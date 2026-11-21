@@ -71,12 +71,13 @@
       <p v-if="orderFailure" role="alert" class="refund-failure">{{ orderFailure }}</p>
       <a-spin :spinning="ordersLoading">
         <a-form v-if="orderMode === 'edit'" layout="vertical">
+          <p v-if="applicantBindingsReviewed">客服已核对并关联订单；可修改理由，若需调整金额或退款方式请联系管理员。</p>
           <a-form-item label="退款方式" :html-for="fieldId('edit-kind')">
-            <a-select :id="fieldId('edit-kind')" v-model:value="editKind" :disabled="busy"
+            <a-select :id="fieldId('edit-kind')" v-model:value="editKind" :disabled="busy || applicantBindingsReviewed"
               :options="[{value: 'original', label: '原路退回'}, {value: 'manual', label: '人工退回'}]" @change="revisionKindChanged" />
           </a-form-item>
           <a-form-item label="申请金额（元）" :html-for="fieldId('edit-amount')">
-            <a-input :id="fieldId('edit-amount')" v-model:value="editYuan" :disabled="busy || row.status !== 'pending_review'" @change="reallocate" />
+            <a-input :id="fieldId('edit-amount')" v-model:value="editYuan" :disabled="busy || applicantBindingsReviewed || row.status !== 'pending_review'" @change="reallocate" />
           </a-form-item>
           <a-form-item label="申请理由" :html-for="fieldId('edit-reason')">
             <a-textarea :id="fieldId('edit-reason')" v-model:value="editReason" :maxlength="500" :disabled="busy" :rows="3" />
@@ -149,7 +150,7 @@ const proofUploadInput = ref(null), revisionQrInput = ref(null)
 const confirmation = ref(null)
 const orderMode = ref(''), orders = ref([]), ordersLoading = ref(false), orderFailure = ref('')
 const editKind = ref('manual'), editYuan = ref(''), editReason = ref(''), unpaidConfirmed = ref(false)
-const allocations = ref([]), manualOrderIDs = ref([]), manualOrdersChanged = ref(false)
+const allocations = ref([]), manualOrderIDs = ref([]), manualOrdersChanged = ref(false), revisionSelectionChanged = ref(false)
 const revisionQrId = ref(0), revisionSignatureId = ref(0), revisionSignedAt = ref('')
 const revisionAgreement = ref(''), revisionAgreementVisible = ref(false), evidenceBusy = ref(false)
 const revisionPhone = ref(null), revisionSmsCode = ref('')
@@ -165,6 +166,7 @@ const canProcessOriginal = computed(() => ready.value && props.isAdmin && row.va
 const canReconcile = computed(() => ready.value && props.isAdmin && row.value.kind === 'manual' && ['frozen', 'processing', 'unknown'].includes(row.value.status))
 const canEdit = computed(() => ready.value && (row.value.status === 'pending_review' || (props.isAdmin && row.value.status === 'frozen' && !row.value.startedAt)))
 const orderLines = computed(() => Array.isArray(row.value.orderLines) ? row.value.orderLines : [])
+const applicantBindingsReviewed = computed(() => !props.isAdmin && row.value.kind === 'manual' && (row.value.orderId || orderLines.value.length))
 const reviewAllocationCents = computed(() => row.value.kind === 'original' && orderLines.value.length > 0
   ? orderLines.value.reduce((sum, line) => sum + line.cents, 0)
   : null)
@@ -248,6 +250,7 @@ function setAllocation(orderId, raw) {
 function toggleManualOrder(id, checked) {
   manualOrderIDs.value = checked ? [...manualOrderIDs.value, id] : manualOrderIDs.value.filter(orderId => orderId !== id)
   if (orderMode.value === 'history') manualOrdersChanged.value = true
+  else if (orderMode.value === 'edit') revisionSelectionChanged.value = true
 }
 async function loadOrders() {
   if (!owned() || ordersLoading.value) return
@@ -273,7 +276,8 @@ function openEdit() {
     allocations.value = [{ orderId: row.value.orderId, cents: allocationTarget.value, manual: false }]
   }
   manualOrderIDs.value = orderLines.value.filter(line => !line.cents).map(line => line.orderId)
-  if (!manualOrderIDs.value.length && row.value.orderId) manualOrderIDs.value = [row.value.orderId]
+  if (row.value.orderId && !manualOrderIDs.value.includes(row.value.orderId)) manualOrderIDs.value.push(row.value.orderId)
+  revisionSelectionChanged.value = false
   orderMode.value = 'edit'
   void loadOrders()
 }
@@ -366,8 +370,9 @@ async function saveRevision() {
       return
     }
     payload.allocations = allocations.value.map(({ orderId, cents }) => ({ orderId, cents }))
-  } else if (props.isAdmin) payload.manualOrderIds = manualOrderIDs.value
-  else if (needsRevisionEvidence.value) {
+  } else if (props.isAdmin) {
+    if (revisionSelectionChanged.value || row.value.kind !== 'manual') payload.manualOrderIds = manualOrderIDs.value
+  } else if (needsRevisionEvidence.value) {
     if (!revisionQrId.value || !revisionSignatureId.value || !revisionPhone.value ||
       (revisionPhone.value.required && !/^\d{6}$/.test(revisionSmsCode.value))) {
       orderFailure.value = '请上传收款码、签署承诺书并完成所需的手机号核验。'

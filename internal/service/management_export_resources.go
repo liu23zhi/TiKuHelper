@@ -17,19 +17,20 @@ const (
 func init() {
 	exportResourceSpecs[ExportResourceRechargeOrders] = exportResourceSpec{
 		resource: ExportResourceRechargeOrders,
-		columns:  []ExportColumn{exportColumn("id"), exportColumn("user_id"), exportColumn("username"), maskedColumn("order_no", MaskExportToken), exportColumn("payment_provider"), exportColumn("payment_method"), exportColumn("amount"), exportColumn("status"), maskedColumn("third_party_order_no", MaskExportToken), exportColumn("paid_at"), exportColumn("created_at"), exportColumn("updated_at")},
+		columns:  []ExportColumn{exportColumn("id"), exportColumn("user_id"), exportColumn("username"), maskedColumn("order_no", MaskExportToken), exportColumn("payment_provider"), exportColumn("payment_method"), exportColumn("amount"), exportColumn("status"), maskedColumn("third_party_order_no", MaskExportToken), exportColumn("paid_at"), exportColumn("created_at"), exportColumn("updated_at"), exportColumn("refund_marked"), exportColumn("refund_reserved"), exportColumn("settlement_needs_review"), exportColumn("refund_order_cap_cents")},
 		load: func(db *gorm.DB, limit int) ([][]string, error) {
-			var rows []struct {
-				entity.RechargeOrder
-				Username string
-			}
-			err := exportLimit(db.Session(&gorm.Session{NewDB: true}).Model(&entity.RechargeOrder{}).Select("recharge_orders.*, users.username AS username").Joins("LEFT JOIN users ON users.id = recharge_orders.user_id").Order("recharge_orders.id ASC"), limit).Find(&rows).Error
+			var rows []RechargeOrderListItem
+			_, columns := rechargeOrderReadProjection(db)
+			query := rechargeOrderRows(db.Session(&gorm.Session{NewDB: true})).Select(columns).Order("recharge_orders.id ASC")
+			err := exportLimit(query, limit).Find(&rows).Error
 			if err != nil {
 				return nil, err
 			}
 			out := make([][]string, 0, len(rows))
+			now := time.Now()
 			for _, row := range rows {
-				out = append(out, []string{strconv.FormatInt(int64(row.ID), 10), strconv.FormatInt(int64(row.UserID), 10), row.Username, row.OrderNo, row.PaymentProvider, row.PaymentMethodNameSnapshot, strconv.FormatFloat(row.Amount, 'f', 6, 64), row.Status, row.ThirdPartyOrderNo, formatExportTimePtr(row.PaidAt), formatExportTime(row.CreatedAt), formatExportTime(row.UpdatedAt)})
+				row.setRefundOrderCap(now)
+				out = append(out, []string{strconv.FormatInt(int64(row.ID), 10), strconv.FormatInt(int64(row.UserID), 10), row.Username, row.OrderNo, row.PaymentProvider, row.PaymentMethodNameSnapshot, strconv.FormatFloat(row.Amount, 'f', 6, 64), row.Status, row.ThirdPartyOrderNo, formatExportTimePtr(row.PaidAt), formatExportTime(row.CreatedAt), formatExportTime(row.UpdatedAt), strconv.FormatBool(row.RefundMarked), strconv.FormatBool(row.RefundReserved), strconv.FormatBool(row.SettlementNeedsReview), strconv.FormatInt(row.RefundOrderCapCents, 10)})
 			}
 			return out, nil
 		},

@@ -14,6 +14,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+var ErrTicketRefundBindingsReviewed = errors.New("客服已核对并关联订单；可以修改申请理由，调整金额或退款方式请联系管理员")
+
 type TicketRefundRevisionInput struct {
 	Manage                bool                          `json:"manage"`
 	UnpaidConfirmed       bool                          `json:"unpaidConfirmed"`
@@ -209,7 +211,7 @@ func EditTicketRefundWithDB(db *gorm.DB, actor entity.User, id int64, input Tick
 		!utf8.ValidString(input.Reason) || len(input.Reason) > 2000 || utf8.RuneCountInString(input.Reason) > 500 ||
 		(input.Kind != TicketRefundKindManual && input.Kind != TicketRefundKindOriginal) ||
 		(input.Kind == TicketRefundKindOriginal && len(input.ManualOrderIDs) != 0) ||
-		(input.Kind == TicketRefundKindManual && len(input.Allocations) != 0) || (!input.Manage && len(input.ManualOrderIDs) != 0) {
+		(input.Kind == TicketRefundKindManual && len(input.Allocations) != 0) || (!input.Manage && input.ManualOrderIDs != nil) {
 		return entity.TicketRefund{}, ErrTicketRefundInvalid
 	}
 	var row entity.TicketRefund
@@ -243,9 +245,40 @@ func EditTicketRefundWithDB(db *gorm.DB, actor entity.User, id int64, input Tick
 		if err != nil {
 			return err
 		}
-		next, err := planTicketRefundRevisionLines(tx, row, input, target, verify, now)
-		if err != nil {
-			return err
+		// A manual selection belongs to staff. Omission (including from legacy
+		// clients) is not an empty selection. Preserve the actual row IDs,
+		// payout references and the legacy parent snapshot on a reason-only edit.
+		if !input.Manage && row.Kind == TicketRefundKindManual && (row.OrderID != nil || len(before) > 0) &&
+			(input.Kind != row.Kind || input.RequestedCents != row.RequestedCents) {
+			return ErrTicketRefundBindingsReviewed
+		}
+		sameManual := input.Kind == TicketRefundKindManual && row.Kind == TicketRefundKindManual
+		keepLines := sameManual && input.ManualOrderIDs == nil
+		keepParent := keepLines && row.OrderID != nil
+		if sameManual && input.ManualOrderIDs != nil && row.OrderID != nil {
+			// The legacy funding order is stored on the parent, not twice as a line.
+			ids := make([]int32, 0, len(input.ManualOrderIDs))
+			for _, id := range input.ManualOrderIDs {
+				if id == *row.OrderID {
+					if keepParent {
+						return ErrTicketRefundInvalid
+					}
+					keepParent = true
+				} else {
+					ids = append(ids, id)
+				}
+			}
+			input.ManualOrderIDs = ids
+		}
+		if keepParent && target > row.OrderPaidCents {
+			return ErrTicketRefundAmount
+		}
+		next := before
+		if !keepLines {
+			next, err = planTicketRefundRevisionLines(tx, row, input, target, verify, now)
+			if err != nil {
+				return err
+			}
 		}
 		if row.Status == TicketRefundStatusPendingReview {
 			wallet, err := lockTicketRefundWallet(tx, row.UserID)
@@ -266,7 +299,12 @@ func EditTicketRefundWithDB(db *gorm.DB, actor entity.User, id int64, input Tick
 		var attachmentIDs []int64
 		updates := map[string]any{
 			"kind": input.Kind, "requested_cents": input.RequestedCents, "reason": input.Reason,
-			"order_id": nil, "order_no": "", "order_paid_cents": 0, "original_trade_no": "", "channel_ref": "",
+		}
+		orderNo := row.OrderNo
+		if !keepParent {
+			orderNo = ""
+			updates["order_id"], updates["order_no"], updates["order_paid_cents"] = nil, "", 0
+			updates["original_trade_no"], updates["channel_ref"] = "", ""
 		}
 		if row.Status == TicketRefundStatusFrozen {
 			const auditPrefix = "【可退本金核算】"
@@ -293,16 +331,16 @@ func EditTicketRefundWithDB(db *gorm.DB, actor entity.User, id int64, input Tick
 			attachmentIDs = []int64{*evidence.PayoutQrAttachmentID, *evidence.SignatureAttachmentID}
 		}
 		previous := describeTicketRefundRevision(row.Kind, row.RequestedCents, row.Reason, row.OrderNo, before)
-		current := describeTicketRefundRevision(input.Kind, input.RequestedCents, updates["reason"].(string), "", next)
+		current := describeTicketRefundRevision(input.Kind, input.RequestedCents, updates["reason"].(string), orderNo, next)
 		if previous == current {
 			return nil
 		}
-		if len(before) > 0 {
+		if !keepLines && len(before) > 0 {
 			if err := tx.Where("refund_id = ?", row.ID).Delete(&entity.TicketRefundOrderLine{}).Error; err != nil {
 				return err
 			}
 		}
-		if len(next) > 0 {
+		if !keepLines && len(next) > 0 {
 			if err := tx.Create(&next).Error; err != nil {
 				if errors.Is(err, gorm.ErrDuplicatedKey) {
 					return ErrTicketRefundOrderUnavailable

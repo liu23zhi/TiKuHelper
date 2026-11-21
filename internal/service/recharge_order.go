@@ -291,9 +291,7 @@ type RechargeOrderListQuery struct {
 }
 
 func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeOrderListQuery, page int, pageSize int) (RechargeOrderListResult, error) {
-	marked := rechargeOrderRefundExists(db, true)
-	reserved := rechargeOrderRefundExists(db, false)
-	effectiveStatus := "CASE WHEN (" + marked + ") THEN 'refunded' ELSE recharge_orders.status END"
+	effectiveStatus, columns := rechargeOrderReadProjection(db)
 	baseQuery := applyRechargeOrderFilters(buildRechargeOrderListQuery(db, operator), query, effectiveStatus)
 
 	var total int64
@@ -312,10 +310,7 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	var records []RechargeOrderListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, " +
-			effectiveStatus + " AS status, (" + marked + ") AS refund_marked, (" + reserved + ") AS refund_reserved, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at, " +
-			"CASE WHEN (recharge_orders.status = 'paid' OR recharge_orders.paid_at IS NOT NULL OR " +
-			"EXISTS (SELECT 1 FROM payment_events pe WHERE pe.order_no = recharge_orders.order_no)) AND NOT " + entity.RechargeCreditEvidenceSQL + " THEN 1 ELSE 0 END AS settlement_needs_review").
+		Select(columns).
 		Order("recharge_orders.id desc").
 		Limit(pageSize).
 		Offset(offset).
@@ -324,12 +319,11 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	}
 
 	currentPageAmount := 0.0
+	now := time.Now()
 	for i := range records {
 		record := &records[i]
 		currentPageAmount += record.Amount
-		if !record.SettlementNeedsReview && record.Status == rechargeOrderStatusPaid && !record.RefundReserved && record.PaidAt != nil && !record.PaidAt.After(time.Now()) {
-			record.RefundOrderCapCents, _ = ticketRefundOrderAmountCents(record.Amount)
-		}
+		record.setRefundOrderCap(now)
 	}
 
 	return RechargeOrderListResult{
@@ -342,6 +336,30 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 			CurrentPageAmount: normalizeRechargeAmount(currentPageAmount),
 		},
 	}, nil
+}
+
+// Both the admin export and the UI use this projection. Missing historical
+// evidence tables cannot certify a settlement or an available refund cap.
+func rechargeOrderReadProjection(db *gorm.DB) (status, columns string) {
+	marked, reserved := rechargeOrderRefundExists(db, true), rechargeOrderRefundExists(db, false)
+	status = "CASE WHEN (" + marked + ") THEN 'refunded' ELSE recharge_orders.status END"
+	event, bill := "1=0", "(1=0)"
+	if db.Migrator().HasTable(&entity.PaymentEvent{}) {
+		event = "EXISTS (SELECT 1 FROM payment_events pe WHERE pe.order_no = recharge_orders.order_no)"
+	}
+	if db.Migrator().HasTable(&entity.BillingRecord{}) {
+		bill = entity.RechargeCreditEvidenceSQL
+	}
+	columns = "recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, " +
+		status + " AS status, (" + marked + ") AS refund_marked, (" + reserved + ") AS refund_reserved, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at, " +
+		"CASE WHEN (recharge_orders.status = 'paid' OR recharge_orders.paid_at IS NOT NULL OR " + event + ") AND NOT " + bill + " THEN 1 ELSE 0 END AS settlement_needs_review"
+	return status, columns
+}
+
+func (record *RechargeOrderListItem) setRefundOrderCap(now time.Time) {
+	if !record.SettlementNeedsReview && record.Status == rechargeOrderStatusPaid && !record.RefundReserved && record.PaidAt != nil && !record.PaidAt.After(now) {
+		record.RefundOrderCapCents, _ = ticketRefundOrderAmountCents(record.Amount)
+	}
 }
 
 func rechargeOrderRefundExists(db *gorm.DB, succeeded bool) string {
@@ -364,12 +382,16 @@ func rechargeOrderRefundExists(db *gorm.DB, succeeded bool) string {
 // JOIN 必须在这里完成：关键词筛选会用到 users.username，
 // 若只在取数据时才 JOIN，Count 会因为缺列而报错（或算出与数据不一致的 total）。
 func buildRechargeOrderListQuery(db *gorm.DB, operator entity.User) *gorm.DB {
-	baseQuery := db.Table(entity.TableNameRechargeOrder + " AS recharge_orders").
-		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id")
+	baseQuery := rechargeOrderRows(db)
 	if !isAdminUser(operator) {
 		baseQuery = baseQuery.Where("recharge_orders.user_id = ?", operator.ID)
 	}
 	return baseQuery
+}
+
+func rechargeOrderRows(db *gorm.DB) *gorm.DB {
+	return db.Table(entity.TableNameRechargeOrder + " AS recharge_orders").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id")
 }
 
 // applyRechargeOrderFilters 把关键词、状态与支付渠道筛选应用到充值记录查询上。

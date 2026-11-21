@@ -77,6 +77,21 @@ afterEach(async () => {
 })
 after(() => { axios.defaults.adapter = priorAdapter; URL.createObjectURL = priorCreate; URL.revokeObjectURL = priorRevoke })
 
+for (const isAdmin of [false, true]) test('人工退款只改理由时保留已核对订单；不把未选变成清空 '+isAdmin, async () => {
+  const wrapper = await open({ ...manual, orderLines: [{ orderId:31, orderNo:'ORDER-31', cents:0, paidCents:750, status:'pending_review' }] },isAdmin)
+  findButton(wrapper.element,'修改退款申请').click(); await settle()
+  const modal = [...document.querySelectorAll('.ant-modal')].find(node => node.textContent.includes('申请理由'))
+  assert.ok(modal)
+  assert.equal(modal.querySelector('input[id$="edit-amount"]').disabled, !isAdmin)
+  if (!isAdmin) assert.match(modal.textContent,/客服已核对并关联订单/)
+  const reason = modal.querySelector('textarea')
+  reason.value = 'reason edit'; reason.dispatchEvent(new Event('input', {bubbles:true})); await settle()
+  await state(wrapper).saveRevision(); await settle()
+  const write = calls.find(call => call.method === 'patch')
+  assert.ok(write); assert.equal(write.data.reason,'reason edit')
+  assert.equal(Object.hasOwn(write.data,'manualOrderIds'),false)
+})
+
 test('真实待审核状态显示审核入口；超额拦截后按分审核，操作只提交一次', async () => {
   const wrapper = await open()
   assert.match(wrapper.text(), /待审核/)

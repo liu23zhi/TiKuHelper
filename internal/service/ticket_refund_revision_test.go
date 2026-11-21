@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +247,177 @@ func TestTicketRefundRevisionCannotReleaseLegacyOrderAtReconciliation(t *testing
 		Kind: TicketRefundKindOriginal, RequestedCents: 50, OrderID: &order.ID,
 	}, testVerifyTicketRefundChannel); !errors.Is(err, ErrTicketRefundOrderUnavailable) {
 		t.Fatalf("legacy funding order reused after payout: %v", err)
+	}
+}
+
+func TestManualReasonEditPreservesStaffAssociations(t *testing.T) {
+	db := newTicketRefundMergeTestDB(t)
+	if err := db.AutoMigrate(&entity.TicketRefundOrderLine{}, &entity.ReferralRebate{}, &entity.PaymentEvent{}, &entity.BillingRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := seedRefundActor(t, db, 50, "edit-owner")
+	admin := seedRefundActor(t, db, 51, "edit-admin")
+	if err := db.Model(&admin).Update("role", "admin").Error; err != nil {
+		t.Fatal(err)
+	}
+	admin.Role = "admin"
+	for _, legacy := range []bool{false, true} {
+		t.Run(strconv.FormatBool(legacy), func(t *testing.T) {
+			id := int32(61)
+			if legacy {
+				id++
+			}
+			order := seedTicketRefundOrder(t, db, id, owner.ID, "paid", time.Now().Add(-time.Hour), 5, true)
+			created := CreateTicketRefundInput{Kind: TicketRefundKindManual, RequestedCents: 500, Reason: "first"}
+			if legacy {
+				created.OrderID = &order.ID
+			}
+			row, err := CreateTicketRefundWithDB(db, owner, withTestRefundIdentity(t, db, owner, created), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			edit := TicketRefundRevisionInput{Kind: TicketRefundKindManual, RequestedCents: 500, Reason: "first"}
+			if !legacy {
+				link := edit
+				link.Manage = true
+				link.ManualOrderIDs = []int32{order.ID}
+				if _, err = EditTicketRefundWithDB(db, admin, row.ID, link, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := TicketRefundLinesWithDB(db, row.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			edit.Reason = "applicant correction"
+			updated, err := EditTicketRefundWithDB(db, owner, row.ID, edit, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := TicketRefundLinesWithDB(db, row.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Reason != edit.Reason || !legacy && (len(after) != 1 || before[0].ID != after[0].ID || before[0].RefundNo != after[0].RefundNo) || legacy && (updated.OrderID == nil || *updated.OrderID != order.ID || updated.OrderNo != order.OrderNo || updated.OrderPaidCents != 500) {
+				t.Fatalf("reason-only edit lost financial association: parent=%v before=%+v after=%+v", updated.OrderID, before, after)
+			}
+			// Neither an explicit empty array nor a change of amount/method can silently release a staff-reviewed link.
+			for _, mutate := range []func(*TicketRefundRevisionInput){
+				func(i *TicketRefundRevisionInput) { i.ManualOrderIDs = []int32{} },
+				func(i *TicketRefundRevisionInput) { i.RequestedCents = 490 },
+				func(i *TicketRefundRevisionInput) {
+					i.Kind = TicketRefundKindOriginal
+					i.Allocations = []TicketRefundOrderAllocation{{OrderID: order.ID, Cents: 500}}
+				},
+			} {
+				bad := edit
+				mutate(&bad)
+				if _, err = EditTicketRefundWithDB(db, owner, row.ID, bad, nil); err == nil {
+					t.Fatal("applicant changed a staff-controlled financial link")
+				}
+			}
+			edit.Manage = true
+			edit.Reason = "staff note"
+			updated, err = EditTicketRefundWithDB(db, admin, row.ID, edit, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if legacy && updated.OrderID == nil {
+				t.Fatal("omitted admin selection released the legacy order")
+			}
+			if legacy {
+				edit.ManualOrderIDs = []int32{}
+				updated, err = EditTicketRefundWithDB(db, admin, row.ID, edit, nil)
+				if err != nil || updated.OrderID != nil {
+					t.Fatalf("deliberate admin clear did not release the draft link: %+v %v", updated, err)
+				}
+				return
+			}
+			if _, err = ReviewTicketRefundWithDB(db, admin, row.ID, true, 500, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = ReconcileManualTicketRefundWithDB(db, admin, row.ID, TicketRefundStatusSucceeded, "fixture-settled", nil); err != nil {
+				t.Fatal(err)
+			}
+			list, err := ListRechargeOrdersWithDB(db, admin, RechargeOrderListQuery{Status: "refunded"}, 1, 10)
+			if err != nil || len(list.Data) != 1 || list.Data[0].ID != order.ID || !list.Data[0].RefundMarked {
+				t.Fatalf("final payout lost the staff-approved order: %+v err=%v", list, err)
+			}
+		})
+	}
+}
+
+func TestRechargeExportMatchesSettlementAndReservationProjection(t *testing.T) {
+	db := newTicketRefundMergeTestDB(t)
+	if err := db.AutoMigrate(&entity.TicketRefundOrderLine{}, &entity.ReferralRebate{}, &entity.PaymentEvent{}, &entity.BillingRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := seedRefundActor(t, db, 30, "export-owner")
+	admin := seedRefundActor(t, db, 31, "export-admin")
+	if err := db.Model(&admin).Update("role", "admin").Error; err != nil {
+		t.Fatal(err)
+	}
+	admin.Role = "admin"
+	var orders []entity.RechargeOrder
+	for i := 0; i < 6; i++ {
+		o := seedTicketRefundOrder(t, db, int32(11+i), owner.ID, "paid", time.Now().Add(-time.Duration(i+1)*time.Hour), 7.5, true)
+		if i < 4 {
+			bill := entity.BillingRecord{UserID: owner.ID, Type: "recharge", RelatedOrderID: o.ID, RequestID: o.OrderNo, Amount: o.Amount}
+			if err := db.Create(&bill).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if i == 5 {
+			if err := db.Model(&o).Updates(map[string]any{"status": "awaiting_callback", "paid_at": nil}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		orders = append(orders, o)
+	}
+	alloc := []TicketRefundOrderAllocation{{OrderID: orders[0].ID, Cents: 750}, {OrderID: orders[1].ID, Cents: 750}}
+	detail, err := CreateTicketForUserWithDB(db, &owner, CreateTicketInput{TicketType: TicketTypeRefund, RefundMethod: TicketRefundKindOriginal, RefundRequestedCents: 1500, RefundReason: "local reconciliation", RefundOrderAllocations: alloc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := detail.Refund.RefundID
+	if _, err = ReviewTicketRefundDecisionWithDB(db, admin, id, true, nil, testVerifyTicketRefundChannel); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range orders[:2] {
+		if _, _, _, err = PrepareTicketRefundLineWithDB(db, admin, id, o.ID, true, testVerifyTicketRefundChannel); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = ReconcileTicketRefundLineWithDB(db, admin, id, o.ID, TicketRefundStatusSucceeded, "test-settlement"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{Kind: TicketRefundKindOriginal, OrderID: &orders[2].ID, RequestedCents: 500}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := ListRechargeOrdersWithDB(db, admin, RechargeOrderListQuery{}, 1, 10)
+	if err != nil || len(list.Data) != 6 {
+		t.Fatalf("list %+v err=%v", list, err)
+	}
+	file, err := ExportDataWithDB(db, ExportDataOptions{Resource: ExportResourceRechargeOrders, Format: ExportFormatJSON})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []struct {
+		ID          int32
+		Status      string
+		Reserved    string `json:"refund_reserved"`
+		Marked      string `json:"refund_marked"`
+		NeedsReview string `json:"settlement_needs_review"`
+		Cap         string `json:"refund_order_cap_cents"`
+	}
+	if err = json.Unmarshal(file.Content, &records); err != nil || len(records) != 6 {
+		t.Fatal(err, len(records))
+	}
+	for i, row := range list.Data {
+		got := records[len(records)-1-i]
+		if got.ID != row.ID || got.Status != row.Status || got.Reserved != strconv.FormatBool(row.RefundReserved) || got.Marked != strconv.FormatBool(row.RefundMarked) || got.NeedsReview != strconv.FormatBool(row.SettlementNeedsReview) || got.Cap != strconv.FormatInt(row.RefundOrderCapCents, 10) {
+			t.Errorf("export and list differ for order %d: exported=%+v list=%+v", row.ID, got, row)
+		}
 	}
 }

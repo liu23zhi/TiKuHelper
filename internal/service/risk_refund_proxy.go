@@ -21,13 +21,13 @@ import (
 // 账单表只有收支金额，没有「退款申请 → 审核 → 终态」这套状态机。
 // 退款主表是 `ticket_refunds`（entity.TicketRefund）。
 //
-// # 为什么只算 status = succeeded
+// # 为什么按实际结算口径
 //
 // `ticket_refunds.status` 有 7 个取值（entity/ticket_refund.go:9-15）：
 //
 //	pending_review / rejected / frozen / processing / unknown / succeeded / failed
 //
-// 只有 `succeeded` 代表**钱真的退出去了**。而且它是终态 ——
+// 只有成功的整笔退款或部分成功申请中已成功的逐笔明细代表钱真的退出去了。
 // `ticket_refund.go:359` 明确拒绝从 succeeded/failed 再改状态。
 //
 // 算错 status 的后果：把「申请 3 次全被驳回」的用户误报成退款滥用。
@@ -35,7 +35,7 @@ import (
 //
 // # 「接近满额」的定义与数字来源
 //
-// 比例 = approved_cents / order_paid_cents，要求 ≥ riskRefundNearFullRatio（90%）。
+// 比例 = 同一申请实际退款 / 对应已退款订单实付，要求 ≥ riskRefundNearFullRatio（90%）。
 //
 // ⚠️ **90% 是本仓自定的经验值**（97 号只说「接近满额」，没给数字）。
 // 取 90% 的理由：正常退款常因「部分未使用/按比例退」而明显低于满额；
@@ -55,58 +55,71 @@ const riskRefundAbuseWindow = 30 * 24 * time.Hour
 // ⚠️ **本仓自定**，97 号未给数字。见文件顶部注释里的取值理由。
 const riskRefundNearFullRatio = 0.9
 
-// collectRefundAbuseCandidates 收集 R13 的命中（97 §5.1）。
-//
-// # 三个数据陷阱的处理（每个都有用例）
-//
-//  1. **approved_cents = 0**（申请被拒 / 尚未审批）→ 不算。
-//     这些行本来就因为 `status != succeeded` 被 SQL 过滤掉了，
-//     但这里**再加一次显式判断**：万一将来有「succeeded 但 approved=0」的脏数据
-//     （理论上不该有，`ticket_refund.go:676` 有校验），也不该进分子。
-//
-//  2. **order_paid_cents = 0 → 除零**。
-//     `ticket_refund.go:676-677` 的校验只覆盖「OrderID != nil」的情形；
-//     手工退款（Kind=manual，OrderID 为 nil）没有订单实付金额。
-//     对一个 0 元的「订单」算「接近满额」没有意义 → 跳过。
-//
-//  3. **同一订单多次退款**：`order_id` 有 **uniqueIndex**
-//     （`entity.TicketRefund` 的 `OrderID *int32 gorm:"...;uniqueIndex"`），
-//     所以「一笔订单拆多次退」在数据层**不可能出现**。
-//     但 `order_id` 为 NULL 的手工退款可以有任意多条（NULL 不参与唯一约束），
-//     它们按「多次退款」正常累计 —— 那是刻意的：手工退款本来就没有订单可去重。
+// One row per application, even when multiple original payments funded it.
+// Cents on original-channel lines are allocations; manual marker lines contain
+// no allocation, so the successful parent amount is the only payout numerator.
+type refundAbuseRow struct {
+	RefundID                                            int64
+	UserID, ParentOrderID                               int32
+	Kind, Status                                        string
+	ApprovedCents, OrderPaidCents                       int64
+	Lines, SucceededLines, InvalidLines, IncludesParent int64
+	SettledCents, SettledPaidCents                      int64
+}
+
+func (r refundAbuseRow) settledAmounts() (refunded, paid int64) {
+	switch {
+	case r.Lines == 0: // Legacy single-order payout, no new-format line exists.
+		if r.Status != TicketRefundStatusSucceeded {
+			return 0, 0
+		}
+		refunded, paid = r.ApprovedCents, r.OrderPaidCents
+	case r.InvalidLines != 0 || r.SucceededLines == 0:
+		return 0, 0 // Never substitute the parent estimate for a failed/unknown payout.
+	case r.Kind == TicketRefundKindOriginal:
+		refunded, paid = r.SettledCents, r.SettledPaidCents
+	case r.Kind == TicketRefundKindManual && r.Status == TicketRefundStatusSucceeded && r.Lines == r.SucceededLines:
+		refunded, paid = r.ApprovedCents, r.SettledPaidCents
+		if r.ParentOrderID > 0 && r.IncludesParent == 0 {
+			if r.OrderPaidCents <= 0 {
+				return 0, 0
+			}
+			paid += r.OrderPaidCents
+		}
+	}
+	if refunded <= 0 || paid <= 0 || refunded > paid || refunded > r.ApprovedCents {
+		return 0, 0
+	}
+	return refunded, paid
+}
+
+// Only terminal applications enter the rolling window. In a partially
+// successful application, only confirmed lines contribute to either sum.
 func collectRefundAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
 	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
-	if threshold <= 0 {
-		return nil, nil
-	}
-	if !db.Migrator().HasTable(&entity.TicketRefund{}) {
+	if threshold <= 0 || !db.Migrator().HasTable(&entity.TicketRefund{}) {
 		return nil, nil
 	}
 	windowStart := now.Add(-riskRefundAbuseWindow)
-	timeExpr := riskWindowColumnExpr(db, "created_at")
-
-	// 只取 succeeded 且 approved > 0 且 order_paid > 0 的行 —— 三个陷阱在 SQL 层挡掉两个，
-	// approved=0 在 Go 侧再判一次（防御脏数据）。
-	type refundRow struct {
-		UserID         int32
-		ApprovedCents  int64
-		OrderPaidCents int64
-		RefundID       int64
+	// Old rows may not have a settlement timestamp; retain their prior window.
+	timeExpr := riskWindowColumnExpr(db, "COALESCE(r.resolved_at, r.created_at)")
+	query := db.Session(&gorm.Session{NewDB: true}).Table("ticket_refunds AS r").
+		Where("r.status IN ? AND r.user_id > 0 AND r.approved_cents > 0", []string{TicketRefundStatusSucceeded, TicketRefundStatusPartial}).
+		Where(timeExpr+" >= ? AND "+timeExpr+" < ?", windowStart.Format("2006-01-02 15:04:05"), now.Format("2006-01-02 15:04:05"))
+	columns := "r.id AS refund_id, r.user_id, COALESCE(r.order_id, 0) AS parent_order_id, r.kind, r.status, r.approved_cents, r.order_paid_cents"
+	if db.Migrator().HasTable(&entity.TicketRefundOrderLine{}) {
+		query = query.Joins("LEFT JOIN ticket_refund_order_lines l ON l.refund_id = r.id").
+			Group("r.id, r.user_id, r.order_id, r.kind, r.status, r.approved_cents, r.order_paid_cents")
+		columns += `, COUNT(l.id) AS lines,
+			SUM(CASE WHEN l.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_lines,
+			SUM(CASE WHEN l.status = 'succeeded' AND (l.paid_cents <= 0 OR (r.kind = 'original' AND (l.cents <= 0 OR l.cents > l.paid_cents))) THEN 1 ELSE 0 END) AS invalid_lines,
+			MAX(CASE WHEN l.status = 'succeeded' AND l.order_id = r.order_id THEN 1 ELSE 0 END) AS includes_parent,
+			SUM(CASE WHEN l.status = 'succeeded' THEN l.cents ELSE 0 END) AS settled_cents,
+			SUM(CASE WHEN l.status = 'succeeded' THEN l.paid_cents ELSE 0 END) AS settled_paid_cents`
 	}
-	var rows []refundRow
-	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
-		Select("user_id, id AS refund_id, approved_cents, order_paid_cents").
-		Where("status = ?", entity.TicketRefundStatusSucceeded).
-		Where("user_id > 0").
-		Where("approved_cents > 0").
-		Where("order_paid_cents > 0").
-		Where(timeExpr+" >= ? AND "+timeExpr+" < ?",
-			windowStart.Format("2006-01-02 15:04:05"), now.Format("2006-01-02 15:04:05")).
-		Scan(&rows).Error; err != nil {
+	var rows []refundAbuseRow
+	if err := query.Select(columns).Order("r.id ASC").Scan(&rows).Error; err != nil {
 		return nil, err
-	}
-	if len(rows) == 0 {
-		return nil, nil
 	}
 
 	// 按 user_id 聚合「接近满额的退款」。
@@ -120,6 +133,10 @@ func collectRefundAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Ti
 	aggregates := make(map[int32]*refundAggregate, 8)
 	order := make([]int32, 0, 8)
 	for _, row := range rows {
+		refunded, paid := row.settledAmounts()
+		if refunded == 0 {
+			continue
+		}
 		aggregate, ok := aggregates[row.UserID]
 		if !ok {
 			aggregate = &refundAggregate{SampleRefundID: row.RefundID}
@@ -127,17 +144,9 @@ func collectRefundAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Ti
 			order = append(order, row.UserID)
 		}
 		aggregate.TotalRefunds++
-		aggregate.TotalApproved += row.ApprovedCents
-		aggregate.TotalOrderPaid += row.OrderPaidCents
-		// 陷阱 1：approved_cents = 0 已在 SQL 过滤，这里再判一次防脏数据。
-		if row.ApprovedCents <= 0 {
-			continue
-		}
-		// 陷阱 2：order_paid_cents = 0 已在 SQL 过滤，这里再判一次防脏数据。
-		if row.OrderPaidCents <= 0 {
-			continue
-		}
-		ratio := float64(row.ApprovedCents) / float64(row.OrderPaidCents)
+		aggregate.TotalApproved += refunded
+		aggregate.TotalOrderPaid += paid
+		ratio := float64(refunded) / float64(paid)
 		if ratio >= riskRefundNearFullRatio {
 			aggregate.NearFullCount++
 		}
@@ -176,9 +185,7 @@ func collectRefundAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Ti
 			"windowStart":    windowStart.Format(time.RFC3339),
 			"windowEnd":      now.Format(time.RFC3339),
 			"evaluatedAt":    now.Format(time.RFC3339),
-			"evidenceNote": "30 天滑动窗口内**已成功**（status=succeeded）的退款中，" +
-				"approved/order_paid ≥ 90% 的笔数。" +
-				"申请中被拒/冻结/失败的不计入；order_paid=0 的手工退款不计入（无法判断是否满额）",
+			"evidenceNote":   "按终态申请去重：已退金额 / 对应订单实付 ≥ 90%。部分成功只计成功明细；人工核销按实际打款总额计一次，无实付依据不计。",
 		})
 		if err != nil {
 			return nil, err

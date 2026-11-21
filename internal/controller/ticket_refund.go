@@ -534,6 +534,8 @@ func writeTicketRefundError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrTicketRefundInvalid), errors.Is(err, service.ErrTicketRefundAmount):
 		status, code, message = http.StatusBadRequest, "REFUND_INVALID", "退款参数或金额无效"
+	case errors.Is(err, service.ErrTicketRefundBindingsReviewed):
+		status, code, message = http.StatusConflict, "REFUND_BINDINGS_REVIEWED", err.Error()
 	case errors.Is(err, service.ErrTicketRefundAllocationMismatch):
 		status, code, message = http.StatusConflict, "REFUND_ALLOCATION_MISMATCH", err.Error()
 	case errors.Is(err, service.ErrTicketRefundProofInvalid):

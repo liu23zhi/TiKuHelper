@@ -53,6 +53,7 @@ export const REFUND_ALLOCATION_MISMATCH_MESSAGE = '审核金额须等于订单�
 
 const REFUND_FAILURE_MESSAGES = Object.freeze({
   REFUND_INVALID: '请核对退款参数、金额及订单分配。',
+  REFUND_BINDINGS_REVIEWED: '客服已核对并关联订单；可修改理由，调整金额或退款方式请联系管理员。',
   REFUND_ALLOCATION_MISMATCH: REFUND_ALLOCATION_MISMATCH_MESSAGE,
   REFUND_FORBIDDEN: '无权执行此退款操作。',
   REFUND_VERIFICATION_REQUIRED: '请核对收款信息和承诺书签署。',
