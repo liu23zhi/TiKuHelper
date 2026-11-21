@@ -82,10 +82,6 @@ func TestHandleRechargePaymentNotifyWithDBConcurrentDuplicateChild(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = a.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{},
-		&entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.PaymentEvent{}); err != nil {
-		t.Fatal(err)
-	}
 	b, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -104,16 +100,24 @@ func TestHandleRechargePaymentNotifyWithDBConcurrentDuplicateChild(t *testing.T)
 	defer sqlA.Close()
 	defer sqlB.Close()
 
-	user := seedRechargeOrderUser(t, a, 7, "user")
-	if err = a.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 5.25).Error; err != nil {
-		t.Fatal(err)
-	}
+	// Commit all fixture writes together before either callback opens its independent transaction.
+	// On slow disks hundreds of per-setting fsyncs otherwise exhaust the concurrency watchdog during setup.
 	publicKey, privateKey, recheckKeys := rechargeNotifyTestKeys(t)
-	seedRechargePaymentSettings(t, a, publicKey, privateKey)
-	order := entity.RechargeOrder{UserID: user.ID, OrderNo: "rcg_notify_success",
-		PaymentProvider: DefaultPaymentProvider, PaymentMethodNameSnapshot: "支付宝",
-		Amount: 12.35, Status: rechargeOrderStatusPending}
-	if err = a.Create(&order).Error; err != nil {
+	var user entity.User
+	var order entity.RechargeOrder
+	err = a.Transaction(func(tx *gorm.DB) error {
+		if err := tx.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.PaymentEvent{}); err != nil {
+			return err
+		}
+		user = seedRechargeOrderUser(t, tx, 7, "user")
+		if err := tx.Model(&user).Update("balance", 5.25).Error; err != nil {
+			return err
+		}
+		seedRechargePaymentSettings(t, tx, publicKey, privateKey)
+		order = entity.RechargeOrder{UserID: user.ID, OrderNo: "rcg_notify_success", PaymentProvider: DefaultPaymentProvider, PaymentMethodNameSnapshot: "支付宝", Amount: 12.35, Status: rechargeOrderStatusPending}
+		return tx.Create(&order).Error
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	values := url.Values{"pid": {"10001"}, "type": {"alipay"}, "out_trade_no": {order.OrderNo},
