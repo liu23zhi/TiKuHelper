@@ -37,7 +37,6 @@ after(()=>{axios.defaults.adapter=priorAdapter;writeLedger()})
 
 
 async function until(fn,label){const at=performance.now();while(performance.now()-at<7000){if(fn())return;await new Promise(r=>setTimeout(r,5));await settle()}assert.fail('probe wait '+label)}
-function currentModal(title){const n=[...document.querySelectorAll('.ant-modal')].find(n=>visible(n)&&(!title||compact(n.querySelector('.ant-modal-title')?.textContent)===title));assert.ok(n,'actual visible Modal');return n}
 function field(root,text){const item=[...root.querySelectorAll('.ant-form-item')].find(n=>compact(n.querySelector('.ant-form-item-label')?.textContent).replace(/^\*/,'')===text);assert.ok(item,'actual visible FormItem '+text);const label=item.querySelector('.ant-form-item-label label'),control=item.querySelector('input[role="combobox"],textarea,input:not([type="hidden"]),button[role="switch"]');assert.ok(control,'actual focusable native control '+text);return{label,control}}
 function attrs(n){return Object.fromEntries(['id','for','role','aria-label','aria-labelledby','aria-describedby','type','tabindex','disabled','readonly'].map(k=>[k,n?.getAttribute(k)??null]))}
 
