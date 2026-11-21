@@ -14,7 +14,7 @@ const normal = { id: 222, role: 'user', username: 'fixture_user' }
 const ownerCommand = 'powershell -EncodedCommand ZgA='
 const row = (name, ownerId) => ({ id: 7, ownerId, name, scheme: 'https', baseDomain: 'fixture.example.test', shortCode: 'a', versionId: 5, command: ownerCommand })
 const okay = data => ({ status: 200, data })
-const reads = [], writes = [], purchases = [], redemptions = [], updates = [], policyWrites = [], deletes = [], mounts = []
+const reads = [], writes = [], purchases = [], redemptions = [], updates = [], policyWrites = [], deletes = [], shortWrites = [], mounts = []
 let holdReads = false, holdWrites = false, activationPriceFixture = 12.345678
 let listFixture = [row('现有脚本', 111)]
 
@@ -26,8 +26,10 @@ api.exports = {
     return new Promise(resolve => reads.push({ params, resolve }))
   },
   getScriptVersions: async () => okay([{ id: 5, version: 'synthetic', nativeLeaseProtocol: true, isCurrent: true }]),
+  getScriptDomainSettings: async () => okay({ domains: ['*.example.test'] }),
   getScriptDomainFormats: async () => okay({ formats: [{ raw: '*.example.test', kind: 'wildcard', host: 'example.test', slot: 'prefix' }] }),
-  getScriptDomainSettings: async () => okay({ domains: ['example.test'], allowWildcard: true }),
+  configureScriptShortAuthorization(id, payload) { return new Promise(resolve => shortWrites.push({ id, payload, resolve })) },
+  configureScriptLauncherAuthorization(id, payload) { return new Promise(resolve => shortWrites.push({ id, payload, kind: 'full', resolve })) },
   getScriptEscrowPolicy: async () => okay({ targetMicros: 80000000, minimumMicros: 60000000, multiplierMicros: 1000000 }),
   getScriptActivationCodePrice: async () => okay({ enabled: true, price: activationPriceFixture }),
   updateScriptEscrowPolicy: async payload => { policyWrites.push(payload); return okay(payload) },
@@ -49,15 +51,14 @@ require.cache[apiPath] = api
 const PAGE = require('../../src/pages/ScriptManagement/index.vue')
 
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
-async function open(account = admin) {
+async function open(account = admin, viewMode) {
   user.setStoredCurrentUser(account)
   const history = createMemoryHistory(), router = createRouter({ history, routes: [
-    { path: '/scripts', name: 'scripts', meta: { viewMode: 'self' }, component: PAGE },
-    { path: '/script-admin', name: 'script-admin', meta: { viewMode: 'admin' }, component: PAGE },
+    { path: '/adapter/scripts', name: viewMode === 'admin' ? 'script-admin' : 'scripts', component: PAGE, meta: viewMode ? { viewMode } : {} },
     { path: '/other', component: { render: () => h('div', 'Other') } },
     { path: '/login', component: { render: () => h('div', 'Login') } },
   ] })
-  await router.push(account.role === 'admin' ? '/script-admin' : '/scripts'); await router.isReady()
+  await router.push('/adapter/scripts'); await router.isReady()
   const wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router, Antd] } })
   mounts.push({ wrapper, history })
   await settle()
@@ -70,12 +71,135 @@ afterEach(async () => {
   await settle()
   user.clearStoredCurrentUser()
   document.body.replaceChildren()
-  reads.length = writes.length = purchases.length = redemptions.length = updates.length = policyWrites.length = deletes.length = 0; holdReads = holdWrites = false; activationPriceFixture = 12.345678
+  reads.length = writes.length = purchases.length = redemptions.length = updates.length = policyWrites.length = deletes.length = shortWrites.length = 0; holdReads = holdWrites = false; activationPriceFixture = 12.345678
   listFixture = [row('现有脚本', 111)]
 })
 
 const activeLease = id => ({ status: 409, data: { code: 'SCRIPT_ACTIVE_LEASE_CONFIRM_REQUIRED', activeRunSessionId: id } })
 const escrowRow = () => ({ ...row('冻结金脚本', 111), billingMode: 'escrow' })
+
+test('admin script management always reads all scripts and has no scope switch', async () => {
+  holdReads = true
+  const { page } = await open()
+  assert.deepEqual(reads[0].params, { scope: 'all' })
+  assert.doesNotMatch(page.text(), /只看我的脚本|显示全部脚本/)
+  reads[0].resolve(okay(listFixture))
+  await settle()
+})
+
+test('administrator using the ordinary script view still reads only own scripts', async () => {
+  holdReads = true
+  const { page } = await open(admin, 'self')
+  assert.deepEqual(reads[0].params, { scope: 'self' })
+  assert.doesNotMatch(page.text(), /管理员上传 EXE|脚本计费政策/)
+  reads[0].resolve(okay(listFixture))
+  await settle()
+})
+
+test('own command is visible in the script list and purchases have an independent entry', async () => {
+  const { page } = await open(admin, 'self')
+  assert.ok(page.text().includes(ownerCommand), 'command should be selectable without opening settings')
+  assert.ok(page.find('[data-script-activation-purchases]').exists(), 'standalone purchase and receipt entry')
+})
+
+test('activation creation uses visible code and a stable wallet purchase label', async () => {
+  const { state } = await open(admin, 'self')
+  state.openCreate()
+  state.setFormField('billingMode', 'activation_code')
+  state.purchaseUncertain = true
+  await settle()
+  const input = document.querySelector('input[placeholder="输入激活码"]')
+  assert.equal(input?.type, 'text')
+  assert.doesNotMatch(document.body.textContent, /重试同一次购买/)
+  assert.match(document.body.textContent, /钱包购买 ¥12\.345678/)
+})
+
+test('both script views create a launcher without user-supplied address, scheme or description', async () => {
+  holdWrites = true
+  for (const view of ['self', 'admin']) {
+    const { state, wrapper, router } = await open(admin, view)
+    state.openCreate()
+    await settle()
+    const modal = document.querySelector('.ant-modal')
+    assert.doesNotMatch(modal.textContent, /添加域名|协议|说明/)
+    assert.equal(modal.querySelector('input[placeholder="子域"]'), null)
+    state.setFormField('name', '随机地址')
+    const operation = state.handleSubmit()
+    const write = writes.at(-1)
+    assert.ok(write)
+    for (const key of ['baseDomain', 'scheme', 'useWildcardDomain', 'description', 'domains']) {
+      assert.equal(Object.hasOwn(write.payload, key), false, key)
+    }
+    write.resolve(okay({}))
+    await operation
+    await router.push('/other')
+    await settle()
+    assert.ok(wrapper.exists())
+  }
+})
+
+test('short entry authorization keeps complete command and supports expiry plus revocation', async () => {
+  const { state } = await open()
+  assert.equal(state.rows[0].command, ownerCommand)
+  assert.equal(state.rows[0].shortAuthorization, undefined)
+  assert.equal(state.mayCopyCommand(state.rows[0]), true)
+  assert.doesNotMatch(document.body.textContent, /powershell -c "iex/, '默认只提供完整授权指令，不展示未启用的短命令')
+  state.openShortAuthorization(state.rows[0])
+  await settle()
+  assert.doesNotMatch(document.body.textContent, /powershell -c "iex/, '打开短命令设置也不能在授权前展示可用短命令')
+  state.setShortAuthorizationField('slot', 'a')
+  state.setShortAuthorizationField('durationMinutes', 7)
+  const operation = state.saveShortAuthorization(true)
+  state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 1)
+  assert.deepEqual(shortWrites[0].payload, { enabled: true, domainFormat: '*.example.test', durationMinutes: 7, maxUses: 1, startsAt: null })
+  const grant = { status: 'active', address: 'https://a.example.test', expiresAt: new Date(Date.now() + 7 * 60000).toISOString(), command: 'powershell -c "iex(irm https://a.example.test)"' }
+  shortWrites[0].resolve(okay(grant))
+  await operation; await settle()
+  assert.match(document.body.textContent, /powershell -c "iex\(irm https:\/\/a.example.test\)"/)
+  assert.match(document.body.textContent, /有效至/)
+  assert.equal(state.rows[0].command, ownerCommand)
+  const revoke = state.saveShortAuthorization(false)
+  assert.deepEqual(shortWrites[1].payload, { enabled: false })
+  shortWrites[1].resolve(okay({ status: 'disabled', address: grant.address }))
+  await revoke; await settle()
+  assert.doesNotMatch(document.body.textContent, /powershell -c "iex/)
+  assert.equal(state.mayCopyCommand(state.rows[0]), true)
+})
+
+test('complete command supports its own schedule and use count without enabling a short entry', async () => {
+  const { state } = await open()
+  state.openShortAuthorization(state.rows[0], 'full')
+  assert.equal(state.shortAuthorizationForm.durationMinutes, 0)
+  assert.equal(state.shortAuthorizationForm.maxUses, 0)
+  state.setShortAuthorizationField('durationMinutes', 45)
+  state.setShortAuthorizationField('maxUses', 3)
+  state.setShortAuthorizationField('startsAt', '2026-12-01T12:30')
+  const pending = state.saveShortAuthorization(true)
+  assert.equal(shortWrites[0].kind, 'full')
+  assert.deepEqual(shortWrites[0].payload, { enabled: true, durationMinutes: 45, maxUses: 3, startsAt: new Date('2026-12-01T12:30').toISOString() })
+  shortWrites[0].resolve(okay({ status: 'scheduled', command: 'powershell -EncodedCommand YQA=', maxUses: 3, usedCount: 0, startsAt: new Date('2026-12-01T12:30').toISOString() }))
+  await pending; await settle()
+  assert.equal(state.rows[0].command, 'powershell -EncodedCommand YQA=')
+  assert.equal(state.rows[0].shortAuthorization, undefined)
+  assert.match(document.body.textContent, /待生效|已使用 0 \/ 3 次/)
+})
+
+test('retiring an account hides short authorization and rejects its late response', async () => {
+  const { state } = await open()
+  state.openShortAuthorization(state.rows[0])
+  state.setShortAuthorizationField('slot', 'private')
+  const pending = state.saveShortAuthorization(true)
+  listFixture = [row('下一账号', normal.id)]
+  user.setStoredCurrentUser(normal)
+  await settle()
+  shortWrites[0].resolve(okay({ status: 'active', address: 'https://private.example.test', expiresAt: new Date(Date.now() + 60000).toISOString(), command: 'powershell -c "iex(irm https://private.example.test)"' }))
+  await pending; await settle()
+  assert.equal(state.shortAuthorizationRecord, null)
+  assert.equal(state.rows[0].ownerId, normal.id)
+  assert.equal(state.rows[0].shortAuthorization, undefined)
+  assert.doesNotMatch(document.body.textContent, /private.example.test/)
+})
 function clickActiveClose(label) {
   const modal = [...document.querySelectorAll('.ant-modal')].find(el => el.textContent.includes('客户端正在运行'))
   assert.ok(modal, 'second independent confirmation is visible')
@@ -155,19 +279,19 @@ test('changing accounts retires a pending confirmation and cannot reuse its sess
 test('script identity change clears rows and prevents late all-scope result publication', async () => {
   const { state, page } = await open()
   assert.equal(state.rows[0].name, '现有脚本')
-  assert.doesNotMatch(page.text(), /EncodedCommand/, 'launcher credentials are not printed in the table')
+  assert.ok(page.text().includes(ownerCommand), 'owner can directly select the command in the table')
   assert.equal(state.mayCopyCommand(state.rows[0]), true)
   assert.equal(state.mayCopyCommand(row('其他账号', 222)), false)
   holdReads = true
-  state.toggleScope()
+  state.refreshScripts()
   assert.deepEqual(reads[0].params, { scope: 'all' })
-  assert.deepEqual(state.rows, [])
   user.setStoredCurrentUser(normal)
   await settle()
   assert.deepEqual(reads[1].params, { scope: 'self' })
   reads[0].resolve(okay([row('迟到管理员数据', 111)]))
   await settle()
   assert.deepEqual(state.rows, [])
+  assert.doesNotMatch(page.text(), /EncodedCommand/, 'retired command is immediately hidden on identity change')
   assert.equal(state.loading, true, 'old request does not clear new loading')
   reads[1].resolve(okay([row('新账号脚本', 222)]))
   await settle()
@@ -181,8 +305,6 @@ test('script save deduplicates clicks and retains the idempotency key only for a
   state.openCreate()
   await settle()
   state.setFormField('name', '合成脚本')
-  state.setDomainRowFormat(0, '*.example.test')
-  state.setDomainRowSlot(0, 'fixture')
   const editor = page.findComponent(Antd.Modal)
   assert.ok(editor.exists())
   editor.vm.$emit('ok')
@@ -218,7 +340,7 @@ test('leaving the script page asks before discarding a draft but never traps log
   assert.ok(cancel)
   cancel.click()
   await navigation
-  assert.equal(router.currentRoute.value.path, '/script-admin')
+  assert.equal(router.currentRoute.value.path, '/adapter/scripts')
   assert.equal(state.form.name, '待保留草稿')
   await router.push('/login')
   await settle()
@@ -292,8 +414,6 @@ test('redeeming sends code only to redemption; creation uses entitlement and edi
   state.openCreate()
   state.setFormField('billingMode', 'activation_code')
   state.setFormField('name', '一次合成脚本')
-  state.setDomainRowFormat(0, '*.example.test')
-  state.setDomainRowSlot(0, 'fixture')
   state.setFormField('runDurationMinutes', 35)
   state.setFormField('notifyOnDenied', true)
   await settle()

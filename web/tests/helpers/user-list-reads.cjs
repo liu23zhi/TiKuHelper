@@ -13,5 +13,11 @@ Module._load = function (request, parent, main) {
     assert.deepEqual(params, { userId: params.userId, active: 'true', page: 1, pageSize: 1 })
     return { status: 200, data: { data: [], total: 0 } }
   } }
+  // The administrator's independent import/export history is also visible on this branch.
+  if (request === '../IntelligentImport/asyncTaskApi.mjs') return { ...actual, async listAsyncTasks(params) {
+    assert.ok(['import', 'export'].includes(params?.type))
+    assert.deepEqual(params, { type: params.type, resource: 'users', pageSize: 20 })
+    return { status: 200, data: { data: [], total: 0 } }
+  } }
   return actual
 }

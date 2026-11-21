@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -76,7 +75,7 @@ func SensitiveImageEntryList(c *gin.Context) {
 		return
 	}
 
-	query := db.Model(&entity.SensitiveImageCacheEntry{})
+	query := service.SensitiveImageHistoryQuery(db)
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -88,7 +87,7 @@ func SensitiveImageEntryList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取敏感图片检测记录失败"})
 		return
 	}
-	rows := make([]entity.SensitiveImageCacheEntry, 0, pageSize)
+	rows := make([]service.SensitiveImageHistoryEntry, 0, pageSize)
 	if err := query.Order("updated_at DESC, image_sha256 ASC").
 		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取敏感图片检测记录失败"})

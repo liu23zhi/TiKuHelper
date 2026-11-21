@@ -38,6 +38,7 @@ const (
 	DeviceBindingRevokeReasonUserRemoved  = "user_removed"
 	DeviceBindingRevokeReasonAdminUnbound = "admin_unbound"
 	DeviceBindingRevokeReasonIdle10d      = "idle_10d"
+	DeviceBindingRevokeReasonIdleTimeout  = "idle_timeout"
 	DeviceBindingRevokeReasonDeviceBanned = "device_banned"
 )
 

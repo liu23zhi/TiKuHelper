@@ -75,6 +75,9 @@
           </dl>
         </article>
       </ConsoleSummaryGrid>
+      <div class="metrics-charts">
+        <PortraitChart v-for="chart in runtimeCharts" :key="chart.key" :title="chart.title" :hint="chart.hint" :options="chart.options" :aria-label="chart.title" />
+      </div>
       <p v-if="!metrics.tasks" class="metrics-help">当前接口未提供任务摘要；不将未知状态填成零。</p>
       <p class="metrics-help">失败响应按 HTTP 状态码 ≥400 统计。此处搜索/回退缓存统计结果复用，不是上游模型输入 Token 缓存命中率。请求、缓存、结算事件与当前保留任务采用不同统计口径，不能相加推算用户数、排队数或账单金额。</p>
     </template>
@@ -88,6 +91,9 @@ import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
+import PortraitChart from '@/pages/UserPortrait/PortraitChart.vue'
+import { useChartPalette } from '@/utils/useChartPalette'
+import { buildRuntimeCharts } from '@/utils/operationalCharts.mjs'
 import { getSystemMetrics } from '@/api/TikuComponentApi'
 import { isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
@@ -111,11 +117,13 @@ function readError(status) {
 
 export default {
   name: 'SystemMetricsPanel',
-  components: { RequestFailureAlert, ConsolePanel, ConsoleSummaryGrid },
+  components: { RequestFailureAlert, ConsolePanel, ConsoleSummaryGrid, PortraitChart },
   setup() {
     const { currentUser } = useCurrentUserDisplay()
     const canView = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
     const metrics = ref(null)
+    const palette = useChartPalette()
+    const runtimeCharts = computed(() => buildRuntimeCharts(metrics.value, palette.value))
     const loading = ref(false)
     const errorText = ref('')
     const failure = shallowRef(null)
@@ -186,13 +194,14 @@ export default {
       { key: 'search', label: '搜索', value: metrics.value.tasks.search },
       { key: 'fallback', label: '回退', value: metrics.value.tasks.fallback },
     ] : [])
-    return { canView, metrics, loading, errorText, failure, failureContext, isCurrentFailure, retryFailure, sampledAt, handleRefresh, count, mebibytes, startedAtText, meanLatency, maxLatency, cacheEntries, taskEntries }
+    return { canView, metrics, loading, errorText, failure, failureContext, isCurrentFailure, retryFailure, sampledAt, handleRefresh, count, mebibytes, startedAtText, meanLatency, maxLatency, cacheEntries, taskEntries, runtimeCharts }
   },
 }
 </script>
 
 <style scoped>
 .system-metrics-panel { margin-bottom: 24px; min-width: 0; }
+.metrics-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; margin-top: 20px; min-width: 0; }
 .metrics-notice { margin-bottom: 16px; }
 .metrics-meta, .metrics-help { color: var(--console-muted); font-size: 13px; overflow-wrap: anywhere; }
 .metrics-meta { margin: 0 0 16px; }

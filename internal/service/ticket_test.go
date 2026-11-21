@@ -117,6 +117,113 @@ func TestTicketReplyStatusAndNotificationVisibility(t *testing.T) {
 	}
 }
 
+func TestTicketManagementDetailIncludesFeedbackUserSummary(t *testing.T) {
+	db := newTicketTestDB(t)
+	lastLogin := time.Date(2026, 11, 20, 20, 0, 0, 0, time.UTC)
+	user := &entity.User{ID: 11, Username: "ticket-user", Nickname: "普通用户aa", Role: "user", Status: "enabled", CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), LastLoginAt: &lastLogin, LastLoginIP: "192.0.2.10"}
+	admin := &entity.User{ID: 12, Username: "ticket-admin", Role: "admin", Status: "enabled"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	detail, err := CreateTicketWithDB(db, user, CreateTicketInput{Subject: "标题", Body: "首条"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	management, err := GetTicketWithDBForView(db, admin, detail.Ticket.ID, false)
+	if err != nil || management.User == nil {
+		t.Fatalf("management detail user summary missing: %+v %v", management.User, err)
+	}
+	if management.User.Nickname != "普通用户aa" || management.User.ID != user.ID || management.User.LastLoginAt == nil || management.User.LastLoginIP != "192.0.2.10" {
+		t.Fatalf("unexpected management user summary: %+v", management.User)
+	}
+	feedback, err := GetTicketWithDBForView(db, user, detail.Ticket.ID, true)
+	if err != nil || feedback.User != nil {
+		t.Fatalf("feedback view must not expose user summary: %+v %v", feedback.User, err)
+	}
+}
+
+func TestTicketDetailReadsCurrentNicknamesWithoutChangingAuditSnapshots(t *testing.T) {
+	db := newTicketTestDB(t)
+	owner := &entity.User{ID: 41, Username: "nickname-owner", Nickname: "旧用户昵称", Role: "user"}
+	admin := &entity.User{ID: 42, Username: "nickname-admin", Nickname: "旧管理员昵称", Role: "admin"}
+	for _, actor := range []*entity.User{owner, admin} {
+		if err := db.Create(actor).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err := CreateTicketWithDB(db, owner, CreateTicketInput{Subject: "昵称回归", Body: "首条"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddTicketMessageWithDB(db, admin, detail.Ticket.ID, ReplyTicketInput{Body: "回复"}); err != nil {
+		t.Fatal(err)
+	}
+	for id, name := range map[int32]string{owner.ID: "现用户昵称", admin.ID: "现管理员昵称"} {
+		if err := db.Model(&entity.User{}).Where("id = ?", id).Update("nickname", name).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	management, err := GetTicketWithDB(db, admin, detail.Ticket.ID)
+	if err != nil || management.Ticket.UserName != "现用户昵称" || management.Messages[0].AuthorName != "现用户昵称" || management.Messages[1].AuthorName != "现管理员昵称" {
+		t.Fatalf("detail must read current names: %+v %v", management, err)
+	}
+	feedback, err := GetTicketWithDBForView(db, owner, detail.Ticket.ID, true)
+	if err != nil || feedback.Messages[0].AuthorName != "现用户昵称" || feedback.Messages[1].AuthorName != "管理员" || feedback.Messages[1].UserID != 0 {
+		t.Fatalf("feedback current nickname/privacy: %+v %v", feedback.Messages, err)
+	}
+	var stored entity.TicketMessage
+	if err := db.First(&stored, management.Messages[0].ID).Error; err != nil || stored.AuthorName != "旧用户昵称" {
+		t.Fatalf("audit snapshot changed: %+v %v", stored, err)
+	}
+}
+
+func TestTicketFeedbackViewHidesAdministratorIdentityAndUsesUserReplies(t *testing.T) {
+	db := newTicketTestDB(t)
+	owner := &entity.User{ID: 21, Username: "feedback-owner", Nickname: "反馈昵称", Role: "admin"}
+	responder := &entity.User{ID: 22, Username: "private-admin-name", Nickname: "具体管理员", Role: "admin"}
+	for _, user := range []*entity.User{owner, responder} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err := CreateTicketWithDB(db, owner, CreateTicketInput{Subject: "管理员自助反馈", Body: "首条"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddTicketMessageWithDBForView(db, responder, detail.Ticket.ID, ReplyTicketInput{Body: "管理回复"}, false); err != nil {
+		t.Fatal(err)
+	}
+	feedback, err := GetTicketWithDBForView(db, owner, detail.Ticket.ID, true)
+	if err != nil || len(feedback.Messages) != 2 {
+		t.Fatalf("feedback detail: %+v %v", feedback, err)
+	}
+	if reply := feedback.Messages[1]; reply.AuthorRole != "admin" || reply.AuthorName != "管理员" || reply.UserID != 0 {
+		t.Fatalf("feedback response leaked administrator identity: %+v", reply)
+	}
+	closed := entity.TicketStatusClosed
+	feedback, err = AddTicketMessageWithDBForView(db, owner, detail.Ticket.ID, ReplyTicketInput{Body: "自助追加", Status: &closed}, true)
+	if err != nil || len(feedback.Messages) != 3 {
+		t.Fatalf("feedback reply: %+v %v", feedback, err)
+	}
+	if reply := feedback.Messages[2]; reply.AuthorRole != "user" || reply.AuthorName != "反馈昵称" || reply.UserID != owner.ID {
+		t.Fatalf("self-view reply must use feedback user identity: %+v", reply)
+	}
+	if feedback.Ticket.Status != entity.TicketStatusOpen {
+		t.Fatalf("self-view reply must reopen as a user, not apply administrator status: %s", feedback.Ticket.Status)
+	}
+	management, err := GetTicketWithDBForView(db, responder, detail.Ticket.ID, false)
+	if err != nil || management.Messages[1].AuthorName != "具体管理员" || management.Messages[1].UserID != responder.ID {
+		t.Fatalf("management must retain stored administrator identity: %+v %v", management.Messages, err)
+	}
+	var notice entity.TicketNotification
+	if err := db.Where("ticket_id = ? AND event_type = ?", detail.Ticket.ID, "user_reply").First(&notice).Error; err != nil {
+		t.Fatalf("self-view reply must notify managers as user reply: %v", err)
+	}
+}
+
 func TestTicketListKeywordAndExclusiveEnd(t *testing.T) {
 	db := newTicketTestDB(t)
 	user := &entity.User{ID: 1, Username: "alice", Role: "user"}
@@ -181,6 +288,54 @@ func TestTicketListSearchesUsernameWithoutCrossingUserScope(t *testing.T) {
 			}
 			if item.want == 1 && result.Items[0].ID != first.Ticket.ID {
 				t.Fatalf("returned wrong owner: %+v", result.Items[0])
+			}
+		})
+	}
+}
+
+func TestTicketListKeywordSearchKeepsAdministratorIdentityInManagementView(t *testing.T) {
+	db := newTicketTestDB(t)
+	owner := &entity.User{ID: 31, Username: "feedback-search-user", Nickname: "反馈用户昵称", Role: "user"}
+	adminOwner := &entity.User{ID: 32, Username: "feedback-search-admin", Nickname: "自助反馈昵称", Role: "admin"}
+	responder := &entity.User{ID: 33, Username: "staff-search-login", Nickname: "只在署名出现的管理员", Role: "admin"}
+	for _, user := range []*entity.User{owner, adminOwner, responder} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, actor := range []*entity.User{owner, adminOwner} {
+		detail, err := CreateTicketWithDB(db, actor, CreateTicketInput{Subject: "可见反馈标题", Body: "用户可见问题正文"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AddTicketMessageWithDBForView(db, responder, detail.Ticket.ID, ReplyTicketInput{Body: "用户可见答复正文"}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		actor    *entity.User
+		selfOnly bool
+		keyword  string
+		want     int64
+	}{
+		{"ordinary user cannot infer admin name", owner, false, responder.Nickname, 0},
+		{"ordinary self scope cannot infer partial admin name", owner, true, "署名出现", 0},
+		{"administrator self scope cannot infer admin name", adminOwner, true, responder.Nickname, 0},
+		{"management can search admin name", adminOwner, false, responder.Nickname, 2},
+		{"management can search partial admin name", responder, false, "署名出现", 2},
+		{"ordinary user can search ticket title", owner, false, "可见反馈标题", 1},
+		{"ordinary user can search own body", owner, false, "问题正文", 1},
+		{"ordinary user can search admin reply body", owner, false, "答复正文", 1},
+		{"ordinary user can search own nickname", owner, false, owner.Nickname, 1},
+		{"ordinary user can search own login name", owner, false, owner.Username, 1},
+		{"administrator self scope can search own nickname", adminOwner, true, adminOwner.Nickname, 1},
+		{"administrator self scope can search admin reply body", adminOwner, true, "答复正文", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ListTicketsWithDB(db, tc.actor, TicketListQuery{Keyword: tc.keyword, SelfOnly: tc.selfOnly}, 1, 20)
+			if err != nil || result.Total != tc.want || int64(len(result.Items)) != tc.want {
+				t.Fatalf("keyword=%q selfOnly=%v result=%+v err=%v", tc.keyword, tc.selfOnly, result, err)
 			}
 		})
 	}

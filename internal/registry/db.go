@@ -763,9 +763,11 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		// 归属地查询结果的持久化缓存（节省按积分计费的 UAPI 调用）。
 		&entity.LocationCache{},
 		&entity.Ticket{},
+		&entity.TicketAppealProof{},
 		&entity.TicketMessage{},
 		&entity.TicketNotification{},
 		&entity.TicketRefund{},
+		&entity.TicketRefundOrderLine{},
 		&entity.TicketRefundLedger{},
 		&entity.TicketRefundProof{},
 		&entity.RefundPayoutQrMemory{},
@@ -775,6 +777,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		&entity.AIOCRCacheSequence{},
 		&entity.ScriptVersion{},
 		&entity.UserScript{},
+		&entity.ScriptAddressReservation{},
 		&entity.ScriptExchangeToken{},
 		&entity.ScriptRunSession{},
 		&entity.ScriptEscrow{},
@@ -794,6 +797,9 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	err = autoMigrateAccountDomainWithBillingLookupIndex(db, accountDomainModels)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+	if err := runStartupMigration("backfillScriptAddressReservations", func() error { return service.BackfillScriptAddressReservationsWithDB(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("backfill script address reservations: %w", err))
 	}
 	if err := runStartupMigration("ensureAIOCRCacheIDs", func() error { return ensureAIOCRCacheIDs(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("OCR 缓存 ID 回填失败（不影响启动，将在下次启动重试）：%v", err))
@@ -903,7 +909,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	}
 
 	// 充值阶梯赠送：建 recharge_promotion_grants（赠送发放账本，recharge_order_id 唯一）。
-	// 与开关解耦：开关默认 false，表照建，运营打开开关时结构已就位。
+	// 发放由配置档位决定，账本结构始终准备就绪。
 	// 必须排在 ensureReviewRebateSchema 之后 —— 它依赖 users.gift_balance 已存在。
 	if err := runStartupMigration("ensureRechargePromotionSchema", func() error { return ensureRechargePromotionSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion schema fail: %w", err))
@@ -1030,8 +1036,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	}
 
 	// 充值阶梯赠送的可配置档位表（Q75-2，94-*.md §2 C2）。
-	// 只建表、不写数据：表空时服务层回退到 DefaultRechargePromotionTiers，
-	// 因此本迁移对既有发放行为零影响，可安全先上。
+	// 只建表、不写数据：表空表示不赠送，不回退到默认六档。
 	if err := runStartupMigration("ensureRechargePromotionTierSchema", func() error { return ensureRechargePromotionTierSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion tier schema fail: %w", err))
 		return nil

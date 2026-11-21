@@ -5,6 +5,8 @@
       description="按账号封禁：封禁后该账号立即无法使用服务（双读判定：users.status 与 user_bans 任一命中即封禁）。解封是**软撤销** —— 封禁记录永久保留，只让判定失效。"
     >
       <template #actions>
+
+        <UserBanImport v-if="canManage()" @imported="loadRows" />
         <a-button :loading="loading" :disabled="!canManage() || loading || writing" @click="loadRows">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -196,6 +198,8 @@
         <p v-if="revokeError" class="filter-error" role="alert">{{ revokeError }}</p>
       </a-modal>
     </template>
+    <AdminDataTransfer v-if="canManage()" resource="user_bans" title="账号封禁历史" />
+
   </div>
 </template>
 
@@ -207,6 +211,8 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
+import UserBanImport from '@/components/UserBanImport.vue'
 import { createUserBan, getUserBans, revokeUserBan } from '@/api/UserBanApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
@@ -229,7 +235,7 @@ function readNonnegativeInt(value) {
 
 export default {
   name: 'UserBanPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, AdminDataTransfer, UserBanImport },
   setup() {
     const route = useRoute()
     const prefix = 'user-ban-' + useId()

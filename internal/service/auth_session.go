@@ -53,7 +53,7 @@ func IssueUserLoginJWTWithDB(db *gorm.DB, user *entity.User, requestIP, password
 			return errors.New("unsupported exact login credential comparison driver")
 		}
 		result := tx.Model(&entity.User{}).Where("id = ?", user.ID).Where(passwordPredicate, user.Password).
-			Where("LOWER(TRIM(COALESCE(status, ''))) IN ?", []string{"", "enabled"}).Updates(updates)
+			Where("LOWER(TRIM(COALESCE(status, ''))) IN ?", []string{"", "enabled", "banned", "closure_pending"}).Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}

@@ -36,7 +36,7 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 }
 
 func BuildAITikuSearchToolWithDB(db *gorm.DB) internalsearch.AITikuSearchTool {
-	if db == nil || !db.Migrator().HasTable(&entity.Tiku{}) {
+	if db == nil || !IsSearchProviderCallEnabledWithDB(db, "local") || !db.Migrator().HasTable(&entity.Tiku{}) {
 		return nil
 	}
 	return internalsearch.NewDBTikuSearchTool(db)
@@ -327,11 +327,8 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 			return AISearchConfigView{}, err
 		}
 	}
-	if input.TikuSearchPricePerCall != nil {
-		if err := SetTikuSearchPricePerCallWithDB(db, *input.TikuSearchPricePerCall); err != nil {
-			return AISearchConfigView{}, err
-		}
-	}
+	// Legacy AI payloads may still contain tiku_search_price_per_call. The
+	// authoritative local tariff is now maintained in default account config.
 	if err := SetAIStagedTokenBillingSettingsWithDB(db, input.EnableAIStagedTokenBilling, input.SmoothAIStagedTokenMultiplier, input.StagedTokenMultiplierPoints); err != nil {
 		return AISearchConfigView{}, err
 	}
@@ -396,6 +393,9 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 }
 
 func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaultAccount bool, explicitConfigAllowed ...bool) (ResolvedAISearchConfig, error) {
+	if !IsSearchProviderCallEnabledWithDB(db, aiSearchAccountProvider) {
+		return ResolvedAISearchConfig{}, nil
+	}
 	maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
 	compression := GetAIContextCompressionSettingsWithDB(db)
 	resolved := ResolvedAISearchConfig{

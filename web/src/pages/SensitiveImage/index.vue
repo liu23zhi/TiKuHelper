@@ -5,6 +5,7 @@
       description="按图片内容（SHA256）缓存判定结论。检测记录与每日额度是两件事：额度限制「触发新外呼的图」，本页两者都能看。"
     >
       <template #actions>
+
         <a-button :loading="loadingQuota" :disabled="!canManage() || busy()" @click="loadQuota">刷新额度</a-button>
         <a-button
           :loading="loadingCurrentTab"
@@ -275,6 +276,8 @@
         </div>
       </a-modal>
     </template>
+    <AdminDataTransfer v-if="canManage()" resource="sensitive_images" title="敏感图片检测记录" importable :formats="['json', 'xlsx']" accept=".json,.xlsx" import-description="仅未脱敏备份包含仍保留的原图：JSON 使用 image_base64，Excel 将图片嵌入对应单元格。脱敏文件和已清理的图片仅保留检测记录。" @imported="reloadCurrentTab" />
+
   </div>
 </template>
 
@@ -283,6 +286,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, useId } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
@@ -319,7 +323,7 @@ const emptyDetectForm = () => ({ imageSha256: '', ticketId: '' })
 
 export default {
   name: 'SensitiveImagePage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, AdminDataTransfer },
   setup() {
     const route = useRoute()
     const prefix = 'sensitive-image-' + useId()

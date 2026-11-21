@@ -7,13 +7,6 @@
     <ConsolePageHeading :title="pageTitle" :description="pageDescription">
       <template #actions>
       <a-space wrap class="section-actions">
-        <a-button
-          v-if="isAdmin"
-          :type="showAllTokens ? 'primary' : 'default'"
-          @click="toggleAllTokens"
-        >
-          {{ showAllTokens ? '只看我的令牌' : '显示全部令牌' }}
-        </a-button>
         <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
         <a-button type="primary" @click="openCreateModal">新增令牌</a-button>
       </a-space>
@@ -432,7 +425,7 @@ const formState = ref({
     // 两句话都必须点明数据范围，否则用户无法从文案判断自己看到的是全部还是自己的。
     const pageTitle = computed(() => (isAdmin.value ? '令牌管理' : '我的令牌'))
     const pageDescription = computed(() => (isAdmin.value
-      ? '管理全站访问令牌：可切换查看全部用户或只看自己，并按令牌维度维护状态、备注与累计额度上限。'
+      ? '管理全部用户的访问令牌，并按令牌维度维护状态、备注与累计额度上限。'
       : '为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。此处只显示你自己的令牌。'))
     const routeViewMode = computed(() => {
       const mode = route?.meta?.viewMode
@@ -540,7 +533,7 @@ const formState = ref({
       },
     ]
     const allColumns = computed(() => {
-      if (!isAdmin.value || !showAllTokens.value) {
+      if (!isAdmin.value) {
         return baseColumns.map(column => column.key === 'remark' ? { ...column, width: remarkExpansion.columnWidth('remark') } : column)
       }
       return [
@@ -556,7 +549,7 @@ const formState = ref({
 
     const columnScope = computed(() => {
       const identity = currentUser.value?.id ? 'id:' + currentUser.value.id : ''
-      return identity ? `${identity}:${isAdmin.value ? 'admin' : 'user'}:${isAdmin.value && showAllTokens.value ? 'all' : 'mine'}` : ''
+      return identity ? `${identity}:${isAdmin.value ? 'admin:all' : 'user:mine'}` : ''
     })
     const priorityColumnKeys = ['username', 'name', 'status', 'totalQuotaLimit', 'totalAmountUsed', 'operation']
     const { visibleColumns: columns, selectedKeys, columnOptions, scopeKey: columnContextKey, setSelectedKeys, resetColumns } = useTableColumnPreferences({
@@ -848,7 +841,7 @@ const formState = ref({
       const owns = () => ownsView() && (typeof isReconciliationCurrent !== 'function' || (ownsRead() && isReconciliationCurrent()))
       this.clearListFailure()
       this.tableLoading = true
-      return getAccessTokens(buildAccessTokenListParams(this.showAllTokens)).then(res => {
+      return getAccessTokens(buildAccessTokenListParams(this.isAdmin)).then(res => {
         if (!owns()) return
         if (res?.status === 200) {
           this.clearListFailure()
@@ -882,13 +875,6 @@ const formState = ref({
         if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return
         this.userLevelSummary = summary
       }).catch(() => { /* 设备上限读不到就显示「—」，不影响令牌管理其它功能。 */ })
-    },
-    toggleAllTokens() {
-      if (!this.isAdmin) {
-        return
-      }
-      this.showAllTokens = !this.showAllTokens
-      this.handleLoad()
     },
     openCreateModal() {
       if (!this.canLoadForCurrentUser()) return

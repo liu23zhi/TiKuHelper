@@ -43,7 +43,8 @@ const Page = require(path.join(root, 'src/pages/AdminServiceStatus/index.vue'))
 async function settle() { await nextTick(); await flushPromises(); await nextTick() }
 async function open(identity) {
   user.setStoredCurrentUser(identity)
-  const wrapper = mount(Page, { attachTo: document.body, global: { plugins: [Antd] } })
+  // Keep the real diagnostic and Antd surfaces; only the canvas renderer is unavailable in jsdom.
+  const wrapper = mount(Page, { attachTo: document.body, global: { plugins: [Antd], stubs: { PortraitChart: true } } })
   wrappers.push(wrapper)
   await settle()
   return wrapper

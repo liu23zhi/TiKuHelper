@@ -259,7 +259,11 @@ func Auth(c *gin.Context) {
 		})
 		return
 	}
-	if !isUserSessionAllowed(user) {
+	if err := refreshSessionBan(user); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(user) {
 		c.AbortWithStatusJSON(401, gin.H{
 			"message": "用户已被禁用",
 		})
@@ -277,6 +281,16 @@ func Auth(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
 		return
 	}
+	if strings.EqualFold(user.Status, "banned") {
+		c.Set("account_banned", true)
+		if !bannedSessionRouteAllowed(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": "ACCOUNT_BANNED", "message": "账号已被封禁，仅可查看封禁提示和提交工单申诉"})
+			return
+		}
+		// Appeal access never inherits administrator permissions, even if the
+		// banned account used to be an administrator.
+		user.Role = "user"
+	}
 	// 滑动续期（2026-11-19）：所有校验通过后，若这枚令牌已走过半程，就重发一次。
 	//
 	// 为什么需要：JWTTTL 是 24 小时且没有 refresh 接口，用户正常每天使用也会在
@@ -292,7 +306,7 @@ func Auth(c *gin.Context) {
 	// 令牌生命周期，服务端不该替它们改写行为。
 	// 同时要求 sid 匹配已在上面的 tokenLoginSessionMatches 里校验过，
 	// 所以续出来的新令牌仍绑定同一登录会话，不会绕过单设备登录。
-	if cookieCredential {
+	if cookieCredential && c.FullPath() != ticketAppealVerificationPath {
 		if refreshed := util.RefreshJwtIfNeeded(tokenValue, user.ID, user.Password, user.LoginSessionID); refreshed != "" {
 			setAuthCookie(c, refreshed)
 		}
@@ -358,7 +372,16 @@ func AuthAccessToken(c *gin.Context) {
 
 // UserSession is a read-only heartbeat; Auth already checked the current session.
 func UserSession(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+	user, _ := c.Get("user")
+	response := gin.H{"message": "ok", "status": ""}
+	if value, ok := user.(*entity.User); ok && value != nil {
+		response["status"] = value.Status
+		if ban := currentUserBanNotice(c, value); ban != nil {
+			response["banReason"] = ban.Reason
+			response["banExpiresAt"] = ban.ExpiresAt
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // UserInfo 获取用户信息
@@ -373,10 +396,38 @@ func UserInfo(c *gin.Context) {
 	// 普通用户也需要知道当前生效的充值下限，避免管理员调整后页面仍按旧默认值提交。
 	// 读取失败时使用服务层默认值，不影响用户信息接口本身。
 	minimum := service.GetMinRechargeAmountWithDB(withDatabasePriority(dao.User.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow))
-	c.JSON(http.StatusOK, struct {
+	response := struct {
 		*entity.User
-		MinRechargeAmount float64 `json:"minRechargeAmount"`
-	}{User: user, MinRechargeAmount: minimum})
+		MinRechargeAmount float64    `json:"minRechargeAmount"`
+		BanReason         string     `json:"banReason,omitempty"`
+		BanExpiresAt      *time.Time `json:"banExpiresAt,omitempty"`
+	}{User: user, MinRechargeAmount: minimum}
+	if ban := currentUserBanNotice(c, user); ban != nil {
+		response.BanReason = ban.Reason
+		response.BanExpiresAt = ban.ExpiresAt
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func currentUserBanNotice(c *gin.Context, user *entity.User) *entity.UserBan {
+	if !strings.EqualFold(user.Status, service.UserBanStatusBanned) {
+		return nil
+	}
+	ban, err := service.ActiveUserBanWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), user.ID, time.Now())
+	if err != nil {
+		logger.SysWarn("读取账号封禁提示失败：" + err.Error())
+	}
+	return ban
+}
+
+func writeUserLoginResponse(c *gin.Context, user *entity.User, token string) {
+	setAuthCookie(c, token)
+	response := gin.H{"message": "user login", "jwt": token, "status": user.Status}
+	if ban := currentUserBanNotice(c, user); ban != nil {
+		response["banReason"] = ban.Reason
+		response["banExpiresAt"] = ban.ExpiresAt
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // UserLogin 用户登录
@@ -434,7 +485,11 @@ func UserLogin(c *gin.Context) {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
-	if !isUserSessionAllowed(user) {
+	if err := refreshSessionBan(user); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(user) {
 		loginGate.failAccount(payload.Username, "用户已被禁用")
 		return
 	}
@@ -474,8 +529,7 @@ func UserLogin(c *gin.Context) {
 	// X-Device-Id，只能退化成 UA 哈希当设备标识。那个哈希与 API 路径的
 	// device_id 不是同一个键，于是会出现「登录被设备池拦下、但该设备调 API 完全正常」
 	// 的自相矛盾状态，且拦截依据是一台从未登记过的「幽灵设备」。
-	setAuthCookie(c, token)
-	c.JSON(http.StatusOK, gin.H{"message": "user login", "jwt": token})
+	writeUserLoginResponse(c, user, token)
 }
 
 // UserRegister 公开注册
@@ -767,8 +821,7 @@ func evaluateUserLevelAfterRegister(userID int32) {
 // applyReferralOnRegister 在注册事务内完成邀请归因并生成新用户自己的邀请码。
 //
 // 语义（对应 04 稿 3.6 节）：
-//   - 总开关关闭：整段跳过，不生成邀请码、不绑定邀请人、也不因为带了
-//     inviteCode 而报错（老客户端可能带着历史码）；
+//   - 注册始终生成邀请码并保留有效邀请关系；返佣开关只控制奖励发放。
 //   - inviteCode 为空：只生成自己的邀请码；
 //   - inviteCode 非法 / 自邀：返回业务错误，整个注册事务回滚（用户必须改输入重来）；
 //   - 生成邀请码失败：**不阻断注册** —— 邀请码是附加权益，下次可补发。
@@ -776,9 +829,6 @@ func evaluateUserLevelAfterRegister(userID int32) {
 // 邀请码只在注册时生效，注册后不可改绑（绑定入口只有这里）。
 func applyReferralOnRegister(tx *gorm.DB, user *entity.User, inviteCode string) error {
 	if tx == nil || user == nil || user.ID <= 0 {
-		return nil
-	}
-	if !service.GetReferralRebateEnabledWithDB(tx) {
 		return nil
 	}
 	if code := strings.TrimSpace(inviteCode); code != "" {
@@ -1199,7 +1249,11 @@ func UserSMSLogin(c *gin.Context) {
 		return
 	}
 	user := users[0]
-	if !isUserSessionAllowed(&user) {
+	if err := refreshSessionBan(&user); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(&user) {
 		loginGate.failAccount(phone, "用户已被禁用")
 		return
 	}
@@ -1221,8 +1275,7 @@ func UserSMSLogin(c *gin.Context) {
 	//
 	// 「只能一台设备登录」由 login_session_id（JWT 的 sid claim）保证，
 	// 不靠设备池；设备池只约束 chaoxing 调 API 的台数。
-	setAuthCookie(c, token)
-	c.JSON(200, gin.H{"message": "user login", "jwt": token})
+	writeUserLoginResponse(c, &user, token)
 }
 
 func UserLogout(c *gin.Context) {

@@ -45,7 +45,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 
 	// &entity.SensitiveWordCache{}：生产启动迁移会建出这张表，测试库同样建出来，
 	// 否则「缓存去重」路径在 controller 测试里永远是 fail-open（走不到真正的读写）。
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}, &entity.SensitiveWordCache{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptAddressReservation{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}, &entity.SensitiveWordCache{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -1991,6 +1991,10 @@ func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	token := seedControllerAccessToken(t, db, "disabled-local-token")
+	blocked := false
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "local", service.UpdateSearchAccountConfigInput{CallEnabled: &blocked}); err != nil {
+		t.Fatal(err)
+	}
 
 	originalResolver := resolveSearchRequestContext
 	originalClientBindings := buildSearchClientBindings
@@ -2024,7 +2028,7 @@ func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
 	}
-	if !strings.Contains(got.Detail, "本地题库") || !strings.Contains(got.Detail, "未启用") {
+	if !strings.Contains(got.Detail, "本地题库") || !strings.Contains(got.Detail, "禁止调用") {
 		t.Fatalf("expected unauthorized detail to mention disabled local provider, got %q", got.Detail)
 	}
 	if token.ID == 0 {

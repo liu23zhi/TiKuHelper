@@ -484,46 +484,40 @@ func TestUserLevelDeleteFallsBackReferencingUsers(t *testing.T) {
 
 // ─────────────────────── C2：档位表 ───────────────────────
 
-// TestRechargePromotionTiersFallBackOnlyWhenTableMissing 钉住「**只有**表不存在才回退常量」。
+// TestRechargePromotionTiersNeverFallBackForMissingConfiguration 钉住无配置不赠送。
 //
 // 原用例名为 FallBackToConstantsWhenTableEmpty，把「表空」与「表不存在」写成同一件事，
 // 正是 T-30 要修的反向语义。现在拆成两个阶段：
-//   - 表不存在（未迁移）→ 回退常量六档（新库首启不能停发）；
+//   - 表不存在（未迁移）→ 空列表 = 不赠送；
 //   - 表存在但为空     → 空列表 = 不赠送（清空表 = 关闭赠送，不是「恢复默认六档」）。
 //
 // 三态与完整端到端覆盖见 recharge_promotion_tier_test.go。
-func TestRechargePromotionTiersFallBackOnlyWhenTableMissing(t *testing.T) {
-	// 阶段 1：表不存在 → 回退常量，与改动前逐条一致。
+func TestRechargePromotionTiersNeverFallBackForMissingConfiguration(t *testing.T) {
+	// 阶段 1：表不存在 → 空档位，不赠送。
 	missing := newUserLevelTestDB(t)
 	if err := missing.Migrator().DropTable(entity.TableNameRechargePromotionTierRule); err != nil {
 		t.Fatalf("drop tier table: %v", err)
 	}
 
 	tiers := RechargePromotionTiersWithDB(missing)
-	if len(tiers) != len(DefaultRechargePromotionTiers) {
-		t.Fatalf("missing table must fall back to %d constants, got %d", len(DefaultRechargePromotionTiers), len(tiers))
-	}
-	for index, want := range DefaultRechargePromotionTiers {
-		if tiers[index].Threshold != want.Threshold || tiers[index].Rate != want.Rate {
-			t.Fatalf("fallback tier[%d] = %+v, want %+v", index, tiers[index], want)
-		}
+	if len(tiers) != 0 {
+		t.Fatalf("missing table must yield no tiers, got %+v", tiers)
 	}
 	missingList, err := ListRechargePromotionTierRulesWithDB(missing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missingList.Source != "default" {
-		t.Fatalf("missing table: source = %q, want default", missingList.Source)
+	if missingList.Source != "unavailable" {
+		t.Fatalf("missing table: source = %q, want unavailable", missingList.Source)
 	}
 	if len(missingList.Rows) != 0 {
 		t.Fatalf("missing table: rows = %d, want 0", len(missingList.Rows))
 	}
-	// 也验证「选档结果与常量版一致」——不只是表长得一样。
+	// 所有金额均不能命中档位。
 	for _, amount := range []float64{8.8, 28, 100, 288, 500, 888, 1688, 2000} {
-		wantTier, wantOK := SelectRechargePromotionTier(amount)
 		gotTier, gotOK := SelectRechargePromotionTierWithDB(missing, amount)
-		if wantOK != gotOK || wantTier != gotTier {
-			t.Fatalf("amount %v: db fallback %+v/%v != constant %+v/%v", amount, gotTier, gotOK, wantTier, wantOK)
+		if gotOK {
+			t.Fatalf("amount %v: missing configuration must not match, got %+v", amount, gotTier)
 		}
 	}
 

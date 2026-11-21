@@ -2,6 +2,12 @@ const { test, afterEach } = require('node:test')
 const assert = require('node:assert/strict'), path = require('node:path'), fs = require('node:fs'), Module = require('node:module')
 const root = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 require(process.env.UI_TEST_HELPER || path.join(root, 'tests/helpers/vue-dom.cjs'))
+const { reviewRebateAvailabilityResponse } = require('../helpers/review-rebate-availability.cjs')
+require('axios').defaults.adapter = async config => {
+  const response = reviewRebateAvailabilityResponse(config)
+  if (response) return response
+  throw new Error(`Unexpected fixture operation ${config.method} ${config.url}`)
+}
 for (const name of ['DOMParser', 'CustomEvent', 'HTMLTemplateElement', 'HTMLInputElement', 'HTMLButtonElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLVideoElement', 'HTMLAudioElement']) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: window[name] })
 window.scrollTo = () => {} // jsdom has no scroll geometry; these tests only observe popup ownership.
 const { mount, flushPromises } = require('@vue/test-utils'), { h, nextTick } = require('vue')

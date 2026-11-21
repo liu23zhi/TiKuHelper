@@ -13,22 +13,26 @@ const axios = require('axios'), originalAdapter = axios.defaults.adapter, forbid
 const shellAdapter = require('../helpers/navigation-shell-api.cjs')({
  actor: user.getStoredCurrentUser, record() {}, deny(kind) { forbidden.push(kind); throw new Error('Forbidden theme shell request: ' + kind) },
 })
-axios.defaults.adapter = shellAdapter
+axios.defaults.adapter = async config => {
+ const response = await shellAdapter(config)
+ if (config.url === '/api/user/review-rebate/availability') response.data.enabled = true
+ return response
+}
 require('node:test').after(() => { axios.defaults.adapter = originalAdapter })
 const production = require(path.join(root, 'src/router/router.js'))
 const productionRouter = production.default || production
 let wrapper, router
 // Fixed expected permission/order matrix, independent of the source under test.
 const ADMIN_HREFS = [
-  '/profile', '/my-devices', '/user-usage', '/tickets', '/my-tokens',
-  '/scripts', '/service-status', '/component', '/import', '/userlist',
-  '/user-portrait', '/risk-admin', '/archived-users', '/loglist', '/recharge-orders',
-  '/billing-admin', '/ip-location-cache', '/ip-segments', '/phone-location-cache', '/wechat-bindings',
-  '/phone-bindings', '/search-account-config', '/ai-search-config', '/ocr-cache', '/sensitive-word',
-  '/user-exam-tool', '/referral-rebates', '/review-rebate-admin', '/blacklist', '/whitelist',
-  '/user-bans', '/device-admin', '/sensitive-image', '/ticket-image-cache', '/user-levels',
-  '/system-settings', '/extension-updates', '/token-admin', '/script-admin', '/script-activation-codes',
-  '/ticket-admin', '/service-status-admin',
+  '/profile', '/my-devices', '/user-usage', '/tickets', '/my-referral',
+  '/review-rebate', '/my-tokens', '/scripts', '/service-status', '/component',
+  '/import', '/userlist', '/user-portrait', '/risk-admin', '/archived-users',
+  '/loglist', '/recharge-orders', '/billing-admin', '/ip-location-cache', '/ip-segments',
+  '/phone-location-cache', '/wechat-bindings', '/phone-bindings', '/search-account-config', '/ai-search-config',
+  '/ocr-cache', '/sensitive-word', '/user-exam-tool', '/referral-rebates', '/review-rebate-admin',
+  '/referral-invites', '/blacklist', '/whitelist', '/user-bans', '/device-admin',
+  '/sensitive-image', '/ticket-image-cache', '/user-levels', '/system-settings', '/extension-updates',
+  '/token-admin', '/script-admin', '/script-activation-codes', '/ticket-admin', '/service-status-admin',
 ]
 const USER_HREFS = [
   '/profile', '/my-devices', '/user-usage', '/my-tokens', '/scripts',

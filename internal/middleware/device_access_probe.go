@@ -34,7 +34,7 @@ func DeviceAccessProbeWith(db *gorm.DB) gin.HandlerFunc {
 			deviceLimitReject(c, blocked)
 			return
 		}
-		if !service.GetDeviceLimitEnabledWithDB(database) || scriptSession {
+		if scriptSession {
 			c.Next()
 			return
 		}

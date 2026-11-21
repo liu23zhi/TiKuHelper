@@ -7,6 +7,7 @@
       </div>
     </div>
     <a-menu
+      :key="accountBanned ? 'appeal' : isAdmin ? 'admin' : 'user'"
       :id="navigationId"
       mode="inline"
       :theme="resolvedTheme"
@@ -103,6 +104,7 @@ import {
 // 这不是绕过检查 —— 那条断言的语义是「CloudServerOutlined 确实被引入」，单独 import 同样满足。
 import { LaptopOutlined } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
+import { useReviewRebateAvailability } from '../../utils/reviewRebateAvailability';
 import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
 
 const ADMIN_MENU_ITEMS = [
@@ -155,6 +157,9 @@ const ADMIN_MENU_ITEMS = [
   // 路由 key 仍是 referral-rebates：改名只动用户可见文案，不动路由名与权限注册。
   { key: 'referral-rebates', label: '赠送记录', icon: GiftOutlined },
   { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
+  { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
+  { key: 'referral-invites', label: '邀请码管理', icon: ShareAltOutlined },
+  { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
   // 白名单（T-04 / T-05）。紧跟黑名单：两者规则结构相同，管理员要能并排看。
   { key: 'whitelist', label: '白名单管理', icon: SafetyCertificateOutlined },
@@ -316,9 +321,19 @@ export default defineComponent({
       unsubscribeTheme?.();
     });
     const isAdmin = computed(() => isAdminUser(props.currentUser));
-    const visibleMenuItems = computed(() => (isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS));
-    // 分区只影响渲染分组，不影响权限判定与选中/跳转逻辑：两者都仍以 visibleMenuItems 为准。
-    const menuSections = computed(() => (isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS));
+    const accountBanned = computed(() => String(props.currentUser?.status || '').toLowerCase() === 'banned');
+    const reviewRebateEnabled = useReviewRebateAvailability(() => props.currentUser);
+    const visibleMenuItems = computed(() => {
+      if (accountBanned.value) return USER_MENU_ITEMS.filter(item => item.key === 'tickets');
+      const items = isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS;
+      return items.filter(item => item.key !== 'review-rebate' || reviewRebateEnabled.value);
+    });
+    const menuSections = computed(() => {
+      if (accountBanned.value) return [{ key: 'appeal', title: '', items: visibleMenuItems.value }];
+      const sections = isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS;
+      const visibleKeys = new Set(visibleMenuItems.value.map(item => item.key));
+      return sections.map(section => ({ ...section, items: section.items.filter(item => visibleKeys.has(item.key)) }));
+    });
 
     // 分区里 menu-item 的 key 带分区前缀（见模板注释），选中态要还原成真实 key。
     const REAL_KEY_SEPARATOR = ':';
@@ -380,6 +395,7 @@ export default defineComponent({
       selectedKeys,
       resolvedTheme,
       visibleMenuItems,
+      accountBanned,
       menuSections,
       isAdmin,
       handleSelect,

@@ -104,6 +104,16 @@ test('ASYNC_API buildExportTaskPayload 恒带 format=csv，且不带 limit/maske
   assert.equal('limit' in payload, false)
 })
 
+test('ASYNC_API 管理资源 JSON 导出和归属地回灌使用现有任务接口', async () => {
+  respond = config => ok(config, { taskId: 'exp-0011223344556677', status: 'pending' }, 202)
+  await api.submitExportTask({ resource: 'ip_locations', format: 'json', masked: false })
+  assert.deepEqual(JSON.parse(requests[0].data), { resource: 'ip_locations', format: 'json', masked: false })
+  for (const resource of ['ip_locations', 'phone_locations']) {
+    assert.equal(api.buildImportTaskForm({ resource, file: fakeFile('locations.json') }).get('resource'), resource)
+  }
+  assert.throws(() => api.buildExportTaskPayload({ resource: 'logs', format: 'exe' }), /格式不受支持/)
+})
+
 test('ASYNC_API buildExportTaskPayload 显式传 masked=false 时必须原样透传（明文导出）', () => {
   const payload = api.buildExportTaskPayload({ resource: 'questions', masked: false })
   assert.equal(payload.masked, false)

@@ -102,12 +102,10 @@ func writeLogRetentionActiveFile(t *testing.T, dir string, name string, size int
 
 // ── 配置层 ─────────────────────────────────────────────────────────────
 
-// 默认值必须是 30 天 / 10 GiB / 100 MiB（Q14 定稿），且字节换算是 1024 进制。
+// 默认值与系统设置共源：30 天 / 5 GiB / 100 MiB，且换算是 1024 进制。
 //
-// 这条用例同时钉住「10 GB 存成 10 GiB」这个单位口径：
-// 若有人把换算写成 1000 进制，10737418240 会变成 10000000000 —— 差 7%，
-// 而页面上两者都显示「10 GB」量级，肉眼看不出来。
-func TestLogRetentionDefaultsAreThirtyDaysTenGiBAndHundredMiB(t *testing.T) {
+// 这条用例同时钉住 GiB 二进制单位口径。
+func TestLogRetentionDefaultsAreThirtyDaysFiveGiBAndHundredMiB(t *testing.T) {
 	db := newLogRetentionTestDB(t)
 
 	settings := GetLogRetentionSettingsWithDB(db)
@@ -117,15 +115,15 @@ func TestLogRetentionDefaultsAreThirtyDaysTenGiBAndHundredMiB(t *testing.T) {
 	if settings.MaxAgeDays != 30 {
 		t.Fatalf("default maxAgeDays must be 30, got %d", settings.MaxAgeDays)
 	}
-	if settings.MaxTotalGiB != 10 {
-		t.Fatalf("default maxTotalGiB must be 10, got %d", settings.MaxTotalGiB)
+	if settings.MaxTotalGiB != 5 {
+		t.Fatalf("default maxTotalGiB must be 5, got %d", settings.MaxTotalGiB)
 	}
 	if settings.MaxFileMiB != 100 {
 		t.Fatalf("default maxFileMiB must be 100, got %d", settings.MaxFileMiB)
 	}
-	const wantTotalBytes int64 = 10 * 1024 * 1024 * 1024
+	const wantTotalBytes int64 = 5 * 1024 * 1024 * 1024
 	if settings.MaxTotalBytes != wantTotalBytes {
-		t.Fatalf("default maxTotalBytes must be %d (10 GiB, 1024 进制), got %d", wantTotalBytes, settings.MaxTotalBytes)
+		t.Fatalf("default maxTotalBytes must be %d (5 GiB, 1024 进制), got %d", wantTotalBytes, settings.MaxTotalBytes)
 	}
 	const wantFileBytes int64 = 100 * 1024 * 1024
 	if settings.MaxFileBytes != wantFileBytes {
@@ -179,7 +177,7 @@ func TestLogRetentionRejectsNonPositiveValues(t *testing.T) {
 	// 「总上限已改、单文件仍是旧值」的半截状态，而接口返回 400 时
 	// 管理员会以为什么都没发生。
 	settings := GetLogRetentionSettingsWithDB(db)
-	if settings.MaxAgeDays != 30 || settings.MaxTotalGiB != 10 || settings.MaxFileMiB != 100 {
+	if settings.MaxAgeDays != 30 || settings.MaxTotalGiB != 5 || settings.MaxFileMiB != 100 {
 		t.Fatalf("rejected writes must not persist anything, got %+v", settings)
 	}
 }
@@ -285,8 +283,8 @@ func TestLogRetentionPartialUpdateKeepsOtherFields(t *testing.T) {
 	if settings.MaxFileMiB != 200 {
 		t.Fatalf("maxFileMiB must be 200, got %d", settings.MaxFileMiB)
 	}
-	if settings.MaxTotalGiB != 10 {
-		t.Fatalf("maxTotalGiB must keep default 10, got %d", settings.MaxTotalGiB)
+	if settings.MaxTotalGiB != 5 {
+		t.Fatalf("maxTotalGiB must keep default 5, got %d", settings.MaxTotalGiB)
 	}
 }
 
@@ -307,7 +305,7 @@ func TestLogRetentionReadFallsBackOnCorruptValues(t *testing.T) {
 	}
 
 	settings := GetLogRetentionSettingsWithDB(db)
-	if settings.MaxAgeDays != 30 || settings.MaxTotalGiB != 10 || settings.MaxFileMiB != 100 {
+	if settings.MaxAgeDays != 30 || settings.MaxTotalGiB != 5 || settings.MaxFileMiB != 100 {
 		t.Fatalf("corrupt values must fall back to defaults, got %+v", settings)
 	}
 	if !settings.Enabled {

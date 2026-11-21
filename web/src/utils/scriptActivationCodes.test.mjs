@@ -36,7 +36,7 @@ test('批量数量：合法值通过，边界与非法值全部拒绝', () => {
 })
 
 test('状态展示：四种状态都有中文文案，未知状态不崩', () => {
-  for (const status of ['unused', 'used', 'disabled', 'expired']) {
+  for (const status of ['unused', 'used', 'disabled', 'expired', 'frozen']) {
     const meta = statusMeta(status)
     assert.ok(meta.label && meta.label !== status, `${status} 应有中文文案`)
     assert.ok(meta.color, `${status} 应有颜色`)
@@ -44,6 +44,11 @@ test('状态展示：四种状态都有中文文案，未知状态不崩', () =>
   // 未知/空状态要能安全降级（后端将来加状态时前端不应崩）。
   assert.ok(statusMeta('').label)
   assert.ok(statusMeta('something-new').label)
+})
+
+test('frozen entitlements and real script binding have explicit Chinese labels', () => {
+  assert.equal(statusMeta('frozen').label, '已兑换，待创建')
+  assert.equal(buildUsageTimeline([{ kind: 'bind' }])[0].label, '创建脚本')
 })
 
 test('掩码识别：列表项只带 codeMask 时必须判定为掩码', () => {

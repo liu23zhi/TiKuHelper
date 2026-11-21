@@ -32,10 +32,11 @@ test('账单类型取值恰好是后端真实写入的 9 个，不含自造值',
     'referral_rebate',
     'referral_rebate_reversal',
     'review_rebate',
+    'review_rebate_clawback',
     'script_reservation',
     'script_refund',
   ])
-  assert.equal(BILLING_RECORD_TYPE_VALUES.length, 9, '不多不少 9 个')
+  assert.equal(BILLING_RECORD_TYPE_VALUES.length, 10, '包含独立的评价返现追缴类型')
   // 选项与取值必须一一对应：多一个选项就是自造值，少一个就是漏筛。
   assert.deepEqual(BILLING_TYPE_OPTIONS.map(option => option.value), [...BILLING_RECORD_TYPE_VALUES])
 })
@@ -50,6 +51,7 @@ test('类型选项文案与页面原有文案逐条一致', () => {
     'referral_rebate=邀请返佣',
     'referral_rebate_reversal=邀请返佣冲回',
     'review_rebate=评价返现',
+    'review_rebate_clawback=评价返现追缴',
     'script_reservation=脚本预扣',
     'script_refund=脚本退款',
   ])

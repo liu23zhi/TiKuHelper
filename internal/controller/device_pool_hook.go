@@ -214,8 +214,7 @@ func devicePoolClientIP(c *gin.Context) string {
 // 为什么准入必须同步：异步判定的结论写不进已经发出的响应，用户已经拿到 cookie 了，
 // 再判「该拒绝」就只能靠前端补救 —— 那不是准入，是事后通知。
 //
-// 返回 true = 放行。以下三种情况一律放行（**fail-open**，与 device_pool.go:107 同一条纪律）：
-//   - 开关 `device_limit_enabled` 关闭（默认关，见 CanUseDeviceWithSwitch）
+// 返回 true = 放行。以下情况一律放行（**fail-open**，与 device_pool.go:107 同一条纪律）：
 //   - 设备标识拿不到（没有指纹就没法判「是不是新设备」）
 //   - 判定过程出错（表不存在 / 查询失败）
 //

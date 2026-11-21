@@ -206,6 +206,8 @@ type deviceUserDeviceItem struct {
 	BlockOnly bool `json:"blockOnly"`
 	// Removable=当前是否可点「移除」（已撤销的行没有意义再撤销一次）。
 	Removable bool `json:"removable"`
+	// Deletable 仅对已撤销且未拉黑的历史记录为 true，允许用户清理历史。
+	Deletable bool `json:"deletable"`
 }
 
 // deviceUserStatusText 把状态翻译成界面文案（137 §9.1：使用中 / 已移除 / 已拉黑）。
@@ -389,6 +391,7 @@ func UserDevices(c *gin.Context) {
 		}
 		item.StatusText = deviceUserStatusText(item.Status)
 		item.Removable = row.RevokedAt == nil
+		item.Deletable = row.RevokedAt != nil && !item.Blocked
 		devices = append(devices, item)
 	}
 
@@ -421,6 +424,115 @@ func UserDevices(c *gin.Context) {
 		"blocked":     blocked,
 		"schemaReady": true,
 	}})
+}
+
+// UserDeviceDelete 删除本人已移除的设备历史记录。
+//
+// DELETE /api/user/devices/:id
+//
+// 移除动作仍然是软撤销，保留撤销时间与原因；本端点是用户明确点击删除后的
+// 历史清理，只允许已撤销且未拉黑的本人记录，避免清理仍参与准入判定的设备。
+func UserDeviceDelete(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, ok := deviceUserParseID(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法删除设备记录"})
+		return
+	}
+	row, err := deviceUserFindBinding(db, operator.ID, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+		return
+	}
+	if row == nil {
+		deviceUserNotFound(c)
+		return
+	}
+	if row.RevokedAt == nil {
+		c.JSON(http.StatusConflict, gin.H{"message": "只能删除已移除的设备"})
+		return
+	}
+	if blocks, err := deviceUserLoadBlocks(db, operator.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备拉黑记录失败"})
+		return
+	} else if _, blocked := blocks[row.DeviceID]; blocked {
+		c.JSON(http.StatusConflict, gin.H{"message": "已拉黑设备请先解除拉黑"})
+		return
+	}
+	deleteQuery := db.Table(entity.TableNameAccountDeviceBinding).
+		Where("id = ? AND user_id = ? AND revoked_at IS NOT NULL", id, operator.ID)
+	if deviceUserBlocksTableAvailable(db) {
+		// 拉黑记录可能在前面的读取之后插入；在实际 DELETE 内再次判断，
+		// 让新出现的拉黑记录保留其绑定历史，而不是先删绑定再留下孤儿拉黑。
+		deleteQuery = deleteQuery.Where("NOT EXISTS (SELECT 1 FROM user_device_blocks WHERE user_device_blocks.user_id = ? AND user_device_blocks.device_id = account_device_bindings.device_id)", operator.ID)
+	}
+	result := deleteQuery.Delete(&entity.AccountDeviceBinding{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "删除设备记录失败"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		latest, findErr := deviceUserFindBinding(db, operator.ID, id)
+		if findErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+			return
+		}
+		if latest != nil {
+			c.JSON(http.StatusConflict, gin.H{"message": "设备状态已变化，请刷新后重试"})
+			return
+		}
+		deviceUserNotFound(c)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": id, "deviceId": row.DeviceID, "deleted": true}})
+}
+
+// UserDeviceExpiryGet/Put 读取和保存当前用户的设备闲置自动移除时间。
+func UserDeviceExpiryGet(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法读取设备过期策略"})
+		return
+	}
+	maxDays := service.GetDeviceIdleRevokeAfterDaysWithDB(db)
+	days, customized := service.GetUserDeviceIdleRevokeAfterDaysWithDB(db, operator.ID)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"days": days, "maxDays": maxDays, "customized": customized, "allowDisable": service.GetDeviceIdleRevokeAllowUserDisableWithDB(db)}})
+}
+
+func UserDeviceExpiryPut(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法保存设备过期策略"})
+		return
+	}
+	var input struct {
+		Days *int `json:"days"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Days == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供设备自动移除天数"})
+		return
+	}
+	if err := service.SaveUserDeviceIdleRevokeAfterDaysWithDB(db, operator.ID, *input.Days); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	days, customized := service.GetUserDeviceIdleRevokeAfterDaysWithDB(db, operator.ID)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"days": days, "maxDays": service.GetDeviceIdleRevokeAfterDaysWithDB(db), "customized": customized, "allowDisable": service.GetDeviceIdleRevokeAllowUserDisableWithDB(db)}})
 }
 
 // sortDeviceUserItems 按 device_id 升序排（只用于孤儿行，保证顺序稳定）。

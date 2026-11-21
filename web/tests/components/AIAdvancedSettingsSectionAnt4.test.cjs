@@ -4,11 +4,11 @@ const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 require(path.join(web, 'tests/helpers/vue-dom.cjs'))
 const { mount, flushPromises } = require('@vue/test-utils'), { nextTick } = require('vue'), Antd = require('ant-design-vue')
 const user = require(path.join(web, 'src/utils/currentUser.js'))
-const CONFIG = { enabled: false, baseUrl: 'https://fixture.invalid/v1', apiKey: 'SYNTHETIC_KEY', model: 'MODEL-A', manualModels: ['MODEL-A', 'MODEL-B'], prompt: 'SYNTHETIC_PROMPT', remark: 'PRESERVE', temperature: 0, topP: 0, maxAISearchModelCalls: 4, maxAISearches: 3, maxAISearchRetries: 3, searchPricePerCall: 0, tikuSearchPricePerCall: 0, maxAIWebReads: 5, webReadPricePerCall: 0, imageOCRPricePerCall: 0, enableAIStagedTokenBilling: true, smoothAIStagedTokenMultiplier: false, stagedTokenMultiplierPoints: [{ tokens: 0, multiplier: 2 }, { tokens: 1000, multiplier: 1 }] }
+const CONFIG = { enabled: false, baseUrl: 'https://fixture.invalid/v1', apiKey: 'SYNTHETIC_KEY', model: 'MODEL-A', manualModels: ['MODEL-A', 'MODEL-B'], prompt: 'SYNTHETIC_PROMPT', remark: 'PRESERVE', temperature: 0, topP: 0, maxAISearchModelCalls: 4, maxAISearches: 3, maxAISearchRetries: 3, searchPricePerCall: 0, maxAIWebReads: 5, webReadPricePerCall: 0, imageOCRPricePerCall: 0, enableAIStagedTokenBilling: true, smoothAIStagedTokenMultiplier: false, stagedTokenMultiplierPoints: [{ tokens: 0, multiplier: 2 }, { tokens: 1000, multiplier: 1 }] }
 const ROWS = [{ id: 501, modelName: 'MODEL-A', displayName: 'A', inputPrice: 0, cachedPrice: 0, cacheWritePrice: 0, outputPrice: 0, multiplier: 1, remark: '' }]
-const fields = ['maxAISearchModelCalls', 'maxAISearches', 'maxAISearchRetries', 'searchPricePerCall', 'tikuSearchPricePerCall', 'maxAIWebReads', 'webReadPricePerCall', 'imageOCRPricePerCall']
-const priceFields = new Set(['searchPricePerCall', 'tikuSearchPricePerCall', 'webReadPricePerCall', 'imageOCRPricePerCall'])
-const labels = ['模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '本地题库检索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）']
+const fields = ['maxAISearchModelCalls', 'maxAISearches', 'maxAISearchRetries', 'searchPricePerCall', 'maxAIWebReads', 'webReadPricePerCall', 'imageOCRPricePerCall']
+const priceFields = new Set(['searchPricePerCall', 'webReadPricePerCall', 'imageOCRPricePerCall'])
+const labels = ['模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）']
 const limits = Object.freeze({ minModelCalls: 1, maxBudget: 20, minSearches: 1, minRetries: 1, maxRetries: 10, minWebReads: 1, maxWebReads: 20 })
 const calls = [], pendingCapability = [], wrappers = []; let serverConfig = structuredClone(CONFIG)
 const clone = x => JSON.parse(JSON.stringify(x)), ok = data => ({ status: 200, data })
@@ -48,16 +48,16 @@ test('positive native UI: eight advanced fields retain exact order, bounds, pars
  assert.deepEqual(region.findAll('.ant-form-item-label').map(x => x.text()), [...labels, '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数'])
  assert.equal(w.findAll('form.ai-config-form').length, 1); assert.equal(region.findAll('form').length, 0)
  assert.equal(region.attributes('tabindex'), '-1'); assert.equal(region.attributes('aria-labelledby'), region.find('h2').attributes('id'))
- const numbers = region.findAllComponents(Antd.InputNumber); assert.equal(numbers.length, 11)
+ const numbers = region.findAllComponents(Antd.InputNumber); assert.equal(numbers.length, fields.length + 3)
  for (let i = 0; i < fields.length; i++) { const p = numbers[i].props(), integer = !priceFields.has(fields[i]); assert.equal(p.value, CONFIG[fields[i]]); assert.equal(p.min, integer ? 1 : 0); assert.equal(p.precision, integer ? 0 : 6); assert.equal(p.step, integer ? 1 : 0.01); if (integer) { assert.equal(p.max, i === 2 ? 10 : 20); assert.equal(p.parser, w.vm.parseIntegerInput) } assert.ok(item(region, labels[i]).find('.hint').text().length > 20) }
- assert.deepEqual(numbers.filter((_, i) => priceFields.has(fields[i])).map(n => n.get('input').element.value), ['0.000000', '0.000000', '0.000000', '0.000000'])
+ assert.deepEqual(numbers.filter((_, i) => priceFields.has(fields[i])).map(n => n.get('input').element.value), ['0.000000', '0.000000', '0.000000'])
  for (const label of ['温度', 'Top P']) { const input = item(w, label).get('input').element; assert.equal(input.value, '0'); assert.equal(input.readOnly, true); assert.equal(input.disabled, true) }
  assert.equal(canonical.enabled, false); assert.equal(canonical.smoothAIStagedTokenMultiplier, false); assert.equal(w.vm.hasUnsavedChanges, false); assert.deepEqual(mutations(), [])
  console.log('ADVANCED_POSITIVE ' + JSON.stringify({ order: labels, values: fields.map(f => canonical[f]), noRequests: mutations(), parser: numbers[0].props('parser') === w.vm.parseIntegerInput }))
 })
 
 test('positive native UI: all eight edits preserve canonical identity, nonowned values, snapshots and dirty/revert', async () => {
- const w = await start(), canonical = w.vm.formState, before = clone(canonical), snapshot = w.vm.savedConfigSnapshot, values = [7, 8, 6, 0.123456, 0.000061, 9, 0.654321, 0.321001]
+ const w = await start(), canonical = w.vm.formState, before = clone(canonical), snapshot = w.vm.savedConfigSnapshot, values = [7, 8, 6, 0.123456, 9, 0.654321, 0.321001]
  for (let i = 0; i < fields.length; i++) { await item(w, labels[i]).get('input').setValue(String(values[i])); assert.equal(canonical[fields[i]], values[i]); assert.equal(w.vm.formState, canonical) }
  for (const field of Object.keys(before).filter(f => !fields.includes(f))) assert.deepEqual(clone(canonical[field]), before[field], 'preserve ' + field)
  assert.equal(w.vm.hasUnsavedChanges, true); assert.equal(w.vm.savedConfigSnapshot, snapshot); assert.deepEqual(mutations(), [])
@@ -72,11 +72,11 @@ test('private extraction boundary: controlled advanced child exists and mounts o
 })
 
 test('positive native UI: eight advanced values save once through parent with untouched canonical fields and clean snapshot', async () => {
- const w = await start(), canonical = w.vm.formState, before = clone(canonical), values = [20, 19, 10, 0.123456, 0.000061, 18, 0.654321, 0.222222]
+ const w = await start(), canonical = w.vm.formState, before = clone(canonical), values = [20, 19, 10, 0.123456, 18, 0.654321, 0.222222]
  for (let i = 0; i < fields.length; i++) await item(w, labels[i]).get('input').setValue(String(values[i]))
  button(w.element, '保存配置').click(); await settle()
  const saves = mutations().filter(x => x[0] === 'save-config'); assert.equal(saves.length, 1); const payload = saves[0][1]
- for (let i = 0; i < fields.length; i++) assert.equal(payload[fields[i] === 'tikuSearchPricePerCall' ? 'tiku_search_price_per_call' : fields[i]], values[i])
+ for (let i = 0; i < fields.length; i++) assert.equal(payload[fields[i]], values[i])
  for (const field of ['enabled', 'baseUrl', 'apiKey', 'model', 'prompt', 'temperature', 'topP', 'enableAIStagedTokenBilling', 'smoothAIStagedTokenMultiplier']) assert.deepEqual(payload[field], before[field], field)
  assert.deepEqual(payload.manualModels, CONFIG.manualModels); assert.equal(w.vm.formState, canonical); assert.equal(w.vm.hasUnsavedChanges, false); assert.equal(w.vm.currentConfigSnapshot, w.vm.savedConfigSnapshot)
  console.log('ADVANCED_SAVE ' + JSON.stringify({ payload, canonical: w.vm.formState === canonical, dirty: w.vm.hasUnsavedChanges }))
@@ -106,11 +106,11 @@ test('positive native UI: capability is explicit-only; parent owns two synthetic
 
 test('positive parent ownership: invalid numeric budgets and prices never reach save fixture; exact valid zero saves', async () => {
  const w = await start(), canonical = w.vm.formState, before = clone(canonical)
- for (const [field, value] of [['maxAISearchModelCalls', 0], ['maxAISearchModelCalls', 21], ['maxAISearches', 1.5], ['maxAISearchRetries', 11], ['maxAIWebReads', 0], ['maxAIWebReads', 21], ['searchPricePerCall', -0.01], ['tikuSearchPricePerCall', -0.01], ['webReadPricePerCall', -0.01], ['imageOCRPricePerCall', -0.01]]) {
+ for (const [field, value] of [['maxAISearchModelCalls', 0], ['maxAISearchModelCalls', 21], ['maxAISearches', 1.5], ['maxAISearchRetries', 11], ['maxAIWebReads', 0], ['maxAIWebReads', 21], ['searchPricePerCall', -0.01], ['webReadPricePerCall', -0.01], ['imageOCRPricePerCall', -0.01]]) {
   Object.assign(canonical, before, { [field]: value }); await settle(); button(w.element, '保存配置').click(); await settle(); assert.deepEqual(mutations(), [], field + '=' + value)
  }
  Object.assign(canonical, before, { maxAISearchModelCalls: 1, maxAISearches: 1, maxAISearchRetries: 1, maxAIWebReads: 1, searchPricePerCall: 0, webReadPricePerCall: 0, imageOCRPricePerCall: 0 }); await settle(); button(w.element, '保存配置').click(); await settle()
- const save = mutations().find(x => x[0] === 'save-config'); assert.ok(save); assert.equal(save[1].searchPricePerCall, 0); assert.equal(save[1].tiku_search_price_per_call, 0); assert.equal(save[1].webReadPricePerCall, 0); assert.equal(save[1].imageOCRPricePerCall, 0); assert.equal(w.vm.formState, canonical)
+ const save = mutations().find(x => x[0] === 'save-config'); assert.ok(save); assert.equal(save[1].searchPricePerCall, 0); assert.ok(!('tiku_search_price_per_call' in save[1])); assert.equal(save[1].webReadPricePerCall, 0); assert.equal(save[1].imageOCRPricePerCall, 0); assert.equal(w.vm.formState, canonical)
 })
 
 function freezeDeep(value) { Object.freeze(value); for (const x of Object.values(value)) if (x && typeof x === 'object' && !Object.isFrozen(x)) freezeDeep(x); return value }
@@ -144,7 +144,7 @@ async function isolated(props) { const w = mount(require(childPath), { props, at
 const absentChild = !fs.existsSync(childPath) && 'baseline private child is intentionally absent; explicit structural ASSERTION RED above'
 
 test('controlled child: frozen props emit exactly one full independent clone per native numeric input, including zero', { skip: absentChild }, async () => {
- const props = childProps(), before = clone(props.formValue), w = await isolated(props), requestCount = calls.length, values = [7, 8, 6, 0.123456, 0.000061, 9, 0.654321, 0.321001]
+ const props = childProps(), before = clone(props.formValue), w = await isolated(props), requestCount = calls.length, values = [7, 8, 6, 0.123456, 9, 0.654321, 0.321001]
  assert.equal(w.attributes('id'), props.sectionId); assert.equal(w.attributes('tabindex'), '-1'); assert.equal(w.attributes('aria-labelledby'), props.sectionId + '-heading'); assert.equal(w.find('h2').attributes('id'), props.sectionId + '-heading'); assert.equal(w.findAll('form').length, 0)
  for (let i = 0; i < fields.length; i++) {
   const previous = (w.emitted('update:form-value') || []).length, input = item(w, labels[i]).get('input')

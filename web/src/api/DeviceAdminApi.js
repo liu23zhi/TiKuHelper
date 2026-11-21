@@ -6,6 +6,7 @@ import request from '../utils/request'
 //
 //	GET    /api/admin/devices                  列表：分页 + keyword / status
 //	POST   /api/admin/devices/:id/unbind       强制解绑（:id 是**绑定行主键**）
+//	DELETE /api/admin/devices/:id              删除已解绑记录，保留设备封禁
 //	POST   /api/admin/device-bans              封禁：reason 必填，expiresAt 空 = 永久
 //	DELETE /api/admin/device-bans/:deviceId    解封（:deviceId 是**设备 ID**）
 //
@@ -49,6 +50,12 @@ export function unbindAdminDevice(bindingId) {
     url: `/api/admin/devices/${id}/unbind`,
     method: 'post',
   })
+}
+
+export function deleteAdminDevice(bindingId) {
+  const id = Number(bindingId)
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('删除参数错误')
+  return request({ errorFeedback: 'local', url: `/api/admin/devices/${id}`, method: 'delete' })
 }
 
 // 封禁设备：expiresAt 由调用方显式给出（null/空 = 永久）。

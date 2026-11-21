@@ -201,10 +201,9 @@ test('① 总开关关闭时提交入口仍存在，但处于禁用态', { skip:
     assert.notEqual(button.attributes('disabled'), undefined,
       '关闭态下提交按钮必须是 disabled（可见但不可用），不能是「能点但点了报错」')
 
-    // 文件选择框是同一个入口的组成部分，必须存在且禁用。
-    const fileInput = context.wrapper.find('input[type="file"]')
-    assert.equal(fileInput.exists(), true, '关闭态下截图选择框必须仍存在')
-    assert.notEqual(fileInput.attributes('disabled'), undefined, '关闭态下截图选择框必须禁用')
+    const picker = context.wrapper.findAll('button').find((node) => buttonText(node) === '选择截图')
+    assert.ok(picker, '关闭态下截图选择按钮必须仍存在')
+    assert.equal(picker.element.disabled, true, '关闭态下截图选择按钮必须禁用')
 
     // entryDisabled 必须是「关闭」这个原因驱动的，不能靠 submitting/limitReached 巧合成立。
     assert.equal(context.setup.enabled, false, '前置失效：本用例要求关闭态')
@@ -256,7 +255,7 @@ test('③ 总开关开启时入口可用，且不显示关闭原因', { skip: be
       '开启态不得出现关闭原因文案')
 
     // 「开放了才有意义」的面板仍在。
-    assert.match(context.wrapper.text(), /当前规则/, '开启态必须仍显示规则表面板')
+    assert.match(context.wrapper.text(), /活动说明/, '开启态必须仍显示活动说明')
     assert.match(context.wrapper.text(), /我的提交/, '开启态必须仍显示「我的提交」面板')
   } finally {
     teardown(context, environment)
@@ -313,7 +312,7 @@ test('③-b 开启且达上限时：「提交审核」禁用，但「清空」�
 // ══════════════════════════════════════════════════════════════════════════
 // ④ 「未开始」与「已结束」的文案必须区分
 // ══════════════════════════════════════════════════════════════════════════
-test('④ 「尚未开始」与「已结束」两种关闭原因文案不同，且都渲染到页面', { skip: behaviourSkip }, async () => {
+test('④ 关闭态说明未开放或已暂停，不虚构活动起止时间', { skip: behaviourSkip }, async () => {
   const environment = prepare()
 
   const notStarted = await mountPage(environment, RESPONSE_NOT_STARTED)
@@ -332,7 +331,8 @@ test('④ 「尚未开始」与「已结束」两种关闭原因文案不同，�
   assert.notEqual(notStartedReason, endedReason,
     '「未开始」与「已结束」必须给出不同文案 —— 用户下一步动作相反（等开放 vs 问是不是被停权）')
   assert.match(notStartedReason, /未开放|尚未开始/, '未开始的原因文案必须说明「还没开始」')
-  assert.match(endedReason, /已结束|已停止/, '已结束的原因文案必须说明「结束了」')
+  assert.match(endedReason, /已暂停/, '禁用活动只能说明暂停，不能推断已结束')
+  assert.doesNotMatch(notStartedReason + endedReason, /尚未开始|已结束/)
 
   // 修复不能在两种关闭态之一失效。
   assert.equal(notStartedHasEntry, true, '未开始态下入口必须存在')
@@ -340,5 +340,5 @@ test('④ 「尚未开始」与「已结束」两种关闭原因文案不同，�
 
   // 文案必须真的渲染到页面，不能只存在于 setup 状态里。
   assert.match(notStartedText, /未开放|尚未开始/, '未开始的文案必须渲染到页面上')
-  assert.match(endedText, /已结束|已停止/, '已结束的文案必须渲染到页面上')
+  assert.match(endedText, /已暂停/, '暂停文案必须渲染到页面上')
 })

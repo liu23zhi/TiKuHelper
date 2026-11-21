@@ -18,7 +18,7 @@ func newScriptBillingTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.UserScript{}, &entity.ScriptVersion{}, &entity.ScriptExchangeToken{}, &entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.UserScript{}, &entity.ScriptAddressReservation{}, &entity.ScriptVersion{}, &entity.ScriptExchangeToken{}, &entity.SystemSetting{}, &entity.SearchAccountConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	return db

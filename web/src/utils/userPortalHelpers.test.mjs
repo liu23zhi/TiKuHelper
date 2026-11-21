@@ -58,9 +58,12 @@ test('resolveAdapterHomePath sends admins to component and users to usage page',
   assert.equal(resolveAdapterHomePath(null), '/user-usage');
 });
 
-test('buildRegisterSourceLabel maps system registrations to initialization wording', () => {
-  assert.equal(buildRegisterSourceLabel('system'), '系统初始化创建');
-  assert.equal(buildRegisterSourceLabel('public'), '公开注册');
+test('buildRegisterSourceLabel supports all known sources and preserves unknown codes', () => {
+  const labels = Object.fromEntries(['public', 'admin', 'SYSTEM', 'legacy', 'import', 'wechat', 'future-provider', ''].map(source => [source, buildRegisterSourceLabel(source)]));
+  assert.deepEqual(labels, {
+    public: '公开注册', admin: '后台创建', SYSTEM: '系统初始化创建', legacy: '历史数据',
+    import: '导入创建', wechat: '微信注册', 'future-provider': 'future-provider', '': '-',
+  });
 });
 
 test('buildPortalMenuKeys includes personal usage for admin users', () => {
@@ -201,6 +204,7 @@ test('billing record helpers render recharge and search ledger rows', () => {
   assert.equal(buildBillingRecordTypeText({ type: 'referral_rebate' }), '邀请返佣（入赠送余额）');
   assert.equal(buildBillingRecordTypeText({ type: 'referral_rebate_reversal' }), '邀请返佣冲回');
   assert.equal(buildBillingRecordTypeText({ type: 'review_rebate' }), '评价返现');
+  assert.equal(buildBillingRecordTypeText({ type: 'review_rebate_clawback' }), '评价返现追缴');
   assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
   assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
   assert.equal(buildBillingRecordReferenceText(search), 'req-search');
@@ -332,6 +336,11 @@ test('personal billing detail hides AI pricing metadata while retaining keyword 
   assert.doesNotMatch(html, /5949/)
   assert.doesNotMatch(html, /2\.06x/)
   assert.doesNotMatch(html, /显示在用户账单流水/)
+})
+
+test('banned accounts enter only the appeal workspace regardless of former role',()=>{
+ assert.equal(resolveAdapterHomePath({role:'admin',status:'banned'}),'/tickets')
+ assert.equal(resolveAdapterHomePath({role:'user',status:'banned'}),'/tickets')
 })
 
 test('web read fee details prefer the structured URL and retain it in normalized items', () => {

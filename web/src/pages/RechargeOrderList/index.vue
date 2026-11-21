@@ -109,9 +109,12 @@
         <template #bodyCell="{ column, record }">
           <span v-if="column.key === 'username'">{{ record.username || `用户 #${record.userId || '-'}` }}</span>
           <span v-else-if="column.key === 'amount'" class="money-cell">¥ {{ formatAmount(record.amount) }}</span>
-          <a-tag v-else-if="column.key === 'status'" :color="record.settlementNeedsReview ? 'orange' : buildStatusColor(record.status)">
-            {{ record.settlementNeedsReview ? '历史入账待核对' : buildStatusLabel(record.status) }}
-          </a-tag>
+          <div v-else-if="column.key === 'status'">
+            <a-tag :color="record.settlementNeedsReview ? 'orange' : buildStatusColor(record.status)">{{ record.settlementNeedsReview ? '历史入账待核对' : buildStatusLabel(record.status) }}</a-tag>
+            <div v-if="record.refundMarked">退款工单已核销</div>
+            <div v-else-if="record.refundReserved">已有退款申请</div>
+            <div v-else-if="record.refundOrderCapCents > 0">订单退款上限 ¥{{ formatAmount(record.refundOrderCapCents / 100) }}</div>
+          </div>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
           <a-button v-else-if="column.key === 'review' && canEditStatus" type="link" size="small"
             :disabled="record.settlementNeedsReview || record.refundReserved || record.refundMarked"
@@ -160,10 +163,13 @@
         </a-form>
       </a-modal>
     </ConsolePanel>
+    <AdminDataTransfer v-if="isAdmin" resource="recharge_orders" title="充值订单" />
+
   </div>
 </template>
 
 <script>
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { computed, defineComponent, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
@@ -181,11 +187,11 @@ function readNonnegativeNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) && number >= 0 ? number : null
 }
-const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'settlementNeedsReview', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
+const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'settlementNeedsReview', 'refundMarked', 'refundReserved', 'refundOrderCapCents', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
 
 export default defineComponent({
   name: 'RechargeOrderList',
-  components: { RequestFailureAlert },
+  components: { AdminDataTransfer, RequestFailureAlert },
   setup() {
     const filterIdPrefix = 'recharge-orders-' + useId()
     const filterFieldId = field => filterIdPrefix + '-' + field

@@ -1,5 +1,10 @@
 const DEFAULT_SCHEME = 'https'
 
+export function isRedeemableScriptCode(value) {
+  const code = String(value ?? '').trim()
+  return /^sac_[a-f0-9]{64}$/.test(code) || /^TKA-[a-f0-9]{32}$/.test(code)
+}
+
 function text(value) {
   return String(value ?? '').trim()
 }
@@ -96,11 +101,12 @@ export function normalizeScriptRows(response) {
   return rows.map(normalizeScriptRecord)
 }
 
-export function buildScriptListParams(isAdmin, showAll) {
-  return { scope: isAdmin && showAll ? 'all' : 'self' }
+export function buildScriptListParams(isAdmin) {
+  return { scope: isAdmin ? 'all' : 'self' }
 }
 
 export function buildScriptDownloadURL(record = {}) {
+  if (typeof record.downloadUrl === 'string') return record.downloadUrl
   const normalized = normalizeScriptRecord(record)
   const domain = normalized.baseDomain
   if (!domain || domain.length > 253 || !domain.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return ''
@@ -115,7 +121,20 @@ export function buildScriptDownloadURL(record = {}) {
 // the legacy instruction field.
 export function buildScriptCommand(record = {}) {
   const command = typeof record.command === 'string' ? record.command : ''
-  return command.length <= 16384 && /^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command) ? command : ''
+  if (command.length > 16384) return ''
+  if (/^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command)) return command
+  return /^powershell -c "iex\(irm https:\/\/(?:[a-z0-9][a-z0-9.-]*|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)* -Headers @\{'X-Script-Launcher'='[A-Za-z0-9_-]{43}'\} -MaximumRedirection 0 -TimeoutSec 15\)"$/.test(command) ? command : ''
+}
+
+export function buildScriptShortCommand(record = {}, now = Date.now()) {
+  const grant = record.shortAuthorization
+  if (!['active', 'scheduled'].includes(grant?.status)) return ''
+  if (grant.expiresAt != null && (!Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now)) return ''
+  if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
+  const address = String(grant.address || '')
+  if (!/^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''
+  const command = `powershell -c "iex(irm ${address})"`
+  return grant.command === command ? command : ''
 }
 
 export function buildScriptSavePayload(form = {}) {

@@ -212,10 +212,15 @@ func IPSegmentSyncFromCache(c *gin.Context) {
 	// 一次最多取这么多行缓存参与沉淀。与启动回填同一口径：
 	// 缓存表可能很大，全量扫描会让一次点击变成秒级阻塞。
 	const syncLimit = 5000
+	if !db.Migrator().HasTable(entity.TableNameLocationCache) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "IP 归属地缓存表尚未就绪，请稍后重试"})
+		return
+	}
 	rows := make([]entity.LocationCache, 0, syncLimit)
 	if err := db.Session(&gorm.Session{NewDB: true}).
 		Model(&entity.LocationCache{}).
-		Order("id DESC").Limit(syncLimit).Find(&rows).Error; err != nil {
+		Where("kind = ?", entity.LocationKindIP).
+		Order("fetched_at DESC, lookup_key ASC, source ASC").Limit(syncLimit).Find(&rows).Error; err != nil {
 		writeIPSegmentFailure(c, err, "读取 IP 归属地缓存失败")
 		return
 	}

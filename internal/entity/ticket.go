@@ -90,6 +90,8 @@ type Ticket struct {
 	// 否则按 origin 过滤会漏掉全部旧工单。
 	Origin   string `gorm:"column:origin;type:varchar(16);not null;default:user;index" json:"origin"`
 	Category string `gorm:"column:category;type:varchar(32);not null;default:general;index" json:"category"`
+	// Set by the server after appeal verification. UserID remains the submitter.
+	AppealTargetUserID *int32 `gorm:"column:appeal_target_user_id" json:"-"`
 	// Context 是**建单那一刻**的类别上下文快照（JSON）：当时的命中规则、当时的失败原因。
 	// 硬约束：不得存凭据 —— 手机号只留后四位，验证码 / token / password 一律抹掉
 	// （service.marshalTicketContext 落库前过一道 redact）。只做原样展示，不按字段查询。

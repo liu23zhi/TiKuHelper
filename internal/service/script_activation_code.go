@@ -47,11 +47,9 @@ var (
 
 // AdminScriptActivationCodeUsageRecord 是一条使用记录。
 //
-// 用户要的是「换取令牌、下载脚本等具体情况，方便客服处理工单」，所以这里
-// 不只返回「用了没」，而是把兑换时刻、兑换人、绑定脚本、以及由
-// entitlement → run session 串起来的下游动作用同一结构表达。
+// 领取、绑定和运行会话分别使用各自保存的时间。
 type AdminScriptActivationCodeUsageRecord struct {
-	// Kind 取值：redeem（兑换绑定）/ run（脚本实际运行）/ download（下载脚本）。
+	// Kind 取值：redeem（领取）/ bind（绑定脚本）/ run（脚本实际运行）。
 	Kind       string    `json:"kind"`
 	At         time.Time `json:"at"`
 	UserID     int32     `json:"userId"`
@@ -122,20 +120,15 @@ func newAdminScriptActivationCode() (string, error) {
 	return AdminScriptActivationCodePrefix + hex.EncodeToString(buffer), nil
 }
 
-// projectAdminScriptActivationCodeStatus 把持久状态与 ExpiresAt 合成对外状态。
-//
-// 过期不入库（没有后台扫描任务），而是每次读取时按时间算：否则「到期了但
-// 还没被扫到」的窗口里，列表会显示「未使用」而兑换又失败，客服无法自证。
-func projectAdminScriptActivationCodeStatus(code entity.AdminScriptActivationCode, now time.Time) string {
-	return ProjectAdminScriptActivationCodeStatus(code, now)
-}
-
-// ProjectAdminScriptActivationCodeStatus 是上面那个的导出版本，供 controller
-// 组装响应时复用同一份逻辑（两份实现必然漂移：列表显示「未使用」而兑换报
-// 「已过期」正是漂移最伤人的表现）。
+// ProjectAdminScriptActivationCodeStatus 根据冻结期限和码的有效期计算对外状态。
 func ProjectAdminScriptActivationCodeStatus(code entity.AdminScriptActivationCode, now time.Time) string {
 	if code.Status == entity.ScriptActivationCodeStatusUsed {
-		return entity.ScriptActivationCodeStatusUsed
+		if !adminScriptActivationIsReservation(code) {
+			return entity.ScriptActivationCodeStatusUsed
+		}
+		if code.UsedAt.Add(ScriptActivationCodeFreezeDuration).After(now) {
+			return ScriptActivationCodeStatusFrozen
+		}
 	}
 	if code.Status == entity.ScriptActivationCodeStatusDisabled {
 		return entity.ScriptActivationCodeStatusDisabled
@@ -144,6 +137,18 @@ func ProjectAdminScriptActivationCodeStatus(code entity.AdminScriptActivationCod
 		return entity.ScriptActivationCodeStatusExpired
 	}
 	return entity.ScriptActivationCodeStatusUnused
+}
+
+func adminScriptActivationIsReservation(code entity.AdminScriptActivationCode) bool {
+	return code.Status == entity.ScriptActivationCodeStatusUsed && code.UsedAt != nil && code.UsedEntitlementID != nil && code.UsedScriptID == nil
+}
+
+func projectAdminScriptActivationCode(code entity.AdminScriptActivationCode, now time.Time) entity.AdminScriptActivationCode {
+	if adminScriptActivationIsReservation(code) && !code.UsedAt.Add(ScriptActivationCodeFreezeDuration).After(now) {
+		code.Status = entity.ScriptActivationCodeStatusUnused
+		code.UsedAt, code.UsedBy, code.UsedEntitlementID = nil, nil, nil
+	}
+	return code
 }
 
 // AdminScriptActivationCodeListQuery 是列表筛选条件。
@@ -177,21 +182,30 @@ func ListAdminScriptActivationCodes(db *gorm.DB, query AdminScriptActivationCode
 		query.PageSize = 20
 	}
 
-	now := time.Now().UTC()
+	now := db.NowFunc().UTC()
+	freezeCutoff := now.Add(-ScriptActivationCodeFreezeDuration)
+	const reservation = "(used_script_id IS NULL AND used_entitlement_id IS NOT NULL AND used_at IS NOT NULL)"
+	const elapsedReservation = "(status = ? AND " + reservation + " AND used_at <= ?)"
+	unclaimed := func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("(status = ? OR "+elapsedReservation+")", entity.ScriptActivationCodeStatusUnused, entity.ScriptActivationCodeStatusUsed, freezeCutoff)
+	}
 	// 用两个**独立的**查询构造器，而不是复用同一个 scope：
 	// `Session(&gorm.Session{NewDB:true})` 会清掉 Statement 上的 Model，
 	// 复用它去 Count 会报 "Table not set"（实测）。
 	build := func() *gorm.DB {
 		tx := db.Session(&gorm.Session{NewDB: true}).Model(&entity.AdminScriptActivationCode{})
 		if query.UsedBy > 0 {
-			tx = tx.Where("used_by = ?", query.UsedBy)
+			tx = tx.Where("used_by = ? AND NOT "+elapsedReservation, query.UsedBy, entity.ScriptActivationCodeStatusUsed, freezeCutoff)
 		}
 		switch strings.TrimSpace(query.Status) {
 		case entity.ScriptActivationCodeStatusExpired:
-			// 库里不存 expired 这个值，必须翻译成「未使用且已过期」的谓词，
-			// 否则筛「已过期」永远空。
-			return tx.Where("status = ? AND expires_at IS NOT NULL AND expires_at <= ?",
-				entity.ScriptActivationCodeStatusUnused, now)
+			return unclaimed(tx).Where("expires_at IS NOT NULL AND expires_at <= ?", now)
+		case entity.ScriptActivationCodeStatusUnused:
+			return unclaimed(tx).Where("(expires_at IS NULL OR expires_at > ?)", now)
+		case ScriptActivationCodeStatusFrozen:
+			return tx.Where("status = ? AND "+reservation+" AND used_at > ?", entity.ScriptActivationCodeStatusUsed, freezeCutoff)
+		case entity.ScriptActivationCodeStatusUsed:
+			return tx.Where("status = ? AND NOT "+reservation, entity.ScriptActivationCodeStatusUsed)
 		case "":
 			return tx
 		default:
@@ -213,6 +227,9 @@ func ListAdminScriptActivationCodes(db *gorm.DB, query AdminScriptActivationCode
 	if err != nil {
 		return AdminScriptActivationCodeListResult{}, err
 	}
+	for i := range items {
+		items[i] = projectAdminScriptActivationCode(items[i], now)
+	}
 	return AdminScriptActivationCodeListResult{
 		Items: items, Total: total, Page: query.Page, PageSize: query.PageSize,
 	}, nil
@@ -228,7 +245,7 @@ func GetAdminScriptActivationCodeByID(db *gorm.DB, id int64) (entity.AdminScript
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return entity.AdminScriptActivationCode{}, ErrAdminScriptActivationCodeNotFound
 	}
-	return code, err
+	return projectAdminScriptActivationCode(code, db.NowFunc().UTC()), err
 }
 
 // AdminScriptActivationCodeUpdate 是修改入参（指针语义：nil = 不修改）。
@@ -243,12 +260,10 @@ type AdminScriptActivationCodeUpdate struct {
 
 // UpdateAdminScriptActivationCode 修改有效期/备注/启用状态。
 //
-// 已使用的码不允许再改状态（只能改备注）：把 used 改回 unused 等于让一张
-// 已兑换的凭据可以再兑换一次，直接破坏一次性语义。
+// 冻结中的码和已永久使用的码保留原状态。
 func UpdateAdminScriptActivationCode(db *gorm.DB, id int64, update AdminScriptActivationCodeUpdate) (entity.AdminScriptActivationCode, error) {
-	current, err := GetAdminScriptActivationCodeByID(db, id)
-	if err != nil {
-		return entity.AdminScriptActivationCode{}, err
+	if db == nil || id <= 0 {
+		return entity.AdminScriptActivationCode{}, ErrAdminScriptActivationCodeNotFound
 	}
 
 	fields := map[string]any{}
@@ -264,9 +279,6 @@ func UpdateAdminScriptActivationCode(db *gorm.DB, id int64, update AdminScriptAc
 		if next != entity.ScriptActivationCodeStatusUnused && next != entity.ScriptActivationCodeStatusDisabled {
 			return entity.AdminScriptActivationCode{}, ErrAdminScriptActivationCodeInvalid
 		}
-		if current.Status == entity.ScriptActivationCodeStatusUsed {
-			return entity.AdminScriptActivationCode{}, ErrAdminScriptActivationCodeUsed
-		}
 		fields["status"] = next
 	}
 	if update.ClearExpiry {
@@ -274,17 +286,35 @@ func UpdateAdminScriptActivationCode(db *gorm.DB, id int64, update AdminScriptAc
 	} else if update.ExpiresAt != nil {
 		fields["expires_at"] = *update.ExpiresAt
 	}
-	if len(fields) == 0 {
-		return current, nil
-	}
-	err = db.Session(&gorm.Session{NewDB: true}).
-		Model(&entity.AdminScriptActivationCode{}).
-		Where("id = ?", id).
-		Updates(fields).Error
+	var current entity.AdminScriptActivationCode
+	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, id).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAdminScriptActivationCodeNotFound
+		}
+		if err != nil {
+			return err
+		}
+		now := tx.NowFunc().UTC()
+		status := ProjectAdminScriptActivationCodeStatus(current, now)
+		if update.Status != nil && (status == entity.ScriptActivationCodeStatusUsed || status == ScriptActivationCodeStatusFrozen) {
+			return ErrAdminScriptActivationCodeUsed
+		}
+		if update.Status != nil && adminScriptActivationIsReservation(current) {
+			fields["used_at"], fields["used_by"], fields["used_entitlement_id"] = nil, nil, nil
+		}
+		if len(fields) == 0 {
+			return nil
+		}
+		if err := tx.Model(&current).Updates(fields).Error; err != nil {
+			return err
+		}
+		return tx.First(&current, id).Error
+	})
 	if err != nil {
 		return entity.AdminScriptActivationCode{}, err
 	}
-	return GetAdminScriptActivationCodeByID(db, id)
+	return projectAdminScriptActivationCode(current, db.NowFunc().UTC()), nil
 }
 
 // ConsumeAdminScriptActivationCode 原子兑换一个管理员预生成的激活码。
@@ -358,17 +388,13 @@ func ConsumeAdminScriptActivationCode(db *gorm.DB, code string, userID int32, sc
 
 // ListAdminScriptActivationCodeUsages 返回该码的使用记录。
 //
-// 数据来源分两段：
-//  1. 码自身的兑换事件（used_at / used_by / used_script_id）；
-//  2. 由 used_entitlement_id 串到 run session 的「实际运行」事件。
-//
-// 为什么不查 logs 表：logs 是运维流水（量大、有保留期），而工单排查要的是
-// 结构化的「谁、何时、哪个脚本」。entitlement → run session 是权威链路。
+// 领取记录来自码本身，绑定和运行记录来自关联的资格与会话。
 func ListAdminScriptActivationCodeUsages(db *gorm.DB, code entity.AdminScriptActivationCode) ([]AdminScriptActivationCodeUsageRecord, error) {
 	if db == nil {
 		return nil, nil
 	}
-	usages := make([]AdminScriptActivationCodeUsageRecord, 0, 2)
+	usages := make([]AdminScriptActivationCodeUsageRecord, 0, 3)
+	code = projectAdminScriptActivationCode(code, db.NowFunc().UTC())
 	if code.UsedAt == nil {
 		return usages, nil
 	}
@@ -403,7 +429,7 @@ func ListAdminScriptActivationCodeUsages(db *gorm.DB, code entity.AdminScriptAct
 		Username:   username,
 		ScriptID:   code.UsedScriptID,
 		ScriptName: scriptName,
-		Detail:     "激活码兑换绑定",
+		Detail:     "领取激活码",
 	})
 
 	// ② 实际运行事件（由 entitlement 串到 run session）。
@@ -411,6 +437,17 @@ func ListAdminScriptActivationCodeUsages(db *gorm.DB, code entity.AdminScriptAct
 		var entitlement entity.ScriptActivationEntitlement
 		err := db.Session(&gorm.Session{NewDB: true}).
 			Where("id = ?", *code.UsedEntitlementID).First(&entitlement).Error
+		if err == nil && entitlement.ScriptBoundAt != nil && entitlement.ScriptID != nil {
+			usages = append(usages, AdminScriptActivationCodeUsageRecord{
+				Kind:       "bind",
+				At:         *entitlement.ScriptBoundAt,
+				UserID:     userID,
+				Username:   username,
+				ScriptID:   entitlement.ScriptID,
+				ScriptName: scriptName,
+				Detail:     "绑定脚本",
+			})
+		}
 		if err == nil && entitlement.RunSessionID != nil {
 			var session entity.ScriptRunSession
 			sessionErr := db.Session(&gorm.Session{NewDB: true}).
@@ -425,20 +462,6 @@ func ListAdminScriptActivationCodeUsages(db *gorm.DB, code entity.AdminScriptAct
 					ScriptID:   &sessionScriptID,
 					ScriptName: scriptName,
 					Detail:     fmt.Sprintf("脚本运行会话 #%d，到期 %s", session.ID, session.ExpiresAt.Format(time.RFC3339)),
-				})
-			}
-			// 下载脚本事件：entitlement 被绑定到脚本即说明用户拿到了可下载的
-			// 版本，时间取 ScriptBoundAt（没有则退回兑换时刻）。
-			if entitlement.ScriptBoundAt != nil {
-				boundAt := *entitlement.ScriptBoundAt
-				usages = append(usages, AdminScriptActivationCodeUsageRecord{
-					Kind:       "download",
-					At:         boundAt,
-					UserID:     userID,
-					Username:   username,
-					ScriptID:   entitlement.ScriptID,
-					ScriptName: scriptName,
-					Detail:     "绑定脚本版本，用户可下载脚本",
 				})
 			}
 		}

@@ -5,9 +5,11 @@ require('../helpers/vue-dom.cjs')
 for (const name of ['HTMLInputElement', 'HTMLButtonElement']) global[name] = window[name]
 global.FormData = window.FormData
 global.getComputedStyle = element => window.getComputedStyle(element)
-const { mount, flushPromises } = require('@vue/test-utils')
+const { config, mount, flushPromises } = require('@vue/test-utils')
 const { nextTick } = require('vue')
 const Antd = require('ant-design-vue'), axios = require('axios')
+const { registerConsoleUI } = require('../../src/registerUI.js')
+for (const name of ['ConsolePageHeading', 'ConsolePanel', 'ConsoleSummaryGrid', 'ConsoleTableShell']) delete config.global.components[name]
 const user = require('../../src/utils/currentUser.js')
 const owner = { id: 781, role: 'user', status: 'enabled' }, admin = { id: 782, role: 'admin', status: 'enabled' }
 const original = { id: 1, orderId: 14, userId: 781, kind: 'original', requestedCents: 1250, status: 'pending_review' }
@@ -16,14 +18,24 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR
 const image = new Blob([png], { type: 'image/png' })
 const priorAdapter = axios.defaults.adapter, priorCreate = URL.createObjectURL, priorRevoke = URL.revokeObjectURL
 const calls = [], wrappers = [], created = [], revoked = [], unexpected = [], runtime = []
-let record, rejectMutation = false, proofWait = null, changed = 0
+let record, rejectMutation = false, proofWait = null, changed = 0, reviewRejected = false
+const rechargeOrders = [
+  { id: 31, orderNo: 'ORDER-31', paidCents: 750, paidAt: '2026-11-18T08:00:00Z', status: 'paid', originalSupported: true, manualSupported: true },
+  { id: 32, orderNo: 'ORDER-32', paidCents: 750, paidAt: '2026-11-19T08:00:00Z', status: 'paid', originalSupported: true, manualSupported: true },
+]
 function response(config, data, status = 200) { return { status, data, config, headers: {}, request: { memoryOnly: true } } }
 axios.defaults.adapter = async config => {
   const url = String(config.url), method = config.method, data = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
   calls.push({ url, method, data, retryPolicy: config.retryPolicy })
   if (/^\/api\/ticket-refunds\/\d+$/.test(url) && method === 'get') return response(config, { ...record })
+  if (url.endsWith('/recharge-orders') && method === 'get') return response(config, rechargeOrders)
+  if (/^\/api\/ticket-refunds\/\d+$/.test(url) && method === 'patch') {
+    record = { ...record, ...data, orderLines: data.allocations?.map(line => ({ ...line, orderNo: rechargeOrders.find(order => order.id === line.orderId).orderNo, status: record.status })) || [] }
+    return response(config, record)
+  }
   if (method === 'post' && rejectMutation) return response(config, { message: 'PRIVATE_PROVIDER_DETAIL_NOT_FOR_DISPLAY' }, 503)
   if (url.endsWith('/decision') && method === 'post') {
+    if (reviewRejected) return response(config, { code: 'REFUND_PRINCIPAL_UNAVAILABLE' }, 409)
     record = { ...record, status: data.action === 'approve' ? 'frozen' : 'rejected', approvedCents: data.approvedCents || record.requestedCents }
     return response(config, { ...record })
   }
@@ -34,7 +46,7 @@ axios.defaults.adapter = async config => {
   if (url.endsWith('/reconcile') && method === 'post') { record = { ...record, status: data.outcome }; return response(config, { ...record }) }
   if (url.endsWith('/proof') && method === 'post') { record = { ...record, hasProof: true }; return response(config, { hasProof: true }, 201) }
   if (url.endsWith('/proof') && method === 'get') { if (proofWait) await proofWait; return response(config, image) }
-  if (/^\/api\/ticket-attachments\/\d+\/admin$/.test(url) && method === 'get') return response(config, image)
+  if (/^\/api\/ticket-attachments\/\d+(?:\/admin)?$/.test(url) && method === 'get') return response(config, image)
   unexpected.push(`${method} ${url}`); throw new Error('Unexpected fixture HTTP')
 }
 URL.createObjectURL = blob => { created.push(blob); return 'blob:http://localhost/refund-proof-fixture' }
@@ -45,7 +57,7 @@ const writes = () => calls.filter(call => call.method === 'post')
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
 async function open(row = original, isAdmin = true) {
   record = { ...row }; user.setStoredCurrentUser(isAdmin ? admin : owner)
-  const wrapper = mount(Actions, { attachTo: document.body, props: { refund: { ...row, refundId: row.id }, isAdmin, onChanged() { changed++ } }, global: { plugins: [Antd], config: { errorHandler: error => runtime.push(error) } } })
+  const wrapper = mount(Actions, { attachTo: document.body, props: { refund: { ...row, refundId: row.id }, isAdmin, onChanged() { changed++ } }, global: { plugins: [registerConsoleUI], config: { errorHandler: error => runtime.push(error) } } })
   wrappers.push(wrapper); await settle(); return wrapper
 }
 function findButton(root, label) { return [...root.querySelectorAll('button')].find(node => node.textContent.replace(/\s/g, '') === label.replace(/\s/g, '')) }
@@ -61,9 +73,24 @@ afterEach(async () => {
   await settle(); Antd.message.destroy(); Antd.Modal.destroyAll(); user.clearStoredCurrentUser(); document.body.replaceChildren()
   assert.deepEqual(unexpected, []); assert.deepEqual(runtime, [])
   calls.length = created.length = revoked.length = unexpected.length = runtime.length = 0
-  rejectMutation = false; proofWait = null; changed = 0
+  rejectMutation = reviewRejected = false; proofWait = null; changed = 0
 })
 after(() => { axios.defaults.adapter = priorAdapter; URL.createObjectURL = priorCreate; URL.revokeObjectURL = priorRevoke })
+
+for (const isAdmin of [false, true]) test('人工退款只改理由时保留已核对订单；不把未选变成清空 '+isAdmin, async () => {
+  const wrapper = await open({ ...manual, orderLines: [{ orderId:31, orderNo:'ORDER-31', cents:0, paidCents:750, status:'pending_review' }] },isAdmin)
+  findButton(wrapper.element,'修改退款申请').click(); await settle()
+  const modal = [...document.querySelectorAll('.ant-modal')].find(node => node.textContent.includes('申请理由'))
+  assert.ok(modal)
+  assert.equal(modal.querySelector('input[id$="edit-amount"]').disabled, !isAdmin)
+  if (!isAdmin) assert.match(modal.textContent,/客服已核对并关联订单/)
+  const reason = modal.querySelector('textarea')
+  reason.value = 'reason edit'; reason.dispatchEvent(new Event('input', {bubbles:true})); await settle()
+  await state(wrapper).saveRevision(); await settle()
+  const write = calls.find(call => call.method === 'patch')
+  assert.ok(write); assert.equal(write.data.reason,'reason edit')
+  assert.equal(Object.hasOwn(write.data,'manualOrderIds'),false)
+})
 
 test('真实待审核状态显示审核入口；超额拦截后按分审核，操作只提交一次', async () => {
   const wrapper = await open()
@@ -75,6 +102,65 @@ test('真实待审核状态显示审核入口；超额拦截后按分审核，�
   assert.deepEqual(writes().map(({ url, data, retryPolicy }) => ({ url, data, retryPolicy })), [{ url: '/api/ticket-refunds/1/decision', data: { action: 'approve', approvedCents: 1249 }, retryPolicy: 'single' }])
   assert.match(wrapper.text(), /资金已冻结/); assert.equal(changed, 1)
 });
+
+test('审核明确拒绝时显示安全原因，留空审核时按申请金额提交', async () => {
+  reviewRejected = true
+  const wrapper = await open()
+  await confirm(wrapper, '审核通过')
+  assert.match(wrapper.text(), /可退本金不足/)
+  assert.equal(findButton(wrapper.element, '审核通过').disabled, false)
+  reviewRejected = false
+  await confirm(wrapper, '审核通过')
+  assert.deepEqual(writes().map(call => call.data), [{ action: 'approve' }, { action: 'approve' }])
+  assert.match(wrapper.text(), /资金已冻结/)
+})
+
+test('原路逐笔分配的审核金额不符时，在确认前提示修改申请并保留已有分配', async () => {
+  const wrapper = await open({ ...original, orderId: undefined, requestedCents: 1000,
+    orderLines: [
+      { orderId: 31, orderNo: 'ORDER-31', cents: 750, status: 'pending_review' },
+      { orderId: 32, orderNo: 'ORDER-32', cents: 250, status: 'pending_review' },
+    ],
+  })
+  assert.match(wrapper.text(), /已分配合计 ¥10\.00/)
+  const input = wrapper.find('input:not([type=file])')
+  await input.setValue('9')
+  findButton(wrapper.element, '审核通过').click()
+  await settle()
+  assert.match(wrapper.find('[role=alert]').text(), /请先点「修改退款申请」调整申请金额和逐笔分配/)
+  assert.equal(document.querySelector('[data-refund-action-confirmation]'), null)
+  assert.equal(writes().length, 0)
+  assert.equal(calls.filter(call => call.method === 'patch').length, 0)
+  findButton(wrapper.element, '修改退款申请').click()
+  await settle()
+  const first = document.querySelector('input[aria-label="订单 ORDER-31 的退款金额（元）"]')
+  const second = document.querySelector('input[aria-label="订单 ORDER-32 的退款金额（元）"]')
+  assert.equal(first.value, '7.50')
+  assert.equal(second.value, '2.50')
+  findButton(document.body, '关闭').click()
+  await settle()
+  await input.setValue('10')
+  await confirm(wrapper, '审核通过')
+  assert.deepEqual(writes().map(call => call.data), [{ action: 'approve', approvedCents: 1000 }])
+})
+
+test('申请人可从退款详情保存足额原路分摊，旧订单优先', async () => {
+  const wrapper = await open({ ...original, orderId: undefined, requestedCents: 1000, reason: '修改前' }, false)
+  findButton(wrapper.element, '修改退款申请').click(); await settle()
+  const orderChecks = [...document.querySelectorAll('.refund-order-lines input[type=checkbox]')]
+  assert.equal(orderChecks.length, 2)
+  orderChecks[1].click(); await settle()
+  orderChecks[0].click(); await settle()
+  const reason = document.querySelector('textarea')
+  reason.value = '修改后'
+  reason.dispatchEvent(new Event('input', { bubbles: true }))
+  findButton(document.body, '保存修改').click(); await settle()
+  assert.deepEqual(calls.filter(call => call.method === 'patch').map(call => call.data), [{
+    manage: false, kind: 'original', requestedCents: 1000, reason: '修改后', unpaidConfirmed: false,
+    allocations: [{ orderId: 31, cents: 750 }, { orderId: 32, cents: 250 }],
+  }])
+  assert.match(wrapper.text(), /退款申请已修改/)
+})
 
 test('用户只能查看退款信息；人工审核未上传凭证时不能通过但可以驳回', async () => {
   let wrapper = await open(original, false)
@@ -129,14 +215,29 @@ test('仅可撤销尚未提交的原路退款，成功后不能再次撤销', as
   assert.match(wrapper.text(), /冻结已解除/); assert.equal(findButton(wrapper.element, '撤销未提交退款并解冻'), undefined)
 });
 
-test('人工核销必须填写真实凭据编号，并使用reconcile接口', async () => {
+test('人工核销凭据编号可留空，并使用reconcile接口', async () => {
   const wrapper = await open({ ...manual, status: 'frozen', approvedCents: 1500, hasProof: true })
   await confirm(wrapper, '确认人工退款成功')
-  assert.equal(writes().length, 0)
+  assert.deepEqual(writes().map(({ url, data }) => ({ url, data })), [{ url: '/api/ticket-refunds/2/reconcile', data: { outcome: 'succeeded', reference: '' } }])
+  assert.match(wrapper.text(), /退款成功/)
+});
+
+test('人工核销可选凭据有填写时仍需有效，真实编号原样提交', async () => {
+  const wrapper = await open({ ...manual, status: 'frozen', approvedCents: 1500, hasProof: true })
+  await wrapper.find('input:not([type=file])').setValue('错误<编号>')
+  await confirm(wrapper, '确认人工退款成功'); assert.equal(writes().length, 0)
   await wrapper.find('input').setValue('FIXTURE-RECON-1')
   await confirm(wrapper, '确认人工退款成功')
   assert.deepEqual(writes().map(({ url, data }) => ({ url, data })), [{ url: '/api/ticket-refunds/2/reconcile', data: { outcome: 'succeeded', reference: 'FIXTURE-RECON-1' } }])
   assert.match(wrapper.text(), /退款成功/)
+});
+
+test('人工退款已带本次签署收款证据时可直接审核，不再要求另传旧核验图', async () => {
+  const wrapper = await open({ ...manual, hasSignedPayoutEvidence: true })
+  assert.equal(findButton(wrapper.element, '审核通过').disabled, false)
+  await confirm(wrapper, '审核通过')
+  assert.equal(writes().length, 1)
+  assert.equal(writes()[0].url, '/api/ticket-refunds/2/decision')
 });
 
 test('详情切换或账户退出时，旧凭证响应不显示且旧动作不发送请求', async () => {
@@ -159,4 +260,20 @@ test('管理员从退款详情查看收款码、签名和已签协议快照', as
   state(wrapper).closeProof()
   findButton(wrapper.element, '查看签名').click(); await settle()
   assert.ok(calls.some(call => call.url === '/api/ticket-attachments/42/admin'))
+});
+
+test('已提交承诺书展示真实签名图像、服务端签署及申请时间，普通申请人也可查看', async () => {
+  const wrapper = await open({ ...manual, signatureAttachmentId: 42, agreementText: '承诺条款\n申请人（以电子签名方式确认）：见签名图像\n签署日期：提交本次退款申请之日', agreementSignedAt: '2026-11-20T12:34:56Z', createdAt: '2026-11-20T12:35:06Z' }, false)
+  const details = wrapper.element.querySelector('details')
+  assert.ok(details)
+  details.open = true
+  details.dispatchEvent(new Event('toggle'))
+  await settle()
+  const evidence = wrapper.element.querySelector('[data-refund-signed-evidence]')
+  assert.match(evidence.textContent, /申请人（以电子签名方式确认）：/)
+  assert.match(evidence.textContent, /签署日期：2026\/11\/20.*20:34:56/)
+  assert.match(evidence.textContent, /申请时间：2026\/11\/20.*20:35:06/)
+  assert.doesNotMatch(wrapper.text(), /见签名图像|提交本次退款申请之日/)
+  assert.ok(evidence.querySelector('img'))
+  assert.ok(calls.some(call => call.url === '/api/ticket-attachments/42'))
 });

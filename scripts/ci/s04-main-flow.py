@@ -178,7 +178,7 @@ def actual_exit(raw, state):
 def actual_gin_client_ips(raw, expected):
     # Parse only the service PID1's literal stdout. Probe JSON or an observer's
     # echoed header value is not a Gin access-log observation.
-    pattern = re.compile(r'^\[GIN\] [0-9]{4}/[0-9]{2}/[0-9]{2} - [0-9]{2}:[0-9]{2}:[0-9]{2} \|\s*([0-9]{3})\s*\|[^|]+\|\s*([^|\s]+)\s*\|\s*GET\s+"(/healthz|/readyz)"\s*$')
+    pattern = re.compile(r'^\[(?:GIN|HTTP)\] [0-9]{4}/[0-9]{2}/[0-9]{2} - [0-9]{2}:[0-9]{2}:[0-9]{2} \|\s*([0-9]{3})\s*\|[^|]+\|\s*([^|\s]+)\s*\|\s*GET\s+"(/healthz|/readyz)"\s*$')
     observed = []
     for line in raw.decode('utf-8').splitlines():
         match = pattern.fullmatch(line)

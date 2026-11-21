@@ -11,6 +11,7 @@ const root = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(root, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter)
 Module._initPaths()
 require(process.env.UI_TEST_HELPER || path.join(root, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/transfer-history-read.cjs')(root, ['ip_locations', 'phone_locations'])
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises } = require('@vue/test-utils')
 const { h, nextTick } = require('vue')

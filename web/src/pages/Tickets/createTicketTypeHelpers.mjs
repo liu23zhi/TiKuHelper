@@ -148,7 +148,10 @@ export const TICKET_ACCOUNT_ISSUE_OPTIONS = Object.freeze([
   { value: "login", label: "登录异常", titlePrefix: "【登录异常】" },
   { value: "binding", label: "绑定问题", titlePrefix: "【绑定问题】" },
   { value: "banned", label: "封禁申诉", titlePrefix: "【封禁申诉】" },
+  { value: "other", label: "其它问题", titlePrefix: "【其它问题】" },
 ]);
+
+export const DEFAULT_TICKET_ACCOUNT_ISSUE = TICKET_ACCOUNT_ISSUE_OPTIONS[0].value;
 
 export function ticketAccountIssueLabel(issueType) {
   const matched = TICKET_ACCOUNT_ISSUE_OPTIONS.find(

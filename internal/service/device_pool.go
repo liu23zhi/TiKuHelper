@@ -771,19 +771,13 @@ func inspectDeviceAccess(db *gorm.DB, userID int32, deviceID string, clientIP st
 	}
 }
 
-// CanUseDeviceWithSwitch 是 CanUseDevice 的**开关感知**版本（接线层用）。
+// CanUseDeviceWithSwitch 保留接线层的历史入口，现与 CanUseDevice 使用同一判定。
 //
-// system_settings.device_limit_enabled 默认 false（"启用账户设备池上限（默认关闭）"，
-// 见 system_setting.go 的同名键）。关闭时整档限制不生效、零查询直接放行 ——
-// 与黑名单总开关「关闭时零查询」的同款纪律。
+// system_settings.device_limit_enabled 是兼容旧客户端的历史字段，服务端始终按启用处理。
+// 等级 device_limit=0 表示该等级不限设备数；其它正数按设备池上限判定。
 //
-// 为什么不在 CanUseDevice 内部直接读开关：核心判定要被单测直接驱动，
-// 而开关是运营配置（默认关）。把两件事揉在一起，会让「等级上限算错了」
-// 与「开关没打开」这两种完全不同的故障在测试里长得一模一样。
+// 不再读取旧开关，避免旧客户端留下的 false 绕过当前等级上限。
 func CanUseDeviceWithSwitch(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
-	if !GetDeviceLimitEnabledWithDB(db) {
-		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonSwitchOff, Used: DevicePoolUsedUnknown}
-	}
 	return CanUseDevice(db, userID, deviceID)
 }
 

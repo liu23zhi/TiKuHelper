@@ -26,6 +26,13 @@ const { parse } = require("@vue/compiler-sfc");
 const { compile } = require("@vue/compiler-dom");
 const { Form } = require("ant-design-vue");
 
+test("detail normalization preserves the server refund association used by inline actions", () => {
+  const refund = { refundId: 81, status: "pending_review", kind: "original", requestedCents: 500 };
+  const result = normalizeTicketDetailResponse({ data: { data: { ticket: { id: 71, category: "refund", status: "open" }, refund, messages: [] } } });
+  assert.deepEqual(result.ticket.refund, refund);
+  assert.equal(result.ticket.id, 71);
+});
+
 async function loadTicketApi(request) {
   const source = (
     await readFile(new URL("../api/TicketApi.js", import.meta.url), "utf8")
@@ -113,21 +120,23 @@ async function loadTicketPage(overrides = {}) {
 }
 
 async function mountNotificationForm(page) {
-  const source = await readFile(
+  const pageSource = await readFile(
     new URL("../pages/Tickets/index.vue", import.meta.url),
     "utf8"
   );
+  assert.match(pageSource, /<TicketNotificationSettingsForm[\s\S]*?:config="notificationConfig"[\s\S]*?:save="saveNotificationConfig"/, "ticket page connects its real settings handlers to the shared form");
+  const source = await readFile(new URL("../components/TicketNotificationSettingsForm.vue", import.meta.url), "utf8");
   const findForm = (node) => {
     if (
       node.tag === "a-form" &&
-      node.props.some((prop) => prop.exp?.content === "notificationEntry.bind(saveNotificationConfig)")
+      node.props.some((prop) => prop.exp?.content === "entry.bind(save)")
     )
       return node;
     return node.children?.map(findForm).find(Boolean);
   };
   const form = findForm(parse(source).descriptor.template.ast);
   assert.ok(form, "notification settings form exists");
-  assert.ok(form.props.some(prop => prop.arg?.content === "model" && prop.exp?.content === "notificationConfig"), "real AntForm has its actual notificationConfig model");
+  assert.ok(form.props.some(prop => prop.arg?.content === "model" && prop.exp?.content === "config"), "shared AntForm binds its actual config model");
   const render = new Function(
     "Vue",
     compile(form.loc.source, { mode: "function", prefixIdentifiers: true }).code
@@ -159,7 +168,17 @@ async function mountNotificationForm(page) {
     },
     patchProp: (target, key, previous, next) => (target.props[key] = next),
   });
-  const app = renderer.createApp({ setup: () => page, render });
+  const app = renderer.createApp({ setup: () => ({
+    config: page.notificationConfig,
+    entry: page.notificationEntry,
+    loaded: page.configLoaded,
+    disabled: Vue.computed(() => !page.canManage()),
+    saving: page.configSaving,
+    testing: page.configTesting,
+    save: page.saveNotificationConfig,
+    test: page.testNotification,
+    setField: page.setConfig, clearWebhook: page.clearSavedWebhook, keepWebhook: page.keepSavedWebhook,
+  }), render });
   // Keep the actual form's validation and submit handling; other controls need no DOM.
   app.component("a-form", Form);
   for (const tag of ["a-form-item", "a-switch", "a-input", "a-button", "a-space"])

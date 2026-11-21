@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -51,6 +52,40 @@ func TestTicketDetailCarriesRefundSummary(t *testing.T) {
 	}
 	if detail.Refund.Status == "" {
 		t.Fatal("Refund.Status 不能为空 —— 前端据此决定显示哪些操作按钮")
+	}
+}
+
+func TestTicketRefundListFiltersByDisplayedRefundStatus(t *testing.T) {
+	db := newTicketRefundMergeTestDB(t)
+	owner := seedRefundActor(t, db, 51, "refund-filter-owner")
+	refund, err := CreateTicketRefundWithDB(db, owner, withTestRefundIdentity(t, db, owner, CreateTicketRefundInput{Kind: entity.TicketRefundKindManual, RequestedCents: 500, Reason: "筛选回归"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{entity.TicketRefundStatusPendingReview, entity.TicketRefundStatusSucceeded, entity.TicketRefundStatusRejected} {
+		if err := db.Model(&entity.TicketRefund{}).Where("id = ?", refund.ID).Update("status", status).Error; err != nil {
+			t.Fatal(err)
+		}
+		result, err := ListTicketsWithDB(db, &owner, TicketListQuery{Status: status}, 1, 20)
+		if err != nil || result.Total != 1 || result.Items[0].Refund == nil || result.Items[0].Refund.Status != status {
+			t.Fatalf("status=%s result=%+v err=%v", status, result, err)
+		}
+		stale, err := ListTicketsWithDB(db, &owner, TicketListQuery{Status: entity.TicketStatusOpen}, 1, 20)
+		if err != nil || stale.Total != 0 {
+			t.Fatalf("refund must not match stale shell status: %+v %v", stale, err)
+		}
+	}
+	var systemMessage entity.TicketMessage
+	if err := db.Where("ticket_id = ?", *refund.TicketID).First(&systemMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacy := "审核、打款与对账请在「退款」详情中操作，不要在本工单里回复金额。"
+	if err := db.Model(&entity.TicketMessage{}).Where("id = ?", systemMessage.ID).Update("body", legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	detail, err := GetTicketWithDB(db, &owner, *refund.TicketID)
+	if err != nil || strings.Contains(detail.Messages[0].Body, "请在「退款」详情") {
+		t.Fatalf("stale redirect still shown: %+v %v", detail.Messages, err)
 	}
 }
 

@@ -23,6 +23,7 @@ axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url);calls.push({method,url})
  const aux=require('../helpers/settings-panel-reads.cjs').settingsPanelRead(config);if(aux)return Promise.resolve(aux)
  const response=data=>({status:200,data,headers:{},config,request:{memoryOnly:true}})
+ if(method==='get'&&url==='/api/user/review-rebate/availability')return Promise.resolve(response({enabled:false}))
  if(method==='get'&&url==='/api/user/session'){assert.ok(Number.isSafeInteger(Number(user.getStoredCurrentUser()?.id))&&Number(user.getStoredCurrentUser()?.id)>0,'protected synthetic actor only; anonymous polling stays forbidden');assert.ok(config.signal&&config.data==null&&config.params===undefined,'bodyless cancellable session GET');return Promise.resolve(response({message:'ok'}))}
  if(method==='get'&&url==='/api/public/register-status')return Promise.resolve(response({siteName:'Synthetic validation app'}))
  if(method==='get'&&url==='/api/system-settings')return Promise.resolve(response({siteName:'Synthetic settings',maxLogSizeBytes:2*1024*1024*1024,minRechargeAmount:1,captchaProvider:'local'}))

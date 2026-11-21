@@ -4,6 +4,8 @@
     <div v-if="canManage()" :key="frameKey" ref="pageRoot" :onInputCapture="pageEntry.guardNative" :onChangeCapture="pageEntry.guardNative" :onClickCapture="pageEntry.guardNative" :onKeydownCapture="pageEntry.guardNative">
     <ConsolePageHeading title="OCR 缓存管理" description="查看和维护已保存的图片识别结果。">
       <template #actions>
+
+        <OCRBatchRecognition v-if="canAct()" :onCompleted="pageEntry.bind(load)" />
         <a-button type="primary" :disabled="deleting || adding || !canAct()" :onClick="pageEntry.bind(openAddDialog)">手动添加</a-button>
         <a-button :loading="loading" :disabled="deleting || adding || !canAct()" :onClick="pageEntry.bind(load)">刷新列表</a-button>
       </template>
@@ -113,6 +115,8 @@
       </div>
     </a-modal>
     </div>
+    <AdminDataTransfer v-if="canAct()" resource="ocr_cache" title="OCR 缓存" importable import-description="支持 CSV / JSON 缓存备份，每次最多 5000 条；相同图片 URL 更新识别文本，不调用识别服务。图片哈希和识别文本必填；无原始 URL 的历史记录保留 URL 哈希。" :onImported="pageEntry.bind(load)" />
+
   </div>
 </template>
 
@@ -123,6 +127,8 @@ import { Descriptions, message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import OverflowTableText from '@/components/OverflowTableText.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
+import OCRBatchRecognition from '@/components/OCRBatchRecognition.vue'
 import { buildAIToolTestPayload } from '@/utils/aiSearchConfigHelpers.mjs'
 import { getAIOCRCacheEntries, getAIOCRCacheImage, deleteAIOCRCacheBatch, testAIToolCall } from '@/api/TikuComponentApi'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -143,7 +149,7 @@ const nonnegative = value => {
 }
 export default defineComponent({
   name: 'OCRCache',
-  components: { ADescriptions: Descriptions, ADescriptionsItem: Descriptions.Item, RequestFailureAlert, OverflowTableText },
+  components: { ADescriptions: Descriptions, ADescriptionsItem: Descriptions.Item, RequestFailureAlert, OverflowTableText, AdminDataTransfer, OCRBatchRecognition },
   methods: { sumTableColumnWidths },
   setup() {
     const route = useRoute(), mountedPath = route.path

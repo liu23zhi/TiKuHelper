@@ -24,6 +24,7 @@ func TestScriptDomainFormatParsesOnlyStarSyntax(t *testing.T) {
 		wantHost string
 	}{
 		{"*.a.com", ScriptDomainFormatWildcard, "a.com"},
+		{"*a.com", ScriptDomainFormatWildcard, "a.com"},
 		{"*.A.COM", ScriptDomainFormatWildcard, "a.com"}, // 归一化为小写
 		{"a.com/*", ScriptDomainFormatPath, "a.com"},
 		{"  *.a.zelly.cn  ", ScriptDomainFormatWildcard, "a.zelly.cn"},
@@ -78,7 +79,6 @@ func TestScriptDomainFormatMalformedStarIsInvalidNotLegacy(t *testing.T) {
 		"a.com/*/",  // 尾部斜杠
 		"a.*.a.com", // 中间通配
 		"**.a.com",  // 双星
-		"*a.com",    // 星不独立
 		"*.com",     // host 单标签
 		"*.a",       // 顶级域单字符
 		"*.a.1",     // 顶级域是数字

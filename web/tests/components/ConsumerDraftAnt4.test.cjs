@@ -4,6 +4,12 @@ const path = require('node:path')
 const Module = require('node:module')
 const root = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname,'../..')
 require(process.env.UI_TEST_HELPER || path.resolve(__dirname,'../helpers/vue-dom.cjs'))
+const { reviewRebateAvailabilityResponse } = require('../helpers/review-rebate-availability.cjs')
+require('axios').defaults.adapter = async config => {
+  const response = reviewRebateAvailabilityResponse(config)
+  if (response) return response
+  throw new Error(`Unexpected fixture operation ${config.method} ${config.url}`)
+}
 const { mount, flushPromises } = require('@vue/test-utils')
 const { h, nextTick, reactive } = require('vue')
 const { createRouter, createMemoryHistory, RouterView } = require('vue-router')

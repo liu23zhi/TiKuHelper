@@ -88,8 +88,8 @@ func TestDeviceIdleRevokeMarksStaleBindings(t *testing.T) {
 	if revokedAt == nil {
 		t.Fatal("10 天未活跃的绑定必须被撤销")
 	}
-	if reason != "idle_10d" {
-		t.Fatalf("撤销原因必须是 idle_10d（稳定字符串，前端/审计依赖它），实际 %q", reason)
+	if reason != "idle_timeout" {
+		t.Fatalf("可配置闲置撤销原因必须是 idle_timeout，实际 %q", reason)
 	}
 	if !revokedAt.Equal(idleTestNow) {
 		t.Fatalf("revoked_at 必须写成传入的 now（可测性依赖它），期望 %v 实际 %v", idleTestNow, revokedAt)
@@ -121,10 +121,10 @@ func TestDeviceIdleRevokeKeepsRecentlyActiveBindings(t *testing.T) {
 	for i, age := range []time.Duration{
 		0,
 		time.Minute,
-		4 * time.Hour,       // ← 变异「240 分钟」会把它错杀
-		23 * time.Hour,      // ← 变异「按天取整」也可能错杀
-		24 * time.Hour,      // 1 天
-		239 * time.Hour,     // 差 1 小时到 10 天，仍不该解绑
+		4 * time.Hour,   // ← 变异「240 分钟」会把它错杀
+		23 * time.Hour,  // ← 变异「按天取整」也可能错杀
+		24 * time.Hour,  // 1 天
+		239 * time.Hour, // 差 1 小时到 10 天，仍不该解绑
 	} {
 		seedBindingWithLastSeen(t, db, 3002, "recent-"+formatInt64(int64(i)), idleTestNow.Add(-age), false, "")
 	}
@@ -265,5 +265,137 @@ func TestDeviceIdleRevokeZeroNowFallsBackToRealTime(t *testing.T) {
 	}
 	if processed != 0 {
 		t.Fatalf("零值 now 必须回退到真实时间，刚活跃的行不该被撤销，实际 %d", processed)
+	}
+}
+
+func TestDeviceIdleRevokeHonorsAdminAndUserSettings(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	seedDevicePoolUser(t, db, 3010, 0)
+	seedDevicePoolUser(t, db, 3011, 0)
+	if err := db.Create(&entity.SystemSetting{Key: DeviceIdleRevokeAfterDaysSettingKey, Value: "3"}).Error; err != nil {
+		t.Fatalf("save max idle days: %v", err)
+	}
+	if err := db.Create(&entity.SystemSetting{Key: UserDeviceIdleRevokeAfterDaysKey(3010), Value: "1"}).Error; err != nil {
+		t.Fatalf("save user idle days: %v", err)
+	}
+	seedBindingWithLastSeen(t, db, 3010, "custom-old", idleTestNow.Add(-2*24*time.Hour), false, "")
+	seedBindingWithLastSeen(t, db, 3011, "global-fresh", idleTestNow.Add(-2*24*time.Hour), false, "")
+
+	processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow)
+	if err != nil || processed != 1 {
+		t.Fatalf("用户自定义 1 天应先被回收，实际 processed=%d err=%v", processed, err)
+	}
+	if revoked, _ := readBindingRevokeState(t, db, 3010, "custom-old"); revoked == nil {
+		t.Fatal("用户自定义闲置时长未生效")
+	}
+	if revoked, _ := readBindingRevokeState(t, db, 3011, "global-fresh"); revoked != nil {
+		t.Fatal("未超过管理员 3 天上限的设备不应被回收")
+	}
+}
+
+func TestDeviceIdleRevokeDisabledWhenAdminSetsZero(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	seedDevicePoolUser(t, db, 3012, 0)
+	if err := db.Create(&entity.SystemSetting{Key: DeviceIdleRevokeAfterDaysSettingKey, Value: "0"}).Error; err != nil {
+		t.Fatalf("save disabled idle setting: %v", err)
+	}
+	seedBindingWithLastSeen(t, db, 3012, "never-auto-remove", idleTestNow.Add(-500*time.Hour), false, "")
+	processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow)
+	if err != nil || processed != 0 {
+		t.Fatalf("管理员设置 0 应关闭自动回收，实际 processed=%d err=%v", processed, err)
+	}
+}
+
+func TestDeviceIdleRevokeUserDisableFollowsAdminPermission(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	seedDevicePoolUser(t, db, 3016, 0)
+	settings := []entity.SystemSetting{
+		{Key: DeviceIdleRevokeAfterDaysSettingKey, Value: "3"},
+		{Key: DeviceIdleRevokeAllowUserDisableSettingKey, Value: "true"},
+		{Key: UserDeviceIdleRevokeAfterDaysKey(3016), Value: "0"},
+	}
+	if err := db.Create(&settings).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedBindingWithLastSeen(t, db, 3016, "user-disabled", idleTestNow.Add(-20*24*time.Hour), false, "")
+	if processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow); err != nil || processed != 0 {
+		t.Fatalf("管理员允许时用户的 0 必须关闭自动移除：processed=%d err=%v", processed, err)
+	}
+	if err := db.Model(&entity.SystemSetting{}).Where("key = ?", DeviceIdleRevokeAllowUserDisableSettingKey).Update("value", "false").Error; err != nil {
+		t.Fatal(err)
+	}
+	if days, customized := GetUserDeviceIdleRevokeAfterDaysWithDB(db, 3016); days != 3 || customized {
+		t.Fatalf("管理员撤销权限后必须立即采用全局期限：days=%d customized=%v", days, customized)
+	}
+	if processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow); err != nil || processed != 1 {
+		t.Fatalf("已失效的用户 0 不得绕过全局期限：processed=%d err=%v", processed, err)
+	}
+}
+
+func TestDeviceIdleRevokeLoweredAdminCapOverridesSavedUserDays(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	seedDevicePoolUser(t, db, 3017, 0)
+	settings := []entity.SystemSetting{
+		{Key: DeviceIdleRevokeAfterDaysSettingKey, Value: "10"},
+		{Key: UserDeviceIdleRevokeAfterDaysKey(3017), Value: "5"},
+	}
+	if err := db.Create(&settings).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedBindingWithLastSeen(t, db, 3017, "cap-lowered", idleTestNow.Add(-4*24*time.Hour), false, "")
+	if days, customized := GetUserDeviceIdleRevokeAfterDaysWithDB(db, 3017); days != 5 || !customized {
+		t.Fatalf("原用户期限应有效：days=%d customized=%v", days, customized)
+	}
+	if err := db.Model(&entity.SystemSetting{}).Where("key = ?", DeviceIdleRevokeAfterDaysSettingKey).Update("value", "3").Error; err != nil {
+		t.Fatal(err)
+	}
+	if days, customized := GetUserDeviceIdleRevokeAfterDaysWithDB(db, 3017); days != 3 || customized {
+		t.Fatalf("管理员收紧上限后不能继续采用超限的旧配置：days=%d customized=%v", days, customized)
+	}
+	if processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow); err != nil || processed != 1 {
+		t.Fatalf("收紧后的全局期限应立即生效：processed=%d err=%v", processed, err)
+	}
+}
+
+func TestDeviceIdleRevokeScansPastSkippedFirstBatch(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	seedDevicePoolUser(t, db, 3013, 0)
+	seedDevicePoolUser(t, db, 3014, 0)
+	rows := make([]entity.AccountDeviceBinding, 0, 501)
+	for i := 0; i < 500; i++ {
+		rows = append(rows, entity.AccountDeviceBinding{UserID: 3013, DeviceID: "skip-" + formatInt64(int64(i)), LastSeenAt: idleTestNow.Add(-2 * 24 * time.Hour)})
+	}
+	rows = append(rows, entity.AccountDeviceBinding{UserID: 3014, DeviceID: "later-stale", LastSeenAt: idleTestNow.Add(-20 * 24 * time.Hour)})
+	if err := db.CreateInBatches(&rows, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow)
+	if err != nil || processed != 1 {
+		t.Fatalf("跳过前 500 条后仍应处理后续过期设备：processed=%d err=%v", processed, err)
+	}
+}
+
+func TestDeviceIdleRevokeKeepsBindingThatBecomesActiveBeforeUpdate(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	seedDevicePoolUser(t, db, 3015, 0)
+	seedBindingWithLastSeen(t, db, 3015, "active-during-worker", idleTestNow.Add(-20*24*time.Hour), false, "")
+	called := false
+	if err := db.Callback().Update().Before("gorm:update").Register("test:refresh-device-before-idle-revoke", func(tx *gorm.DB) {
+		if called {
+			return
+		}
+		called = true
+		if err := db.Exec("UPDATE account_device_bindings SET last_seen_at = ? WHERE device_id = ?", idleTestNow, "active-during-worker").Error; err != nil {
+			t.Errorf("refresh device: %v", err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	processed, err := RunDeviceIdleRevokeOnce(db, idleTestNow)
+	if err != nil || processed != 0 {
+		t.Fatalf("扫描后恢复活跃的设备不能被误撤销：processed=%d err=%v", processed, err)
+	}
+	if revoked, _ := readBindingRevokeState(t, db, 3015, "active-during-worker"); revoked != nil {
+		t.Fatal("设备已经重新活跃，不应撤销")
 	}
 }

@@ -1,6 +1,6 @@
 <template>
   <div v-if="accountMounted" :key="accountKey" ref="accountSurface" class="console-page search-account-page" :onInputCapture="accountEntry.guardNative" :onChangeCapture="accountEntry.guardNative" :onClickCapture="accountEntry.guardNative">
-    <ConsolePageHeading title="默认账号配置" description="维护题库渠道、默认参数和单价。">
+    <ConsolePageHeading title="默认账号配置" description="开启渠道后用户可调用并按单价计费；停用渠道后，即使用户提供自己的密钥也无法调用。默认凭据可单独设置。">
       <template #actions><a-space wrap>
         <a-button :loading="tabLoading" :disabled="!canManageConfigs() || accountDraining || savingAll" :onClick="accountEntry.bind(handleSearchAccountConfigs)">刷新</a-button>
         <a-button type="primary" :loading="savingAll" :disabled="!canManageConfigs() || accountDraining || !configsLoaded || tabLoading || savingAll" :onClick="accountEntry.bind(onSaveAll)">保存全部配置</a-button>
@@ -58,7 +58,11 @@
             />
           </template>
         </div>
-        <a-switch v-else-if="column.key === 'enabled'" :checked="!!record.enabled" :disabled="!canManageConfigs() || accountDraining || !configsLoaded || savingAll" :aria-label="(record.providerLabel || record.provider) + ' 启用'" :onChange="accountEntry.bind(onEnabledChange, record.provider)" />
+        <a-switch v-else-if="column.key === 'callEnabled'" :checked="record.callEnabled !== false" :disabled="!canManageConfigs() || accountDraining || !configsLoaded || savingAll" :aria-label="(record.providerLabel || record.provider) + ' 允许调用'" :onChange="accountEntry.bind(updateConfig, record, 'callEnabled')" />
+        <template v-else-if="column.key === 'enabled'">
+          <a-switch v-if="record.tokenKey" :checked="!!record.enabled" :disabled="!canManageConfigs() || accountDraining || !configsLoaded || savingAll" :aria-label="(record.providerLabel || record.provider) + ' 启用'" :onChange="accountEntry.bind(onEnabledChange, record.provider)" />
+          <span v-else>{{ record.provider === 'ai' ? '在 AI 配置中维护' : '无需默认参数' }}</span>
+        </template>
         <a-input v-else-if="column.key === 'remark'" :value="record.remark" v-on="{ 'update:value': accountEntry.bind(updateConfig, record, 'remark') }" :disabled="!canManageConfigs() || accountDraining || !configsLoaded || savingAll" :aria-label="(record.providerLabel || record.provider) + ' 备注'" placeholder="备注" />
       </template>
     </a-table></ConsoleTableShell>
@@ -219,7 +223,7 @@ export default defineComponent({
       return prompt.promise
     }
     const normalizeConfigs = configs => configs.map(item => ({
-      ...item, enabled: !!item.enabled, flatPrice: Number(item?.flatPrice || 0),
+      ...item, enabled: !!item.enabled, callEnabled: item.callEnabled !== false, flatPrice: Number(item?.flatPrice || 0),
     }))
     const reportReadFailure = (carrier = null, ownsFailure = () => false) => {
       configsError.value = configsLoaded.value
@@ -391,7 +395,8 @@ export default defineComponent({
         { title: 'Provider', dataIndex: 'provider', key: 'provider', width: 140 },
         { title: '默认参数', dataIndex: 'defaultParameter', key: 'defaultParameter', width: 360 },
         { title: '单价', dataIndex: 'unitPrice', key: 'unitPrice', width: 280 },
-        { title: '是否启用', dataIndex: 'enabled', key: 'enabled', width: 110 },
+        { title: '启用题库渠道', dataIndex: 'callEnabled', key: 'callEnabled', width: 140 },
+        { title: '使用默认参数', dataIndex: 'enabled', key: 'enabled', width: 130 },
         { title: '备注', dataIndex: 'remark', key: 'remark', width: 220 },
       ],
     };

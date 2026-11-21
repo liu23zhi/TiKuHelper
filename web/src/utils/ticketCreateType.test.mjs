@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   TICKET_ACCOUNT_ISSUE_OPTIONS,
+  DEFAULT_TICKET_ACCOUNT_ISSUE,
   TICKET_CREATE_FORBIDDEN_TYPES,
   TICKET_CREATE_TYPE_ACCOUNT,
   TICKET_CREATE_TYPE_ACCOUNT_CLOSURE,
@@ -158,15 +159,16 @@ test("只有退款类型会切换到退款专属字段", () => {
 test("account 的问题类型是三项固定枚举，不是自由文本（B2-6）", () => {
   assert.deepEqual(
     TICKET_ACCOUNT_ISSUE_OPTIONS.map((item) => item.value),
-    ["login", "binding", "banned"],
+    ["login", "binding", "banned", "other"],
   );
   assert.deepEqual(
     TICKET_ACCOUNT_ISSUE_OPTIONS.map((item) => item.label),
-    ["登录异常", "绑定问题", "封禁申诉"],
+    ["登录异常", "绑定问题", "封禁申诉", "其它问题"],
   );
+  assert.equal(DEFAULT_TICKET_ACCOUNT_ISSUE, "login");
   assert.equal(ticketAccountIssueLabel("login"), "登录异常");
   assert.equal(ticketAccountIssueLabel(" BANNED "), "封禁申诉");
-  assert.equal(ticketAccountIssueLabel("other"), "");
+  assert.equal(ticketAccountIssueLabel("other"), "其它问题");
   assert.equal(ticketAccountIssueLabel(""), "");
 });
 
@@ -269,6 +271,14 @@ test("account 类型的标题带固定前缀、正文是用户说明、不带退
   assert.equal("refundReason" in payload, false);
   // 问题类型不进 payload（后端没有这个字段）。
   assert.equal("issueType" in payload, false);
+
+  const other = buildTicketCreatePayload({
+    ticketType: TICKET_CREATE_TYPE_ACCOUNT,
+    issueType: "other",
+    body: "其它账号问题说明",
+  });
+  assert.equal(other.validation.message, "");
+  assert.equal(other.payload.subject, "【其它问题】账号问题");
 });
 
 test("account_closure 类型的标题固定生成、用户只填原因（B2-2）", () => {
@@ -362,7 +372,8 @@ test("合法退款表单完全通过校验", () => {
 
 test("account 校验：问题类型必选、说明必填（B2-6）", () => {
   assert.equal(getAccountDraftValidation({ issueType: "", body: "说明" }).field, "issueType");
-  assert.equal(getAccountDraftValidation({ issueType: "other", body: "说明" }).field, "issueType");
+  assert.equal(getAccountDraftValidation({ issueType: "unknown", body: "说明" }).field, "issueType");
+  assert.equal(getAccountDraftValidation({ issueType: "other", body: "说明" }).message, "");
   assert.equal(getAccountDraftValidation({ issueType: "login", body: "   " }).field, "body");
   assert.equal(getAccountDraftValidation({ issueType: "login", body: "说明" }).message, "");
   assert.equal(
@@ -453,8 +464,9 @@ test("列表页接上两步向导、注销引导与自助注销入口", async ()
   // 注销引导必须被渲染（而不是只 import）。
   assert.match(page, /<ClosureGuide/, "注销类型必须先渲染引导组件");
   // 列表要能显示退款真实状态。
-  assert.match(page, /ticketRowRefundStatus/, "列表行必须显示退款真实状态");
-  assert.match(page, /isRefundTicketRow/, "列表必须能区分退款行");
+  assert.match(page, /effectiveStatusLabel\(record\)/, "列表必须渲染统一的有效状态");
+  assert.match(page, /return ticket\?\.refund \? refundStatusLabel\(ticket\.refund\.status\) : ticketStatusLabel\(ticket\?\.status\)/, "退款行须使用退款真实状态，普通工单须使用工单状态");
+  assert.doesNotMatch(page, /key:\s*["']refundStatus["']/, "退款行不能再有第二列退款状态");
 
   // 个人中心必须挂自助注销入口（B2-5）。
   //
@@ -681,6 +693,7 @@ test("新建表单与列表都接上了类型选择与退款展示", async () =>
   assert.match(page, /ticketCreateTypeNeedsRefundFields/, "必须按类型切换字段");
   assert.match(page, /buildTicketCreatePayload/, "提交必须走统一的 payload 构造");
   // 列表要能显示退款真实状态。
-  assert.match(page, /ticketRowRefundStatus/, "列表行必须显示退款真实状态");
-  assert.match(page, /isRefundTicketRow/, "列表必须能区分退款行");
+  assert.match(page, /effectiveStatusLabel\(record\)/, "列表必须渲染统一的有效状态");
+  assert.match(page, /return ticket\?\.refund \? refundStatusLabel\(ticket\.refund\.status\) : ticketStatusLabel\(ticket\?\.status\)/, "退款行须使用退款真实状态，普通工单须使用工单状态");
+  assert.doesNotMatch(page, /key:\s*["']refundStatus["']/, "退款行不能再有第二列退款状态");
 });

@@ -93,12 +93,12 @@ func TestDevicePoolLoginIgnoresDeviceLimit(t *testing.T) {
 	}
 }
 
-// TestDevicePoolLoginAllowedWhenSwitchOff 是同一契约在「开关关闭」下的对照。
+// TestDevicePoolLoginAllowedWithLegacyFalse 是同一契约在历史 false 配置下的对照。
 //
 // 保留它是为了覆盖两个独立变量：开关开/关 × 登录放行。
 // 只有开关关闭时放行，可能是「开关没生效」；只有开关打开时放行，
 // 才说明登录路径真的不看设备池。
-func TestDevicePoolLoginAllowedWhenSwitchOff(t *testing.T) {
+func TestDevicePoolLoginAllowedWithLegacyFalse(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	stubCtrlCaptcha(t, nil)
 	levelID := seedDevicePoolHookLevel(t, db, 1, 1)
@@ -110,7 +110,7 @@ func TestDevicePoolLoginAllowedWhenSwitchOff(t *testing.T) {
 	for _, ua := range []string{"Agent/a", "Agent/b", "Agent/c"} {
 		rec := loginWithUserAgent(t, user.Username, password, ua)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("开关关闭时登录不得被设备上限挡住，UA=%s got %d body=%s",
+			t.Fatalf("历史开关值不得影响网页登录，UA=%s got %d body=%s",
 				ua, rec.Code, rec.Body.String())
 		}
 	}

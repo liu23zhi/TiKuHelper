@@ -1,4 +1,4 @@
-import { Tabs, Pagination, Table, Tag, Modal, InputNumber, Select, AutoComplete, Checkbox, Switch, Layout, Row, Col, Space, Upload, Menu, Popconfirm, Badge, Empty, Statistic } from 'ant-design-vue'
+import { Tabs, Pagination, Table, Tag, Modal, InputNumber, Select, AutoComplete, Checkbox, Switch, Layout, Row, Col, Space, Upload, Menu, Popconfirm, Badge, Empty, Statistic, Popover, Descriptions, Drawer, Timeline, Divider, Result, Typography } from 'ant-design-vue'
 import { registerPublicUI } from './publicUI'
 import ConsolePageHeading from './components/ConsolePageHeading.vue'
 import ConsolePanel from './components/ConsolePanel.vue'
@@ -6,7 +6,7 @@ import ConsoleSummaryGrid from './components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from './components/ConsoleTableShell.vue'
 
 export function registerConsoleExtras(app) {
-  for (const widget of [Tabs, Pagination, Table, Tag, Modal, InputNumber, Select, AutoComplete, Checkbox, Switch, Layout, Row, Col, Space, Upload, Menu, Popconfirm, Badge, Empty, Statistic]) app.use(widget)
+  for (const widget of [Tabs, Pagination, Table, Tag, Modal, InputNumber, Select, AutoComplete, Checkbox, Switch, Layout, Row, Col, Space, Upload, Menu, Popconfirm, Badge, Empty, Statistic, Popover, Descriptions, Drawer, Timeline, Divider, Result, Typography]) app.use(widget)
   for (const widget of [ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell]) app.component(widget.name, widget)
   return app
 }

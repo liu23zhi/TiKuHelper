@@ -54,7 +54,7 @@ const state = wrapper => wrapper.vm.$.setupState
 
 async function openDialog(t, props = {}) {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 1000 })
-  const wrapper = mount(Dialog, { attachTo: document.body, props: { visible: true, text: '承诺书正文\n'.repeat(200), ...props }, global: { plugins: [Antd] } })
+  const wrapper = mount(Dialog, { attachTo: document.body, props: { visible: true, payoutQrReady: true, text: '承诺书正文\n'.repeat(200), ...props }, global: { plugins: [Antd] } })
   wrappers.push(wrapper)
   await settle()
   const scroll = element('[data-refund-agreement-text]')
@@ -108,6 +108,18 @@ test('signing requires both ten seconds and the bottom of the agreement', async 
   assert.equal(wrapper.emitted('signed'), undefined)
 })
 
+test('an unsigned agreement hides legacy signature placeholders and cannot be signed without a payout image', async t => {
+  const wrapper = await openDialog(t, { payoutQrReady: false, text: '本人承诺条款。\n\n申请人（以电子签名方式确认）：见签名图像\n签署日期：提交本次退款申请之日' })
+  assert.doesNotMatch(element('[data-refund-agreement-text]').textContent, /申请人（以电子签名方式确认）|签署日期|见签名图像/)
+  await scrollBottom(); t.mock.timers.tick(10000); await settle()
+  assert.equal(element('[data-refund-agreement-sign]').disabled, true)
+  assert.match(element('[data-refund-agreement-progress]').textContent, /上传或解锁收款码/)
+  await state(wrapper).openSignaturePad(); await settle()
+  assert.equal(document.querySelector('[data-refund-signature]'), null)
+  await wrapper.setProps({ payoutQrReady: true }); await settle()
+  assert.equal(element('[data-refund-agreement-sign]').disabled, false)
+})
+
 test('canceling the signature leaves the agreement open and ready to sign again', async t => {
   const wrapper = await openDialog(t)
   await scrollBottom()
@@ -154,7 +166,8 @@ test('confirmation uploads only the signature, closes both dialogs, and shows it
   await signStroke()
   assert.equal(element('[data-refund-signature-confirm]').disabled, false)
   await click('[data-refund-signature-confirm]')
-  assert.deepEqual(wrapper.emitted('signed'), [[51]])
+  assert.equal(wrapper.emitted('signed')[0][0], 51)
+  assert.equal(wrapper.emitted('signed')[0][1], '1970-01-01T00:00:11.000Z')
   assert.equal(wrapper.emitted('close').length, 1)
   assert.equal(document.querySelector('[data-refund-signature]'), null)
   const upload = calls.find(call => call.method === 'post')
@@ -164,6 +177,8 @@ test('confirmation uploads only the signature, closes both dialogs, and shows it
   await wrapper.setProps({ visible: true }); await settle()
   const preview = element('[data-refund-agreement-signed] img')
   assert.equal(preview.getAttribute('src'), 'blob:http://localhost/signature-1')
+  assert.match(element('[data-refund-agreement-signed]').textContent, /申请人（以电子签名方式确认）：/)
+  assert.match(element('[data-refund-agreement-signed]').textContent, /签署日期：.*1970/)
   assert.equal(document.querySelector('[data-refund-agreement-sign]'), null)
   assert.equal(document.querySelector('.refund-signature__canvas--grid'), null)
   assert.equal(calls.filter(call => call.method === 'get').length, 0, 'reopening the same draft uses its local signature')

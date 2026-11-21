@@ -20,6 +20,7 @@ var ticketControllerDB = func() *gorm.DB { return manager.GetManager().GetDB() }
 var sendTicketControllerWebhook = service.SendTicketWebhook
 
 func TicketList(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	user, ok := currentOperator(c)
 	if !ok {
 		return
@@ -71,6 +72,15 @@ func CreateTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+	if c.GetBool("account_banned") {
+		if strings.TrimSpace(input.TicketType) != service.TicketTypeAccount ||
+			(strings.TrimSpace(input.AccountIssue) != "" && strings.TrimSpace(input.AccountIssue) != service.TicketAccountIssueBanAppeal) {
+			c.JSON(http.StatusForbidden, gin.H{"message": "账号封禁期间仅可提交本账号的封禁申诉"})
+			return
+		}
+		// 旧版客户端仅提交账号类型。受限会话的此类提交统一按本人封禁申诉处理。
+		input.AccountIssue = service.TicketAccountIssueBanAppeal
+	}
 	// T-209：选了「退款」类型的建单必须真的走退款流程（落 ticket_refunds 行），
 	// 而退款渠道校验器只在 controller 层能拿到（它要读 EPAY 配置）。
 	// 所以这里显式分流，而不是让 service 自己合成一个「永远通过」的桩 ——
@@ -81,10 +91,16 @@ func CreateTicket(c *gin.Context) {
 		writeTicketError(c, err, "创建工单失败")
 		return
 	}
+	// The create endpoint is part of the feedback/self view, including when an
+	// administrator uses it. Notification metadata belongs to ticket management.
+	detail.Notification = nil
+	detail.User = nil
+	detail.AppealTarget = nil
 	c.JSON(http.StatusOK, gin.H{"data": detail})
 }
 
 func TicketDetail(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	user, ok := currentOperator(c)
 	if !ok {
 		return
@@ -93,7 +109,8 @@ func TicketDetail(c *gin.Context) {
 	if !ok {
 		return
 	}
-	detail, err := service.GetTicketWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, id)
+	selfView := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "self")
+	detail, err := service.GetTicketWithDBForView(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, id, selfView)
 	if err != nil {
 		writeTicketError(c, err, "获取工单详情失败")
 		return
@@ -115,7 +132,8 @@ func AddTicketMessage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
-	detail, err := service.AddTicketMessageWithDB(ticketControllerDB(), &user, id, input)
+	selfView := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "self")
+	detail, err := service.AddTicketMessageWithDBForView(ticketControllerDB(), &user, id, input, selfView)
 	if err != nil {
 		writeTicketError(c, err, "回复工单失败")
 		return
@@ -269,6 +287,7 @@ func writeTicketError(c *gin.Context, err error, fallback string) {
 	case errors.Is(err, service.ErrTicketRefundOrderUnavailable), errors.Is(err, service.ErrTicketRefundInsufficientBalance):
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrTicketSubjectRequired), errors.Is(err, service.ErrTicketBodyRequired),
+		errors.Is(err, service.ErrTicketAppealProof),
 		errors.Is(err, service.ErrTicketInvalidStatus), errors.Is(err, service.ErrTicketInvalidPriority),
 		errors.Is(err, service.ErrTicketInvalidOrigin), errors.Is(err, service.ErrTicketInvalidCategory),
 		errors.Is(err, service.ErrTicketSystemUserRequired), errors.Is(err, service.ErrTicketContextTooLarge),

@@ -47,6 +47,7 @@ var nonConsumptionBillingRecordTypes = []string{
 	registrationBonusBillingRecordType,
 	rechargePromotionBillingRecordType,
 	ReviewRebateBillingRecordType,
+	ReviewRebateClawbackBillingType,
 	ReferralRebateBillingRecordType,
 	ReferralRebateReversalBillingRecordType,
 	balanceAdjustmentBillingRecordType,
@@ -214,6 +215,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值赠送"
 	case ReviewRebateBillingRecordType:
 		return "评价返现"
+	case ReviewRebateClawbackBillingType:
+		return "评价返现追缴"
 	case ReferralRebateBillingRecordType:
 		return "邀请返佣"
 	case ReferralRebateReversalBillingRecordType:
@@ -1266,7 +1269,7 @@ func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
 		if row.Direction == "income" || row.Type == balanceAdjustmentBillingRecordType {
 			continue
 		}
-		if row.Type == RegistrationBonusClawbackBillingRecordType || row.Type == registrationBonusRevokedBillingRecordType {
+		if row.Type == RegistrationBonusClawbackBillingRecordType || row.Type == registrationBonusRevokedBillingRecordType || row.Type == ReviewRebateClawbackBillingType {
 			continue
 		}
 		if amount := row.Amount; amount > 0 {

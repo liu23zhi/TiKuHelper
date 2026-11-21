@@ -4,6 +4,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path'), Module = require('node:module')
 const root = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 require(path.join(root, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/transfer-history-read.cjs')(root, ['billing', 'logs', 'questions'])
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises } = require('@vue/test-utils')
 const { nextTick } = require('vue')

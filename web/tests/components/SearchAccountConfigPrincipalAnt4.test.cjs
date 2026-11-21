@@ -42,9 +42,9 @@ Antd.Modal.confirm = options => { confirms.push(options); return nativeConfirm(o
 const Page = require(path.join(root, 'src/pages/SearchAccountConfig/index.vue'))
 async function settle() { await nextTick(); await flushPromises(); await nextTick() }
 function rows(tag = 'A') { return [
-  { provider: 'icodef', providerLabel: 'SYNTHETIC_ICODEF', tokenKey: 'token', tokenValue: `SYNTHETIC_TOKEN_${tag}`, enabled: true, remark: `SYNTHETIC_REMARK_${tag}`, flatPrice: 0.12345678 },
-  { provider: 'wenku', providerLabel: 'SYNTHETIC_WENKU', tokenKey: 'token', tokenValue: `SYNTHETIC_SECOND_${tag}`, enabled: false, remark: `SYNTHETIC_SECOND_REMARK_${tag}`, flatPrice: 0.000001 },
-  { provider: 'ai', providerLabel: 'SYNTHETIC_AI', tokenValue: `SYNTHETIC_AI_${tag}`, enabled: true, remark: '', flatPrice: 0 },
+  { provider: 'icodef', providerLabel: 'SYNTHETIC_ICODEF', tokenKey: 'token', tokenValue: `SYNTHETIC_TOKEN_${tag}`, enabled: true, callEnabled: true, remark: `SYNTHETIC_REMARK_${tag}`, flatPrice: 0.12345678 },
+  { provider: 'wenku', providerLabel: 'SYNTHETIC_WENKU', tokenKey: 'token', tokenValue: `SYNTHETIC_SECOND_${tag}`, enabled: false, callEnabled: true, remark: `SYNTHETIC_SECOND_REMARK_${tag}`, flatPrice: 0.000001 },
+  { provider: 'ai', providerLabel: 'SYNTHETIC_AI', tokenValue: `SYNTHETIC_AI_${tag}`, enabled: true, callEnabled: true, remark: '', flatPrice: 0 },
 ] }
 async function mountPage(actor = A, loaded = true) {
   if (actor) user.setStoredCurrentUser(actor); else user.clearStoredCurrentUser()
@@ -113,11 +113,11 @@ test('SAC_PRINCIPAL exact same-actor payload retains all nonAI providers, trim/c
   first.provider = ' icodef '; first.remark = '  SYNTHETIC_EDITED_REMARK  '; first.flatPrice = 0.87654321; first.enabled = false
   second.tokenValue = ''; second.remark = ' SYNTHETIC_SECOND_NOTE '; second.flatPrice = 0.123456
   click(w, '保存全部配置'); await settle()
-  assert.deepEqual(writes.map(({ provider, payload }) => ({ provider, payload })), [{ provider: 'icodef', payload: { tokenValue: 'SYNTHETIC_EDITED_TOKEN', enabled: false, remark: 'SYNTHETIC_EDITED_REMARK', flatPrice: 0.87654321 } }])
+  assert.deepEqual(writes.map(({ provider, payload }) => ({ provider, payload })), [{ provider: 'icodef', payload: { callEnabled: true, tokenValue: 'SYNTHETIC_EDITED_TOKEN', enabled: false, remark: 'SYNTHETIC_EDITED_REMARK', flatPrice: 0.87654321 } }])
   writes[0].resolve({ status: 200 }); await settle()
-  assert.deepEqual(writes[1].payload, { tokenValue: '', enabled: false, remark: 'SYNTHETIC_SECOND_NOTE', flatPrice: 0.123456 })
+  assert.deepEqual(writes[1].payload, { callEnabled: true, tokenValue: '', enabled: false, remark: 'SYNTHETIC_SECOND_NOTE', flatPrice: 0.123456 })
   assert.equal(writes[1].provider, 'wenku'); writes[1].resolve({ status: 200 }); await settle()
-  assert.equal(writes.length, 2, 'AI_METADATA_IS_NEVER_WRITTEN_HERE')
+  assert.equal(writes.length, 3); assert.deepEqual(writes[2].payload, { callEnabled: true }, 'ONLY_AI_CALL_PERMISSION_IS_WRITTEN_HERE'); writes[2].resolve({ status: 200 }); await settle()
   assert.ok(notices.some(item => item.kind === 'success')); assert.equal(w.vm.savingAll, false)
   finishLatest('SAVED'); await settle()
   assert.equal(w.vm.dataSource[0].tokenValue, 'SYNTHETIC_TOKEN_SAVED', 'SUCCESSFUL_FOLLOWUP_GET_IS_RENDERED')
@@ -134,12 +134,11 @@ test('SAC_PRINCIPAL existing same-actor GET renders full rows, native precision8
   assert.ok(routes.includes('/ai-search-config')); assert.equal(writes.length, 0)
 })
 
-test('SAC_PRINCIPAL existing AI-only config remains excluded from default-account writes', async () => {
+test('SAC_PRINCIPAL AI-only config saves call permission without overwriting model or credentials', async () => {
   const w = await mountPage(A, false)
   reads[0].resolve({ status: 200, data: [rows('A')[2]] }); await settle()
   click(w, '保存全部配置'); await settle()
-  assert.equal(writes.length, 0); assert.equal(notices.some(item => item.kind === 'success'), false)
-  assert.ok(notices.some(item => item.kind === 'warning'))
+  assert.equal(writes.length, 1); assert.deepEqual(writes[0].payload, { callEnabled: true }); writes[0].resolve({ status: 200 }); await settle(); finishLatest('A'); await settle()
 })
 
 test('SAC_PRINCIPAL failed initial GET cannot save defaults; explicit retry can load and save', async () => {
@@ -225,12 +224,12 @@ test('SAC_PRINCIPAL one save round snapshots payloads and rejects repeated direc
   await tokenInput(w, 'SYNTHETIC_ROUND_TOKEN')
   click(w, '保存全部配置'); w.vm.onSaveAll(); button(w, '保存全部配置').element.click(); await settle()
   assert.equal(writes.length, 1, 'ONE_ACTIVE_BATCH_ONLY')
-  const expectedSecond = { tokenValue: 'SYNTHETIC_SECOND_A', enabled: false, remark: 'SYNTHETIC_SECOND_REMARK_A', flatPrice: 0.000001 }
+  const expectedSecond = { callEnabled: true, tokenValue: 'SYNTHETIC_SECOND_A', enabled: false, remark: 'SYNTHETIC_SECOND_REMARK_A', flatPrice: 0.000001 }
   // Direct mutation here simulates a retained reference, not a second authorization channel.
   w.vm.dataSource[1].tokenValue = 'SYNTHETIC_MUTATED_DURING_SAVE'; w.vm.dataSource[1].flatPrice = 9
   writes[0].resolve({ status: 200 }); await settle()
   assert.equal(writes.length, 2); assert.deepEqual(writes[1].payload, expectedSecond, 'PAYLOADS_CAPTURED_ONCE_AT_BATCH_START')
-  writes[1].resolve({ status: 200 }); await settle(); assert.equal(writes.length, 2)
+  writes[1].resolve({ status: 200 }); await settle(); assert.equal(writes.length, 3); assert.deepEqual(writes[2].payload, { callEnabled: true }); writes[2].resolve({ status: 200 }); await settle()
 })
 
 for (const completion of ['success', 'reject', 'non200']) {

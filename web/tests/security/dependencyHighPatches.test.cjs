@@ -29,7 +29,17 @@ async function withServers(run){const sockets=new Set(),servers=[],ports=[];let 
   const target=make((req,res)=>{observe('target',req);res.writeHead(200,{'content-type':'application/json'});res.end('{"ok":true}')})
   const origin=make((req,res)=>{observe('origin',req);if(req.url==='/error'){res.writeHead(418,{'content-type':'text/plain'});res.end('SYNTHETIC_418');return}res.writeHead(302,{location:'http://127.0.0.1:'+targetPort+'/sink'});res.end()})
   try{for(const server of [target,origin]){await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve)});const port=server.address().port;ports.push(port);allowedPorts.add(port)}targetPort=target.address().port;check(origin.address().port!==targetPort,'genuine cross-origin owned loopback ports differ');await run({originPort:origin.address().port,targetPort})}
-  finally{for(const server of servers){server.closeIdleConnections?.();await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()))}await new Promise(resolve=>setImmediate(resolve));for(const port of ports)allowedPorts.delete(port);cur.serverCleanup={listening:servers.some(server=>server.listening),openSockets:sockets.size,ownedPortsRemoved:ports.every(port=>!allowedPorts.has(port))};assert.equal(cur.serverCleanup.listening,false,'owned HTTP servers actually closed');assert.equal(sockets.size,0,'owned client/server sockets actually closed')}
+  finally{
+    // Windows may deliver the socket close event after the server close callback.
+    // Wait for each owned socket instead of assuming one event-loop turn is enough.
+    await Promise.all([...sockets].map(socket=>new Promise(resolve=>{
+      if(socket.closed){sockets.delete(socket);resolve();return}
+      socket.once('close',resolve);socket.destroy()
+    })))
+    for(const server of servers){server.closeIdleConnections?.();await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()))}
+    for(const port of ports)allowedPorts.delete(port)
+    cur.serverCleanup={listening:servers.some(server=>server.listening),openSockets:sockets.size,ownedPortsRemoved:ports.every(port=>!allowedPorts.has(port))};assert.equal(cur.serverCleanup.listening,false,'owned HTTP servers actually closed');assert.equal(sockets.size,0,'owned client/server sockets actually closed')
+  }
 }
 function crossRealmSensitive(){const values=vm.runInNewContext("['X-Synthetic-Credential']");assert.ok(Array.isArray(values)&&!(values instanceof Array),'genuine foreign realm sensitiveHeaders array');return values}
 function objectHeaders(tag,credential=true){return{'X-Probe-Tag':tag,'X-Harmless':HARMLESS,...(credential?{'X-Synthetic-Credential':CANARY}:{})}}

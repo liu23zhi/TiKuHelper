@@ -2,20 +2,10 @@ package service
 
 // 充值阶梯赠送：可配置档位（Q75-2，94-*.md §2 C2）。
 //
-// 设计要点 —— **「表不存在」与「表里没有档位」是两件完全不同的事，必须分开**：
+// 没有可用配置就不赠送：缺表、空表、全部停用、非法行或读取失败均返回空档位。
+// 默认常量仅保留给纯计算/模板兼容入口，真实充值发放绝不自动回退默认六档。
 //
-//   - **表不存在**（首次上线、还没迁移的库）：回退到常量表 DefaultRechargePromotionTiers。
-//     这是「可安全上线」的全部依据 —— 上线不需要数据迁移、不需要「把六档常量搬进表」
-//     的一次性动作，且发放行为与改动前逐条一致。**新库首启不能变成「上线即停发」**。
-//
-//   - **表存在、查询成功、但没有任何可用档位**（空表 / 全部停用 / 行全非法）：
-//     返回**空列表 = 不赠送**。需求口径（task_doc/123）：
-//     「充值赠送没有任何档位就是不开启充值赠送功能，不要回退到系统默认六档」。
-//     若这里回退常量，「管理员把表清空」这个动作就会静默变成「恢复系统默认六档」，
-//     与管理员意图**正好相反**，而且界面上看不出任何异常。
-//
-//   - 管理员一旦保存，表就不再为空，此后**只读表**（不会出现「表里三条 + 常量里六条」
-//     混算的情形 —— 那种混算会让「我明明删掉了 888 这档」静默失效）。
+// 只使用管理员保存并启用的档位，不混入默认常量；保存空列表即停止赠送。
 //
 // 「同门槛不允许不同比例」（Q75-2）：同一个门槛出现两个不同比例时，
 // 「按门槛选档」的语义就不确定了（同一笔金额有两个候选）。保存时逐条比对，
@@ -44,8 +34,7 @@ var (
 
 // rechargePromotionTierSchemaAvailable 判断档位表是否已就绪。
 //
-// 表不存在时所有读取都回退到常量表 —— 这是「可安全上线」的全部依据，
-// 也是单测里最小 schema 场景不炸的原因。
+// 表不存在时发放链路不赠送，管理端展示为 unavailable。
 func rechargePromotionTierSchemaAvailable(db *gorm.DB) bool {
 	if db == nil {
 		return false
@@ -55,17 +44,16 @@ func rechargePromotionTierSchemaAvailable(db *gorm.DB) bool {
 
 // rechargePromotionTierSource 是「档位表给的是什么」的三态。
 //
-// 为什么必须三态而不是 bool：这三种情况的**正确行为完全不同**，合并成 ok=false
-// 就只能取其中一种，另一种必然是错的。
+// 三态用于管理端区分配置不可用、没有可用档位和存在可用档位。
 //
-//	表不存在   → 回退常量（新库首启不能停发）
+//	表不存在   → 不赠送，标记配置不可用
 //	表存在且空 → 不赠送（用户清空 = 关闭赠送功能）
 //	表存在有档 → 只读表
 type rechargePromotionTierSource int
 
 const (
 	// rechargePromotionTierSourceSchemaMissing 表不存在：未迁移 / 首次上线。
-	// 只有这一态回退 DefaultRechargePromotionTiers。
+	// 不发放赠送，管理端以 unavailable 提示迁移状态。
 	rechargePromotionTierSourceSchemaMissing rechargePromotionTierSource = iota
 	// rechargePromotionTierSourceTable 表存在且有可用档位。
 	rechargePromotionTierSourceTable
@@ -77,11 +65,11 @@ const (
 // loadConfiguredRechargePromotionTiers 读表并转成选档用的 RechargePromotionTier。
 //
 // 返回值第二项是三态（见 rechargePromotionTierSource），**不是 bool**：
-//   - SchemaMissing：表不存在 → 调用方回退常量；
+//   - SchemaMissing：表不存在 → 调用方返回空列表，不赠送；
 //   - Empty：表在但无可用档位 → 调用方返回空列表（不赠送），**不回退**；
 //   - Table：正常读表。
 //
-// err != nil 时调用方仍回退常量：发放链路不能因为配置表抖动就停发赠金。
+// err != nil 时调用方返回空列表：配置无法确认时不能自动赠送。
 //
 // 停用档位被排除在选档之外，但保留行（便于临时停用再恢复）。
 func loadConfiguredRechargePromotionTiers(db *gorm.DB) ([]RechargePromotionTier, rechargePromotionTierSource, error) {
@@ -109,18 +97,11 @@ func loadConfiguredRechargePromotionTiers(db *gorm.DB) ([]RechargePromotionTier,
 	return tiers, rechargePromotionTierSourceTable, nil
 }
 
-// defaultRechargePromotionTiersCopy 返回常量六档的副本（调用方可能改动切片）。
-func defaultRechargePromotionTiersCopy() []RechargePromotionTier {
-	fallback := make([]RechargePromotionTier, len(DefaultRechargePromotionTiers))
-	copy(fallback, DefaultRechargePromotionTiers)
-	return fallback
-}
-
 // RechargePromotionTiersWithDB 返回**当前生效**的档位表。
 //
 // 三分支（与 loadConfiguredRechargePromotionTiers 的三态一一对应）：
 //   - 表存在且有可用档位 → 只读表；
-//   - 表不存在（未迁移）→ 回退 DefaultRechargePromotionTiers（新库首启不能停发）；
+//   - 表不存在（未迁移）或读取失败 → 返回空列表，不赠送；
 //   - 表存在但无可用档位（空表 / 全部停用）→ **返回空列表 = 不赠送**。
 //     需求口径（task_doc/123）：「充值赠送没有任何档位就是不开启充值赠送功能，
 //     不要回退到系统默认六档」。这里回退常量会让「清空表」静默变成
@@ -131,14 +112,13 @@ func defaultRechargePromotionTiersCopy() []RechargePromotionTier {
 func RechargePromotionTiersWithDB(db *gorm.DB) []RechargePromotionTier {
 	tiers, source, err := loadConfiguredRechargePromotionTiers(db)
 	if err != nil {
-		// 读表失败也回退：发放链路不能因为配置表抖动就停发赠金。
-		return defaultRechargePromotionTiersCopy()
+		return []RechargePromotionTier{}
 	}
 	switch source {
 	case rechargePromotionTierSourceTable:
 		return tiers
 	case rechargePromotionTierSourceSchemaMissing:
-		return defaultRechargePromotionTiersCopy()
+		return []RechargePromotionTier{}
 	default: // rechargePromotionTierSourceEmpty
 		// 非 nil 空切片：管理端 JSON 里是 [] 而不是 null，前端可直接 .length。
 		return []RechargePromotionTier{}
@@ -149,8 +129,8 @@ func RechargePromotionTiersWithDB(db *gorm.DB) []RechargePromotionTier {
 const (
 	// rechargePromotionTiersSourceTable 用表。
 	rechargePromotionTiersSourceTable = "table"
-	// rechargePromotionTiersSourceDefault 表不存在，回退常量六档。
-	rechargePromotionTiersSourceDefault = "default"
+	// rechargePromotionTiersSourceUnavailable 表不存在或读取失败，不发放赠金。
+	rechargePromotionTiersSourceUnavailable = "unavailable"
 	// rechargePromotionTiersSourceEmpty 表存在但为空 → 不赠送。
 	// 必须与前两者区分：此时「正在使用系统默认六档」这句话是**错的**。
 	rechargePromotionTiersSourceEmpty = "empty"
@@ -161,13 +141,13 @@ const (
 func rechargePromotionTiersSourceWithDB(db *gorm.DB) string {
 	_, source, err := loadConfiguredRechargePromotionTiers(db)
 	if err != nil {
-		return rechargePromotionTiersSourceDefault
+		return rechargePromotionTiersSourceUnavailable
 	}
 	switch source {
 	case rechargePromotionTierSourceTable:
 		return rechargePromotionTiersSourceTable
 	case rechargePromotionTierSourceSchemaMissing:
-		return rechargePromotionTiersSourceDefault
+		return rechargePromotionTiersSourceUnavailable
 	default:
 		return rechargePromotionTiersSourceEmpty
 	}
@@ -197,7 +177,7 @@ func selectRechargePromotionTierFrom(tiers []RechargePromotionTier, paidAmount f
 	return selected, matched
 }
 
-// SelectRechargePromotionTierWithDB 是发放链路使用的选档入口（读表 + 回退）。
+// SelectRechargePromotionTierWithDB 是发放链路使用的选档入口，只认数据库配置。
 func SelectRechargePromotionTierWithDB(db *gorm.DB, paidAmount float64) (RechargePromotionTier, bool) {
 	return selectRechargePromotionTierFrom(RechargePromotionTiersWithDB(db), paidAmount)
 }
@@ -206,8 +186,7 @@ func SelectRechargePromotionTierWithDB(db *gorm.DB, paidAmount float64) (Recharg
 
 // RechargePromotionTierRuleList 是管理端列表的返回结构。
 //
-// 同时下发 rows 与 effective/source：管理员需要知道「表现在是空的，实际在用常量」，
-// 否则会以为「我明明保存了 3 档，怎么还是六档在发」。
+// 同时下发 rows 与 effective/source，区分已有配置、无可用档位与配置不可用。
 type RechargePromotionTierRuleList struct {
 	Rows      []entity.RechargePromotionTierRule `json:"rows"`
 	Effective []RechargePromotionTier            `json:"effective"`

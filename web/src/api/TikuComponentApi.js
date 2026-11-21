@@ -860,6 +860,20 @@ export function updateScript(data) {
   })
 }
 
+export function configureScriptShortAuthorization(id, data) {
+  return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    url: `/api/scripts/${id}/short-authorization`,
+    method: 'put',
+    data,
+  })
+}
+
+export function configureScriptLauncherAuthorization(id, data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/api/scripts/${id}/launcher-authorization`, method: 'put', data })
+}
+
 export function deleteScript(data) {
   const sessionId = data.confirmActiveSessionId
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(sessionId))) {
@@ -959,6 +973,10 @@ export function redeemScriptActivationCode(data) {
     method: 'post',
     data,
   })
+}
+
+export function getScriptActivationCodePurchases(params = {}) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: '/api/script-activation-codes/purchases', method: 'get', params })
 }
 
 // A diagnostic snapshot is explicit-only: one request per mount or manual refresh.
@@ -1071,6 +1089,14 @@ export function getTicketRefundDetail(id, signal) {
   return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'get', signal }).then(requireTicketResponse)
 }
 
+export function getTicketRefundRechargeOrders(id, manage, signal) {
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'recharge-orders'), method: 'get', params: { manage }, signal }).then(requireTicketResponse)
+}
+
+export function updateTicketRefund(id, data, signal) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'patch', data, signal })
+}
+
 export function createTicketRefund(data, signal) {
   return ticketRefundRequest({ url: ticketRefundBase, method: 'post', data, signal })
 }
@@ -1125,6 +1151,22 @@ export function removeMyDevice(id, signal) {
     method: 'post',
     signal,
   })
+}
+
+export function deleteMyRemovedDevice(id, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id),
+    method: 'delete',
+    signal,
+  })
+}
+
+export function getMyDeviceExpiry(signal) {
+  return myDeviceRequest({ url: '/api/user/device-expiry', method: 'get', signal })
+}
+
+export function updateMyDeviceExpiry(days, signal) {
+  return myDeviceRequest({ url: '/api/user/device-expiry', method: 'put', data: { days: Number(days) }, signal })
 }
 
 export function renameMyDevice(id, label, signal) {

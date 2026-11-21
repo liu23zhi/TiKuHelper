@@ -77,7 +77,8 @@ import (
 
 const (
 	// TicketAttachmentRetentionKeyPrefix 是全部工单图片保留策略键的统一前缀。
-	TicketAttachmentRetentionKeyPrefix = "ticket_attachment_retention_"
+	TicketAttachmentRetentionKeyPrefix      = "ticket_attachment_retention_"
+	TicketAttachmentRetentionModeSettingKey = "ticket_attachment_retention_mode"
 	// TicketAttachmentRetentionMaxAgeDaysSettingKey 是按时间清理的天数（>0）。
 	TicketAttachmentRetentionMaxAgeDaysSettingKey = "ticket_attachment_retention_max_age_days"
 	// TicketAttachmentRetentionMaxTotalGiBSettingKey 是全部附件密文总量上限，单位 **GiB**。
@@ -131,6 +132,7 @@ var ErrTicketAttachmentRetentionNoDatabase = errors.New("工单图片保留策�
 // 单位写进字段名后缀（GiB / Days / Minutes），前端不用猜；MaxTotalBytes 是
 // 只读派生值，供页面显示「当前占用 3.2 GB / 20 GiB」这类精确文案。
 type TicketAttachmentRetentionSettings struct {
+	Mode string `json:"mode"`
 	// MaxAgeDays 是按时间清理的天数（>0）。
 	MaxAgeDays int `json:"maxAgeDays"`
 	// MaxTotalGiB 是全部附件密文总量上限，单位 GiB。
@@ -153,11 +155,18 @@ type TicketAttachmentRetentionConfig struct {
 
 // Config 把设置形态换算成生效形态（唯一的 GiB → 字节换算点）。
 func (s TicketAttachmentRetentionSettings) Config() TicketAttachmentRetentionConfig {
-	return TicketAttachmentRetentionConfig{
+	config := TicketAttachmentRetentionConfig{
 		MaxAgeDays:      s.MaxAgeDays,
 		MaxTotalBytes:   s.MaxTotalGiB * ticketAttachmentRetentionGiB,
 		CleanupInterval: time.Duration(s.CleanupIntervalMinutes) * time.Minute,
 	}
+	if s.Mode == "size" {
+		config.MaxAgeDays = 0
+	}
+	if s.Mode == "time" {
+		config.MaxTotalBytes = 0
+	}
+	return config
 }
 
 // TicketAttachmentRetentionResult 汇总一次清理的产出。
@@ -182,11 +191,16 @@ type TicketAttachmentRetentionResult struct {
 // 会让按大小清理退化成「删光全部附件」。
 func GetTicketAttachmentRetentionSettingsWithDB(db *gorm.DB) TicketAttachmentRetentionSettings {
 	settings := TicketAttachmentRetentionSettings{
+		Mode:                   "both",
 		MaxAgeDays:             DefaultTicketAttachmentRetentionMaxAgeDays,
 		MaxTotalGiB:            DefaultTicketAttachmentRetentionMaxTotalGiB,
 		CleanupIntervalMinutes: DefaultTicketAttachmentRetentionCleanupIntervalMinutes,
 	}
 	if db != nil {
+		mode := getSystemSettingStringWithDefault(db, TicketAttachmentRetentionModeSettingKey, "both")
+		if mode == "time" || mode == "size" || mode == "both" {
+			settings.Mode = mode
+		}
 		settings.MaxAgeDays = int(getTicketAttachmentRetentionInt64Setting(
 			db, TicketAttachmentRetentionMaxAgeDaysSettingKey,
 			DefaultTicketAttachmentRetentionMaxAgeDays, MaxTicketAttachmentRetentionAgeDays))

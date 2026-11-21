@@ -104,11 +104,14 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/script-activation-code-price", controller.Auth, controller.GetScriptActivationCodePrice)
 	apiRouter.PUT("/script-activation-code-price", controller.Auth, middleware.RequireAdmin, controller.PutScriptActivationCodePrice)
 	apiRouter.POST("/script-activation-codes/purchase", controller.Auth, controller.PurchaseScriptActivationCode)
+	apiRouter.GET("/script-activation-codes/purchases", controller.Auth, controller.ListScriptActivationCodePurchases)
 	apiRouter.POST("/script-activation-codes/redeem", controller.Auth, controller.RedeemScriptActivationCode)
 	apiRouter.GET("/script-versions/:id/download", controller.Auth, controller.DownloadScriptVersion)
 	apiRouter.GET("/scripts", controller.Auth, controller.ScriptList)
 	apiRouter.POST("/scripts", controller.Auth, controller.CreateScript)
 	apiRouter.PUT("/scripts/:id", controller.Auth, controller.UpdateScript)
+	apiRouter.PUT("/scripts/:id/short-authorization", controller.Auth, controller.ConfigureScriptShortAuthorization)
+	apiRouter.PUT("/scripts/:id/launcher-authorization", controller.Auth, controller.ConfigureScriptLauncherAuthorization)
 	apiRouter.DELETE("/scripts/:id", controller.Auth, controller.DeleteScript)
 	apiRouter.POST("/scripts/:id/exchange-token", controller.Auth, controller.IssueScriptExchangeToken)
 	apiRouter.POST("/scripts/:id/token", controller.Auth, controller.IssueScriptExchangeToken)
@@ -170,7 +173,7 @@ func SetAPIRouter(router *gin.Engine) {
 
 	// 充值阶梯赠送的可配置档位（Q75-2，94-*.md §2 C2）。
 	//
-	// 表空时服务层回退到 DefaultRechargePromotionTiers，因此本接口先上线不影响发放。
+	// 未配置档位表示不赠送，不回退到默认六档。
 	// 整体替换（PUT）而不是逐条增删改：档位是一张阶梯，「同门槛不同比例」的中间态
 	// 在选档语义上不合法，必须让「校验通过」与「生效」是同一瞬间。
 	apiRouter.GET("/admin/recharge-promotion-tiers", controller.Auth, middleware.RequireAdmin, controller.RechargePromotionTierList)
@@ -305,6 +308,9 @@ func SetAPIRouter(router *gin.Engine) {
 	//     段数不同不会抢节点。
 	apiRouter.GET("/user/devices", controller.Auth, controller.UserDevices)
 	apiRouter.POST("/user/devices/:id/remove", controller.Auth, controller.UserDeviceRemove)
+	apiRouter.DELETE("/user/devices/:id", controller.Auth, controller.UserDeviceDelete)
+	apiRouter.GET("/user/device-expiry", controller.Auth, controller.UserDeviceExpiryGet)
+	apiRouter.PUT("/user/device-expiry", controller.Auth, controller.UserDeviceExpiryPut)
 	// 重命名：只写 device_label 一列。用 /label 这个子路径而不是通用 PUT /user/devices/:id
 	// —— 后者会让 device_id / last_seen_at / revoked_at 也变成「可被用户改」，
 	// 而这三列各有判定语义（唯一索引 / 10 天闲置 / 撤销）。见 controller.UserDeviceRename 的说明。
@@ -370,16 +376,19 @@ func SetAPIRouter(router *gin.Engine) {
 	// 默认查询会把这些行过滤掉，列表永远是空的）。
 	apiRouter.GET("/admin/archived-users", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserList)
 	apiRouter.GET("/admin/archived-users/:id", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserDetail)
+	apiRouter.GET("/admin/archived-users/:id/identity", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserIdentity)
 	apiRouter.POST("/admin/archived-users/:id/restore", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserRestore)
 
 	apiRouter.GET("/tickets", controller.Auth, controller.TicketList)
 	apiRouter.POST("/tickets", controller.Auth, controller.CreateTicket)
+	apiRouter.POST("/tickets/appeal-verification", middleware.BodyLimit(8192), controller.Auth, controller.VerifyTicketAppealAccount)
 	apiRouter.GET("/tickets/config", controller.Auth, middleware.RequireAdmin, controller.TicketWecomSettings)
 	apiRouter.PUT("/tickets/config", controller.Auth, middleware.RequireAdmin, controller.UpdateTicketWecomSettings)
 	apiRouter.POST("/tickets/config/test", controller.Auth, middleware.RequireAdmin, controller.TestTicketWecomWebhook)
 	apiRouter.GET("/tickets/:id", controller.Auth, controller.TicketDetail)
 	apiRouter.POST("/tickets/:id/messages", controller.Auth, controller.AddTicketMessage)
 	apiRouter.PUT("/tickets/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateTicket)
+	apiRouter.POST("/tickets/:id/account-action", controller.Auth, middleware.RequireAdmin, controller.TicketAccountAction)
 	// 工单图片附件：先上传（本地校验 + 加密落库 + 标记待检测），再异步做敏感检测。
 	// 用户端读图只拿得到「非敏感」的字节；敏感图返回占位状态（403 + 明确 code）。
 	// 管理端读图单独一条路由，必须 RequireAdmin，且 handler 内写账户审计。
@@ -398,6 +407,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/ticket-refunds", controller.Auth, controller.TicketRefundList)
 	apiRouter.POST("/ticket-refunds", controller.Auth, controller.CreateTicketRefund)
 	apiRouter.GET("/ticket-refunds/:id", controller.Auth, controller.TicketRefundDetail)
+	apiRouter.PATCH("/ticket-refunds/:id", controller.Auth, controller.UpdateTicketRefund)
+	apiRouter.GET("/ticket-refunds/:id/recharge-orders", controller.Auth, controller.TicketRefundRevisionOrders)
 	apiRouter.POST("/ticket-refunds/:id/decision", controller.Auth, middleware.RequireAdmin, controller.ReviewTicketRefund)
 	apiRouter.POST("/ticket-refunds/:id/process", controller.Auth, middleware.RequireAdmin, controller.ProcessTicketRefund)
 	apiRouter.POST("/ticket-refunds/:id/reconcile", controller.Auth, middleware.RequireAdmin, controller.ReconcileManualTicketRefund)
@@ -433,6 +444,9 @@ func SetAPIRouter(router *gin.Engine) {
 	// 邀请码与充值返佣。本人只能看自己的汇总（handler 内固定用当前账户），
 	// 返佣列表与结算一律管理员（Auth + RequireAdmin）。
 	apiRouter.GET("/user/referral", controller.Auth, controller.ReferralSummary)
+	apiRouter.GET("/admin/referral-settings", controller.Auth, middleware.RequireAdmin, controller.ReferralSettingsGet)
+	apiRouter.PUT("/admin/referral-settings", controller.Auth, middleware.RequireAdmin, controller.ReferralSettingsPut)
+	apiRouter.GET("/admin/referral-invites", controller.Auth, middleware.RequireAdmin, controller.ReferralInviteAdminList)
 	apiRouter.GET("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.ReferralRebateList)
 	apiRouter.POST("/admin/referral-rebates/:id/settle", controller.Auth, middleware.RequireAdmin, controller.SettleReferralRebate)
 	// 管理员手动补录返佣（无需充值订单的一笔），与结算同为管理员权限。
@@ -443,9 +457,11 @@ func SetAPIRouter(router *gin.Engine) {
 	// 评价返现（16-*.md §1.8）。用户端只碰自己的数据（handler 内固定用当前账户），
 	// 管理端一律 Auth + RequireAdmin；开关默认关闭，关闭时入口返回 400。
 	apiRouter.GET("/user/review-rebate/program", controller.Auth, controller.ReviewRebateProgram)
+	apiRouter.GET("/user/review-rebate/availability", controller.Auth, controller.ReviewRebateAvailability)
 	apiRouter.POST("/user/review-rebate/claims", controller.Auth, controller.CreateReviewRebateClaim)
 	apiRouter.GET("/user/review-rebate/claims", controller.Auth, controller.MyReviewRebateClaims)
 	apiRouter.GET("/admin/review-rebate/programs", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebatePrograms)
+	apiRouter.POST("/admin/review-rebate/programs", controller.Auth, middleware.RequireAdmin, controller.AdminCreateReviewRebateProgram)
 	apiRouter.PUT("/admin/review-rebate/programs/:id", controller.Auth, middleware.RequireAdmin, controller.AdminUpdateReviewRebateProgram)
 	apiRouter.GET("/admin/review-rebate/rules", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateRules)
 	apiRouter.POST("/admin/review-rebate/rules", controller.Auth, middleware.RequireAdmin, controller.AdminCreateReviewRebateRule)
@@ -455,6 +471,9 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/admin/review-rebate/claims/:id/decision", controller.Auth, middleware.RequireAdmin, controller.AdminDecideReviewRebateClaim)
 	// Agent 打分重跑（占位打分器，不真的调模型）：只写 claim，不发放。
 	apiRouter.POST("/admin/review-rebate/claims/:id/score", controller.Auth, middleware.RequireAdmin, controller.AdminScoreReviewRebateClaim)
+	apiRouter.GET("/admin/review-rebate/claims/:id/verification", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateVerification)
+	apiRouter.POST("/admin/review-rebate/claims/:id/verification", controller.Auth, middleware.RequireAdmin, controller.AdminRecordReviewRebateVerification)
+	apiRouter.POST("/admin/review-rebate/claims/:id/clawback", controller.Auth, middleware.RequireAdmin, controller.AdminClawBackReviewRebate)
 	// 截图回显：截图落在私有目录、没有可直连 URL，管理员复核必须经这个鉴权入口取图。
 	apiRouter.GET("/admin/review-rebate/claims/:id/screenshot", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateScreenshot)
 	apiRouter.GET("/access-tokens", controller.Auth, controller.AccessTokenList)
@@ -480,6 +499,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.DELETE("/ai-search-config/ocr-cache", controller.Auth, middleware.RequireAdmin, controller.ClearAIOCRCache)
 	apiRouter.POST("/ai-search-config/test", controller.Auth, controller.TestAISearchConfig)
 	apiRouter.POST("/ai-search-config/tool-test", controller.Auth, middleware.RequireAdmin, controller.TestAIToolCall)
+	apiRouter.POST("/admin/ocr/document-preview", controller.Auth, middleware.RequireAdmin, controller.OCRDocumentPreview)
+	apiRouter.POST("/admin/ocr/image-upload", controller.Auth, middleware.RequireAdmin, controller.OCRImageUpload)
 	apiRouter.PUT("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.UpdateAISearchConfig)
 	// 模型绑定（ai-model-architectures）已移除：模型列表由 AI 搜索配置维护，
 	// 计费由模型价格表按「模型 ID / 显示名称」匹配。
@@ -555,6 +576,9 @@ func SetAPIRouter(router *gin.Engine) {
 	// DELETE 的 `:userId` 只出现在 DELETE 树上，gin 按方法分树，不会与 GET 抢占。
 	blacklistAdminRouter.GET("/admin/user-bans", controller.Auth, middleware.RequireAdmin, controller.UserBanAdminList)
 	blacklistAdminRouter.POST("/admin/user-bans", controller.Auth, middleware.RequireAdmin, controller.UserBanAdminCreate)
+	blacklistAdminRouter.POST("/admin/user-bans/import/preview", controller.Auth, middleware.RequireAdmin, controller.UserBanImportPreviewCreate)
+	blacklistAdminRouter.POST("/admin/user-bans/import/:previewId/confirm", controller.Auth, middleware.RequireAdmin, controller.UserBanImportPreviewConfirm)
+	blacklistAdminRouter.DELETE("/admin/user-bans/import/:previewId", controller.Auth, middleware.RequireAdmin, controller.UserBanImportPreviewDelete)
 	// 解封路径用 :userId（不是 user_bans 主键 id）：service.Unban 的语义是
 	// 「解除这个用户的封禁」（处理该用户全部未到期行），不是「作废某一条记录」。
 	// 按记录 id 解封会让调用方误以为只解了一条，且传错 id 会解封到另一个账号。
@@ -587,6 +611,7 @@ func SetAPIRouter(router *gin.Engine) {
 	// 它同时断言「四条路由能注册并匹配」与「同层不同名通配符仍然 panic」。
 	blacklistAdminRouter.GET("/admin/devices", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceList)
 	blacklistAdminRouter.POST("/admin/devices/:id/unbind", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceUnbind)
+	blacklistAdminRouter.DELETE("/admin/devices/:id", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceDelete)
 	blacklistAdminRouter.POST("/admin/device-bans", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceBan)
 	// 解封的路径参数是 device_id（不是规则 id）：语义是「这台设备可以再被使用」。
 	// device_id 可能含 `:`（exe:a1b2…），前端需 encodeURIComponent，gin 会自行解码。
@@ -688,6 +713,8 @@ func SetAPIRouter(router *gin.Engine) {
 
 	// 工单图片缓存管理（T-12）。删除受 ref_count 保护：仍被引用的 blob 拒绝删除。
 	apiRouter.GET("/admin/ticket-image-cache", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheList)
+	apiRouter.GET("/admin/ticket-image-cache/settings", controller.Auth, middleware.RequireAdmin, controller.TicketImageRetentionSettings)
+	apiRouter.PUT("/admin/ticket-image-cache/settings", controller.Auth, middleware.RequireAdmin, controller.TicketImageRetentionSettings)
 	apiRouter.DELETE("/admin/ticket-image-cache/:sha256", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheDelete)
 	apiRouter.POST("/admin/ticket-image-cache/batch-delete", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheBatchDelete)
 	apiRouter.POST("/admin/ticket-image-cache/clean", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheCleanNow)
@@ -728,10 +755,15 @@ func SetAPIRouter(router *gin.Engine) {
 	// 而不是假装成功（见 controller/async_task.go:199 的注释）。
 	apiRouter.POST("/export/tasks", controller.Auth, middleware.RequireAdmin, controller.ExportTaskCreate)
 	apiRouter.POST("/import/tasks", controller.Auth, middleware.RequireAdmin, controller.ImportTaskCreate)
+	apiRouter.POST("/import/previews", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewCreate)
+	apiRouter.GET("/import/previews/:previewId", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewPage)
+	apiRouter.POST("/import/previews/:previewId/confirm", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewConfirm)
+	apiRouter.DELETE("/import/previews/:previewId", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewDelete)
 	apiRouter.GET("/export/tasks", controller.Auth, middleware.RequireAdmin, controller.ExportTaskList)
 	apiRouter.GET("/export/tasks/:taskId", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDetail)
 	apiRouter.GET("/export/tasks/:taskId/download", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDownload)
 	apiRouter.GET("/export/tasks/:taskId/errors", controller.Auth, middleware.RequireAdmin, controller.ExportTaskErrorReport)
+	apiRouter.DELETE("/export/tasks/:taskId", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDelete)
 	apiRouter.GET("/import/template", controller.Auth, middleware.RequireAdmin, controller.ImportTemplate)
 
 	// 管理员赠送 / 批量赠送 / 追缴式回滚（44 / T-30 的前置）。九个 handler 全部

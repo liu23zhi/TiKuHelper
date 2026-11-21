@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	legacyxls "github.com/extrame/xls"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -19,21 +21,15 @@ import (
 
 // 批量导入（107 Q13 / 111 §7 / 117 §4.5，任务书 ③④）。
 //
-// # 支持矩阵（117 §4.5 定稿）
+// # 支持矩阵
 //
 //	.csv   ✅ 完整   标准库 encoding/csv
 //	.json  ✅ 完整   标准库 encoding/json（题库）
 //	.xlsx  ✅ 完整   excelize/v2（go.mod 已有 v2.11.1）
-//	.xls   ⚠️ 尽力   —— 见 parseLegacyXls 的说明：**没有 BIFF 解析器**
-//
-// .xls 的「尽力」是真实存在的两层处理，不是敷衍：
-//
-//  1. 现实里大量「.xls」其实不是 BIFF：Excel 另存的「单一文件网页」是 HTML 表格，
-//     另有工具直接改扩展名。这两种能真正解析成功（parseLegacyXls 走 HTML / ZIP 分支）。
-//  2. 剩下的（真 OLE2 复合文档）需要 `extrame/xls` 这类 BIFF 解析器，
-//     **go.mod 里没有该依赖**（任务书要求缺依赖先报告，不能自己加）。
-//     因此这一支返回 ErrImportXlsUnsupported，文案含「请另存为 xlsx」，
-//     引导用户零成本自救 —— 比抛一个解析器的内部错误有用得多。
+//	.xls   ✅ 完整   BIFF 解析器支持旧版 Excel 工作簿
+//	.txt   ✅ 表格   按首行分隔符解析制表符或逗号分隔的题目表格
+//	.xml   ✅ 完整   标准库 encoding/xml
+//	.html  ✅ 表格   提取 HTML table 行列
 //
 // # 部分成功语义（107 Q13b 选 A）
 //
@@ -64,9 +60,12 @@ const QuestionImportMaxRows = DefaultImportMaxRows
 
 // 导入资源标识。与导出共用同一套命名（题库 questions / 黑名单 blacklist / 用户 users）。
 const (
-	ImportResourceQuestions = ExportResourceQuestions
-	ImportResourceBlacklist = ExportResourceBlacklist
-	ImportResourceUsers     = ExportResourceUsers
+	ImportResourceQuestions      = ExportResourceQuestions
+	ImportResourceBlacklist      = ExportResourceBlacklist
+	ImportResourceWhitelist      = ExportResourceWhitelist
+	ImportResourceUsers          = ExportResourceUsers
+	ImportResourceIPLocations    = ExportResourceIPLocations
+	ImportResourcePhoneLocations = ExportResourcePhoneLocations
 )
 
 // 导入格式。
@@ -75,6 +74,9 @@ const (
 	ImportFormatJSON  = "json"
 	ImportFormatXlsx  = "xlsx"
 	ImportFormatXls   = "xls"
+	ImportFormatXML   = "xml"
+	ImportFormatHTML  = "html"
+	ImportFormatTXT   = "txt"
 	ImportFormatUnset = ""
 )
 
@@ -92,11 +94,8 @@ var (
 	ErrImportResourceUnsupported = errors.New("不支持的导入资源")
 	// ErrImportFormatUnsupported 格式无法识别（无扩展名 / 其它扩展名）。
 	ErrImportFormatUnsupported = errors.New("不支持的导入格式")
-	// ErrImportXlsUnsupported 真 xls（BIFF）无法解析。
-	//
-	// 文案必须含「请另存为 xlsx」：这是用户唯一能立刻执行的动作。
-	// 不要改成「请联系管理员」——管理员也没有别的办法（缺的是解析器依赖）。
-	ErrImportXlsUnsupported = errors.New("暂不支持旧版 .xls（BIFF）格式，请另存为 xlsx 后重试")
+	// ErrImportXlsUnsupported 表示文件内容不是可解析的 XLS 工作簿。
+	ErrImportXlsUnsupported = errors.New("无法解析旧版 .xls 文件，请确认文件有效")
 	// ErrImportFileEmpty 文件为空 / 只有表头。
 	ErrImportFileEmpty = errors.New("导入文件没有数据行")
 	// ErrImportHeaderInvalid 表头缺必填列。
@@ -172,6 +171,12 @@ func DetectImportFormat(filename string, content []byte) (string, error) {
 		return ImportFormatXlsx, nil
 	case strings.HasSuffix(lower, ".xls"):
 		return ImportFormatXls, nil
+	case strings.HasSuffix(lower, ".xml"):
+		return ImportFormatXML, nil
+	case strings.HasSuffix(lower, ".html"), strings.HasSuffix(lower, ".htm"):
+		return ImportFormatHTML, nil
+	case strings.HasSuffix(lower, ".txt"):
+		return ImportFormatTXT, nil
 	}
 	// 扩展名缺失或不认识 → 看内容。
 	if len(content) == 0 {
@@ -190,10 +195,13 @@ func DetectImportFormat(filename string, content []byte) (string, error) {
 			return ImportFormatJSON, nil
 		}
 		if looksLikeHTMLTable(content) {
-			return ImportFormatXls, nil
+			return ImportFormatHTML, nil
+		}
+		if bytes.HasPrefix(trimmed, []byte("<?xml")) || bytes.HasPrefix(trimmed, []byte("<questions")) {
+			return ImportFormatXML, nil
 		}
 	}
-	return ImportFormatUnset, fmt.Errorf("%w：请选择 .csv / .json / .xlsx / .xls 文件", ErrImportFormatUnsupported)
+	return ImportFormatUnset, fmt.Errorf("%w：请选择 .json / .xlsx / .xls / .csv / .xml / .html / .txt 文件", ErrImportFormatUnsupported)
 }
 
 // ole2Magic 是 OLE2 复合文档（真 .xls 的容器）的 8 字节魔数。
@@ -231,9 +239,40 @@ func ParseImportRows(format string, content []byte) ([]string, [][]string, error
 		return parseImportXlsx(content)
 	case ImportFormatXls:
 		return parseLegacyXls(content)
+	case ImportFormatXML:
+		return parseImportXML(content)
+	case ImportFormatHTML:
+		return parseImportHTMLTable(content)
+	case ImportFormatTXT:
+		return parseImportTextTable(content)
 	default:
 		return nil, nil, fmt.Errorf("%w：%q", ErrImportFormatUnsupported, format)
 	}
+}
+
+// parseImportTextTable accepts structured UTF-8 TSV or CSV text files. It does
+// not guess at free-form prose, so every accepted TXT file has an explicit header.
+func parseImportTextTable(content []byte) ([]string, [][]string, error) {
+	text := bytes.TrimPrefix(content, []byte("\uFEFF"))
+	if len(bytes.TrimSpace(text)) == 0 {
+		return nil, nil, ErrImportFileEmpty
+	}
+	firstLine := text
+	if newline := bytes.IndexByte(firstLine, '\n'); newline >= 0 {
+		firstLine = firstLine[:newline]
+	}
+	delimiter := rune(',')
+	if bytes.Contains(firstLine, []byte("\t")) {
+		delimiter = '\t'
+	}
+	reader := csv.NewReader(bytes.NewReader(text))
+	reader.Comma = delimiter
+	reader.FieldsPerRecord = 0
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, nil, fmt.Errorf("解析 TXT 表格失败：%w", err)
+	}
+	return normalizeImportTable(records)
 }
 
 // parseImportCSV 解析 CSV。
@@ -419,24 +458,8 @@ func parseImportXlsx(content []byte) ([]string, [][]string, error) {
 	return normalizeImportTable(records)
 }
 
-// parseLegacyXls 是 .xls 的「尽力」分支（117 §4.5）。
-//
-// 三层判定，全部是真实世界里会遇到的形态：
-//
-//  1. ZIP 魔数（PK）→ 其实是改了扩展名的 xlsx，直接交给 excelize。**真正解析成功**。
-//  2. HTML 表格 → Excel 的「单一文件网页」另存为 .xls。**真正解析成功**。
-//  3. OLE2 复合文档（真 BIFF8）→ 返回 ErrImportXlsUnsupported（含「请另存为 xlsx」）。
-//
-// 第 3 支为什么不硬啃：BIFF8 的 SST / LABELSST / RK / MULRK 记录解析要几百行
-// 二进制代码，而本仓库**没有** `extrame/xls` 这类成熟解析器依赖（go.mod 里没有）。
-// 自己手写一个既无法覆盖真实文件（测试夹具也造不出来），又会在生产上静默读错单元格 ——
-// 「看起来在测、实际测不出」比明确报错糟得多。缺依赖已按要求上报 captain，不在此处自行添加。
-//
-// 另：本轮多名成员并行开发，改动 go.mod 会造成合并冲突 —— 这也是不引入该依赖的
-// 工程理由（captain 2026-11-13 拍板）。**这条理由有时效性**：并行期结束后它就不成立，
-// 届时若确实需要真 BIFF 支持（有真实用户拿旧 .xls 来导），应当**重新评估**是否引入
-// `extrame/xls`，而不是把「并行冲突」当成永久结论。判据是「有没有真实文件需要解析」，
-// 不是这条注释本身。
+// parseLegacyXls handles real OLE2/BIFF workbooks, ZIP-based XLSX files
+// mislabeled as .xls, and HTML tables saved with an .xls suffix.
 func parseLegacyXls(content []byte) ([]string, [][]string, error) {
 	if len(content) == 0 {
 		return nil, nil, fmt.Errorf("%w：%w", ErrImportXlsUnsupported, ErrImportFileEmpty)
@@ -448,9 +471,76 @@ func parseLegacyXls(content []byte) ([]string, [][]string, error) {
 		return parseImportHTMLTable(content)
 	}
 	if len(content) >= 8 && bytes.Equal(content[:8], ole2Magic) {
-		return nil, nil, ErrImportXlsUnsupported
+		workbook, err := legacyxls.OpenReader(bytes.NewReader(content), "utf-8")
+		if err != nil {
+			return nil, nil, fmt.Errorf("解析 xls 失败：%w", err)
+		}
+		if workbook.NumSheets() == 0 {
+			return nil, nil, ErrImportFileEmpty
+		}
+		sheet := workbook.GetSheet(0)
+		if sheet == nil {
+			return nil, nil, ErrImportFileEmpty
+		}
+		rows := make([][]string, 0, int(sheet.MaxRow)+1)
+		for rowIndex := 0; rowIndex <= int(sheet.MaxRow); rowIndex++ {
+			row := sheet.Row(rowIndex)
+			if row == nil {
+				rows = append(rows, nil)
+				continue
+			}
+			cells := make([]string, row.LastCol()+1)
+			for columnIndex := range cells {
+				cells[columnIndex] = row.Col(columnIndex)
+			}
+			rows = append(rows, cells)
+		}
+		return normalizeImportTable(rows)
 	}
 	return nil, nil, ErrImportXlsUnsupported
+}
+
+// parseImportXML parses a question list in either a <questions> root or as
+// repeated <question> records. Each question's child elements map to the same
+// normalized import columns used by CSV and JSON.
+func parseImportXML(content []byte) ([]string, [][]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(content))
+	decoder.Strict = true
+	var document struct {
+		Items []struct {
+			Question   string `xml:"question"`
+			Type       string `xml:"type"`
+			Options    string `xml:"options"`
+			Answer     string `xml:"answer"`
+			CourseName string `xml:"course_name"`
+			Extra      string `xml:"extra"`
+			SourceName string `xml:"source_name"`
+		} `xml:"question"`
+		Rows []struct {
+			Question   string `xml:"question"`
+			Type       string `xml:"type"`
+			Options    string `xml:"options"`
+			Answer     string `xml:"answer"`
+			CourseName string `xml:"course_name"`
+			Extra      string `xml:"extra"`
+			SourceName string `xml:"source_name"`
+		} `xml:"row"`
+	}
+	if err := decoder.Decode(&document); err != nil {
+		return nil, nil, fmt.Errorf("解析 XML 失败：%w", err)
+	}
+	items := document.Items
+	if len(items) == 0 {
+		items = document.Rows
+	}
+	if len(items) == 0 {
+		return nil, nil, ErrImportFileEmpty
+	}
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, []string{item.Question, item.Type, item.Options, item.Answer, item.CourseName, item.Extra, item.SourceName})
+	}
+	return []string{"question", "type", "options", "answer", "course_name", "extra", "source_name"}, rows, nil
 }
 
 // parseImportHTMLTable 从 HTML 表格里抽出行（伪 .xls）。
@@ -615,7 +705,7 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 	}
 	resource := strings.ToLower(strings.TrimSpace(opts.Resource))
 	switch resource {
-	case ImportResourceQuestions, ImportResourceBlacklist, ImportResourceUsers:
+	case ImportResourceQuestions, ImportResourceBlacklist, ImportResourceWhitelist, ImportResourceUsers, ImportResourceIPLocations, ImportResourcePhoneLocations, ImportResourceSensitiveImages, ImportResourceOCRCache:
 	default:
 		return ImportResult{}, fmt.Errorf("%w: %q", ErrImportResourceUnsupported, opts.Resource)
 	}
@@ -626,6 +716,18 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 			return ImportResult{}, err
 		}
 		format = detected
+	}
+	if resource == ImportResourceIPLocations || resource == ImportResourcePhoneLocations {
+		return importManagementLocations(db, opts, resource, format)
+	}
+	if resource == ImportResourceSensitiveImages {
+		return importSensitiveImages(db, opts, format)
+	}
+	if resource == ImportResourceOCRCache {
+		return importOCRCacheRows(db, opts, format)
+	}
+	if resource == ImportResourceBlacklist || resource == ImportResourceWhitelist {
+		return importManagementRules(db, opts, resource, format)
 	}
 	header, rows, err := ParseImportRows(format, opts.Content)
 	if err != nil {
@@ -644,120 +746,11 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 	}
 
 	switch resource {
-	case ImportResourceBlacklist:
-		return importBlacklistRows(db, opts, index, rows, now)
 	case ImportResourceQuestions:
 		return importQuestionRows(db, opts, index, rows)
 	default:
 		return importUserRows(db, opts, index, rows, now)
 	}
-}
-
-// importBlacklistRows 导入黑名单（111 §7.5 的模板：value,reason,expires_at）。
-//
-// 复用 CreateBlacklistEntryWithDB：归一化、校验、唯一性都在那一处，
-// 导入路径绝不能自己再写一遍（两份实现必然分叉，最终「导入能进、手工进不去」）。
-func importBlacklistRows(db *gorm.DB, opts ImportDataOptions, index map[string]int, rows [][]string, now func() time.Time) (ImportResult, error) {
-	if err := requireImportColumns(index, []string{"value"}); err != nil {
-		return ImportResult{}, err
-	}
-	result := ImportResult{Total: len(rows), Details: make([]ImportRowResult, 0, len(rows))}
-	// 本批内已出现的 (kind, value) 用于区分「已存在」与「本批内重复」两种跳过原因。
-	seen := make(map[string]int, len(rows))
-	// 模板列：value / reason / expires_at / kind / match_type。
-	const createdBySystem = 0
-
-	for i, row := range rows {
-		rowNo := i + 2 // 1 基且跳过表头，与用户在 Excel 里看到的行号一致
-		value := importCell(row, index, "value")
-		entry := ImportRowResult{Row: rowNo, Key: value}
-		if value == "" {
-			entry.Result = ImportRowFailed
-			entry.Reason = "value 不能为空"
-			result.Details = append(result.Details, entry)
-			result.Failed++
-			continue
-		}
-		kind := strings.ToLower(importCell(row, index, "kind"))
-		if kind == "" {
-			// 推断必须**严格**：猜错方向的代价是「abc 被当成微信 OpenID 建进黑名单」，
-			// 它永远匹配不到任何真实请求，而且运营以为已经拉黑了。
-			// 因此只接受形态无歧义的两类（IP / 11 位大陆手机号），
-			// 其余一律要求填 kind 列 —— 明确报错比静默建错规则好。
-			inferred, inferErr := inferBlacklistKindForImport(value)
-			if inferErr != nil {
-				entry.Result = ImportRowFailed
-				entry.Reason = inferErr.Error()
-				result.Details = append(result.Details, entry)
-				result.Failed++
-				continue
-			}
-			kind = inferred
-		}
-		matchType := strings.ToLower(importCell(row, index, "match_type"))
-		reason := importCell(row, index, "reason")
-		if reason == "" {
-			reason = "批量导入"
-		}
-		expiresAt, expiresErr := parseImportExpiresAt(importCell(row, index, "expires_at"))
-		if expiresErr != nil {
-			entry.Result = ImportRowFailed
-			entry.Reason = expiresErr.Error()
-			result.Details = append(result.Details, entry)
-			result.Failed++
-			continue
-		}
-
-		seenKey := kind + "\x00" + value
-		if firstRow, duplicated := seen[seenKey]; duplicated {
-			entry.Result = ImportRowSkipped
-			entry.Reason = fmt.Sprintf("本批内重复（第 %d 行已处理）", firstRow)
-			result.Details = append(result.Details, entry)
-			result.Skipped++
-			continue
-		}
-
-		if opts.DryRun {
-			entry.Result = ImportRowCreated
-			entry.Reason = "预览模式，未落库"
-			result.Details = append(result.Details, entry)
-			result.Succeeded++
-			seen[seenKey] = rowNo
-			continue
-		}
-
-		_, createErr := CreateBlacklistEntryWithDB(db, CreateBlacklistEntryInput{
-			Kind:      kind,
-			Pattern:   value,
-			MatchType: matchType,
-			Reason:    reason,
-			// 导入的规则一律启用：运营导进来就是为了拦人。
-			Enabled:   true,
-			ExpiresAt: expiresAt,
-			CreatedBy: int32(createdBySystem),
-		})
-		if createErr != nil {
-			if isDuplicateBlacklistError(createErr) {
-				entry.Result = ImportRowSkipped
-				entry.Reason = "已存在相同规则"
-				result.Details = append(result.Details, entry)
-				result.Skipped++
-				seen[seenKey] = rowNo
-				continue
-			}
-			entry.Result = ImportRowFailed
-			entry.Reason = createErr.Error()
-			result.Details = append(result.Details, entry)
-			result.Failed++
-			continue
-		}
-		entry.Result = ImportRowCreated
-		result.Details = append(result.Details, entry)
-		result.Succeeded++
-		seen[seenKey] = rowNo
-	}
-	result.ErrorReport = buildImportErrorReport(result.Details)
-	return result, nil
 }
 
 // inferBlacklistKindForImport 按值的形态推断 kind（导入侧，**只认无歧义的两类**）。
@@ -1321,7 +1314,7 @@ func buildImportErrorReport(details []ImportRowResult) []byte {
 
 // ImportResourceList 返回支持导入的资源标识（升序）。
 func ImportResourceList() []string {
-	return []string{ImportResourceBlacklist, ImportResourceQuestions, ImportResourceUsers}
+	return []string{ImportResourceBlacklist, ImportResourceIPLocations, ImportResourceOCRCache, ImportResourcePhoneLocations, ImportResourceQuestions, ImportResourceSensitiveImages, ImportResourceUsers, ImportResourceWhitelist}
 }
 
 // ImportTemplateCSV 返回某资源的导入模板（只有表头，111 §4.1 Q12-h 的「下载模板」按钮）。
@@ -1331,12 +1324,18 @@ func ImportResourceList() []string {
 func ImportTemplateCSV(resource string) ([]byte, error) {
 	var header []string
 	switch strings.ToLower(strings.TrimSpace(resource)) {
-	case ImportResourceBlacklist:
-		header = []string{"kind", "value", "match_type", "reason", "expires_at"}
+	case ImportResourceBlacklist, ImportResourceWhitelist:
+		header = managementRuleHeaders()
 	case ImportResourceQuestions:
 		header = []string{"question", "type", "options", "answer", "course_name", "extra", "source_name"}
 	case ImportResourceUsers:
 		header = []string{"username", "password", "phone", "level_rank", "balance", "gift_balance", "remark"}
+	case ImportResourceIPLocations, ImportResourcePhoneLocations:
+		header = managementLocationHeaders()
+	case ImportResourceSensitiveImages:
+		header = sensitiveImageTransferHeaders()
+	case ImportResourceOCRCache:
+		header = ocrTransferHeaders()
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrImportResourceUnsupported, resource)
 	}
@@ -1351,4 +1350,51 @@ func ImportTemplateCSV(resource string) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+// ImportTemplateData serializes a template using the selected format. CSV keeps
+// legacy templates for all resources; other formats are supported for questions.
+func ImportTemplateData(resource, format string) ([]byte, error) {
+	resource = strings.ToLower(strings.TrimSpace(resource))
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = ExportFormatCSV
+	}
+	if format == ExportFormatCSV {
+		return ImportTemplateCSV(resource)
+	}
+	if resource != ImportResourceQuestions {
+		if format == ExportFormatJSON || format == ExportFormatXlsx {
+			content, err := ImportTemplateCSV(resource)
+			if err != nil {
+				return nil, err
+			}
+			header, err := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(content, []byte("\uFEFF")))).Read()
+			if err != nil {
+				return nil, err
+			}
+			columns := make([]ExportColumn, 0, len(header))
+			for _, name := range header {
+				columns = append(columns, exportColumn(name))
+			}
+			return serializeExportRows(columns, [][]string{make([]string, len(columns))}, format)
+		}
+		return nil, fmt.Errorf("%w：当前格式的模板仅支持题库", ErrImportResourceUnsupported)
+	}
+	switch format {
+	case ExportFormatJSON, ExportFormatXlsx, ExportFormatXML, ExportFormatHTML:
+	default:
+		return nil, fmt.Errorf("不支持的模板格式：%s", format)
+	}
+	columns := make([]ExportColumn, 0, 7)
+	for _, header := range []string{"question", "type", "options", "answer", "course_name", "extra", "source_name"} {
+		columns = append(columns, exportColumn(header))
+	}
+	row := make([]string, len(columns))
+	for i, column := range columns {
+		if column.Header == "options" || column.Header == "answer" {
+			row[i] = "[]"
+		}
+	}
+	return serializeExportRows(columns, [][]string{row}, format)
 }

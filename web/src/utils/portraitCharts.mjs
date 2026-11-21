@@ -22,6 +22,12 @@
 // 本文件必须保持**零依赖**（不 import vue / echarts / ant-design），
 // 这样 `node --test` 能在没有任何 node_modules 的环境里跑。
 
+import { buildRegisterSourceLabel } from './userPortalHelpers.mjs'
+
+function portraitRegisterSourceLabel(item) {
+  return buildRegisterSourceLabel(item.source, item.label || item.source || '未知来源')
+}
+
 /** 画像的两个视角。与后端 JSON 的 scope 字段同值。 */
 export const PORTRAIT_SCOPE_OVERALL = 'overall'
 export const PORTRAIT_SCOPE_USER = 'user'
@@ -111,6 +117,12 @@ export function buildPortraitCharts(portrait) {
     weekdays: { ...weekdays, title: '时间段分布（按星期）' },
     regions: { ...regions, title: '区域分布' },
     billingTypes: { ...billingTypes, title: '消费类型分布' },
+    daily: buildPortraitSeries(data.daily, { labelKey: 'date' }),
+    tickets: buildPortraitSeries(data.tickets),
+    registerSources: buildPortraitSeries(data.registerSources, { label: portraitRegisterSourceLabel }),
+    registerRegions: buildPortraitSeries(data.registerRegions),
+    userStatuses: buildPortraitSeries(data.userStatuses),
+    userRoles: buildPortraitSeries(data.userRoles),
   }
 }
 
@@ -143,8 +155,66 @@ export function buildPortraitTiles(portrait, formatters) {
   // 整体画像才有的两张卡：单用户视角下后端返回 null，这里按 missing 处理，
   // 页面用 `showOverallOnly` 决定是否渲染（而不是渲染成 0）。
   tiles.unshift(tile('userCount', '用户总数', totals.userCount, formatCount))
-  tiles.push(tile('activeUserCount', '有过账单的用户数', totals.activeUserCount, formatCount))
+  tiles.push(tile('activeUserCount', '有账单用户数', totals.activeUserCount, formatCount))
   return tiles
+}
+
+/** 全站概览专用文案，保留既有逐用户画像卡片文案兼容。 */
+export function buildOverallPortraitTiles(portrait, formatters) {
+  return buildPortraitTiles(portrait, formatters).map(tile => ({
+    ...tile,
+    title: ({
+      recordCount: '账单记录数',
+      amount: '账单金额合计（全部类型）',
+      consumptionCount: '支出类账单数',
+      ticketCount: '工单总数',
+      activeUserCount: '有账单用户数',
+    })[tile.key] || tile.title,
+  }))
+}
+
+/**
+ * buildPortraitBreakdownTables：把全站 overview 的真实聚合字段整理成可扫描的表格。
+ * 不补数据、不二次聚合；金额和 IP 数仅展示后端已经返回的字段。
+ */
+export function buildPortraitBreakdownTables(portrait) {
+  const data = portrait && typeof portrait === 'object' ? portrait : {}
+  const table = (key, title, items, columns, mapRow) => {
+    const source = Array.isArray(items) ? items : []
+    return {
+      key,
+      title,
+      columns,
+      rows: source.filter(item => item && typeof item === 'object').map(mapRow),
+      empty: !source.some(item => item && typeof item === 'object'),
+    }
+  }
+
+  return [
+    table('billingTypes', '账单类型', data.billingTypes, [
+      { key: 'label', title: '类型' }, { key: 'direction', title: '收支' },
+      { key: 'count', title: '记录数', align: 'right' }, { key: 'amount', title: '金额', align: 'right', money: true },
+    ], item => ({
+      label: item.label || item.type || '未知类型',
+      direction: item.direction === 'income' ? '收入' : item.direction === 'expense' ? '支出' : '未知',
+      count: item.count,
+      amount: item.amount,
+    })),
+    table('regions', '账单来源地区', data.regions, [
+      { key: 'label', title: '地区' }, { key: 'count', title: '账单数', align: 'right' },
+      { key: 'amount', title: '金额', align: 'right', money: true }, { key: 'ipCount', title: 'IP 数', align: 'right' },
+    ], item => ({ label: item.label || item.region || '未知地区', count: item.count, amount: item.amount, ipCount: item.ipCount })),
+    table('tickets', '工单状态', data.tickets, [
+      { key: 'label', title: '状态' }, { key: 'count', title: '工单数', align: 'right' },
+    ], item => ({ label: item.label || item.status || '未知状态', count: item.count })),
+    table('registerSources', '注册来源', data.registerSources, [
+      { key: 'label', title: '来源' }, { key: 'count', title: '用户数', align: 'right' },
+    ], item => ({ label: portraitRegisterSourceLabel(item), count: item.count })),
+    table('registerRegions', '注册地区', data.registerRegions, [
+      { key: 'label', title: '地区' }, { key: 'count', title: '用户数', align: 'right' },
+      { key: 'ipCount', title: 'IP 数', align: 'right' },
+    ], item => ({ label: item.label || item.region || '未知地区', count: item.count, ipCount: item.ipCount })),
+  ]
 }
 
 /**

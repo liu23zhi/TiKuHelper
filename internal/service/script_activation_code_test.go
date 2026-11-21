@@ -372,7 +372,7 @@ func TestListAdminScriptActivationCodeUsagesReturnsRealRecords(t *testing.T) {
 	for _, usage := range usages {
 		kinds[usage.Kind] = usage
 	}
-	for _, required := range []string{"redeem", "download", "run"} {
+	for _, required := range []string{"redeem", "bind", "run"} {
 		if _, ok := kinds[required]; !ok {
 			t.Fatalf("使用记录缺少 %q，实际 kinds=%v", required, keysOfActivationUsage(kinds))
 		}
@@ -383,8 +383,11 @@ func TestListAdminScriptActivationCodeUsagesReturnsRealRecords(t *testing.T) {
 	if kinds["run"].ScriptName != "题库脚本" {
 		t.Fatalf("运行记录必须带脚本名，实际 %q", kinds["run"].ScriptName)
 	}
-	if !kinds["download"].At.Equal(boundAt) {
-		t.Fatalf("下载记录时间应等于 ScriptBoundAt，实际 %v want %v", kinds["download"].At, boundAt)
+	if !kinds["bind"].At.Equal(boundAt) {
+		t.Fatalf("绑定记录时间应等于 ScriptBoundAt，实际 %v want %v", kinds["bind"].At, boundAt)
+	}
+	if _, ok := kinds["download"]; ok {
+		t.Fatal("绑定脚本不应生成下载记录")
 	}
 }
 

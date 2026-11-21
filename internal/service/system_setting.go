@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -58,17 +59,24 @@ const SmoothAIStagedTokenMultiplierSettingKey = "smooth_ai_staged_token_multipli
 const AIStagedTokenMultiplierPointsSettingKey = "ai_staged_token_multiplier_points"
 const MinRechargeAmountSettingKey = "min_recharge_amount"
 
-// 商业化功能总开关。两者默认 false：未获批准的方案不得因为「代码已经写了」
-// 而自动生效。
-//
-//   - RechargePromotionEnabledSettingKey 控制充值阶梯赠送（六档 8.8/28/88/288/888/1688）。
-//     关闭时充值只按实付入账，不产生赠金，也不写赠送流水。
-//   - DeviceLimitEnabledSettingKey 控制账户设备池上限（1/2/3/5/10/20）。
-//     关闭时不登记设备、不校验安装，所有有效 Key 都按原逻辑可用。
-//
-// 缺记录、缺字段、解析失败一律按关闭处理：配置丢失不能等于悄悄开启。
+// 兼容旧客户端的历史字段。两个功能不再由系统设置开关控制：
+// 充值赠送是否实际发放由充值档位表决定（没有可用档位即不赠送），
+// 设备池上限始终参与判定（等级的 device_limit=0 表示该等级不限设备）。
+// 保留键名和 DTO 字段是为了兼容仍会提交旧字段的客户端，但读写时一律归一化为 true。
 const RechargePromotionEnabledSettingKey = "recharge_promotion_enabled"
 const DeviceLimitEnabledSettingKey = "device_limit_enabled"
+
+// DeviceIdleRevokeAfterDaysSettingKey 是管理员配置的闲置自动移除上限。
+// 0 表示关闭自动移除；普通用户的个人设置只能在 0..该值内调整。
+const DeviceIdleRevokeAfterDaysSettingKey = "device_idle_revoke_after_days"
+const DeviceIdleRevokeAllowUserDisableSettingKey = "device_idle_revoke_allow_user_disable"
+const DefaultDeviceIdleRevokeAfterDays = 10
+
+var ErrInvalidDeviceIdleRevokeDays = errors.New("设备自动移除时间必须为 0 至 3650 天的整数")
+
+func UserDeviceIdleRevokeAfterDaysKey(userID int32) string {
+	return fmt.Sprintf("device_idle_revoke_after_days_user_%d", userID)
+}
 
 // BlacklistEnabledSettingKey / DefaultBlacklistEnabled / GetBlacklistEnabledWithDB
 // 定义在 blacklist.go（黑名单规格的唯一落点），这里只把它接进系统设置读写。
@@ -88,15 +96,12 @@ const ReferralRebateEnabledSettingKey = "referral_rebate_enabled"
 // 比例在产生返佣时快照进 referral_rebates.rate，改配置不回溯已产生的记录。
 const ReferralRebateRateSettingKey = "referral_rebate_rate"
 
-// 评价返现的四项配置。全部默认关闭/保守值：缺表、缺记录、值非法一律回落默认，
-// 其中 enabled 必须回落 false —— 配置读不出来绝不能变成「悄悄开活动」。
+// 评价返现保留历史配置键；当前开放状态由活动表的 enabled 决定。
+// 次数、金额及置信度的缺省值仍保持保守处理。
 //
 // 规则表本身**不塞进 system_settings**（条数不定），走 review_rebate_rules 表 + 管理页。
 const (
-	// ReviewRebateEnabledSettingKey 是评价返现总开关，默认 false。
-	//
-	// 关闭时：提交接口拒绝、Agent 打分拒绝、管理端决策接口拒绝。
-	// 关闭只影响「是否继续产生新数据」，已存在的 claim/award 行保持原样可查。
+	// ReviewRebateEnabledSettingKey 仅保留旧配置兼容，不能覆盖活动状态。
 	ReviewRebateEnabledSettingKey = "review_rebate_enabled"
 	// ReviewRebateMaxClaimsPerUserSettingKey 是每账号累计提交次数上限，默认 3。
 	ReviewRebateMaxClaimsPerUserSettingKey = "review_rebate_max_claims_per_user"
@@ -219,9 +224,11 @@ type SystemSettingDetail struct {
 	MaxAIWebReads         int     `json:"maxAIWebReads"`
 	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
 	MinRechargeAmount     float64 `json:"minRechargeAmount"`
-	// 商业化总开关，默认关闭。语义见 RechargePromotionEnabledSettingKey 注释。
-	RechargePromotionEnabled bool `json:"rechargePromotionEnabled"`
-	DeviceLimitEnabled       bool `json:"deviceLimitEnabled"`
+	// 兼容旧客户端的只读字段；服务端始终返回 true。
+	RechargePromotionEnabled         bool `json:"rechargePromotionEnabled"`
+	DeviceLimitEnabled               bool `json:"deviceLimitEnabled"`
+	DeviceIdleRevokeAfterDays        int  `json:"deviceIdleRevokeAfterDays"`
+	DeviceIdleRevokeAllowUserDisable bool `json:"deviceIdleRevokeAllowUserDisable"`
 	// 邀请返佣：总开关默认关闭，比例默认 0（0%–100%，上界开区间）。
 	ReferralRebateEnabled bool    `json:"referralRebateEnabled"`
 	ReferralRebateRate    float64 `json:"referralRebateRate"`
@@ -298,10 +305,11 @@ type UpdateSystemSettingInput struct {
 	MaxAIWebReads         int     `json:"maxAIWebReads"`
 	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
 	MinRechargeAmount     float64 `json:"minRechargeAmount"`
-	// 指针语义：nil = 旧客户端未提交该字段，保持库中现值；非 nil 才覆盖。
-	// 若用裸 bool，任何省略字段的旧客户端都会把开关静默关掉。
-	RechargePromotionEnabled *bool `json:"rechargePromotionEnabled"`
-	DeviceLimitEnabled       *bool `json:"deviceLimitEnabled"`
+	// 兼容旧客户端的请求字段；已不再控制功能，服务端忽略其值并归一化为 true。
+	RechargePromotionEnabled         *bool `json:"rechargePromotionEnabled"`
+	DeviceLimitEnabled               *bool `json:"deviceLimitEnabled"`
+	DeviceIdleRevokeAfterDays        *int  `json:"deviceIdleRevokeAfterDays"`
+	DeviceIdleRevokeAllowUserDisable *bool `json:"deviceIdleRevokeAllowUserDisable"`
 	// 邀请返佣：nil = 本次没有提交该字段 = 保持现值。
 	// 布尔一律用指针，避免老前端（不认识这两个字段）把开关静默关掉。
 	ReferralRebateEnabled *bool    `json:"referralRebateEnabled"`
@@ -497,6 +505,8 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		MinRechargeAmount:                 GetMinRechargeAmountWithDB(db),
 		RechargePromotionEnabled:          GetRechargePromotionEnabledWithDB(db),
 		DeviceLimitEnabled:                GetDeviceLimitEnabledWithDB(db),
+		DeviceIdleRevokeAfterDays:         GetDeviceIdleRevokeAfterDaysWithDB(db),
+		DeviceIdleRevokeAllowUserDisable:  GetDeviceIdleRevokeAllowUserDisableWithDB(db),
 		ReferralRebateEnabled:             GetReferralRebateEnabledWithDB(db),
 		ReferralRebateRate:                GetReferralRebateRateWithDB(db),
 		ReviewRebateEnabled:               GetReviewRebateEnabledWithDB(db),
@@ -525,6 +535,9 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 }
 
 func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput) (SystemSettingDetail, error) {
+	if input.DeviceIdleRevokeAfterDays != nil && (*input.DeviceIdleRevokeAfterDays < 0 || *input.DeviceIdleRevokeAfterDays > 3650) {
+		return SystemSettingDetail{}, ErrInvalidDeviceIdleRevokeDays
+	}
 	if err := validateAISearchCountInputs(input.MaxAISearchModelCalls, input.MaxAISearches, input.MaxAISearchRetries, input.MaxAIWebReads); err != nil {
 		return SystemSettingDetail{}, err
 	}
@@ -608,9 +621,11 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		MaxAIWebReads:         resolveMaxAISearchBudget(db, input.MaxAIWebReads, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:   resolveWebReadPrice(db, input.WebReadPricePerCall),
 		MinRechargeAmount:     minRechargeAmount,
-		// 省略字段保持库中现值：旧客户端（或只改其它字段的请求）不会误关开关。
-		RechargePromotionEnabled: resolveBoolSettingInput(db, input.RechargePromotionEnabled, RechargePromotionEnabledSettingKey),
-		DeviceLimitEnabled:       resolveBoolSettingInput(db, input.DeviceLimitEnabled, DeviceLimitEnabledSettingKey),
+		// 两个历史开关已移除，功能始终启用；保留字段仅为兼容旧客户端请求。
+		RechargePromotionEnabled:         true,
+		DeviceLimitEnabled:               true,
+		DeviceIdleRevokeAfterDays:        resolveDeviceIdleRevokeAfterDays(db, input.DeviceIdleRevokeAfterDays),
+		DeviceIdleRevokeAllowUserDisable: resolveDeviceIdleRevokeAllowUserDisable(db, input.DeviceIdleRevokeAllowUserDisable),
 		// nil = 未提交 = 保持现值；读取失败一律 false / 0（不能让配置读错变成开活动）。
 		ReferralRebateEnabled: resolveBoolSettingInput(db, input.ReferralRebateEnabled, ReferralRebateEnabledSettingKey),
 		ReferralRebateRate:    referralRebateRate,
@@ -686,8 +701,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{MaxAIWebReadsSettingKey, strconv.Itoa(normalized.MaxAIWebReads), "AI 搜索网页读取最大次数"},
 		{WebReadPricePerCallSettingKey, strconv.FormatFloat(normalized.WebReadPricePerCall, 'f', -1, 64), "网页读取单价（元/次）"},
 		{MinRechargeAmountSettingKey, formatRechargeSettingAmount(normalized.MinRechargeAmount), "充值最低金额（元）"},
-		{RechargePromotionEnabledSettingKey, strconv.FormatBool(normalized.RechargePromotionEnabled), "启用充值阶梯赠送（默认关闭）"},
-		{DeviceLimitEnabledSettingKey, strconv.FormatBool(normalized.DeviceLimitEnabled), "启用账户设备池上限（默认关闭）"},
+		{RechargePromotionEnabledSettingKey, "true", "充值阶梯赠送由档位配置控制（兼容字段，始终启用）"},
+		{DeviceLimitEnabledSettingKey, "true", "账户设备池上限（兼容字段，始终启用）"},
+		{DeviceIdleRevokeAfterDaysSettingKey, strconv.Itoa(normalized.DeviceIdleRevokeAfterDays), "设备无活跃自动移除天数（0 为关闭）"},
+		{DeviceIdleRevokeAllowUserDisableSettingKey, strconv.FormatBool(normalized.DeviceIdleRevokeAllowUserDisable), "允许用户关闭个人设备自动移除"},
 		{ReferralRebateEnabledSettingKey, strconv.FormatBool(normalized.ReferralRebateEnabled), "启用邀请码与充值返佣（默认关闭）"},
 		{ReferralRebateRateSettingKey, strconv.FormatFloat(normalized.ReferralRebateRate, 'f', -1, 64), "返佣比例（0–1，不含 1）"},
 		{ReviewRebateEnabledSettingKey, strconv.FormatBool(normalized.ReviewRebateEnabled), "启用评价返现（默认关闭）"},
@@ -888,22 +905,21 @@ func SetImageOCRPricePerCallWithDB(db *gorm.DB, requested float64) error {
 }
 
 func GetTikuSearchPricePerCallWithDB(db *gorm.DB) float64 {
-	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+	if db == nil || !db.Migrator().HasTable(&entity.SearchAccountConfig{}) {
 		return DefaultTikuSearchPricePerCall
 	}
-	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, TikuSearchPricePerCallSettingKey, "0"))
-	price, err := strconv.ParseFloat(raw, 64)
-	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+	var config entity.SearchAccountConfig
+	if err := db.Where("provider = ?", "local").First(&config).Error; err != nil {
 		return DefaultTikuSearchPricePerCall
 	}
-	return util.RoundMoney(price)
+	return util.RoundMoney(NormalizeSearchAccountFlatPrice(config.FlatPrice))
 }
 
 func SetTikuSearchPricePerCallWithDB(db *gorm.DB, requested float64) error {
-	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested < 0 {
+	if validateSearchAccountFlatPrice(requested) != nil {
 		return errors.New("本地题库检索单价必须是大于或等于 0 的有效金额")
 	}
-	return saveSystemSettingValue(db, TikuSearchPricePerCallSettingKey, strconv.FormatFloat(util.RoundMoney(requested), 'f', -1, 64), "本地题库检索单价（元/次）")
+	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}}, DoUpdates: clause.Assignments(map[string]any{"flat_price": requested})}).Create(&entity.SearchAccountConfig{Provider: "local", FlatPrice: requested}).Error
 }
 
 type AIStagedTokenBillingSettings struct {
@@ -1060,16 +1076,79 @@ func getBoolSystemSetting(db *gorm.DB, key string) bool {
 	return err == nil && value
 }
 
-// GetRechargePromotionEnabledWithDB 返回充值阶梯赠送开关。默认关闭：
-// 缺表、缺记录、值非法都按关闭处理，不能让配置问题变成「悄悄开活动」。
+// GetRechargePromotionEnabledWithDB 保留旧 API 的读取入口。
+// 充值赠送始终启用，是否发放由当前充值档位表决定；空档位不会发放赠金。
 func GetRechargePromotionEnabledWithDB(db *gorm.DB) bool {
-	return getBoolSystemSetting(db, RechargePromotionEnabledSettingKey)
+	return true
 }
 
-// GetDeviceLimitEnabledWithDB 返回账户设备池开关。默认关闭：
-// 关闭时所有有效 Key 按原逻辑使用，不做设备登记与安装校验。
+// GetDeviceLimitEnabledWithDB 保留旧 API 的读取入口。
+// 设备池上限始终启用；等级 device_limit=0 表示该等级不限设备数。
 func GetDeviceLimitEnabledWithDB(db *gorm.DB) bool {
-	return getBoolSystemSetting(db, DeviceLimitEnabledSettingKey)
+	return true
+}
+
+func GetDeviceIdleRevokeAfterDaysWithDB(db *gorm.DB) int {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultDeviceIdleRevokeAfterDays
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, DeviceIdleRevokeAfterDaysSettingKey, strconv.Itoa(DefaultDeviceIdleRevokeAfterDays)))
+	days, err := strconv.Atoi(raw)
+	if err != nil || days < 0 || days > 3650 {
+		return DefaultDeviceIdleRevokeAfterDays
+	}
+	return days
+}
+
+func GetDeviceIdleRevokeAllowUserDisableWithDB(db *gorm.DB) bool {
+	return getBoolSystemSetting(db, DeviceIdleRevokeAllowUserDisableSettingKey)
+}
+
+func GetUserDeviceIdleRevokeAfterDaysWithDB(db *gorm.DB, userID int32) (int, bool) {
+	maxDays := GetDeviceIdleRevokeAfterDaysWithDB(db)
+	if userID <= 0 || db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return maxDays, false
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, UserDeviceIdleRevokeAfterDaysKey(userID), ""))
+	if raw == "" {
+		return maxDays, false
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil || days < 0 || days > maxDays || (days == 0 && !GetDeviceIdleRevokeAllowUserDisableWithDB(db)) {
+		return maxDays, false
+	}
+	return days, true
+}
+
+func SaveUserDeviceIdleRevokeAfterDaysWithDB(db *gorm.DB, userID int32, days int) error {
+	if userID <= 0 {
+		return errors.New("用户身份无效")
+	}
+	maxDays := GetDeviceIdleRevokeAfterDaysWithDB(db)
+	if days < 0 || days > maxDays {
+		return fmt.Errorf("设备自动移除时间必须在 0 至 %d 天之间", maxDays)
+	}
+	if days == 0 && !GetDeviceIdleRevokeAllowUserDisableWithDB(db) {
+		return errors.New("管理员未允许用户关闭自动移除")
+	}
+	return saveSystemSettingValue(db, UserDeviceIdleRevokeAfterDaysKey(userID), strconv.Itoa(days), "用户自定义设备无活跃自动移除天数")
+}
+
+func resolveDeviceIdleRevokeAfterDays(db *gorm.DB, requested *int) int {
+	if requested == nil {
+		return GetDeviceIdleRevokeAfterDaysWithDB(db)
+	}
+	if *requested < 0 || *requested > 3650 {
+		return GetDeviceIdleRevokeAfterDaysWithDB(db)
+	}
+	return *requested
+}
+
+func resolveDeviceIdleRevokeAllowUserDisable(db *gorm.DB, requested *bool) bool {
+	if requested == nil {
+		return GetDeviceIdleRevokeAllowUserDisableWithDB(db)
+	}
+	return *requested
 }
 
 // resolveBoolSettingInput 处理「省略 = 保持现值」的写入语义。
@@ -1128,10 +1207,12 @@ func resolveBoolSettingInput(db *gorm.DB, requested *bool, key string) bool {
 	return getBoolSystemSetting(db, key)
 }
 
-// GetReviewRebateEnabledWithDB 返回评价返现总开关，默认关闭。
-// 缺表、缺记录、值非法一律按关闭处理：配置读不出来时绝不能变成「悄悄开活动」。
+// GetReviewRebateEnabledWithDB reports the effective activity state. The legacy
+// review_rebate_enabled value remains readable for old configurations but no
+// longer overrides an activity's explicit enabled flag.
 func GetReviewRebateEnabledWithDB(db *gorm.DB) bool {
-	return getBoolSystemSetting(db, ReviewRebateEnabledSettingKey)
+	enabled, err := ReviewRebateAvailabilityWithDB(db)
+	return err == nil && enabled
 }
 
 // GetReviewRebateMaxClaimsPerUserWithDB 返回每账号累计提交次数上限，默认 3。

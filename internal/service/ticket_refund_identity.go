@@ -121,6 +121,25 @@ func validateRefundAttachmentsInTx(tx *gorm.DB, actor entity.User, input CreateT
 	return nil
 }
 
+// HasTicketRefundSignedPayoutEvidenceWithDB identifies the new signed manual
+// flow without treating its immutable QR/signature attachments as legacy proof.
+// Byte integrity is verified through ReadTicketAttachmentWithDB before approval.
+func HasTicketRefundSignedPayoutEvidenceWithDB(db *gorm.DB, refund entity.TicketRefund) (bool, error) {
+	if db == nil || refund.Kind != TicketRefundKindManual || refund.PayoutQrAttachmentID == nil || refund.SignatureAttachmentID == nil ||
+		*refund.PayoutQrAttachmentID <= 0 || *refund.SignatureAttachmentID <= 0 || *refund.PayoutQrAttachmentID == *refund.SignatureAttachmentID ||
+		refund.AgreementSignedAt == nil || strings.TrimSpace(refund.AgreementText) == "" {
+		return false, nil
+	}
+	ticketID := int64(0)
+	if refund.TicketID != nil {
+		ticketID = *refund.TicketID
+	}
+	var count int64
+	err := db.Model(&entity.TicketAttachment{}).Where("id IN ? AND user_id = ? AND ticket_id = ? AND purged_at IS NULL AND byte_size > 0 AND media_type IN ?",
+		[]int64{*refund.PayoutQrAttachmentID, *refund.SignatureAttachmentID}, refund.UserID, ticketID, []string{"image/png", "image/jpeg"}).Count(&count).Error
+	return count == 2, err
+}
+
 // ReadLatestRefundPayoutQrWithDB is only for the password-verified recovery
 // endpoint. Never expose the returned source bytes through the preview endpoint.
 func ReadLatestRefundPayoutQrWithDB(db *gorm.DB, actor entity.User) (int64, string, []byte, error) {

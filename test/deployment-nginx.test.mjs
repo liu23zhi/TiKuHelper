@@ -131,6 +131,7 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
     env: { ...process.env, MSYS_NO_PATHCONV: '1' } }));
   const actual = await readFile(join(run, 'nginx/conf.d/tiku-adapter.conf'), 'utf8');
   assert.ok(actual.includes('server tikuhelper:8060;'), 'probe must replace the actual project service name');
+  assert.equal(actual.split('access_log /var/log/nginx/access.log tiku_safe;').length - 1, 2, 'both listeners must use the production redacted access log');
   await writeFile(join(directory, 'tiku-proxy.inc'), await readFile(join(run, 'nginx/conf.d/tiku-proxy.inc')));
   await writeFile(join(directory, 'trusted-proxies.generated.conf'), '# generated probe\n');
 
@@ -139,6 +140,7 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
     tlsPort = await freePort();
     const config = actual
       .replace('server tikuhelper:8060;', `server 127.0.0.1:${backendPort};`)
+      .replaceAll('/var/log/nginx/access.log', 'logs/access.log')
       .replace('listen 8680;', `listen 127.0.0.1:${nginxPort};`)
       .replace('listen 9043 ssl;', `listen 127.0.0.1:${tlsPort} ssl;`)
       .replaceAll('/etc/nginx/conf.d/tiku-proxy.inc', `${prefix}tiku-proxy.inc`)
@@ -175,5 +177,8 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
       assert.equal(received['x-forwarded-port'], String(encrypted ? tlsPort : nginxPort));
     }
     await stop();
+    const access = await readFile(join(directory, 'logs/access.log'), 'utf8');
+    assert.match(access, /GET \[public-entry\] HTTP\//, 'requests were logged using tiku_safe');
+    assert.ok(!access.includes('/deployment-probe'), 'public route paths stay out of both listeners’ access logs');
   }
 });

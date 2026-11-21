@@ -1,6 +1,6 @@
 package service
 
-// 10 天闲置自动解绑（137 §7，判据 D10 / D11）。
+// 可配置的设备闲置自动解绑；默认 10 天。
 //
 // ## 为什么是「写 revoked_at」而不是删行
 //
@@ -26,12 +26,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// DeviceIdleRevokeAfter 是「多久没活跃就自动解绑」（137 §7：10 天）。
-//
-// ⚠️ 判据 D10 的变异方向是「把 240h 改成 240 分钟」：那会让 10 天变成 4 小时，
-// 正常用户一天内的第二次使用就被解绑。这个常量必须只有一处定义，
-// 任何把阈值写成字面量 240 或 time.Hour*24*10 的地方都会与这里漂移。
-const DeviceIdleRevokeAfter = 240 * time.Hour
+// DeviceIdleRevokeAfter 保留默认时长的兼容常量，实际策略从系统设置读取。
+const DeviceIdleRevokeAfter = time.Duration(DefaultDeviceIdleRevokeAfterDays) * 24 * time.Hour
 
 // DeviceIdleRevokeBatchSize 是单批处理行数（137 §7：分批 500）。
 //
@@ -39,17 +35,13 @@ const DeviceIdleRevokeAfter = 240 * time.Hour
 // 表现为「后台任务跑一次，前台请求全部超时」。500 是 137 指定的值。
 const DeviceIdleRevokeBatchSize = 500
 
-// RunDeviceIdleRevokeOnce 把 last_seen_at < now-240h 且 revoked_at IS NULL 的行
-// 标记为 revoked_reason='idle_10d'，返回本次处理数（137 §7）。
+// RunDeviceIdleRevokeOnce 按管理员上限与用户个人时长标记闲置到期绑定，返回处理数。
 //
 // 语义细节：
 //   - **不删行**，只写 revoked_at + revoked_reason；
 //   - 已撤销的行不重复处理（`revoked_at IS NULL` 条件），因此第二次调用返回 0；
-//   - 分批 500，循环到某批处理数 < 500 为止（说明没有更多可处理行）。
-//     注意：**不能**用「处理数 == 500 就继续」这种写法当终止条件 —— 那会因为
-//     最后一批恰好 500 行而多跑一次空查询（无害但会多一次全表扫描）。
-//     这里用「本批实际影响行数 < 批量」作为终止条件，最后一批正好满 500 时
-//     多跑一次空批，代价可接受且逻辑简单。
+//   - 按 id 分批 500 扫描，未到期或个人关闭自动移除的设备不会阻塞后续批次；
+//   - 更新时再次核对 last_seen_at，防止扫描后设备重新活跃却仍被撤销；
 //   - 表或列不存在时返回 (0, nil)：这是 fail-open 的一部分（设备池是权益限制，
 //     不是安全边界，后台任务更没有理由因为构造差异把服务打红）。
 func RunDeviceIdleRevokeOnce(db *gorm.DB, now time.Time) (int64, error) {
@@ -68,49 +60,73 @@ func RunDeviceIdleRevokeOnce(db *gorm.DB, now time.Time) (int64, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	cutoff := now.Add(-DeviceIdleRevokeAfter)
+	maxDays := GetDeviceIdleRevokeAfterDaysWithDB(db)
+	if maxDays == 0 {
+		return 0, nil
+	}
+	// 用户可以设置比管理员上限更短的时长，候选必须从最短的 1 天取起，
+	// 再逐条按个人策略判断；不能先按管理员天数过滤而漏掉提前到期的设备。
+	minIdle := 24 * time.Hour
 
 	var total int64
+	var lastID int64
+	userDays := map[int32]int{}
 	for {
 		// 先取一批 id 再按 id 更新：直接 `UPDATE ... LIMIT 500` 在 MySQL 上
 		// 合法但 SQLite 不支持（后者需要编译选项），用 id 列表可两方言通用。
-		var ids []int64
+		var candidates []struct {
+			ID       int64     `gorm:"column:id"`
+			UserID   int32     `gorm:"column:user_id"`
+			LastSeen time.Time `gorm:"column:last_seen_at"`
+		}
 		if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-			Where("revoked_at IS NULL AND last_seen_at < ?", cutoff).
+			Where("id > ? AND revoked_at IS NULL AND last_seen_at < ?", lastID, now.Add(-minIdle)).
 			Order("id asc").
 			Limit(DeviceIdleRevokeBatchSize).
-			Pluck("id", &ids).Error; err != nil {
+			Select("id, user_id, last_seen_at").Find(&candidates).Error; err != nil {
 			return total, err
 		}
-		if len(ids) == 0 {
+		if len(candidates) == 0 {
 			return total, nil
+		}
+		lastID = candidates[len(candidates)-1].ID
+		idsByDays := map[int][]int64{}
+		for _, candidate := range candidates {
+			days, exists := userDays[candidate.UserID]
+			if !exists {
+				days, _ = GetUserDeviceIdleRevokeAfterDaysWithDB(db, candidate.UserID)
+				userDays[candidate.UserID] = days
+			}
+			if days > 0 && candidate.LastSeen.Before(now.Add(-time.Duration(days)*24*time.Hour)) {
+				idsByDays[days] = append(idsByDays[days], candidate.ID)
+			}
+		}
+		if len(idsByDays) == 0 {
+			if len(candidates) < DeviceIdleRevokeBatchSize {
+				return total, nil
+			}
+			continue
 		}
 
 		// ⚠️ 更新条件里**再写一次** `revoked_at IS NULL`：
 		// 从取 id 到更新之间可能被别的进程处理过（多实例部署、手动解绑），
 		// 靠它保证「已撤销的行不会被二次写」（重复写会把 revoked_at 往后推，
 		// 变成「明明 10 天前就该解绑，时间却一直变新」）。
-		result := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-			Where("id IN ? AND revoked_at IS NULL", ids).
-			UpdateColumns(map[string]any{
-				"revoked_at":     now,
-				"revoked_reason": entity.DeviceBindingRevokeReasonIdle10d,
-			})
-		if result.Error != nil {
-			return total, result.Error
+		for days, ids := range idsByDays {
+			result := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
+				Where("id IN ? AND revoked_at IS NULL AND last_seen_at < ?", ids, now.Add(-time.Duration(days)*24*time.Hour)).
+				UpdateColumns(map[string]any{"revoked_at": now, "revoked_reason": entity.DeviceBindingRevokeReasonIdleTimeout})
+			if result.Error != nil {
+				return total, result.Error
+			}
+			total += result.RowsAffected
 		}
-		total += result.RowsAffected
 
 		// 终止条件：本批可取到的 id 少于批量 ⇒ 已经没有更多候选行。
-		if len(ids) < DeviceIdleRevokeBatchSize {
+		if len(candidates) < DeviceIdleRevokeBatchSize {
 			return total, nil
 		}
-		// 本批一行都没改动（全被别人处理了）⇒ 继续下一轮；
-		// 但不能无限循环：如果这一批 id 全部拿不到更新（例如行被删），
-		// 下一轮会取到同样的 id。用「本轮改动 0 行」直接返回避免死循环。
-		if result.RowsAffected == 0 {
-			return total, nil
-		}
+		// lastID 已推进，本批没有实际更新也能继续扫描后续候选，不会重复取同一批。
 	}
 }
 
@@ -143,10 +159,10 @@ func StartDeviceIdleRevokeWorker(db *gorm.DB, interval time.Duration) (stop func
 				if err != nil {
 					logger.SysLog("设备闲置解绑任务失败（下轮重试，幂等）：" + logger.RedactSecrets(err.Error()))
 				} else if processed > 0 {
-					logger.SysLog(fmt.Sprintf("设备闲置解绑：本轮撤销 %s 行（阈值 %s，原因 %s）",
+					logger.SysLog(fmt.Sprintf("设备闲置解绑：本轮撤销 %s 行（管理员上限 %d 天，原因 %s）",
 						strconv.FormatInt(processed, 10),
-						DeviceIdleRevokeAfter.String(),
-						entity.DeviceBindingRevokeReasonIdle10d))
+						GetDeviceIdleRevokeAfterDaysWithDB(db),
+						entity.DeviceBindingRevokeReasonIdleTimeout))
 				}
 				timer.Reset(interval)
 			}

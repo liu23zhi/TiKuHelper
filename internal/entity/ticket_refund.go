@@ -12,6 +12,7 @@ const (
 	TicketRefundStatusProcessing    = "processing"
 	TicketRefundStatusUnknown       = "unknown"
 	TicketRefundStatusSucceeded     = "succeeded"
+	TicketRefundStatusPartial       = "partially_succeeded"
 	TicketRefundStatusFailed        = "failed"
 )
 
@@ -82,6 +83,26 @@ type TicketRefund struct {
 }
 
 func (*TicketRefund) TableName() string { return "ticket_refunds" }
+
+// TicketRefundOrderLine reserves a recharge order and records its payout result.
+// Legacy single-order refunds reserve their order through TicketRefund.OrderID.
+type TicketRefundOrderLine struct {
+	ID               int64      `gorm:"primaryKey;autoIncrement" json:"-"`
+	RefundID         int64      `gorm:"not null;index" json:"-"`
+	OrderID          int32      `gorm:"not null;uniqueIndex" json:"orderId"`
+	OrderNo          string     `gorm:"type:varchar(64);not null" json:"orderNo"`
+	PaidCents        int64      `gorm:"not null" json:"paidCents"`
+	Cents            int64      `gorm:"not null" json:"cents"`
+	Status           string     `gorm:"type:varchar(24);not null" json:"status"`
+	OriginalTradeNo  string     `gorm:"type:varchar(128)" json:"-"`
+	ChannelRef       string     `gorm:"type:varchar(255)" json:"-"`
+	RefundNo         string     `gorm:"type:varchar(64);not null;uniqueIndex" json:"-"`
+	OutcomeReference string     `gorm:"type:varchar(128)" json:"-"`
+	StartedAt        *time.Time `json:"startedAt,omitempty"`
+	CreatedAt        time.Time  `json:"-"`
+}
+
+func (*TicketRefundOrderLine) TableName() string { return "ticket_refund_order_lines" }
 
 // TicketRefundLedger is an append-only wallet hold journal. A confirmed
 // refund consumes the prior hold without a second wallet debit.

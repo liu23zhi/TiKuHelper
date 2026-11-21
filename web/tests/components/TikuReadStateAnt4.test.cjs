@@ -102,7 +102,8 @@ function visibleText(node) {
   return compact(parts.join(' '))
 }
 function nativeButton(w, label, enabled = true) {
-  const buttons = [...w.element.querySelectorAll('button')].filter(node => visible(node) && visibleText(node).replace(/\s/g, '') === label.replace(/\s/g, ''))
+  const scope = label === '刷新' ? w.element.querySelector('.console-page-heading') : w.element
+  const buttons = [...scope.querySelectorAll('button')].filter(node => visible(node) && visibleText(node).replace(/\s/g, '') === label.replace(/\s/g, ''))
   assert.equal(buttons.length, 1, 'ONE_VISIBLE_NATIVE_BUTTON_' + label)
   assert.ok(buttons[0].classList.contains('ant-btn'), 'REAL_ANTD_BUTTON_' + label)
   assert.equal(buttons[0].disabled, !enabled, 'NATIVE_BUTTON_PERMISSION_' + label)

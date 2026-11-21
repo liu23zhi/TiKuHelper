@@ -11,6 +11,9 @@ const Antd = require('ant-design-vue')
 const user = require(path.join(web, 'src/utils/currentUser.js'))
 const lookups = []
 let rows = []
+let expiry = { days: 3, maxDays: 7, allowDisable: true }
+const expiryUpdates = []
+const deleted = []
 let wrapper
 const ok = data => ({ status: 200, data })
 const apiPath = path.join(web, 'src/api/TikuComponentApi.js')
@@ -25,6 +28,9 @@ api.exports = {
   renameMyDevice: () => Promise.resolve(ok({})),
   unblockMyDevice: () => Promise.resolve(ok({})),
   updateMyDeviceLimit: () => Promise.resolve(ok({})),
+  getMyDeviceExpiry: () => Promise.resolve(ok({ data: expiry })),
+  updateMyDeviceExpiry: days => { expiryUpdates.push(days); expiry = { ...expiry, days }; return Promise.resolve(ok({ data: expiry })) },
+  deleteMyRemovedDevice: id => { deleted.push(id); rows = rows.filter(row => row.id !== id); return Promise.resolve(ok({ data: { id, deleted: true } })) },
 }
 require.cache[apiPath] = api
 
@@ -43,6 +49,30 @@ afterEach(async () => {
   await settle()
   document.body.replaceChildren()
   lookups.length = 0
+  expiryUpdates.length = 0
+  deleted.length = 0
+  expiry = { days: 3, maxDays: 7, allowDisable: true }
+})
+
+test('real device page reads nested expiry data, saves custom days and deletes only removed history', async () => {
+  user.setStoredCurrentUser({ id: 7302, username: 'expiry-owner', role: 'user' })
+  rows = [{ id: 2, deviceId: 'old-device', status: 'removed', deletable: true, revokedReason: 'user_removed' }]
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/my-devices', component: { template: '<div />' } }] })
+  await router.push('/my-devices'); await router.isReady()
+  wrapper = mount(require(path.join(web, 'src/pages/MyDevices/index.vue')), { attachTo: document.body, global: { plugins: [Antd, router] } })
+  await settle()
+  assert.equal(wrapper.vm.expiryLoaded, true)
+  assert.equal(wrapper.vm.expiryDays, 3)
+  assert.equal(wrapper.vm.expiryMaxDays, 7)
+  assert.ok(wrapper.text().includes('管理员上限：7 天'))
+  assert.ok(wrapper.text().includes('删除记录'))
+  wrapper.vm.expiryDays = 2
+  await wrapper.vm.saveExpiry(); await settle()
+  assert.deepEqual(expiryUpdates, [2])
+  assert.equal(wrapper.vm.expiryDays, 2)
+  await wrapper.vm.deleteRemovedDevice(wrapper.vm.listView.devices[0]); await settle()
+  assert.deepEqual(deleted, [2])
+  assert.equal(wrapper.vm.listView.devices.length, 0)
 })
 
 test('real device table renders first/recent IP with geolocation and absolute times, ignoring superseded lookup results', async () => {

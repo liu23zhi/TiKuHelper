@@ -32,23 +32,16 @@ import (
 //
 // **不含 agentRationale、不含 screenshotUrl** —— 这不是疏忽，见上面的说明。
 type myReviewRebateClaimDTO struct {
-	ID                int32      `json:"id"`
-	ProgramID         int32      `json:"programId"`
-	UserID            int32      `json:"userId"`
-	Username          string     `json:"username"`
-	ClaimedStars      int        `json:"claimedStars"`
-	ClaimedReviewURL  string     `json:"claimedReviewUrl"`
-	Status            string     `json:"status"`
-	AgentStars        int        `json:"agentStars"`
-	AgentContentScore int        `json:"agentContentScore"`
-	AgentConfidence   float64    `json:"agentConfidence"`
-	AgentScorer       string     `json:"agentScorer"`
-	MatchedRuleID     int32      `json:"matchedRuleId"`
-	AwardAmount       float64    `json:"awardAmount"`
-	ReviewNote        string     `json:"reviewNote"`
-	ReviewedByUserID  int32      `json:"reviewedByUserId"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	ReviewedAt        *time.Time `json:"reviewedAt,omitempty"`
+	ID               int32      `json:"id"`
+	ProgramID        int32      `json:"programId"`
+	Source           string     `json:"source"`
+	UserID           int32      `json:"userId"`
+	Username         string     `json:"username"`
+	ClaimedStars     int        `json:"claimedStars"`
+	ClaimedReviewURL string     `json:"claimedReviewUrl"`
+	Status           string     `json:"status"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	ReviewedAt       *time.Time `json:"reviewedAt,omitempty"`
 }
 
 // adminReviewRebateClaimDTO 是「评价返现提交管理」独立页的一行。
@@ -60,6 +53,7 @@ type myReviewRebateClaimDTO struct {
 type adminReviewRebateClaimDTO struct {
 	ID                int32      `json:"id"`
 	ProgramID         int32      `json:"programId"`
+	Source            string     `json:"source"`
 	UserID            int32      `json:"userId"`
 	Username          string     `json:"username"`
 	ClaimedStars      int        `json:"claimedStars"`
@@ -100,23 +94,16 @@ type adminReviewRebateClaimList struct {
 // 刻意**不读** item.AgentRationaleText：目标类型里没有落点，读不到也带不出去。
 func toMyReviewRebateClaimDTO(item service.ReviewRebateClaimListItem) myReviewRebateClaimDTO {
 	return myReviewRebateClaimDTO{
-		ID:                item.ID,
-		ProgramID:         item.ProgramID,
-		UserID:            item.UserID,
-		Username:          item.Username,
-		ClaimedStars:      item.ClaimedStars,
-		ClaimedReviewURL:  item.ClaimedReviewURL,
-		Status:            item.Status,
-		AgentStars:        item.AgentStars,
-		AgentContentScore: item.AgentContentScore,
-		AgentConfidence:   item.AgentConfidence,
-		AgentScorer:       item.AgentScorer,
-		MatchedRuleID:     item.MatchedRuleID,
-		AwardAmount:       item.AwardAmount,
-		ReviewNote:        item.ReviewNote,
-		ReviewedByUserID:  item.ReviewedByUserID,
-		CreatedAt:         item.CreatedAt,
-		ReviewedAt:        item.ReviewedAt,
+		ID:               item.ID,
+		ProgramID:        item.ProgramID,
+		Source:           item.Source,
+		UserID:           item.UserID,
+		Username:         item.Username,
+		ClaimedStars:     item.ClaimedStars,
+		ClaimedReviewURL: item.ClaimedReviewURL,
+		Status:           item.Status,
+		CreatedAt:        item.CreatedAt,
+		ReviewedAt:       item.ReviewedAt,
 	}
 }
 
@@ -128,6 +115,7 @@ func toAdminReviewRebateClaimDTO(item service.ReviewRebateClaimListItem) adminRe
 	return adminReviewRebateClaimDTO{
 		ID:                item.ID,
 		ProgramID:         item.ProgramID,
+		Source:            item.Source,
 		UserID:            item.UserID,
 		Username:          item.Username,
 		ClaimedStars:      item.ClaimedStars,

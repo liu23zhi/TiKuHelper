@@ -19,6 +19,10 @@ function row(label){return{id:label==='A'?901:902,userId:A.id,username:A.usernam
 function dto(label,params){return{data:label==='empty'?[]:[row(label)],total:label==='empty'?0:21,page:label==='empty'?1:Number(params.page)||1,pageSize:Number(params.pageSize)||10}}
 const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
+ // The admin transfer panel owns a separate, read-only first-page request.
+ if (config.method === 'get' && config.url === '/api/export/tasks' && config.params?.resource === 'logs' && Number(config.params.page) === 1)
+   return Promise.resolve({ config, status: 200, data: { data: [], total: 0 }, headers: {}, request: { memoryOnly: true } })
+
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),params=clone(config.params||{}),plan=plans.shift()||{label:'A',status:200}
  const call={method,url,params,actor:user.getStoredCurrentUser()?.id||null,status:plan.status??null,outcome:plan.outcome||'response',label:plan.label||'A',id:(calls.length+1).toString(16).padStart(32,'0')};calls.push(call)
  if(method!=='get'||url!=='/api/logs'){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}

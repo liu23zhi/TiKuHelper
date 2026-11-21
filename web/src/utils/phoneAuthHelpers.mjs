@@ -66,5 +66,6 @@ export function buildPublicRegisterPayload(formValue) {
     phone,
     smsCode,
     captchaToken,
+    ...(trimText(formValue?.inviteCode) ? { inviteCode: trimText(formValue.inviteCode).toUpperCase() } : {}),
   }
 }

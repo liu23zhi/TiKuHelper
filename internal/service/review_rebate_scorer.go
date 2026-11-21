@@ -321,11 +321,16 @@ func buildReviewRebateAgentUserPrompt(program entity.ReviewRebateProgram, claim 
 	if reviewURL == "" {
 		reviewURL = "未填写"
 	}
-	storeURL := strings.TrimSpace(program.StoreURL)
+	storeURL := strings.TrimSpace(claim.StoreURLSnapshot)
+	extensionID := strings.TrimSpace(claim.ExtensionIDSnapshot)
+	// Existing claims predate the store snapshot and keep the historical program context.
+	if storeURL == "" && extensionID == "" {
+		storeURL = strings.TrimSpace(program.StoreURL)
+		extensionID = strings.TrimSpace(program.ExtensionID)
+	}
 	if storeURL == "" {
 		storeURL = "未配置"
 	}
-	extensionID := strings.TrimSpace(program.ExtensionID)
 	if extensionID == "" {
 		extensionID = "未配置"
 	}

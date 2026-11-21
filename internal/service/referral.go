@@ -275,12 +275,16 @@ func BindReferralInviterInTx(tx *gorm.DB, invitedUser *entity.User, invite entit
 	}
 
 	now := time.Now()
-	if err := referralSession(tx).Model(&entity.User{}).Where("id = ? AND COALESCE(invited_by_user_id, 0) = 0", invitedUser.ID).
+	claim := referralSession(tx).Model(&entity.User{}).Where("id = ? AND COALESCE(invited_by_user_id, 0) = 0", invitedUser.ID).
 		Updates(map[string]any{
 			"invited_by_user_id": invite.UserID,
 			"invited_at":         &now,
-		}).Error; err != nil {
-		return err
+		})
+	if claim.Error != nil {
+		return claim.Error
+	}
+	if claim.RowsAffected != 1 {
+		return ErrReferralAlreadyBound
 	}
 	invitedUser.InvitedByUserID = invite.UserID
 	invitedUser.InvitedAt = &now
@@ -309,12 +313,9 @@ func ensureReferralPairNotSameIdentity(_ *gorm.DB, inviter entity.User, invited 
 
 // RegisterReferralInviteForNewUser 在注册事务里为新用户生成自己的邀请码。
 //
-// 开关关闭时直接返回，不产生任何行（需求：关闭时注册不生成邀请码）。
+// 邀请码属于账户标识，注册时始终生成；开关只控制返佣发放。
 // 生成失败不阻断注册：邀请码是附加权益，不能让注册整体失败。
 func RegisterReferralInviteForNewUser(tx *gorm.DB, userID int32) (entity.ReferralInvite, error) {
-	if !GetReferralRebateEnabledWithDB(tx) {
-		return entity.ReferralInvite{}, nil
-	}
 	return EnsureReferralInviteWithDB(tx, userID)
 }
 
@@ -1010,6 +1011,12 @@ func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error
 		summary.Code = invite.Code
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return ReferralSummary{}, err
+	} else {
+		generated, err := EnsureReferralInviteWithDB(db, userID)
+		if err != nil {
+			return ReferralSummary{}, err
+		}
+		summary.Code = generated.Code
 	}
 
 	if err := referralSession(db).Model(&entity.User{}).Where("invited_by_user_id = ?", userID).Count(&summary.InvitedCount).Error; err != nil {

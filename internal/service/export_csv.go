@@ -3,24 +3,25 @@ package service
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
 )
 
-// 异步导出的 CSV 生成（111 §4 / 117 §4.5，任务书 ②③⑧）。
+// 异步导出的数据生成（CSV / JSON / XLSX / XML / HTML）。
 //
-// # 为什么导出只有 CSV，没有 xlsx / xls
-//
-// 111 §4.1 的格式决定是「只 CSV」：CSV 由后端异步生成（大数据量不能塞进浏览器），
-// 而 JSON 是**前端立即生成并下载**（走现有 handleExportSelected，后端零参与），
-// 所以后端没有 JSON 导出路径。xlsx 只出现在**导入**侧（117 §4.5 的支持矩阵）。
+// CSV 保持既有调用方与脱敏规则；题库导出还支持结构化 JSON、XLSX、XML
+// 和 HTML，所有格式均由服务端异步任务生成并记录审计信息。
 //
 // # 为什么脱敏是「默认开」，且不是前端决定
 //
@@ -72,15 +73,28 @@ const QuestionExportMaxRows = 10_000
 // access_tokens 不在 111 §4.4 的清单里，但任务书 ⑧ 要求脱敏覆盖 token ——
 // 既然要脱敏就要有导出的对象，因此这里补一个最小列集（不含 token_hash）。
 const (
-	ExportResourceQuestions     = "questions"
-	ExportResourceUsers         = "users"
-	ExportResourceBilling       = "billing"
-	ExportResourceGifts         = "gifts"
-	ExportResourceLogs          = "logs"
-	ExportResourceTickets       = "tickets"
-	ExportResourceBlacklist     = "blacklist"
-	ExportResourceArchivedUsers = "archived_users"
-	ExportResourceAccessTokens  = "access_tokens"
+	ExportResourceQuestions      = "questions"
+	ExportResourceUsers          = "users"
+	ExportResourceBilling        = "billing"
+	ExportResourceGifts          = "gifts"
+	ExportResourceLogs           = "logs"
+	ExportResourceTickets        = "tickets"
+	ExportResourceBlacklist      = "blacklist"
+	ExportResourceWhitelist      = "whitelist"
+	ExportResourceArchivedUsers  = "archived_users"
+	ExportResourceAccessTokens   = "access_tokens"
+	ExportResourceIPLocations    = "ip_locations"
+	ExportResourcePhoneLocations = "phone_locations"
+	ExportResourceWechatBindings = "wechat_bindings"
+	ExportResourcePhoneBindings  = "phone_bindings"
+)
+
+const (
+	ExportFormatCSV  = "csv"
+	ExportFormatJSON = "json"
+	ExportFormatXlsx = "xlsx"
+	ExportFormatXML  = "xml"
+	ExportFormatHTML = "html"
 )
 
 // ErrExportResourceUnsupported 表示资源标识不在支持清单内（400 而不是 500）。
@@ -90,6 +104,10 @@ var ErrExportResourceUnsupported = errors.New("不支持的导出资源")
 type ExportDataOptions struct {
 	// Resource 取 ExportResource* 之一。
 	Resource string
+	// Format 为空时按 CSV 处理，以兼容旧调用方。
+	Format string
+	// QuestionIDs 非空时仅导出这些题目；空列表表示导出全部题目。
+	QuestionIDs []int64
 	// Masked 为 nil 时使用 DefaultExportMasked（true）；显式 false 才是明文。
 	Masked *bool
 	// Limit 为 0 时使用 ExportMaxRows；负数表示不限制（仅供内部测试/对账使用）。
@@ -106,6 +124,7 @@ type ExportResult struct {
 	Masked bool
 	// Resource 是资源标识（回显用）。
 	Resource string
+	Format   string
 }
 
 // exportMaskFunc 是单列的脱敏函数；nil 表示该列不脱敏。
@@ -242,6 +261,13 @@ func exportCell(column ExportColumn, value string, masked bool) string {
 //
 // 返回错误时 Content 为空 —— 绝不允许「一半的 CSV」被当成完整结果落盘。
 func ExportCSVWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) {
+	opts.Format = ExportFormatCSV
+	return ExportDataWithDB(db, opts)
+}
+
+// ExportDataWithDB generates a supported format from a registered resource.
+// CSV remains the default so legacy async tasks keep their existing output.
+func ExportDataWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) {
 	if db == nil {
 		return ExportResult{}, fmt.Errorf("数据库未初始化")
 	}
@@ -251,41 +277,203 @@ func ExportCSVWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) 
 		return ExportResult{}, fmt.Errorf("%w: %q", ErrExportResourceUnsupported, opts.Resource)
 	}
 	masked := resolveExportMasked(opts.Masked)
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format == "" {
+		format = ExportFormatCSV
+	}
+	switch format {
+	case ExportFormatCSV, ExportFormatJSON, ExportFormatXlsx, ExportFormatXML, ExportFormatHTML:
+	default:
+		return ExportResult{}, fmt.Errorf("不支持的导出格式：%s", format)
+	}
 	limit := exportResolveLimit(resource, opts.Limit)
-	rows, err := spec.load(db, limit)
+	queryDB := db
+	if resource == ExportResourceQuestions && len(opts.QuestionIDs) > 0 {
+		ids := make([]int64, 0, len(opts.QuestionIDs))
+		seen := make(map[int64]struct{}, len(opts.QuestionIDs))
+		for _, id := range opts.QuestionIDs {
+			if id <= 0 {
+				return ExportResult{}, fmt.Errorf("题目 ID 必须为正整数")
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+		if len(ids) > limit {
+			return ExportResult{}, fmt.Errorf("选中题目超过单次导出上限 %d 行", limit)
+		}
+		queryDB = queryDB.Where("id IN ?", ids)
+		limit = len(ids)
+	}
+	loadRows := spec.load
+	if !masked && spec.loadUnmasked != nil {
+		loadRows = spec.loadUnmasked
+	}
+	rows, err := loadRows(queryDB, limit)
 	if err != nil {
 		return ExportResult{}, fmt.Errorf("读取 %s 数据失败: %w", resource, err)
 	}
 
+	for rowIndex, row := range rows {
+		for columnIndex, column := range spec.columns {
+			value := ""
+			if columnIndex < len(row) {
+				value = row[columnIndex]
+			}
+			rows[rowIndex][columnIndex] = exportCell(column, value, masked)
+		}
+	}
+	content, err := serializeExportRows(spec.columns, rows, format)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	return ExportResult{Content: content, Rows: len(rows), Masked: masked, Resource: resource, Format: format}, nil
+}
+
+func serializeExportRows(columns []ExportColumn, rows [][]string, format string) ([]byte, error) {
+	if format == ExportFormatJSON {
+		items := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			item := make(map[string]any, len(columns))
+			for i, column := range columns {
+				value := ""
+				if i < len(row) {
+					value = row[i]
+				}
+				switch column.Header {
+				case "id", "type":
+					if number, err := strconv.ParseInt(value, 10, 64); err == nil {
+						item[column.Header] = number
+					} else {
+						item[column.Header] = value
+					}
+				case "options", "answer":
+					var decoded any
+					if json.Unmarshal([]byte(value), &decoded) == nil {
+						item[column.Header] = decoded
+					} else {
+						item[column.Header] = value
+					}
+				default:
+					item[column.Header] = value
+				}
+			}
+			items = append(items, item)
+		}
+		content, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("生成 JSON 导出失败: %w", err)
+		}
+		return content, nil
+	}
+	if format == ExportFormatXML || format == ExportFormatHTML {
+		return serializeTabularMarkup(columns, rows, format)
+	}
+	if format == ExportFormatXlsx {
+		file := excelize.NewFile()
+		sheet := file.GetSheetName(0)
+		for column, spec := range columns {
+			axis, err := excelize.CoordinatesToCellName(column+1, 1)
+			if err != nil {
+				return nil, err
+			}
+			if err := file.SetCellValue(sheet, axis, spec.Header); err != nil {
+				return nil, err
+			}
+		}
+		for rowIndex, row := range rows {
+			for column, value := range row {
+				axis, err := excelize.CoordinatesToCellName(column+1, rowIndex+2)
+				if err != nil {
+					return nil, err
+				}
+				if column < len(columns) && columns[column].Header == "image_base64" {
+					if err := addSpreadsheetImage(file, sheet, axis, value, rowIndex+2); err != nil {
+						return nil, fmt.Errorf("写入图片失败：%w", err)
+					}
+					continue
+				}
+				if err := file.SetCellValue(sheet, axis, value); err != nil {
+					return nil, err
+				}
+			}
+		}
+		buffer := &bytes.Buffer{}
+		if err := file.Write(buffer); err != nil {
+			return nil, fmt.Errorf("生成 XLSX 导出失败: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
+		return buffer.Bytes(), nil
+	}
 	buffer := &bytes.Buffer{}
 	// UTF-8 BOM：不加的话中文在 Excel 里是乱码，而运营拿到 CSV 的第一反应就是双击打开。
 	buffer.WriteString("\uFEFF")
 	writer := csv.NewWriter(buffer)
-	header := make([]string, len(spec.columns))
-	for i, column := range spec.columns {
+	header := make([]string, len(columns))
+	for i, column := range columns {
 		header[i] = column.Header
 	}
 	if err := writer.Write(header); err != nil {
-		return ExportResult{}, fmt.Errorf("写入 CSV 表头失败: %w", err)
+		return nil, fmt.Errorf("写入 CSV 表头失败: %w", err)
 	}
 	for _, row := range rows {
-		record := make([]string, len(spec.columns))
-		for i, column := range spec.columns {
-			value := ""
-			if i < len(row) {
-				value = row[i]
-			}
-			record[i] = exportCell(column, value, masked)
-		}
+		record := make([]string, len(columns))
+		copy(record, row)
 		if err := writer.Write(record); err != nil {
-			return ExportResult{}, fmt.Errorf("写入 CSV 数据失败: %w", err)
+			return nil, fmt.Errorf("写入 CSV 数据失败: %w", err)
 		}
 	}
 	writer.Flush()
 	if err := writer.Error(); err != nil {
-		return ExportResult{}, fmt.Errorf("写入 CSV 失败: %w", err)
+		return nil, fmt.Errorf("写入 CSV 失败: %w", err)
 	}
-	return ExportResult{Content: buffer.Bytes(), Rows: len(rows), Masked: masked, Resource: resource}, nil
+	return buffer.Bytes(), nil
+}
+
+func serializeTabularMarkup(columns []ExportColumn, rows [][]string, format string) ([]byte, error) {
+	var buffer bytes.Buffer
+	if format == ExportFormatXML {
+		buffer.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rows>\n")
+		for _, row := range rows {
+			buffer.WriteString("  <row>\n")
+			for i, column := range columns {
+				value := ""
+				if i < len(row) {
+					value = row[i]
+				}
+				buffer.WriteString("    <" + column.Header + ">")
+				if err := xml.EscapeText(&buffer, []byte(value)); err != nil {
+					return nil, err
+				}
+				buffer.WriteString("</" + column.Header + ">\n")
+			}
+			buffer.WriteString("  </row>\n")
+		}
+		buffer.WriteString("</rows>")
+		return buffer.Bytes(), nil
+	}
+	buffer.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>题库导出</title></head><body><table><thead><tr>")
+	for _, column := range columns {
+		buffer.WriteString("<th>" + html.EscapeString(column.Header) + "</th>")
+	}
+	buffer.WriteString("</tr></thead><tbody>")
+	for _, row := range rows {
+		buffer.WriteString("<tr>")
+		for i := range columns {
+			value := ""
+			if i < len(row) {
+				value = row[i]
+			}
+			buffer.WriteString("<td>" + html.EscapeString(value) + "</td>")
+		}
+		buffer.WriteString("</tr>")
+	}
+	buffer.WriteString("</tbody></table></body></html>")
+	return buffer.Bytes(), nil
 }
 
 // exportResourceSpec 描述一个可导出资源：列定义 + 取数函数。
@@ -302,6 +490,9 @@ type exportResourceSpec struct {
 	// load 按列顺序返回原始值（未脱敏）。脱敏由 ExportCSVWithDB 统一做，
 	// 取数函数里**不许**再各自打码 —— 否则「勾选不脱敏」时拿到的是已经打码的值。
 	load func(db *gorm.DB, limit int) ([][]string, error)
+	// Optional original-data loader, used only for an explicitly unmasked backup.
+	// The default loader can then avoid fetching or decrypting private payloads at all.
+	loadUnmasked func(db *gorm.DB, limit int) ([][]string, error)
 }
 
 // exportRowLimit 返回某资源实际生效的行数上限（resource 不在清单内时返回 0）。
@@ -394,6 +585,11 @@ func formatExportBool(value bool) string {
 //
 // 8 个页面对应 111 §4.4 的清单，access_tokens 见上方 ExportResourceAccessTokens 的说明。
 var exportResourceSpecs = map[string]exportResourceSpec{
+	ExportResourceWhitelist:      managementWhitelistExportSpec(),
+	ExportResourceIPLocations:    managementLocationExportSpec(entity.LocationKindIP),
+	ExportResourcePhoneLocations: managementLocationExportSpec(entity.LocationKindPhone),
+	ExportResourceWechatBindings: managementBindingExportSpec(entity.BindingKindWechat),
+	ExportResourcePhoneBindings:  managementBindingExportSpec(entity.BindingKindPhone),
 	ExportResourceQuestions: {
 		resource: ExportResourceQuestions,
 		// 题库导出上限 1 万行（不是通用 10 万）：见 QuestionExportMaxRows 的说明。
@@ -511,6 +707,22 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 			maskedColumn("client_ip", MaskExportIP),
 			exportColumn("remark"),
 			exportColumn("created_at"),
+			exportColumn("access_token_id"),
+			exportColumn("provider"),
+			exportColumn("model_name"),
+			exportColumn("input_tokens"),
+			exportColumn("cached_input_tokens"),
+			exportColumn("output_tokens"),
+			exportColumn("total_tokens"),
+			exportColumn("unit_price_snapshot"),
+			exportColumn("question_text"),
+			exportColumn("request_id"),
+			exportColumn("search_mode"),
+			exportColumn("related_order_id"),
+			exportColumn("operator_id"),
+			exportColumn("operator_username"),
+			exportColumn("adjustment_mode"),
+			exportColumn("hidden_from_statement"),
 		},
 		load: func(db *gorm.DB, limit int) ([][]string, error) {
 			rows := make([]entity.BillingRecord, 0, 128)
@@ -523,14 +735,30 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 					strconv.FormatInt(int64(row.ID), 10),
 					strconv.FormatInt(int64(row.UserID), 10),
 					row.Type,
-					formatExportFloat(row.Amount),
+					strconv.FormatFloat(row.Amount, 'f', 8, 64),
 					formatExportFloat(row.BalanceBefore),
 					formatExportFloat(row.BalanceAfter),
-					formatExportFloat(row.GiftCharged),
-					formatExportFloat(row.PrincipalCharged),
+					strconv.FormatFloat(row.GiftCharged, 'f', 8, 64),
+					strconv.FormatFloat(row.PrincipalCharged, 'f', 8, 64),
 					row.ClientIP,
 					row.Remark,
 					formatExportTime(row.CreatedAt),
+					strconv.FormatInt(int64(row.AccessTokenID), 10),
+					row.Provider,
+					row.ModelName,
+					strconv.FormatInt(row.InputTokens, 10),
+					strconv.FormatInt(row.CachedInputTokens, 10),
+					strconv.FormatInt(row.OutputTokens, 10),
+					strconv.FormatInt(row.TotalTokens, 10),
+					row.UnitPriceSnapshot,
+					row.QuestionText,
+					row.RequestID,
+					row.SearchMode,
+					strconv.FormatInt(int64(row.RelatedOrderID), 10),
+					strconv.FormatInt(int64(row.OperatorID), 10),
+					row.OperatorUsername,
+					row.AdjustmentMode,
+					formatExportBool(row.HiddenFromStatement),
 				})
 			}
 			return out, nil
@@ -666,62 +894,7 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 			return out, nil
 		},
 	},
-	ExportResourceArchivedUsers: {
-		resource: ExportResourceArchivedUsers,
-		// 归档账号只能 Unscoped 才看得到（users.deleted_at 是 GORM 软删除列）。
-		columns: []ExportColumn{
-			exportColumn("id"),
-			exportColumn("username"),
-			exportColumn("archived_reason"),
-			exportColumn("archived_at"),
-			maskedColumn("phone", MaskExportPhone),
-		},
-		load: func(db *gorm.DB, limit int) ([][]string, error) {
-			users := make([]entity.User, 0, 64)
-			if err := exportLimit(db.Unscoped().Where("deleted_at IS NOT NULL").Order("id asc"), limit).
-				Find(&users).Error; err != nil {
-				return nil, err
-			}
-			// 归档元数据（原因 / 时点）在 entity.UserArchive 上：与 entity.User 同一张物理表，
-			// 但列不同，所以单独查一次再按 id 对齐。
-			archives := make([]entity.UserArchive, 0, len(users))
-			if len(users) > 0 {
-				ids := make([]int32, 0, len(users))
-				for _, user := range users {
-					ids = append(ids, user.ID)
-				}
-				if err := db.Where("id IN ?", ids).Find(&archives).Error; err != nil {
-					return nil, err
-				}
-			}
-			archiveByID := make(map[int32]entity.UserArchive, len(archives))
-			for _, archive := range archives {
-				archiveByID[archive.UserID] = archive
-			}
-			out := make([][]string, 0, len(users))
-			for _, user := range users {
-				phone := ""
-				if user.Phone != nil {
-					phone = *user.Phone
-				}
-				archive := archiveByID[user.ID]
-				archivedAt := ""
-				if archive.ArchivedAt != nil {
-					archivedAt = formatExportTime(*archive.ArchivedAt)
-				} else if user.DeletedAt.Valid {
-					archivedAt = formatExportTime(user.DeletedAt.Time)
-				}
-				out = append(out, []string{
-					strconv.FormatInt(int64(user.ID), 10),
-					user.Username,
-					archive.ArchivedReason,
-					archivedAt,
-					phone,
-				})
-			}
-			return out, nil
-		},
-	},
+	ExportResourceArchivedUsers: managementArchivedUsersExportSpec(),
 	ExportResourceAccessTokens: {
 		resource: ExportResourceAccessTokens,
 		// 刻意不含 token_hash：它是「bearer 凭据的哈希」，导出后可直接用于撞库核对。

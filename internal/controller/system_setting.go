@@ -82,7 +82,7 @@ func UpdateSystemSetting(c *gin.Context) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		message := "更新系统设置失败"
-		if errors.Is(err, service.ErrInvalidMinRechargeAmount) || errors.Is(err, service.ErrInvalidAISearchCount) {
+		if errors.Is(err, service.ErrInvalidMinRechargeAmount) || errors.Is(err, service.ErrInvalidAISearchCount) || errors.Is(err, service.ErrInvalidDeviceIdleRevokeDays) {
 			status = http.StatusBadRequest
 			message = err.Error()
 		}

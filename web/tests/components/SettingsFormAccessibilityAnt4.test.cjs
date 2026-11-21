@@ -29,7 +29,7 @@ const detail = {
 }
 const zero = { hits: 0, misses: 0, shared: 0 }
 const metrics = { schemaVersion: 1, startedAt: '2026-10-29T00:00:00Z', uptimeSeconds: 1, http: { total: 7, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: zero, fallback: zero }, billing: { attempts: 0, successes: 0, failures: 0 } }
-const LABELS = ["网站名称", "最大日志大小", "允许公开注册", "新用户赠送金额", "充值最低金额", "开启短信登录", "开启微信登录", "启用充值阶梯赠送", "启用账户设备池上限", "启用黑名单", "启用敏感词检测", "微信扫描", "微信验证码", "默认微信方式", "微信 API 地址", "Bearer Token", "验证码二维码", "验证码提供方", "远程服务地址", "远程服务 Key", "验证码类型", "UApiPro API 密钥", "接口版本", "网关地址", "商户编号", "平台公钥", "商户私钥", "网站 Base 地址", "异步通知地址", "同步跳转地址", "短信提供方", "短信宝用户名", "短信宝密钥", "凭证类型", "发送区域", "短信签名", "验证码模板"]
+const LABELS = ["网站名称", "最大日志大小", "允许公开注册", "新用户赠送金额", "充值最低金额", "闲置设备自动移除", "允许用户关闭自动移除", "设备管理入口", "开启短信登录", "开启微信登录", "启用黑名单", "启用敏感词检测", "微信扫描", "微信验证码", "默认微信方式", "微信 API 地址", "Bearer Token", "验证码二维码", "验证码提供方", "远程服务地址", "远程服务 Key", "验证码类型", "UApiPro API 密钥", "接口版本", "网关地址", "商户编号", "平台公钥", "商户私钥", "网站 Base 地址", "异步通知地址", "同步跳转地址", "短信提供方", "短信宝用户名", "短信宝密钥", "凭证类型", "发送区域", "短信签名", "验证码模板"]
 const SECRET_LABELS = ['Bearer Token', '远程服务 Key', 'UApiPro API 密钥', '平台公钥', '商户私钥', '短信宝密钥']
 const wrappers = [], reads = [], mutations = [], network = [], runtimeErrors = []
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -131,7 +131,7 @@ test('Settings original positives preserve 2 GB, six-decimal bonus, fixed/derive
   assert.equal(w.vm.hasUnsavedChanges, false)
   assert.deepEqual(reads.map(entry => entry.name).sort(), ['getPaymentMethods', 'getSystemSettings'].sort())
 })
-test('Settings all 37 visible Chinese form labels cover 38 actual controls', async () => {
+test('Settings all 38 visible Chinese form labels cover 38 actual controls', async () => {
   const [w] = await mountPages(), entries = fields(w)
   assert.deepEqual(entries.map(entry => entry.text), LABELS)
   assert.equal(entries.length, LABELS.length); assert.equal(entries.reduce((sum, entry) => sum + entry.controls.length, 0), 38)

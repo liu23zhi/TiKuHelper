@@ -632,6 +632,10 @@ func decryptTicketAttachmentForScan(db *gorm.DB, row entity.TicketAttachment) ([
 // 异步结果都不能把它**改回 approved** —— 同步审核的结论更贴近上传时刻，
 // 异步复核只允许「pending → approved/sensitive」，不允许放宽已有结论。
 func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
+	return db.Transaction(func(tx *gorm.DB) error { return persistTicketAttachmentScanResultInTx(tx, row, scan, now) })
+}
+
+func persistTicketAttachmentScanResultInTx(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
 	attempts := row.AttemptCount + 1
 	updates := map[string]interface{}{
 		"attempt_count": attempts,
@@ -671,6 +675,11 @@ func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment,
 		// 改成非 scanning（典型：上传前已判 sensitive），此时不能静默——留一条
 		// 可追溯的日志，说明为什么这张图没被改成 approved。
 		logger.SysLog(fmt.Sprintf("ticket_attachment_scan_result_discarded attachmentId=%d want=%s reason=state_changed", row.ID, scan.State))
+	}
+	if result.RowsAffected > 0 {
+		if err := persistTicketImageSharedVerdict(db, row, scan, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }

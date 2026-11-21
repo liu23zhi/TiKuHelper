@@ -178,6 +178,15 @@ export function validateDeviceLimitInput(input, view) {
   return { ok: true, value, error: '', message: '' }
 }
 
+export function validateDeviceExpiryInput(input, maxDays, allowDisable) {
+  const text = String(input === null || input === undefined ? '' : input).trim()
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text))) return { ok: false, message: '请填写非负整数天数' }
+  const value = Number(text)
+  if (value > maxDays) return { ok: false, message: `不能超过管理员设置的 ${maxDays} 天` }
+  if (value === 0 && !allowDisable) return { ok: false, message: '管理员未允许用户关闭自动移除' }
+  return { ok: true, value, message: '' }
+}
+
 /** normalizeDeviceItem 归一化列表里的一台设备（缺字段一律显式置空/未知）。 */
 export function normalizeDeviceItem(raw) {
   const item = raw && typeof raw === 'object' ? raw : {}
@@ -201,6 +210,7 @@ export function normalizeDeviceItem(raw) {
     revokedAt: typeof item.revokedAt === 'string' ? item.revokedAt : '',
     revokedReason: typeof item.revokedReason === 'string' ? item.revokedReason : '',
     blocked: item.blocked === true,
+    deletable: item.deletable === true && status === 'removed' && item.blocked !== true,
     // blockId 只在 >0 时可用（列表里的「解除拉黑」按钮依赖它）。
     blockId: blockId !== null && blockId > 0 ? blockId : 0,
     blockOnly: item.blockOnly === true,

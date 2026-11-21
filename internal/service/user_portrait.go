@@ -115,6 +115,12 @@ type PortraitSourceSlice struct {
 	Count  int64  `json:"count"`
 }
 
+type PortraitDailySlice struct {
+	Date   string  `json:"date"`
+	Count  int64   `json:"count"`
+	Amount float64 `json:"amount"`
+}
+
 // PortraitTotals 是概览标量。
 //
 // 全部用指针：nil = 该范围下**没有可分析的数据**（前端显示「暂无数据」），
@@ -156,6 +162,7 @@ type PortraitBase struct {
 // 同一个结构体是刻意的：前端只写一份渲染，不存在「整体页和单用户页口径不一致」
 // 这类只能靠肉眼发现的问题。
 type UserPortrait struct {
+	Insights     []PortraitInsight     `json:"insights"`
 	Scope        string                `json:"scope"`
 	TargetUserID int32                 `json:"targetUserId"`
 	GeneratedAt  time.Time             `json:"generatedAt"`
@@ -169,6 +176,9 @@ type UserPortrait struct {
 	RegisterSources []PortraitSourceSlice `json:"registerSources"`
 	// RegisterRegions 是「注册 IP 的归属地」分布（数据源 users.register_ip）。
 	RegisterRegions []PortraitRegionSlice `json:"registerRegions"`
+	Daily           []PortraitDailySlice  `json:"daily"`
+	UserStatuses    []PortraitSourceSlice `json:"userStatuses"`
+	UserRoles       []PortraitSourceSlice `json:"userRoles"`
 	Base            *PortraitBase         `json:"base"`
 	// Notes 如实标注「哪些栏位当前没有数据源」，避免前端画成 0 让人以为「用得少」。
 	Notes []string `json:"notes"`
@@ -180,6 +190,56 @@ type UserPortrait struct {
 // 归属地表和进程内存都拖住，而画像只需要「主要来源区域」。这是**采样口径**，
 // 已在 Notes 里如实告知（Top N 覆盖的账单行数比例），不是隐藏的估算。
 const portraitRegionIPLimit = 500
+
+// fillPortraitDailyAndAccounts reads bounded daily billing totals and live account distributions.
+// It keeps empty series empty and uses the same user scope as the rest of the portrait.
+func fillPortraitDailyAndAccounts(db *gorm.DB, scope PortraitScope, portrait *UserPortrait) error {
+	dateExpr := "DATE(created_at)"
+	if portraitDialect(db) == "sqlite" {
+		dateExpr = "strftime('%Y-%m-%d', created_at, '+8 hours')"
+	}
+	zone := time.FixedZone("Asia/Shanghai", 8*60*60)
+	end := portrait.GeneratedAt.In(zone)
+	startDay := end.AddDate(0, 0, -29).Format("2006-01-02")
+	endDay := end.Format("2006-01-02")
+	if err := portraitBillingScope(db, scope).
+		Select(dateExpr+" AS date, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount").
+		Where(dateExpr+" >= ? AND "+dateExpr+" <= ?", startDay, endDay).
+		Group(dateExpr).Order("date ASC").Scan(&portrait.Daily).Error; err != nil {
+		return err
+	}
+	for _, spec := range []struct {
+		column      string
+		destination *[]PortraitSourceSlice
+		labels      map[string]string
+	}{
+		{"status", &portrait.UserStatuses, map[string]string{"enabled": "正常", "disabled": "已禁用"}},
+		{"role", &portrait.UserRoles, map[string]string{"user": "普通用户", "admin": "管理员"}},
+	} {
+		var rows []struct {
+			Source string
+			Count  int64
+		}
+		query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{})
+		if scope.UserID > 0 {
+			query = query.Where("id = ?", scope.UserID)
+		}
+		if err := query.Select(spec.column + " AS source, COUNT(*) AS count").Group(spec.column).Order(spec.column).Scan(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			label := spec.labels[row.Source]
+			if label == "" {
+				label = row.Source
+			}
+			if label == "" {
+				label = "未记录"
+			}
+			*spec.destination = append(*spec.destination, PortraitSourceSlice{Source: row.Source, Label: label, Count: row.Count})
+		}
+	}
+	return nil
+}
 
 // 小时/星期的展示文案。
 var portraitWeekdayLabels = [7]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
@@ -203,10 +263,11 @@ var portraitTicketStatusOrder = []string{
 // 注册来源文案。未知取值**原样回显**，不猜。
 var portraitRegisterSourceLabels = map[string]string{
 	"public": "公开注册",
-	"admin":  "管理员创建",
+	"admin":  "后台创建",
+	"system": "系统初始化创建",
 	"wechat": "微信注册",
-	"import": "批量导入",
-	"legacy": "历史账号",
+	"import": "导入创建",
+	"legacy": "历史数据",
 }
 
 // portraitDialect 返回规范化后的方言名（默认 sqlite）。
@@ -303,6 +364,9 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 		Tickets:         make([]PortraitTicketSlice, 0, 4),
 		RegisterSources: make([]PortraitSourceSlice, 0, 4),
 		RegisterRegions: make([]PortraitRegionSlice, 0, 8),
+		Daily:           make([]PortraitDailySlice, 0, 30),
+		UserStatuses:    make([]PortraitSourceSlice, 0, 3),
+		UserRoles:       make([]PortraitSourceSlice, 0, 3),
 		Notes:           make([]string, 0, 4),
 	}
 
@@ -346,20 +410,27 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 	if err := fillPortraitRegisterRegions(db, normalized, &portrait); err != nil {
 		return UserPortrait{}, err
 	}
+	if err := fillPortraitDailyAndAccounts(db, normalized, &portrait); err != nil {
+		return UserPortrait{}, err
+	}
+	if err := fillPortraitInventory(db, normalized, &portrait); err != nil {
+		return UserPortrait{}, err
+	}
 
 	portrait.Notes = append(portrait.Notes,
-		"设备指纹数据源不存在（98 §1.1），本页不含设备维度，也不做「新设备/设备农场」类判断。",
+		"设备、令牌、充值和退款分布来自当前记录；设备绑定数包含已移除记录，不作为独立设备指纹或风控结论。",
 		"答题正确率无数据源：billing_records 没有正确性字段，本页只统计量与金额。",
 		"时间/区域/类型分布均来自 billing_records：免费额度内的调用不产生账单行，因此是「计费口径」而非「请求口径」。",
+		"按日趋势统计近 30 个自然日的账单，使用北京时间；仅展示有记录的日期，不补齐空日。账号状态与角色仅统计未归档账号。",
 		fmt.Sprintf("区域分布按「出现次数最多的 %d 个 client_ip」解析，未命中本地归属地库的 IP 单独归入未知地区，不外呼上游。", portraitRegionIPLimit),
 	)
 	return portrait, nil
 }
 
-// loadPortraitUser 读目标用户。已归档（软删除）视为不存在。
+// loadPortraitUser 读目标用户，包含管理员指定的已归档账号。
 func loadPortraitUser(db *gorm.DB, userID int32) (entity.User, error) {
 	var user entity.User
-	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ?", userID).Take(&user).Error; err != nil {
+	if err := db.Session(&gorm.Session{NewDB: true}).Unscoped().Where("id = ?", userID).Take(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return entity.User{}, ErrPortraitUserNotFound
 		}
@@ -657,7 +728,7 @@ func fillPortraitTickets(db *gorm.DB, scope PortraitScope, portrait *UserPortrai
 func fillPortraitRegisterSources(db *gorm.DB, scope PortraitScope, portrait *UserPortrait) error {
 	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{})
 	if scope.UserID > 0 {
-		query = query.Where("id = ?", scope.UserID)
+		query = query.Unscoped().Where("id = ?", scope.UserID)
 	}
 	type sourceRow struct {
 		Source string
@@ -669,7 +740,7 @@ func fillPortraitRegisterSources(db *gorm.DB, scope PortraitScope, portrait *Use
 		return err
 	}
 	for _, row := range rows {
-		label := portraitRegisterSourceLabels[row.Source]
+		label := portraitRegisterSourceLabels[strings.ToLower(strings.TrimSpace(row.Source))]
 		if label == "" {
 			label = row.Source
 		}
@@ -687,7 +758,7 @@ func fillPortraitRegisterRegions(db *gorm.DB, scope PortraitScope, portrait *Use
 	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{}).
 		Where("register_ip IS NOT NULL AND register_ip <> ''")
 	if scope.UserID > 0 {
-		query = query.Where("id = ?", scope.UserID)
+		query = query.Unscoped().Where("id = ?", scope.UserID)
 	}
 	type ipRow struct {
 		RegisterIP string

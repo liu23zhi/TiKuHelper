@@ -93,9 +93,9 @@ test('画像图表：三张图都构建出来，且类型分别为柱 / 环 / �
   assert.equal(options.types.series[0].radius.length, 2, '环图 radius 必须是 [内, 外]');
 });
 
-test('画像图表：标题常量与页面使用的一致', () => {
+test('画像图表：标题使用真实账单口径', () => {
   assert.equal(PORTRAIT_HOURS_TITLE, '24 小时时段分布');
-  assert.equal(PORTRAIT_TYPES_TITLE, '题目类型分布');
+  assert.equal(PORTRAIT_TYPES_TITLE, '账单类型分布');
   assert.equal(PORTRAIT_TREND_TITLE, '消费趋势');
 });
 
@@ -160,7 +160,7 @@ test('空数据：页面用空态占位而不是画图（组件层证据）', as
   // 空态文案必须来自统一常量，不能各写一份。
   assert.match(source, /PORTRAIT_EMPTY_HINT/);
   // 空数据时要销毁旧实例，否则切到空视角会看到上一个视角的残图。
-  assert.match(source, /disposeChart\(\)/, '空数据分支必须销毁旧实例');
+  assert.match(source, /watch\(host, element => \{\s*clearHost\(\)\s*if \(!element\) return/, '图表宿主消失时销毁旧实例');
 });
 
 // ---------------------------------------------------------------------------
@@ -385,16 +385,18 @@ test('接线：页面用 PortraitChart 渲染三张图，且空态由组件统�
 
 test('接线：echarts 必须动态 import，不进首屏 bundle', async () => {
   const source = await readFile(chartComponentPath, 'utf8');
-  assert.match(source, /await import\('echarts\/core'\)/, '必须动态 import，避免 echarts 打进首屏 chunk');
+  const registration = await readFile(path.join(path.dirname(chartComponentPath), 'portraitECharts.mjs'), 'utf8');
+  assert.match(source, /import\('\.\/portraitECharts\.mjs'\)/, '必须动态 import，避免 echarts 打进首屏 chunk');
   assert.doesNotMatch(source, /^import .*from 'echarts/m, '不得静态 import echarts');
   // 必须按需注册，不全量 import 'echarts'（体积差一个量级）。
-  assert.match(source, /echarts\.use\(/, '必须按需 use() 注册图表与组件');
-  assert.doesNotMatch(source, /from 'echarts'$/, '不得整包 import echarts');
+  assert.match(registration, /use\(\[[^\]]*BarChart/, '必须按需 use() 注册图表与组件');
+  assert.doesNotMatch(registration, /from 'echarts'$/m, '不得整包 import echarts');
 });
 
-test('接线：趋势图口径如实标注后端无按天字段', async () => {
+test('接线：页面使用小时、账单类型和星期三种真实聚合维度', async () => {
   const page = await readFile(pageSourcePath, 'utf8');
-  // 这是一条「如实告知」的判据：后端没有按天聚合，页面必须说清楚，
-  // 不能画一条折线就让人以为是「今日 vs 昨日」。
-  assert.match(page, /暂无按天聚合字段/, '页面必须标注趋势图不是按天对比');
+  assert.match(page, /PORTRAIT_HOURS_TITLE/);
+  assert.match(page, /PORTRAIT_TYPES_TITLE/);
+  assert.match(page, /PORTRAIT_WEEKDAYS_TITLE/);
+  assert.doesNotMatch(page, /PORTRAIT_TREND_TITLE|消费趋势|暂无按天聚合字段/);
 });

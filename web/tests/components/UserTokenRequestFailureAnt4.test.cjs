@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 // Real Vue/Antd + actual RequestFailureAlert; synthetic read-only APIs, no network/DB.
 const { test, afterEach } = require('node:test')
 const assert = require('node:assert/strict'), path = require('node:path'), Module = require('node:module')
@@ -43,9 +44,13 @@ api.exports = {
 }
 require.cache[apiPath] = api
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
+require('../helpers/token-level-read.cjs').install(web)
 async function page(kind, account = ADMIN) {
   user.setStoredCurrentUser(account)
-  const w = mount(require(targets[kind]), { attachTo: document.body, global: { plugins: [Antd] } })
+  const component = require(targets[kind])
+  const router = kind === 'tokens' ? await require('../helpers/token-view-router.cjs')(component) : null
+  const w = mount(component, { attachTo: document.body, global: { plugins: router ? [Antd, router] : [Antd] } })
+  w.fixtureRouter = router
   wrappers.push(w); await settle(); return w
 }
 const alert = w => w.findComponent({ name: 'RequestFailureAlert' })
@@ -54,7 +59,7 @@ const readCount = () => calls.filter(c => c.kind === 'users' || c.kind === 'toke
 function load(w, kind) { return kind === 'users' ? w.vm.handleUserList() : w.vm.handleLoad() }
 function assertNoWrites() { assert.equal(calls.filter(c => c.kind === 'FORBIDDEN_WRITE').length, 0) }
 afterEach(async () => {
-  for (const w of wrappers) if (w.exists()) w.unmount()
+  for (const w of wrappers) { if (w.exists()) w.unmount(); w.fixtureRouter?.options.history.destroy() }
   wrappers = []; for (const p of pending) p.resolve(healthy(p.kind)); await settle()
   calls = []; queued = []; pending = []; hold = false
   user.clearStoredCurrentUser(); localStorage.clear(); window.sessionStorage.clear(); Antd.message.destroy(); Antd.Modal.destroyAll(); await settle(); document.body.replaceChildren()
@@ -134,14 +139,14 @@ test('users: latest query failure owns diagnostics; query mutation clears inline
 test('tokens: mine/all query retires the old failure and late response without escalating ordinary users', async () => {
   queued.push(failure()); const w = await page('tokens')
   const staleRetry = w.vm.retryTokenList, oldNode = button(w, /重试/).element
-  hold = true; w.vm.toggleAllTokens(); const all = pending.at(-1); await settle(); assert.equal(alert(w).exists(), false); assert.deepEqual(all.payload, { scope: 'all' })
-  w.vm.toggleAllTokens(); const mine = pending.at(-1)
+  hold = true; await w.fixtureRouter.push('/token-admin'); await settle(); const all = pending.at(-1); await settle(); assert.equal(alert(w).exists(), false); assert.deepEqual(all.payload, { scope: 'all' })
+  await w.fixtureRouter.push('/my-tokens'); await settle(); const mine = pending.at(-1)
   all.resolve(failure(503, OLD_ID)); await settle(); assert.equal(alert(w).exists(), false); assert.equal(w.vm.tableLoading, true)
   mine.resolve(failure()); await settle(); assert.ok(alert(w).text().includes(ID))
   const count = readCount(); staleRetry(); oldNode.click(); await settle(); assert.equal(readCount(), count)
   user.setStoredCurrentUser({ ...ADMIN, role: 'user' }); await settle()
   assert.equal(alert(w).exists(), false); assert.equal(w.vm.showAllTokens, false); const ordinary = pending.at(-1); assert.deepEqual(ordinary.payload, {})
-  const ordinaryCount = readCount(); w.vm.toggleAllTokens(); await settle(); assert.equal(readCount(), ordinaryCount); ordinary.resolve(healthy('tokens')); await settle(); assertNoWrites()
+  const ordinaryCount = readCount(); assert.ok(!w.findAll('button').some(b => b.text().includes('显示全部令牌'))); assert.equal(readCount(), ordinaryCount); ordinary.resolve(healthy('tokens')); await settle(); assertNoWrites()
 })
 
 for (const kind of ['users', 'tokens']) for (const retirement of ['account', 'role', 'logout', 'unmount']) test(kind + ': ' + retirement + ' retires inline, stale native retry/copy and pending clipboard feedback', async () => {

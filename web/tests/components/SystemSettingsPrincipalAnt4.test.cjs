@@ -70,7 +70,7 @@ function detail(tag = 'A') {
   return {
     siteName: `SYNTHETIC_SITE_${tag}`, maxLogSizeBytes: 2 * 1024 * 1024 * 1024,
     registerEnabled: true, newUserBonusAmount: 0.123456, minRechargeAmount: 1.25,
-    rechargePromotionEnabled: false, deviceLimitEnabled: false, blacklistEnabled: false,
+    deviceIdleRevokeAfterDays: 10, deviceIdleRevokeAllowUserDisable: false, blacklistEnabled: false,
     epayVersion: 'v2', epayGatewayUrl: 'https://synthetic-pay.invalid/submit.php', epayPartnerId: `SYNTHETIC_PID_${tag}`,
     epayPlatformPublicKey: `SYNTHETIC_PLATFORM_${tag}`, epayMerchantPrivateKey: `SYNTHETIC_PRIVATE_${tag}`,
     epayNotifyUrl: 'https://synthetic-site.invalid/api/payment/notify', epayReturnUrl: 'https://synthetic-site.invalid/recharge/result',

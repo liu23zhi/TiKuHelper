@@ -65,6 +65,12 @@ function prepare() {
   require('node:module')._initPaths()
 
   require(path.join(webRoot, 'tests', 'helpers', 'vue-dom.cjs'))
+  const { reviewRebateAvailabilityResponse } = require(path.join(webRoot, 'tests', 'helpers', 'review-rebate-availability.cjs'))
+  require('axios').defaults.adapter = async config => {
+    const response = reviewRebateAvailabilityResponse(config)
+    if (response) return response
+    throw new Error(`Unexpected fixture operation ${config.method} ${config.url}`)
+  }
   require.extensions['.css'] = (m) => { m.exports = {} }
   for (const key of ['DOMParser', 'HTMLButtonElement', 'HTMLDivElement', 'CustomEvent']) {
     globalThis[key] = window[key]

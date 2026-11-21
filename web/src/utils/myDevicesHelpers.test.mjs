@@ -21,6 +21,7 @@ import {
   readInt,
   validateDeviceLabel,
   validateDeviceLimitInput,
+  validateDeviceExpiryInput,
 } from './myDevicesHelpers.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -46,6 +47,23 @@ test('validateDeviceLimitInput 拒绝超过等级值的输入，文案与后端�
   assert.equal(result.error, 'above-level')
   // 后端 controller/device_user.go 的 400 文案：字面量比对，不引用任何常量。
   assert.equal(result.message, '不能超过当前等级上限 3 台')
+})
+
+test('设备闲置时间只允许管理员范围内的整数，0 由独立开关控制', () => {
+  for (const input of ['', -1, 1.5, 'abc', 11]) assert.equal(validateDeviceExpiryInput(input, 10, false).ok, false)
+  assert.equal(validateDeviceExpiryInput(0, 10, false).ok, false)
+  assert.equal(validateDeviceExpiryInput(0, 10, true).ok, true)
+  assert.equal(validateDeviceExpiryInput(3, 10, false).value, 3)
+})
+
+test('已移除设备才显示删除记录，页面提供个人闲置移除设置', async () => {
+  assert.equal(normalizeDeviceItem({id: 1, status: 'removed', deletable: true}).deletable, true)
+  assert.equal(normalizeDeviceItem({id: 1, status: 'active', deletable: true}).deletable, false)
+  assert.equal(normalizeDeviceItem({id: 1, status: 'blocked', blocked: true, deletable: true}).deletable, false)
+  const page = stripComments(await readSource(path.join('pages', 'MyDevices', 'index.vue')))
+  for (const expected of ['record.deletable', 'deleteRemovedDevice', 'expiryLoaded', 'saveExpiry', 'validateDeviceExpiryInput', '设备闲置自动移除']) assert.ok(page.includes(expected), expected)
+  const api = stripComments(await readSource(path.join('api', 'TikuComponentApi.js')))
+  for (const expected of ['deleteMyRemovedDevice', 'getMyDeviceExpiry', 'updateMyDeviceExpiry', '/api/user/device-expiry']) assert.ok(api.includes(expected), expected)
 })
 
 test('validateDeviceLimitInput 允许 0 与等于上界的值', () => {

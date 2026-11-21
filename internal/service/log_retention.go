@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -42,12 +43,12 @@ import (
 //
 //	log_retention_enabled                    "true" / "false"，默认 true（默认启用）
 //	log_retention_max_age_days               保留天数，默认 30
-//	log_retention_max_total_gib              总体积上限，单位 **GiB**，默认 10
+//	log_retention_max_total_gib              总体积上限，单位 **GiB**，默认 5
 //	log_retention_max_file_mib               单文件上限，单位 **MiB**，默认 100
 //	log_retention_cleanup_interval_minutes   后台清理间隔（分钟），默认 60
 //
-// 与既有的 max_log_size_bytes（字节）/ max_ai_search_* 并存且互不影响：
-// 旧键仍由 system_setting.go 负责，新键只由本文件读写。
+// 总量优先读取系统设置 max_log_size_bytes（字节）；显式修改 GiB 上限时
+// 在同一事务内更新两个键，确保管理页与后台清理使用同一个实际值。
 const (
 	// LogRetentionKeyPrefix 是全部日志清理键的统一前缀（Q14⑤）。
 	//
@@ -94,8 +95,8 @@ const (
 	DefaultLogRetentionEnabled = true
 	// DefaultLogRetentionMaxAgeDays 默认 30 天。
 	DefaultLogRetentionMaxAgeDays = 30
-	// DefaultLogRetentionMaxTotalGiB 默认 10 GiB（全部日志文件总大小）。
-	DefaultLogRetentionMaxTotalGiB int64 = 10
+	// DefaultLogRetentionMaxTotalGiB 与系统设置共用默认 5 GiB。
+	DefaultLogRetentionMaxTotalGiB int64 = DefaultMaxLogSizeBytes / (1 << 30)
 	// DefaultLogRetentionMaxFileMiB 默认 100 MiB（单文件轮转阈值）。
 	DefaultLogRetentionMaxFileMiB int64 = 100
 	// DefaultLogRetentionCleanupIntervalMinutes 默认每 60 分钟清理一次。
@@ -182,10 +183,14 @@ type LogRetentionConfig struct {
 
 // Config 把设置形态换算成生效形态（唯一的 GiB/MiB → 字节换算点）。
 func (s LogRetentionSettings) Config() LogRetentionConfig {
+	maxTotalBytes := s.MaxTotalGiB * logRetentionGiB
+	if s.MaxTotalBytes > 0 {
+		maxTotalBytes = s.MaxTotalBytes
+	}
 	return LogRetentionConfig{
 		Enabled:         s.Enabled,
 		MaxAgeDays:      s.MaxAgeDays,
-		MaxTotalBytes:   s.MaxTotalGiB * logRetentionGiB,
+		MaxTotalBytes:   maxTotalBytes,
 		MaxFileBytes:    s.MaxFileMiB * logRetentionMiB,
 		CleanupInterval: time.Duration(s.CleanupIntervalMinutes) * time.Minute,
 	}
@@ -200,7 +205,7 @@ func (c LogRetentionConfig) Settings() LogRetentionSettings {
 		MaxFileMiB:             c.MaxFileBytes / logRetentionMiB,
 		CleanupIntervalMinutes: int(c.CleanupInterval / time.Minute),
 	}
-	settings.MaxTotalBytes = settings.MaxTotalGiB * logRetentionGiB
+	settings.MaxTotalBytes = c.MaxTotalBytes
 	settings.MaxFileBytes = settings.MaxFileMiB * logRetentionMiB
 	return settings
 }
@@ -241,7 +246,7 @@ type LogRetentionApplyResult struct {
 
 // GetLogRetentionSettingsWithDB 读取日志清理配置。
 //
-// 缺记录、缺字段、解析失败、越界一律回落默认值（30 天 / 10 GiB / 100 MiB）。
+// 缺记录、缺字段、解析失败、越界一律回落默认值（30 天 / 5 GiB / 100 MiB）。
 // 回落而不是返回 0：0 在这里是「非法」而**不是**「不限制」，
 // 把读失败当成 0 会让上层把清理关掉或按 0 字节上限删光全部归档。
 func GetLogRetentionSettingsWithDB(db *gorm.DB) LogRetentionSettings {
@@ -261,6 +266,15 @@ func GetLogRetentionSettingsWithDB(db *gorm.DB) LogRetentionSettings {
 	}
 	settings.MaxTotalBytes = settings.MaxTotalGiB * logRetentionGiB
 	settings.MaxFileBytes = settings.MaxFileMiB * logRetentionMiB
+	// 系统设置与后台日志清理共用同一总量来源，避免定时清理覆盖刚保存的上限。
+	if db != nil {
+		var legacy entity.SystemSetting
+		if db.Where("`key` = ?", MaxLogSizeBytesSettingKey).First(&legacy).Error == nil {
+			if total, err := strconv.ParseInt(legacy.Value, 10, 64); err == nil && total > 0 {
+				settings.MaxTotalBytes = total
+			}
+		}
+	}
 	return settings
 }
 
@@ -288,6 +302,7 @@ func UpdateLogRetentionSettingsWithDB(db *gorm.DB, input UpdateLogRetentionSetti
 	}
 	if input.MaxTotalGiB != nil {
 		next.MaxTotalGiB = *input.MaxTotalGiB
+		next.MaxTotalBytes = next.MaxTotalGiB * logRetentionGiB
 	}
 	if input.MaxFileMiB != nil {
 		next.MaxFileMiB = *input.MaxFileMiB
@@ -306,14 +321,22 @@ func UpdateLogRetentionSettingsWithDB(db *gorm.DB, input UpdateLogRetentionSetti
 	}{
 		{LogRetentionEnabledSettingKey, strconv.FormatBool(next.Enabled), "启用日志文件清理（默认启用）"},
 		{LogRetentionMaxAgeDaysSettingKey, strconv.Itoa(next.MaxAgeDays), "日志归档保留天数（天，默认 30）"},
-		{LogRetentionMaxTotalGiBSettingKey, strconv.FormatInt(next.MaxTotalGiB, 10), "日志文件总大小上限（GiB，默认 10）"},
+		{LogRetentionMaxTotalGiBSettingKey, strconv.FormatInt(next.MaxTotalGiB, 10), "日志文件总大小上限（GiB，默认 5）"},
 		{LogRetentionMaxFileMiBSettingKey, strconv.FormatInt(next.MaxFileMiB, 10), "日志单文件大小上限（MiB，默认 100）"},
 		{LogRetentionCleanupIntervalMinutesSettingKey, strconv.Itoa(next.CleanupIntervalMinutes), "日志清理任务执行间隔（分钟，默认 60）"},
 	}
-	for _, row := range rows {
-		if err := saveSystemSettingValue(db, row.key, row.value, row.remark); err != nil {
-			return LogRetentionSettings{}, err
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		for _, row := range rows {
+			if err := saveSystemSettingValue(tx, row.key, row.value, row.remark); err != nil {
+				return err
+			}
 		}
+		if input.MaxTotalGiB != nil {
+			return saveSystemSettingValue(tx, MaxLogSizeBytesSettingKey, strconv.FormatInt(next.MaxTotalGiB*logRetentionGiB, 10), "日志文件总大小上限（字节）")
+		}
+		return nil
+	}); err != nil {
+		return LogRetentionSettings{}, err
 	}
 	return GetLogRetentionSettingsWithDB(db), nil
 }
@@ -334,9 +357,9 @@ func validateLogRetentionSettings(settings LogRetentionSettings) error {
 	if settings.CleanupIntervalMinutes <= 0 || settings.CleanupIntervalMinutes > MaxLogRetentionCleanupInterval {
 		return ErrLogRetentionIntervalOutOfRange
 	}
-	// 跨字段：总上限按 GiB 存、单文件按 MiB 存，统一换算成 MiB 再比。
+	// 系统设置可能直接更新精确字节上限，必须按实际生效值校验。
 	// 乘法不会溢出：两侧上限分别 1024 GiB 与 10240 MiB。
-	if settings.MaxTotalGiB*(logRetentionGiB/logRetentionMiB) < settings.MaxFileMiB*2 {
+	if settings.Config().MaxTotalBytes < settings.MaxFileMiB*logRetentionMiB*2 {
 		return ErrLogRetentionTotalBelowTwoFiles
 	}
 	return nil

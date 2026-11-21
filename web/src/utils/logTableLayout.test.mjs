@@ -33,7 +33,7 @@ test('log widths account for the named samples and expand entire detail and snap
   assert.deepEqual(LOG_MODULE_OPTIONS.slice(-3).map((option) => option.label), ['短信', '充值', '访问令牌']);
   assert.match(source, /module: Math\.max\(\.\.\.moduleLabels\.map/);
   for (const [key, width] of Object.entries({
-    createTime: 112, username: 170, clientIp: 262, qid: 104,
+    createTime: 190, username: 170, clientIp: 262, qid: 104,
     billingIds: 104, summary: 156, project: 170, hitProvider: 170,
     billingProvider: 170, detail: 170, requestId: 310,
     mode: 160, requestSource: 124, answerCount: 76,

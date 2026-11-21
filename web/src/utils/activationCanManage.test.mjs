@@ -44,7 +44,7 @@ test('canManage 必须用 route.name 白名单判归属（与 ScriptManagement �
   assert.match(source, /const\s+stillOwnRoute\s*=/, '必须有 stillOwnRoute()');
   assert.match(
     source,
-    /canManage\s*=\s*\(\)\s*=>\s*stillOwnRoute\(\)/,
+    /canManage\s*=\s*\(\)\s*=>\s*alive\s*&&\s*stillOwnRoute\(\)/,
     'canManage 必须基于 stillOwnRoute()，不能基于路径快照',
   );
   // 白名单必须真的包含本页路由名，否则 stillOwnRoute 恒 false（另一种全灰）

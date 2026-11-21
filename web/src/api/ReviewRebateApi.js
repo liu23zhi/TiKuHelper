@@ -2,7 +2,8 @@ import request from '../utils/request'
 
 // 评价返现：用户端「评价返现」+ 管理端「评价返现管理」。
 // 后端契约（设计定稿 16-评价返现与邀请返现 §1.8）：
-//   GET    /api/user/review-rebate/program                 当前活动、规则表（脱敏）、我的已领
+//   GET    /api/user/review-rebate/availability            是否有开启的活动
+//   GET    /api/user/review-rebate/program                 当前活动、开放商店与本人的领取状态
 //   POST   /api/user/review-rebate/claims                  multipart 提交截图（字段名 file）
 //   GET    /api/user/review-rebate/claims                  我的提交列表
 //   GET    /api/admin/review-rebate/programs               活动列表（{data:[...]}，与规则表一致）
@@ -25,13 +26,14 @@ import request from '../utils/request'
 const userBase = '/api/user/review-rebate'
 const adminBase = '/api/admin/review-rebate'
 
-// 截图上传：原生 FormData，不引入上传组件。
+// 由提交表单统一发送截图和评价链接。
 // 前端已校验 PNG/JPEG 与 ≤5 MB，服务端仍会自行解码校验（双重保险）。
-export function submitReviewRebateClaim(file, reviewUrl = '') {
+export function submitReviewRebateClaim(file, reviewUrl = '', source = '') {
   const form = new FormData()
   form.append('file', file)
   const link = String(reviewUrl || '').trim()
   if (link) form.append('claimedReviewUrl', link)
+  if (source) form.append('source', source)
   return request({
     errorFeedback: 'local',
     url: `${userBase}/claims`,
@@ -41,12 +43,35 @@ export function submitReviewRebateClaim(file, reviewUrl = '') {
   })
 }
 
-export function getReviewRebateProgram() {
-  return request({ errorFeedback: 'local', url: `${userBase}/program`, method: 'get' })
+export function getReviewRebateProgram(source = '') {
+  return request({ errorFeedback: 'local', url: `${userBase}/program`, method: 'get', params: source ? { source } : undefined })
+}
+
+export function getReviewRebateAvailability(signal) {
+  return request({
+    errorFeedback: 'local',
+    url: `${userBase}/availability`,
+    method: 'get',
+    signal,
+    retryPolicy: 'single',
+    timeout: 10_000,
+  })
 }
 
 export function getMyReviewRebateClaims() {
   return request({ errorFeedback: 'local', url: `${userBase}/claims`, method: 'get' })
+}
+
+export function getReviewRebateVerification(id) {
+  return request({ errorFeedback: 'local', url: `${adminBase}/claims/${id}/verification`, method: 'get' })
+}
+
+export function recordReviewRebateVerification(id, data) {
+  return request({ errorFeedback: 'local', url: `${adminBase}/claims/${id}/verification`, method: 'post', data })
+}
+
+export function clawBackReviewRebate(id, verificationId) {
+  return request({ errorFeedback: 'local', url: `${adminBase}/claims/${id}/clawback`, method: 'post', data: { verificationId } })
 }
 
 export function getReviewRebatePrograms() {
@@ -62,6 +87,10 @@ export function updateReviewRebateProgram(id, data) {
     method: 'put',
     data,
   })
+}
+
+export function createReviewRebateProgram(data) {
+  return request({ errorFeedback: 'local', url: `${adminBase}/programs`, method: 'post', data })
 }
 
 export function getReviewRebateRules() {

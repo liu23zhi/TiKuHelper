@@ -54,7 +54,7 @@ afterEach(async () => {
 })
 test('positive native UI: five connection fields retain complete order, zero/bool values, attributes and readonly sampling', async () => {
  const w = await start(), canonical = w.vm.formState, snap = w.vm.savedConfigSnapshot
- assert.deepEqual(w.findAll('.ai-config-form .ant-form-item-label').map(x => x.text()), ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表', '模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '本地题库检索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数', 'Prompt 设置', '温度', 'Top P'])
+ assert.deepEqual(w.findAll('.ai-config-form .ant-form-item-label').map(x => x.text()), ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表', '模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数', 'Prompt 设置', '温度', 'Top P'])
  const region = connection(w); assert.equal(region.attributes('tabindex'), '-1'); assert.equal(region.attributes('aria-labelledby'), region.find('h2').attributes('id'))
  assert.equal(w.findAll('form.ai-config-form').length, 1)
  const endpoint = item(w, '服务地址').get('input'); assert.equal(endpoint.attributes('name'), 'ai-service-endpoint'); assert.equal(endpoint.attributes('type'), 'url'); assert.equal(endpoint.attributes('autocomplete'), 'off'); assert.equal(endpoint.attributes('autocapitalize'), 'none'); assert.equal(endpoint.attributes('spellcheck'), 'false')

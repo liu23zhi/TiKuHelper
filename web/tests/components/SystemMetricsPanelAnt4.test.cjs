@@ -38,7 +38,8 @@ function snapshot(overrides = {}) {
 function complete(request, data = snapshot()) { request.resolve({ status: 200, data }) }
 async function fixture(identity = admin) {
   user.setStoredCurrentUser(identity)
-  const wrapper = mount(Panel, { attachTo: document.body, global: { plugins: [Antd] } })
+  // Canvas rendering is covered by chart option tests and browser validation; jsdom has no canvas context.
+  const wrapper = mount(Panel, { attachTo: document.body, global: { plugins: [Antd], stubs: { PortraitChart: true } } })
   wrappers.push(wrapper)
   await settle()
   return wrapper

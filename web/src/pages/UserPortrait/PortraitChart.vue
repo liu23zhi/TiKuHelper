@@ -33,13 +33,22 @@
 // # 主题
 // ECharts 是 canvas，CSS 变量对它无效 —— 颜色必须由父组件用
 // getComputedStyle 读出来传进 options。所以主题切换时父组件重建 options，
-// 本组件 watch options 深比较后 setOption。
+// 本组件使用新的 options 对象更新图表。
 //
 // # 为什么 echarts 是动态 import
 // 图表不在首屏路径上（进画像页才用），静态 import 会把 echarts 打进主 chunk，
 // 撞 check-bundle.cjs 的 appJsGzip: 40KB 限额。动态 import 会单独切一个 chunk。
-import { defineComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { defineComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { PORTRAIT_EMPTY_HINT } from '@/utils/portraitCharts.mjs'
+
+let echartsPromise
+function loadECharts() {
+  echartsPromise ||= import('./portraitECharts.mjs').catch(error => {
+    echartsPromise = undefined
+    throw error
+  })
+  return echartsPromise
+}
 
 export default defineComponent({
   name: 'PortraitChart',
@@ -56,81 +65,72 @@ export default defineComponent({
   setup(props) {
     const host = ref(null)
     let chart = null
-    let disposed = false
-    // 串行化初始化：动态 import 是异步的，而 options 可能在其完成前变更多次。
-    let pendingToken = 0
+    let target = null
+    let resizeObserver = null
+    let intersectionObserver = null
+    let frame = null
+    let renderedOptions = null
 
-    async function ensureChart() {
-      if (chart || disposed || !host.value) return chart
-      // 动态 import：单独切 chunk，不占首屏。
-      const echarts = await import('echarts/core')
-      const [{ BarChart, PieChart, LineChart }, { GridComponent, TooltipComponent, LegendComponent }, { CanvasRenderer }] = await Promise.all([
-        import('echarts/charts'),
-        import('echarts/components'),
-        import('echarts/renderers'),
-      ])
-      echarts.use([BarChart, PieChart, LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
-      // 等 import 期间组件可能已卸载（快速切换视角时会发生）。
-      if (disposed || !host.value) return null
-      chart = echarts.init(host.value, null, { renderer: 'canvas' })
-      return chart
-    }
-
-    async function render() {
-      if (disposed) return
-      if (!props.options) {
-        // 空数据：销毁旧实例，避免上一个视角的图残留在 DOM 里。
-        // 这一步是「空数据不画图」的执行点 —— 少了它，切到空视角会看到旧图。
-        disposeChart()
-        return
+    async function update(element) {
+      const echarts = chart ? null : await loadECharts()
+      // 动态加载期间可能关闭弹窗、切换账号或变成空数据。
+      if (element !== target || !props.options) return
+      const width = element.clientWidth
+      const height = element.clientHeight
+      if (!width || !height) return
+      if (!chart) {
+        chart = echarts.init(element, null, { renderer: 'canvas', width, height })
+      } else if (chart.getWidth() !== width || chart.getHeight() !== height) {
+        chart.resize({ width, height })
       }
-      const token = ++pendingToken
-      await nextTick()
-      const instance = await ensureChart()
-      // 只让最后一次 render 生效：旧 token 的 setOption 会覆盖新数据。
-      if (!instance || disposed || token !== pendingToken) return
-      instance.setOption(props.options, true)
-      instance.resize()
-    }
-
-    function disposeChart() {
-      if (chart) {
-        chart.dispose()
-        chart = null
+      if (renderedOptions !== props.options) {
+        chart.setOption(props.options, { notMerge: true })
+        renderedOptions = props.options
       }
     }
 
-    // 容器尺寸变化（侧边栏折叠 / 窗口缩放 / 移动端横竖屏）要重新布局。
-    let observer = null
-    function observeResize() {
-      if (typeof ResizeObserver !== 'function' || !host.value) return
-      observer = new ResizeObserver(() => {
-        if (chart) chart.resize()
+    function scheduleUpdate() {
+      if (!target || intersectionObserver || frame !== null) return
+      const element = target
+      frame = requestAnimationFrame(() => {
+        frame = null
+        return update(element).catch(error => { console.error('画像图表加载失败', error) })
       })
-      observer.observe(host.value)
     }
 
-    watch(() => props.options, () => { render() }, { deep: true })
-    watch(host, (value, previous) => {
-      if (previous && !value) disposeChart()
-      if (value) {
-        observeResize()
-        render()
+    function clearHost() {
+      target = null
+      resizeObserver?.disconnect()
+      intersectionObserver?.disconnect()
+      resizeObserver = intersectionObserver = null
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = null
+      chart?.dispose()
+      chart = renderedOptions = null
+    }
+
+    watch(host, element => {
+      clearHost()
+      if (!element) return
+      target = element
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(scheduleUpdate)
+        resizeObserver.observe(element)
       }
-    })
-
-    // 首次挂载：options 已经就绪（父组件 await 数据后才渲染本组件）。
-    nextTick(() => {
-      observeResize()
-      render()
-    })
-
-    onBeforeUnmount(() => {
-      disposed = true
-      observer?.disconnect()
-      observer = null
-      disposeChart()
-    })
+      if (typeof IntersectionObserver === 'function') {
+        const observer = new IntersectionObserver(entries => {
+          if (target !== element || !entries.some(entry => entry.isIntersecting)) return
+          observer.disconnect()
+          intersectionObserver = null
+          scheduleUpdate()
+        })
+        intersectionObserver = observer
+        observer.observe(element)
+      }
+      scheduleUpdate()
+    }, { flush: 'post' })
+    watch(() => props.options, scheduleUpdate, { flush: 'post' })
+    onBeforeUnmount(clearHost)
 
     return { host }
   },

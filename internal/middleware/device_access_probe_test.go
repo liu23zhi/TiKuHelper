@@ -120,9 +120,7 @@ func TestDeviceAccessProbePreservesHeadlessAndExistingDeviceCapacityExemptions(t
 	level := seedDeviceLimitLevel(t, db, 1, 1)
 	user := seedDeviceLimitUser(t, db, "probe-capacity-exemptions", level, -1)
 	setDeviceLimitSwitch(t, db, false)
-	if out := doDeviceAccessProbe(t, db, user, ""); out.Code != http.StatusOK {
-		t.Fatalf("disabled capacity checks must allow legacy headless clients: %d %s", out.Code, out.Body.String())
-	}
+	assertDeviceLimitHeadlessRejected(t, doDeviceAccessProbe(t, db, user, ""), "legacy false cannot disable limited health probe")
 	setDeviceLimitSwitch(t, db, true)
 	assertDeviceLimitHeadlessRejected(t, doDeviceAccessProbe(t, db, user, ""), "enabled limited health probe")
 	if err := db.Table(entity.TableNameUserLevel).Where("id = ?", level).Update("device_limit", 0).Error; err != nil {
@@ -148,7 +146,7 @@ func TestDeviceAccessProbeCapacityHintOnlyForEnforcedNonScriptRequests(t *testin
 		enabled, script, hint bool
 	}{
 		{"enabled", true, false, true},
-		{"disabled", false, false, false},
+		{"legacy-disabled-ignored", false, false, true},
 		{"script", true, true, false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {

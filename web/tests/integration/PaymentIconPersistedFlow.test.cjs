@@ -140,6 +140,15 @@ test('S02 native Vue/Antd -> production HTTP/controller/service -> isolated SQLi
     switch (config.url) {
       // Sibling panels mounted by the real SystemSettings page: fixed GETs only.
       case '/api/refund-agreement': return Promise.resolve({ status: 200, data: { text: 'S02 fixture agreement', defaultText: 'S02 fixture agreement', isDefault: true } })
+      case '/api/admin/referral-settings':
+      case '/api/admin/ticket-image-cache/settings':
+      case '/api/admin/log-settings': {
+        assert.equal(actor, 'admin', 'only the admin settings page may load these configuration panels')
+        const data = { '/api/admin/referral-settings': { enabled: false, percent: 0 },
+          '/api/admin/ticket-image-cache/settings': { mode: 'both', maxAgeDays: 180, maxTotalGiB: 20, cleanupIntervalMinutes: 60 },
+          '/api/admin/log-settings': { enabled: true, maxAgeDays: 30, cleanupIntervalMinutes: 60 } }[config.url]
+        return Promise.resolve({ status: 200, data })
+      }
       case '/api/system-settings': return Promise.resolve({ status: 200, data: { minRechargeAmount: 1 } })
       case '/api/system-metrics': return Promise.resolve({ status: 200, data: { schemaVersion: 1, startedAt: '2026-10-29T00:00:00Z', uptimeSeconds: 1, http: { total: 0, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: { hits: 0, misses: 0, shared: 0 }, fallback: { hits: 0, misses: 0, shared: 0 } }, billing: { attempts: 0, successes: 0, failures: 0 } } })
       case '/api/user/info': return Promise.resolve({ status: 200, data: { ...(actor === 'admin' ? admin : ordinary), minRechargeAmount: 1 } })

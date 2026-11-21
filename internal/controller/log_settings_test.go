@@ -108,7 +108,7 @@ func decodeLogSettingsResponse(t *testing.T, recorder *httptest.ResponseRecorder
 	return response
 }
 
-// 默认值必须是 30 天 / 10 GiB / 100 MiB，且响应里带单位口径（Q14⑧）。
+// 默认值与系统设置共源：30 天 / 5 GiB / 100 MiB，并明确响应单位。
 func TestLogSettingsDetailReturnsDefaults(t *testing.T) {
 	db := newLogSettingsControllerTestDB(t)
 	applyCalls := installLogSettingsTestDB(t, db)
@@ -122,10 +122,10 @@ func TestLogSettingsDetailReturnsDefaults(t *testing.T) {
 	if !response.Settings.Enabled {
 		t.Fatal("default must be enabled")
 	}
-	if response.Settings.MaxAgeDays != 30 || response.Settings.MaxTotalGiB != 10 || response.Settings.MaxFileMiB != 100 {
+	if response.Settings.MaxAgeDays != 30 || response.Settings.MaxTotalGiB != 5 || response.Settings.MaxFileMiB != 100 {
 		t.Fatalf("unexpected defaults: %+v", response.Settings)
 	}
-	if response.Settings.MaxTotalBytes != 10*(1<<30) || response.Settings.MaxFileBytes != 100*(1<<20) {
+	if response.Settings.MaxTotalBytes != 5*(1<<30) || response.Settings.MaxFileBytes != 100*(1<<20) {
 		t.Fatalf("derived byte values must use 1024-based units: %+v", response.Settings)
 	}
 	// 单位必须显式下发，否则前端会把 maxTotalGiB 当字节用。
@@ -134,7 +134,7 @@ func TestLogSettingsDetailReturnsDefaults(t *testing.T) {
 	}
 	// GET 的 Apply 是「能力报告」，不是「本次请求应用了」。它必须**有值**：
 	// 否则页面刚打开时看不到「单文件上限用不了」，只有点过保存才出现。
-	if response.Apply.MaxAgeDays != 30 || response.Apply.MaxTotalBytes != 10*(1<<30) {
+	if response.Apply.MaxAgeDays != 30 || response.Apply.MaxTotalBytes != 5*(1<<30) {
 		t.Fatalf("GET must carry a capability report for the current settings, got %+v", response.Apply)
 	}
 	if response.Apply.FileSizeApplied {
@@ -232,7 +232,7 @@ func TestLogSettingsUpdateRejectsInvalidValues(t *testing.T) {
 				t.Fatalf("rejected update must not apply anything, got %d calls", *applyCalls)
 			}
 			stored := service.GetLogRetentionSettingsWithDB(db)
-			if stored.MaxAgeDays != 30 || stored.MaxTotalGiB != 10 || stored.MaxFileMiB != 100 {
+			if stored.MaxAgeDays != 30 || stored.MaxTotalGiB != 5 || stored.MaxFileMiB != 100 {
 				t.Fatalf("rejected update must not persist anything, got %+v", stored)
 			}
 		})

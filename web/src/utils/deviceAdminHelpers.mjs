@@ -28,6 +28,7 @@ const REVOKE_REASON_TEXT = Object.freeze({
   user_removed: '用户自己移除',
   admin_unbound: '管理员强制解绑',
   idle_10d: '闲置 10 天自动解绑',
+  idle_timeout: '闲置超时自动解绑',
   device_banned: '设备被全局封禁',
 });
 

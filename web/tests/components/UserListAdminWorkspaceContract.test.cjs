@@ -1,0 +1,40 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const source = fs.readFileSync(path.resolve(__dirname, '../../src/pages/UserList/index.vue'), 'utf8')
+const deviceApi = fs.readFileSync(path.resolve(__dirname, '../../src/api/DeviceAdminApi.js'), 'utf8')
+const importApi = fs.readFileSync(path.resolve(__dirname, '../../src/pages/IntelligentImport/asyncTaskApi.mjs'), 'utf8')
+
+test('用户管理提供异步用户导入导出和下载模板入口', () => {
+  assert.match(source, /导入用户/)
+  assert.match(source, /导出用户/)
+  assert.match(source, /下载用户模板/)
+  assert.match(source, /submitImportTask/)
+  assert.match(source, /submitExportTask/)
+  assert.match(source, /listAsyncTasks/)
+})
+
+test('设备与单用户画像在用户管理弹窗展示', () => {
+  assert.match(source, /:title="deviceTitle"/)
+  assert.match(source, /:title="userPortraitTitle"/)
+  assert.match(source, /getAdminDevices/)
+  assert.match(source, /getUserPortrait/)
+  assert.match(source, /首次使用时间/)
+  assert.match(source, /最近使用时间/)
+  assert.match(source, /首次使用 IP/)
+  assert.match(source, /最近使用 IP/)
+  assert.match(source, /collectLocationKeys\(rows, \['lastLoginIp', 'registerIp', 'firstIp', 'lastIp'\]\)/)
+  assert.match(source, /await ctx\.enrichColumns\(ctx\.deviceRows\.value, current\)/)
+  assert.doesNotMatch(source, /this\.\$router\.push\(\{ name: 'device-admin'/)
+  assert.doesNotMatch(source, /this\.\$router\.push\(\{ name: 'user-portrait'/)
+  assert.match(deviceApi, /params/)
+  assert.match(importApi, /fetchImportTemplate/)
+})
+
+test('绑定历史失败时不把空列表误报成无绑定记录，也不重复渲染故障正文', () => {
+  assert.match(source, /v-else-if="!bindingsLoading && !bindingsFailure"[\s\S]{0,80}该账号还没有任何绑定记录/)
+  assert.doesNotMatch(source, /message="绑定历史请求未完成，请重试。"/)
+  assert.match(source, /readAdminBindingHistory\(res\)/)
+})

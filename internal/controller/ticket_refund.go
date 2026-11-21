@@ -31,7 +31,9 @@ var refundManualReferencePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,96}$`)
 
 type ticketRefundResponse struct {
 	entity.TicketRefund
-	HasProof bool `json:"hasProof"`
+	HasProof                bool                           `json:"hasProof"`
+	HasSignedPayoutEvidence bool                           `json:"hasSignedPayoutEvidence"`
+	OrderLines              []entity.TicketRefundOrderLine `json:"orderLines"`
 }
 
 func ticketRefundRequest(c *gin.Context, admin bool) (*gorm.DB, entity.User, bool) {
@@ -89,13 +91,22 @@ func withTicketRefundProofFlags(db *gorm.DB, refunds []entity.TicketRefund) ([]t
 	}
 	for _, refund := range refunds {
 		owner, found := hasProof[refund.ID]
-		result = append(result, ticketRefundResponse{TicketRefund: refund, HasProof: found && owner == refund.UserID})
+		signedEvidence, err := service.HasTicketRefundSignedPayoutEvidenceWithDB(db, refund)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, ticketRefundResponse{TicketRefund: refund, HasProof: found && owner == refund.UserID, HasSignedPayoutEvidence: signedEvidence})
 	}
 	return result, nil
 }
 
 func respondTicketRefund(c *gin.Context, db *gorm.DB, code int, refund entity.TicketRefund) {
 	rows, err := withTicketRefundProofFlags(db, []entity.TicketRefund{refund})
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	rows[0].OrderLines, err = service.TicketRefundLinesWithDB(db, refund.ID)
 	if err != nil {
 		writeTicketRefundError(c, err)
 		return
@@ -206,6 +217,45 @@ func TicketRefundDetail(c *gin.Context) {
 	respondTicketRefund(c, db, http.StatusOK, refund)
 }
 
+func TicketRefundRevisionOrders(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	id, ok := ticketRefundID(c)
+	if !ok {
+		return
+	}
+	orders, err := service.TicketRefundRevisionOrdersWithDB(db, actor, id, c.Query("manage") == "true")
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, orders)
+}
+
+func UpdateTicketRefund(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	id, ok := ticketRefundID(c)
+	if !ok {
+		return
+	}
+	var input service.TicketRefundRevisionInput
+	if c.ShouldBindJSON(&input) != nil {
+		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
+		return
+	}
+	refund, err := service.EditTicketRefundWithDB(db, actor, id, input, ticketRefundVerifier(db))
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	respondTicketRefund(c, db, http.StatusOK, refund)
+}
+
 func ReviewTicketRefund(c *gin.Context) {
 	db, actor, ok := ticketRefundRequest(c, true)
 	if !ok {
@@ -217,32 +267,44 @@ func ReviewTicketRefund(c *gin.Context) {
 	}
 	var input struct {
 		Action        string `json:"action"`
-		ApprovedCents int64  `json:"approvedCents"`
+		ApprovedCents *int64 `json:"approvedCents"`
 	}
 	if c.ShouldBindJSON(&input) != nil || (input.Action != "approve" && input.Action != "reject") {
 		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
 		return
 	}
-	refund, err := service.GetTicketRefundWithDB(db, actor, id)
-	if err != nil {
-		writeTicketRefundError(c, err)
+	if input.ApprovedCents != nil && *input.ApprovedCents <= 0 {
+		writeTicketRefundError(c, service.ErrTicketRefundAmount)
 		return
 	}
-	if input.Action == "approve" && refund.Kind == service.TicketRefundKindManual && refund.Status == service.TicketRefundStatusPendingReview {
-		if _, _, err := service.ReadTicketRefundProofWithDB(db, actor, id); err != nil {
-			if errors.Is(err, service.ErrTicketRefundNotFound) {
-				err = service.ErrTicketRefundProofRequired
-			}
-			writeTicketRefundError(c, err)
-			return
-		}
-	}
-	refund, err = service.ReviewTicketRefundWithDB(db, actor, id, input.Action == "approve", input.ApprovedCents, ticketRefundVerifier(db))
+	refund, err := service.ReviewTicketRefundDecisionWithDB(db, actor, id, input.Action == "approve", input.ApprovedCents, ticketRefundVerifier(db), ticketRefundManualEvidence(actor))
 	if err != nil {
 		writeTicketRefundError(c, err)
 		return
 	}
 	respondTicketRefund(c, db, http.StatusOK, refund)
+}
+
+func ticketRefundManualEvidence(actor entity.User) service.TicketRefundManualEvidenceCheck {
+	return func(db *gorm.DB, refund entity.TicketRefund) error {
+		signed, err := service.HasTicketRefundSignedPayoutEvidenceWithDB(db, refund)
+		if err != nil {
+			return err
+		}
+		if signed {
+			for _, attachmentID := range []int64{*refund.PayoutQrAttachmentID, *refund.SignatureAttachmentID} {
+				if _, _, _, err := service.ReadTicketAttachmentWithDB(db, &actor, attachmentID); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		_, _, err = service.ReadTicketRefundProofWithDB(db, actor, refund.ID)
+		if errors.Is(err, service.ErrTicketRefundNotFound) {
+			return service.ErrTicketRefundProofRequired
+		}
+		return err
+	}
 }
 
 func UploadTicketRefundProof(c *gin.Context) {
@@ -318,7 +380,8 @@ func ProcessTicketRefund(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Action string `json:"action"`
+		Action  string `json:"action"`
+		OrderID *int32 `json:"orderId"`
 	}
 	if c.ShouldBindJSON(&input) != nil || (input.Action != "submit" && input.Action != "query" && input.Action != "cancel_unsent") {
 		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
@@ -327,7 +390,13 @@ func ProcessTicketRefund(c *gin.Context) {
 	if input.Action == "cancel_unsent" {
 		// Proven never sent; do not require a still-working gateway to
 		// release this hold. The service serializes against Begin.
-		refund, err := service.CancelUnsentTicketRefundWithDB(db, actor, id)
+		cancel := service.CancelUnsentTicketRefundWithDB
+		if input.OrderID != nil {
+			cancel = func(db *gorm.DB, actor entity.User, id int64) (entity.TicketRefund, error) {
+				return service.CancelUnsentTicketRefundLineWithDB(db, actor, id, *input.OrderID)
+			}
+		}
+		refund, err := cancel(db, actor, id)
 		if err != nil {
 			writeTicketRefundError(c, err)
 			return
@@ -338,6 +407,10 @@ func ProcessTicketRefund(c *gin.Context) {
 	cfg, err := service.LoadTicketRefundEPayConfigWithDB(db)
 	if err != nil {
 		writeTicketRefundError(c, err)
+		return
+	}
+	if input.OrderID != nil {
+		processTicketRefundLine(c, db, actor, id, *input.OrderID, input.Action, cfg)
 		return
 	}
 	refund, err := service.GetTicketRefundWithDB(db, actor, id)
@@ -395,6 +468,40 @@ func ProcessTicketRefund(c *gin.Context) {
 	respondTicketRefund(c, db.WithContext(ctx), http.StatusOK, updated)
 }
 
+func processTicketRefundLine(c *gin.Context, db *gorm.DB, actor entity.User, id int64, orderID int32, action string, cfg service.TicketRefundEPayConfig) {
+	parent, line, order, err := service.PrepareTicketRefundLineWithDB(db, actor, id, orderID, action == "submit", cfg.VerifyOriginalOrder)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	if action == "submit" {
+		if err := service.SubmitTicketRefundEPay(c.Request.Context(), cfg, line, order); err != nil {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 4*time.Second)
+			defer cancel()
+			if updated, err := service.ReconcileTicketRefundLineWithDB(db.WithContext(ctx), actor, id, orderID, service.TicketRefundStatusUnknown, ""); err == nil {
+				parent = updated
+			}
+			respondTicketRefund(c, db.WithContext(ctx), http.StatusAccepted, parent)
+			return
+		}
+		respondTicketRefund(c, db, http.StatusAccepted, parent)
+		return
+	}
+	outcome, reference, err := service.QueryTicketRefundEPay(c.Request.Context(), cfg, line, order)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 4*time.Second)
+	defer cancel()
+	updated, err := service.ReconcileTicketRefundLineWithDB(db.WithContext(ctx), actor, id, orderID, outcome, reference)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	respondTicketRefund(c, db.WithContext(ctx), http.StatusOK, updated)
+}
+
 func ReconcileManualTicketRefund(c *gin.Context) {
 	db, actor, ok := ticketRefundRequest(c, true)
 	if !ok {
@@ -405,24 +512,16 @@ func ReconcileManualTicketRefund(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Outcome   string `json:"outcome"`
-		Reference string `json:"reference"`
+		Outcome   string   `json:"outcome"`
+		Reference string   `json:"reference"`
+		OrderIDs  *[]int32 `json:"orderIds"`
 	}
 	if c.ShouldBindJSON(&input) != nil || !refundManualReferencePattern.MatchString(input.Reference) ||
 		(input.Outcome != service.TicketRefundStatusSucceeded && input.Outcome != service.TicketRefundStatusFailed) {
 		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
 		return
 	}
-	refund, err := service.GetTicketRefundWithDB(db, actor, id)
-	if err != nil {
-		writeTicketRefundError(c, err)
-		return
-	}
-	if refund.Kind != service.TicketRefundKindManual {
-		writeTicketRefundError(c, service.ErrTicketRefundForbidden)
-		return
-	}
-	updated, err := service.ReconcileTicketRefundWithDB(db, actor, id, input.Outcome, input.Reference)
+	updated, err := service.ReconcileManualTicketRefundWithDB(db, actor, id, input.Outcome, input.Reference, input.OrderIDs, ticketRefundManualEvidence(actor))
 	if err != nil {
 		writeTicketRefundError(c, err)
 		return
@@ -435,6 +534,10 @@ func writeTicketRefundError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrTicketRefundInvalid), errors.Is(err, service.ErrTicketRefundAmount):
 		status, code, message = http.StatusBadRequest, "REFUND_INVALID", "退款参数或金额无效"
+	case errors.Is(err, service.ErrTicketRefundBindingsReviewed):
+		status, code, message = http.StatusConflict, "REFUND_BINDINGS_REVIEWED", err.Error()
+	case errors.Is(err, service.ErrTicketRefundAllocationMismatch):
+		status, code, message = http.StatusConflict, "REFUND_ALLOCATION_MISMATCH", err.Error()
 	case errors.Is(err, service.ErrTicketRefundProofInvalid):
 		status, code, message = http.StatusBadRequest, "REFUND_PROOF_INVALID", service.ErrTicketRefundProofInvalid.Error()
 	case errors.Is(err, service.ErrTicketRefundForbidden):
@@ -453,6 +556,8 @@ func writeTicketRefundError(c *gin.Context, err error) {
 		status, code, message = http.StatusConflict, "REFUND_ORDER_UNAVAILABLE", "该订单无法申请原路退款，请核对资格或提交人工工单"
 	case errors.Is(err, service.ErrTicketRefundInsufficientBalance):
 		status, code, message = http.StatusConflict, "REFUND_INSUFFICIENT_BALANCE", "可用余额不足，未冻结资金"
+	case errors.Is(err, service.ErrTicketRefundExceedsRefundablePrincipal):
+		status, code, message = http.StatusConflict, "REFUND_PRINCIPAL_UNAVAILABLE", err.Error()
 	case errors.Is(err, service.ErrTicketRefundProofRequired):
 		status, code, message = http.StatusConflict, "REFUND_PROOF_REQUIRED", service.ErrTicketRefundProofRequired.Error()
 	case errors.Is(err, service.ErrTicketRefundProofExists), errors.Is(err, service.ErrTicketRefundState):

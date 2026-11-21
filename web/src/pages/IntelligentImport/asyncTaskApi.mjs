@@ -55,10 +55,10 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled'])
 // ─────────────────────────── 参数形状 ───────────────────────────
 
 // 逐行结果里的 resource 取值（与后端 service.ImportResourceList 一致）。
-export const IMPORT_RESOURCES = ['questions', 'blacklist', 'users']
+export const IMPORT_RESOURCES = ['questions', 'blacklist', 'whitelist', 'users', 'ip_locations', 'phone_locations', 'sensitive_images', 'ocr_cache']
 
-// 导出只支持 CSV：JSON 由前端本地生成（后端对这个组合直接 400）。
-export const EXPORT_FORMATS = ['csv']
+// 管理资源共用服务端异步 CSV / JSON 导出。
+export const EXPORT_FORMATS = ['csv', 'json', 'xlsx', 'xml', 'html']
 
 // readBoolean 把表单/复选框的值归一成布尔。
 //
@@ -95,9 +95,10 @@ export function buildImportTaskForm({ resource, file, dryRun = false, confirmWea
 // service.resolveExportMasked(nil) → DefaultExportMasked(true)。
 // 在这里写 `masked: masked ?? true` 会让默认值出现两个来源，
 // 将来后端改默认（比如按资源分级）时前端会把旧默认值硬套回去。
-export function buildExportTaskPayload({ resource, masked, limit } = {}) {
+export function buildExportTaskPayload({ resource, format = 'csv', masked, limit } = {}) {
   if (typeof resource !== 'string' || !resource.trim()) throw new Error('导出资源不能为空')
-  const payload = { resource: resource.trim(), format: 'csv' }
+  if (!EXPORT_FORMATS.includes(format)) throw new Error('导出格式不受支持')
+  const payload = { resource: resource.trim(), format }
   if (masked !== undefined && masked !== null) payload.masked = readBoolean(masked)
   // limit 为 0/undefined 时不传：让后端按资源上限取默认，
   // 前端硬编码一个数字会在「题库 1 万、其它 10 万」的差别上出错。
@@ -140,6 +141,11 @@ export function fetchAsyncTask(taskId) {
     url: `${EXPORT_TASKS_PATH}/${encodeURIComponent(id)}`,
     method: 'get',
   })
+}
+
+export function downloadAsyncTask(taskId, errors = false) {
+  const id = readTaskId(taskId)
+  return request({ errorFeedback: 'local', url: `${EXPORT_TASKS_PATH}/${encodeURIComponent(id)}/${errors ? 'errors' : 'download'}`, method: 'get', responseType: 'blob' })
 }
 
 // listAsyncTasks 任务列表（管理页：可按 type / status / resource 过滤）。

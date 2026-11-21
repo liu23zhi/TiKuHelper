@@ -15,6 +15,7 @@
     />
 
     <template v-if="canManage()">
+
       <ConsoleSummaryGrid class="rebate-summary">
         <div>
           <div class="summary-label">筛选结果</div>
@@ -31,7 +32,7 @@
       </ConsoleSummaryGrid>
 
       <ConsolePanel title="筛选" description="状态精确匹配；受益人 / 受邀人是账户 ID；订单号精确匹配，不做模糊搜索。">
-        <a-form layout="inline" class="filter-form" :onFinish="reload">
+        <a-form layout="inline" class="filter-form" :model="filters" @finish="reload">
           <a-form-item label="状态" :html-for="fieldId('status')">
             <a-select
               :id="fieldId('status')"
@@ -95,7 +96,7 @@
 
       <!-- B1：管理员手动补录一笔返佣（无需充值订单）。创建即入账，直接进赠送余额。 -->
       <ConsolePanel title="手动补录返佣" description="给指定受益人补一笔返佣。创建即入账（进赠送余额、欠款先抵），同一受益人 + 同一金额 + 同一日期只会记一笔。">
-        <a-form layout="inline" class="manual-form" :onFinish="submitManual">
+        <a-form layout="inline" class="manual-form" :model="manualForm" @finish="submitManual">
           <a-form-item label="受益人 ID" :html-for="fieldId('manualUser')">
             <a-input
               :id="fieldId('manualUser')"
@@ -149,7 +150,7 @@
 
       <!-- B2：赠送记录 —— 四类来源聚合（注册赠送 / 评价返现 / 邀请返佣 / 充值赠金）。 -->
       <ConsolePanel title="赠送记录" :description="giftScopeDescription">
-        <a-form layout="inline" class="filter-form" :onFinish="reloadGiftRecords">
+        <a-form layout="inline" class="filter-form" :model="giftFilters" @finish="reloadGiftRecords">
           <a-form-item label="来源" :html-for="fieldId('giftSource')">
             <a-select
               :id="fieldId('giftSource')"
@@ -294,6 +295,8 @@
         </ConsoleTableShell>
       </ConsolePanel>
     </template>
+    <AdminDataTransfer resource="gifts" title="赠送记录导出" />
+
   </div>
 </template>
 
@@ -308,6 +311,7 @@ import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import { createManualReferralRebate, getGiftRecordSources, getGiftRecords, getReferralRebates, settleReferralRebate } from '@/api/ReferralApi'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -331,7 +335,7 @@ const emptyFilters = () => ({ status: undefined, inviterUserId: '', orderNo: '' 
 
 export default {
   name: 'ReferralRebatesPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert, AdminDataTransfer },
   setup() {
     const route = useRoute()
     const prefix = 'referral-rebates-' + useId()

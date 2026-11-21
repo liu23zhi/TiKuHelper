@@ -65,22 +65,23 @@ test('UserList 有「设备」按钮，且它调用 openDevices', async () => {
     '「设备」按钮必须调用 openDevices(record)');
 });
 
-test('UserList 的 openDevices 跳转到 device-admin 并带 userId', async () => {
+test('UserList 的 openDevices 在用户列表弹出指定用户设备', async () => {
   const source = await readStripped(userListPath);
 
   const method = source.match(/openDevices\s*\(record\)\s*\{[\s\S]*?\n\s{4}\},/);
   assert.ok(method, '必须定义 openDevices(record) 方法');
   const body = method[0];
 
-  // 路由名必须写死字面量 —— 用变量拼会让「路由改名」静默失效。
-  assert.match(body, /name:\s*'device-admin'/,
-    'openDevices 必须跳到 device-admin 路由');
-  assert.match(body, /query:\s*\{\s*userId:\s*String\(id\)/,
-    'openDevices 必须把用户 id 作为 ?userId= 传过去（否则设备页不知道限定谁）');
+  assert.match(body, /deviceTarget\.value\s*=\s*\{\s*id/,
+    'openDevices 必须绑定目标用户供弹窗显示');
+  assert.match(body, /deviceVisible\.value\s*=\s*true/,
+    'openDevices 必须在当前页面打开设备弹窗');
+  assert.match(source, /<DeviceAdmin[^>]*:user-id="Number\(deviceTarget\.id\)"[^>]*embedded/,
+    '打开设备弹窗后必须复用完整设备管理并按目标用户读取');
 
   // 非法 id 必须早退，不能带着 NaN 跳过去。
   assert.match(body, /Number\.isSafeInteger\(id\)/,
-    'openDevices 必须校验 id 是安全整数（否则会带着 NaN 跳转）');
+    'openDevices 必须校验 id 是安全整数（否则会带着 NaN 请求后端）');
 });
 
 test('「设备」与「查看」「画像」是三个并列入口，谁都没被替换', async () => {

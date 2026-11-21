@@ -160,17 +160,24 @@ func requiresAITestWebTool(tool string) bool {
 // TestAIToolCall uses the production token/tool billing functions, while bypassing
 // question caches and question ingestion. All charges belong to the current admin.
 func TestAIToolCall(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var input aiToolTestInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	executeAIToolCall(c, input, nil)
+}
+
+func executeAIToolCall(c *gin.Context, input aiToolTestInput, uploaded *ocrUploadedImage) {
 	operator, ok := currentOperator(c)
 	if !ok {
 		return
 	}
 	if !isAdminUser(&operator) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "无权限测试 AI 工具调用"})
-		return
-	}
-	var input aiToolTestInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
 	target, err := input.validate()
@@ -275,7 +282,11 @@ func TestAIToolCall(c *gin.Context) {
 	if input.Mode == "direct" {
 		if input.Tool == "image_ocr" {
 			client := &search.ChatGptClient{OCRCacheProvider: ocrProvider, OCRAPI: "https://uapis.cn/api/v1/image/ocr"}
-			_, debug, err = runAIImageOCRTest(c.Request.Context(), client, target)
+			if uploaded != nil {
+				_, debug, err = client.TestImageOCRBytes(c.Request.Context(), target, uploaded.name, uploaded.data)
+			} else {
+				_, debug, err = runAIImageOCRTest(c.Request.Context(), client, target)
+			}
 		} else {
 			debug, err = runDirectAIToolTest(c.Request.Context(), recorder, input.Tool, target)
 		}

@@ -470,37 +470,35 @@ func TestDevicePoolNormalizesDeviceID(t *testing.T) {
 	}
 }
 
-// 总开关默认关闭 ⇒ 零查询直接放行（与黑名单总开关同款纪律）。
-func TestDevicePoolSwitchOffAllowsEverything(t *testing.T) {
+// 设备池总开关已移除，历史缺省/旧值都按启用处理。
+func TestDevicePoolLegacySwitchCannotDisableLimits(t *testing.T) {
 	db := newDevicePoolTestDB(t)
 	levelID := seedDevicePoolLevel(t, db, 1, 1)
 	seedDevicePoolUser(t, db, 1100, levelID)
 	mustRegisterDevice(t, db, 1100, "switch-dev")
 
-	// 开关未配置 ⇒ 默认关闭 ⇒ 上限不生效。
-	for i := 0; i < 3; i++ {
-		decision := CanUseDeviceWithSwitch(db, 1100, "switch-new-dev-"+formatInt64(int64(i)))
-		if !decision.Allowed {
-			t.Fatalf("总开关关闭时必须放行：%+v", decision)
-		}
-		if decision.Reason != "switch-off" {
-			t.Fatalf("原因必须是 switch-off，实际 %q", decision.Reason)
-		}
-	}
-
-	// 打开开关后，同样的调用必须真的开始限制（证明开关真的接进了判定）。
-	if err := db.Create(&entity.SystemSetting{
-		Key: DeviceLimitEnabledSettingKey, Value: "true",
-		Remark: "启用账户设备池上限",
-	}).Error; err != nil {
-		t.Fatalf("seed switch: %v", err)
-	}
+	// 未配置历史字段时也必须开始限制。
 	decision := CanUseDeviceWithSwitch(db, 1100, "switch-new-dev-1")
 	if decision.Allowed {
-		t.Fatalf("开关打开后上限 1 的第 2 台必须被拒：%+v", decision)
+		t.Fatalf("未配置历史字段时上限仍必须生效：%+v", decision)
 	}
 	if decision.Reason != "limit-exceeded" {
-		t.Fatalf("开关打开后原因必须是 limit-exceeded，实际 %q", decision.Reason)
+		t.Fatalf("未配置历史字段时原因必须是 limit-exceeded，实际 %q", decision.Reason)
+	}
+
+	// 旧客户端显式写 false 也不能关闭限制。
+	if err := db.Create(&entity.SystemSetting{
+		Key: DeviceLimitEnabledSettingKey, Value: "false",
+		Remark: "启用账户设备池上限",
+	}).Error; err != nil {
+		t.Fatalf("seed legacy switch: %v", err)
+	}
+	decision = CanUseDeviceWithSwitch(db, 1100, "switch-new-dev-2")
+	if decision.Allowed {
+		t.Fatalf("旧 false 值不能关闭上限：%+v", decision)
+	}
+	if decision.Reason != "limit-exceeded" {
+		t.Fatalf("旧 false 值时原因必须是 limit-exceeded，实际 %q", decision.Reason)
 	}
 }
 

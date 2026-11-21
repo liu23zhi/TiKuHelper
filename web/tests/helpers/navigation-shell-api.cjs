@@ -8,10 +8,11 @@ module.exports = function navigationShellAdapter({ actor, record, deny }) {
     let data
     if (url === '/api/public/register-status') {
       data = { siteName: 'SYNTHETIC navigation' }
-    } else if (url === '/api/user/session' || url === '/api/system/storage-status') {
+    } else if (url === '/api/user/session' || url === '/api/system/storage-status' || url === '/api/user/review-rebate/availability') {
       if (!(Number.isSafeInteger(actor()?.id) && actor().id > 0)) return deny('anonymous-protected-shell-read')
-      if (url === '/api/user/session' && !config.signal) return deny('uncancellable-session-check')
-      data = url === '/api/user/session' ? { message: 'ok' } : { driver: 'mysql' }
+      if (url !== '/api/system/storage-status' && !config.signal) return deny('uncancellable-protected-read')
+      if (url === '/api/user/review-rebate/availability' && ['0', 'disabled', 'banned'].includes(String(actor().status))) return deny('ineligible-menu-availability')
+      data = url === '/api/user/session' ? { message: 'ok' } : url === '/api/system/storage-status' ? { driver: 'mysql' } : { enabled: false }
     } else {
       return deny('unexpected-shell-url')
     }

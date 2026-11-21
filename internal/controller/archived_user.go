@@ -163,6 +163,9 @@ func ArchivedUserList(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "获取已归档账号列表失败"})
 		return
 	}
+	for i := range rows {
+		maskArchivedUserIdentity(&rows[i])
+	}
 	c.JSON(200, gin.H{
 		"data":     rows,
 		"total":    total,
@@ -247,6 +250,7 @@ func loadArchivedUser(db *gorm.DB, userID int32) (archivedUserRow, error) {
 
 // ArchivedUserDetail 返回单个已归档账号 + 该用户的绑定记录历史。
 func ArchivedUserDetail(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	operator, _ := c.Get(`user`)
 	currentUser, _ := operator.(*entity.User)
 	if !isAdminUser(currentUser) {
@@ -279,7 +283,66 @@ func ArchivedUserDetail(c *gin.Context) {
 		c.JSON(500, gin.H{"message": "读取绑定记录失败"})
 		return
 	}
+	maskArchivedUserIdentity(&row)
 	c.JSON(200, gin.H{"data": row, "bindings": bindings})
+}
+
+func maskArchivedUserIdentity(row *archivedUserRow) {
+	if row.Phone != nil {
+		masked := maskArchivedBindingValue(entity.BindingKindPhone, *row.Phone)
+		row.Phone = &masked
+	}
+	if row.WechatID != nil {
+		masked := maskArchivedBindingValue(entity.BindingKindWechat, *row.WechatID)
+		row.WechatID = &masked
+	}
+}
+
+// ArchivedUserIdentity reads only supported identity fields, on an explicit administrator action.
+// Passwords, session IDs, token values, binding hashes and upstream credentials never enter this view.
+func ArchivedUserIdentity(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	operator, _ := c.Get("user")
+	admin, _ := operator.(*entity.User)
+	if !isAdminUser(admin) {
+		c.JSON(403, gin.H{"message": "无权限查看归档账号身份信息"})
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 32)
+	if err != nil || id <= 0 {
+		c.JSON(400, gin.H{"message": "参数错误"})
+		return
+	}
+	db := archivedUserDB()
+	if db == nil {
+		c.JSON(500, gin.H{"message": "数据库不可用"})
+		return
+	}
+	row, err := loadArchivedUser(db, int32(id))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(404, gin.H{"message": "已归档账号不存在"})
+		return
+	}
+	if err != nil {
+		c.JSON(500, gin.H{"message": "读取归档身份信息失败"})
+		return
+	}
+	type identityBinding struct {
+		ID    int64  `json:"id"`
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+	}
+	bindings := make([]identityBinding, 0)
+	if db.Migrator().HasTable(entity.TableNameUserBindingRecord) {
+		if err := db.Model(&entity.UserBindingRecord{}).Select("id", "kind", "value").
+			Where("user_id = ? AND state != ? AND kind IN ?", row.ID, "voided", []string{entity.BindingKindPhone, entity.BindingKindWechat}).
+			Order("id DESC").Scan(&bindings).Error; err != nil {
+			c.JSON(500, gin.H{"message": "读取归档身份信息失败"})
+			return
+		}
+	}
+	recordAccountAudit(c, admin, accountLogModule, 1, "查看归档账号身份原文", map[string]any{"targetUserId": row.ID, "bindingCount": len(bindings)})
+	c.JSON(200, gin.H{"userId": row.ID, "phone": row.Phone, "wechatId": row.WechatID, "bindings": bindings})
 }
 
 // loadArchivedUserBindings 返回该用户的**全部**绑定记录（含已释放）。

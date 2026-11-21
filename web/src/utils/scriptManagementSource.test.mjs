@@ -29,13 +29,13 @@ test('script management is routed for both scopes and exposes admin upload contr
   assert.match(api, /url: `\/api\/scripts`/)
   assert.match(api, /url: `\/api\/script-versions\/upload`/)
   assert.match(page, /accept="\.exe,application\/vnd\.microsoft\.portable-executable"/)
-  assert.match(page, /显示全部脚本/)
+  assert.doesNotMatch(page, /只看我的脚本|显示全部脚本|toggleScope/)
   assert.match(page, /预置参数/)
   assert.match(page, /冻结金模式/)
   assert.match(page, /一次性激活码/)
   assert.doesNotMatch(page, /独立答题倍率（X）/)
   assert.match(page, /发布为最新版本/)
-  assert.match(page, /PowerShell \+ \.NET WebClient/)
+  assert.match(page, /PowerShell 2.*兼容指令/)
 })
 
 test('paid script creation sends exactly one stable idempotency header without changing the payload', async () => {

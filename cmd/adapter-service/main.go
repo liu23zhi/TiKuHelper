@@ -81,11 +81,13 @@ func main() {
 		}
 	}(mg)
 
-	server := gin.Default()
+	server := gin.New()
+	server.Use(logger.AccessLogger(), logger.HTTPRecovery())
 	if err := server.SetTrustedProxies(trustedProxies.List); err != nil {
 		logger.FatalLog(err)
 	}
 	logTrustedProxies(trustedProxies)
+	server.Use(controller.ScriptProxyHTTPS(trustedProxies.List[:trustedProxies.ConfiguredCount]))
 	api.SetAPIRouter(server)
 	healthDB, err := mg.GetDB().DB()
 	if err != nil {
