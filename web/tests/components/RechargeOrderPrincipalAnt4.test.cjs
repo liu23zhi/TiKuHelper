@@ -34,6 +34,13 @@ const statusWrites = []
 mock(path.join(web, 'src/api/TikuComponentApi.js'), { getRechargeOrders: deferred, updateRechargeOrderStatus: async (id, status) => {
   statusWrites.push({ id, status }); return { status: 200, data: {} }
 } })
+// The administrator's export panel loads its own job list when this page mounts.
+// Keep the production panel and the no-network sentinel; fake only that read.
+const transferPath = path.join(web, 'src/pages/IntelligentImport/asyncTaskApi.mjs')
+mock(transferPath, { ...require(transferPath), listAsyncTasks: async ({ resource }) => {
+  assert.equal(resource, 'recharge_orders')
+  return { status: 200, data: { data: [], total: 0 } }
+} })
 mock(require.resolve('vue-router'), {
   useRoute: () => activeRoute,
   useRouter: () => ({ currentRoute: { get value() { return activeRoute } }, push() { throw new Error('UNEXPECTED_RECHARGE_NAVIGATION') } }),
