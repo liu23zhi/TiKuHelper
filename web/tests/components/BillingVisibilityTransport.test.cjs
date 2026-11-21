@@ -24,8 +24,8 @@ const B = { id: 952, role: 'admin', username: 'synthetic-later-owner', balance: 
 const query = { keyword: 'synthetic-billing-check', type: 'normal_search', page: 2, pageSize: 10 }
 function writeVisibility(show = false) { logicalWrites++; return api.updateBillingStatementVisibility(8091, show) }
 const methods = [
-  { name: 'GET', method: 'get', url: '/adapter-service/billing-records', invoke: () => api.getBillingRecords({ ...query }) },
-  { name: 'PUT', method: 'put', url: '/adapter-service/billing-records/8091/statement-visibility', invoke: () => writeVisibility(false) },
+  { name: 'GET', method: 'get', url: '/api/billing-records', invoke: () => api.getBillingRecords({ ...query }) },
+  { name: 'PUT', method: 'put', url: '/api/billing-records/8091/statement-visibility', invoke: () => writeVisibility(false) },
 ]
 class FixtureStorage {
   values = new Map()
@@ -217,7 +217,7 @@ test('BILLING_VISIBILITY_TRANSPORT separate balance POST retains its original th
   assert.ok(keys[0].length > 0)
   for (const config of requests) {
     assert.equal(config.method, 'post')
-    assert.equal(config.url, '/adapter-service/user/71/balance')
+    assert.equal(config.url, '/api/user/71/balance')
     assert.equal(resolveRequestPolicy(config), 'keyed')
     assert.deepEqual(JSON.parse(config.data), { mode: 'override', amount: -0.000062, showInStatement: false })
   }
@@ -232,7 +232,7 @@ for (const status of [401, 403]) {
     const value = await api.getSystemMetrics()
     assert.equal(requests.length, 1)
     assert.equal(requests[0].method, 'get')
-    assert.equal(requests[0].url, '/adapter-service/system-metrics')
+    assert.equal(requests[0].url, '/api/system-metrics')
     assert.equal(requests[0].errorFeedback, undefined)
     assert.equal(logicalWrites, 0)
     assertPayload(value, status, body)

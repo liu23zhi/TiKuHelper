@@ -44,7 +44,7 @@ function button(label) {
 }
 async function click(node) { node.click(); await settle() }
 function checkbox(label) {
-  const found = [...document.querySelectorAll('label')].find(node => node.textContent.replace(/\s/g, '').includes(label.replace(/\s/g, '')) && node.querySelector('input[type="checkbox"]'))
+  const found = [...document.querySelectorAll('.column-settings-panel .column-settings-options label')].find(node => node.textContent.replace(/\s/g, '').includes(label.replace(/\s/g, '')) && node.querySelector('input[type="checkbox"]'))
   assert.ok(found, 'REAL_COLUMN_CHECKBOX: ' + label)
   return found.querySelector('input[type="checkbox"]')
 }

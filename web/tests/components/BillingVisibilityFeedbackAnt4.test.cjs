@@ -123,7 +123,7 @@ async function issue(w, show = !w.vm.selectedBillingRecord.showInStatement) {
 }
 function unknown() {
   const raw = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK', config: { url: PRIVATE }, privatePayload: PRIVATE })
-  const error = toUserRequestError({ method: 'put', url: '/adapter-service/billing-records/8091/statement-visibility' }, raw)
+  const error = toUserRequestError({ method: 'put', url: '/api/billing-records/8091/statement-visibility' }, raw)
   assert.equal(error.code, 'UNKNOWN_OUTCOME'); return error
 }
 function failure(status = 503, mode = 'rejected', id = ID) {

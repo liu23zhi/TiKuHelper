@@ -21,7 +21,7 @@ const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),params=clone(config.params||{}),plan=plans.shift()||{label:'A',status:200}
  const call={method,url,params,actor:user.getStoredCurrentUser()?.id||null,status:plan.status??null,outcome:plan.outcome||'response',label:plan.label||'A',id:(calls.length+1).toString(16).padStart(32,'0')};calls.push(call)
- if(method!=='get'||url!=='/adapter-service/logs'){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
+ if(method!=='get'||url!=='/api/logs'){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  if(plan.outcome==='network')return Promise.reject(new axios.AxiosError('Network Error','ERR_NETWORK',config,{memoryOnly:true}))
  const status=plan.status??200;call.status=status
  return Promise.resolve({status,data:status===200?dto(call.label,params):{message:'当前账号无此操作权限。'},headers:{'x-request-id':call.id},config,request:{memoryOnly:true}})
@@ -73,7 +73,7 @@ register('LQ01 actual committed keyword B403 clears A rows/total and distinguish
  const recovered=view(w);cur.observations.push({label:'explicit same B GET200 recovery',view:recovered})
  check(calls.length===before+2&&calls.at(-1).params.keyword===BKEY&&calls.at(-1).params.page===1&&recovered.total===21,'recovery is exactly one explicit owned GET using committed B query')
  check(recovered.ids.length===1&&recovered.ids[0]===902&&!recovered.error&&!recovered.failureKind&&recovered.desktopText.includes('SYNTHETIC_LOG_B_ROW')&&recovered.mobileText.includes('SYNTHETIC_LOG_B_ROW'),'recovered current B row/total renders and retires prior failure')
- check(calls.every(c=>c.method==='get'&&c.url==='/adapter-service/logs'&&c.actor===A.id),'only exact owned read endpoint, no business mutation or location call')
+ check(calls.every(c=>c.method==='get'&&c.url==='/api/logs'&&c.actor===A.id),'only exact owned read endpoint, no business mutation or location call')
 })
 
 register('LQ02 actual native page2 network rejection clears page1 and retains failed page intent; explicit diagnostic read retry reaches valid empty state without success/failure conflation',async()=>{
@@ -89,5 +89,5 @@ register('LQ02 actual native page2 network rejection clears page1 and retains fa
  const recovered=view(w);cur.observations.push({label:'explicit current page2 GET recovered with server empty page1',view:recovered,responseBody:dto('empty',calls.at(-1).params)})
  check(calls.length===before+4&&calls.at(-1).params.page===2&&calls.at(-1).params.pageSize===10,'read retry emits one GET for retained failed page intent and no automatic write')
  check(recovered.total===0&&recovered.page===1&&recovered.ids.length===0&&!recovered.error&&!recovered.failureKind&&recovered.desktopText.includes('当前还没有日志记录')&&recovered.mobileText.includes('当前还没有日志记录'),'valid empty server result accepts returned effective page1, Chinese empty text and no error')
- check(calls.every(c=>c.method==='get'&&c.url==='/adapter-service/logs'&&c.actor===A.id),'all retries/recovery remain exact owned readonly endpoint')
+ check(calls.every(c=>c.method==='get'&&c.url==='/api/logs'&&c.actor===A.id),'all retries/recovery remain exact owned readonly endpoint')
 })
