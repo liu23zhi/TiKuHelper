@@ -143,6 +143,11 @@ export function fetchAsyncTask(taskId) {
   })
 }
 
+export function downloadAsyncTask(taskId, errors = false) {
+  const id = readTaskId(taskId)
+  return request({ errorFeedback: 'local', url: `${EXPORT_TASKS_PATH}/${encodeURIComponent(id)}/${errors ? 'errors' : 'download'}`, method: 'get', responseType: 'blob' })
+}
+
 // listAsyncTasks 任务列表（管理页：可按 type / status / resource 过滤）。
 export function listAsyncTasks(params = {}) {
   const query = {}

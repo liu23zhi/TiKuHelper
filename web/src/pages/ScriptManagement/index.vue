@@ -326,7 +326,7 @@ import { UploadOutlined } from '@ant-design/icons-vue'
 import { getCurrentUserLogoutEpoch, getStoredCurrentUser, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode, configureScriptShortAuthorization, configureScriptLauncherAuthorization } from '@/api/TikuComponentApi'
-import { buildScriptBillingText, buildScriptCommand, buildScriptShortCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
+import { isRedeemableScriptCode, buildScriptBillingText, buildScriptCommand, buildScriptShortCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
 import { collectScriptRevokeNotices, scriptNoticeAlertType } from '@/utils/scriptRevokeNotice.mjs'
 import { shouldShowSkipBindingButton, buildCreateScriptPayload, isBindingsRequiredError, buildSkipBindingConfirmText } from '@/utils/scriptSkipBinding.mjs'
 import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
@@ -763,7 +763,7 @@ async function buyActivationCode() {
 async function redeemActivationCode() {
   const owns = editorEntry.value.isCurrent, code = activationCode.value.trim()
   if (!owns() || editing.value || form.billingMode !== 'activation_code' || saving.value || activationBusy.value || form.entitlementId) return
-  if (!/^sac_[a-f0-9]{64}$/.test(code)) return message.warning('请输入有效激活码。')
+  if (!isRedeemableScriptCode(code)) return message.warning('请输入有效激活码。')
   redeemingCode.value = true
   try {
     const response = await redeemScriptActivationCode({ code })

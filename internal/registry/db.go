@@ -766,6 +766,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		&entity.TicketMessage{},
 		&entity.TicketNotification{},
 		&entity.TicketRefund{},
+		&entity.TicketRefundOrderLine{},
 		&entity.TicketRefundLedger{},
 		&entity.TicketRefundProof{},
 		&entity.RefundPayoutQrMemory{},

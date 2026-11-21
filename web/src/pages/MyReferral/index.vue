@@ -15,7 +15,7 @@
       message="邀请返现功能未开启"
     >
       <template #description>
-        <p class="hint">当前站点没有开放邀请返现。开启后这里会显示你的专属邀请码与返佣记录。</p>
+        <p class="hint">当前站点没有开放邀请返佣。你仍可分享专属邀请码，邀请关系会保留；关闭期间的充值不产生返佣。</p>
       </template>
     </a-alert>
 
@@ -32,7 +32,7 @@
       />
     </section>
 
-    <template v-if="loaded && enabled">
+    <template v-if="loaded">
       <ConsolePanel title="我的邀请码" description="新用户注册时填写这个码，就会绑定到你名下。邀请码不含任何凭据，可以公开分享。">
         <div class="invite-code-block">
           <output class="invite-code" data-invite-code>{{ code || '邀请码生成中，请稍后刷新' }}</output>

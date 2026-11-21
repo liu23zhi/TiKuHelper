@@ -266,6 +266,9 @@ func validScriptActivationCode(code string) bool {
 // purchasing owner returns the same row and cannot produce a second grant.
 func RedeemScriptActivationCodeWithDB(db *gorm.DB, userID int32, code string) (entity.ScriptActivationEntitlement, error) {
 	code = strings.TrimSpace(code)
+	if strings.HasPrefix(code, AdminScriptActivationCodePrefix) {
+		return redeemGeneratedAdminScriptCode(db, userID, code)
+	}
 	if db == nil || userID <= 0 || !validScriptActivationCode(code) {
 		return entity.ScriptActivationEntitlement{}, ErrScriptActivationCodeInvalid
 	}
@@ -278,6 +281,11 @@ func RedeemScriptActivationCodeWithDB(db *gorm.DB, userID int32, code string) (e
 		}
 		if err != nil {
 			return err
+		}
+		if banned, e := IsBanned(tx, userID); e != nil {
+			return e
+		} else if banned {
+			return ErrScriptActivationCodeInvalid
 		}
 		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ? AND code_hash = ?", user.ID, hashScriptSecret(code)).First(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -354,7 +362,52 @@ func BindScriptActivationEntitlementInTx(tx *gorm.DB, userID int32, entitlementI
 	if updated.RowsAffected != 1 {
 		return ErrScriptActivationEntitlementUnavailable
 	}
+	if tx.Migrator().HasTable(&entity.AdminScriptActivationCode{}) {
+		if err := tx.Session(&gorm.Session{NewDB: true}).Model(&entity.AdminScriptActivationCode{}).Where("used_entitlement_id = ? AND used_by = ?", entitlementID, userID).Update("used_script_id", scriptID).Error; err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func redeemGeneratedAdminScriptCode(db *gorm.DB, userID int32, code string) (entity.ScriptActivationEntitlement, error) {
+	if db == nil || userID <= 0 || len(code) != 36 || strings.Trim(strings.TrimPrefix(code, AdminScriptActivationCodePrefix), "0123456789abcdef") != "" {
+		return entity.ScriptActivationEntitlement{}, ErrScriptActivationCodeInvalid
+	}
+	var grant entity.ScriptActivationEntitlement
+	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var user entity.User
+		if err := tx.Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND status = ?", userID, "enabled").First(&user).Error; err != nil {
+			return ErrScriptActivationCodeInvalid
+		}
+		if banned, e := IsBanned(tx, userID); e != nil {
+			return e
+		} else if banned {
+			return ErrScriptActivationCodeInvalid
+		}
+		// A lost successful response may be retried by the same owner. Return
+		// the original grant without consuming or issuing another entitlement.
+		if err := tx.Where("user_id = ? AND code_hash = ? AND redeemed_at IS NOT NULL", userID, hashScriptSecret(code)).First(&grant).Error; err == nil {
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		nonce, err := randomScriptSecret(32)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().Truncate(time.Second)
+		grant = entity.ScriptActivationEntitlement{UserID: userID, PurchaseKeyHash: hashScriptSecret("admin-issued:" + code), PurchaseNonce: nonce, CodeHash: hashScriptSecret(code), RedeemedAt: &now, PurchasePrice: 0}
+		if err := tx.Create(&grant).Error; err != nil {
+			return ErrScriptActivationCodeInvalid
+		}
+		_, err = ConsumeAdminScriptActivationCode(tx, code, userID, nil, &grant.ID)
+		return err
+	})
+	if err != nil {
+		return entity.ScriptActivationEntitlement{}, err
+	}
+	return grant, nil
 }
 
 // ResolveScriptActivationEntitlementRunInTx locks the bound entitlement so

@@ -5,7 +5,7 @@
       description="按 IP / 手机号 / 微信 / 地区拉黑请求来源。规则写入后立即生效；命中记录用于解释「为什么被拦」并判断规则是否误伤。"
     >
       <template #actions>
-        <AdminDataTransfer v-if="canManage()" resource="blacklist" title="黑名单规则" importable import-description="支持 IP、手机号、微信和地区规则的 CSV / JSON，每次最多 5000 条；相同规则跳过，保留文件中的启停状态，不改变总开关。" @imported="loadEntries" />
+
         <a-button :loading="loadingEntries" :disabled="!canManage() || loadingEntries || writing" @click="loadEntries">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -294,6 +294,8 @@
         <p v-if="createError" class="filter-error" role="alert">{{ createError }}</p>
       </a-modal>
     </template>
+    <AdminDataTransfer v-if="canManage()" resource="blacklist" title="黑名单规则" importable import-description="支持 IP、手机号、微信和地区规则的 CSV / JSON，每次最多 5000 条；相同规则跳过，保留文件中的启停状态，不改变总开关。" @imported="loadEntries" />
+
   </div>
 </template>
 

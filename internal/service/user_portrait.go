@@ -162,6 +162,7 @@ type PortraitBase struct {
 // 同一个结构体是刻意的：前端只写一份渲染，不存在「整体页和单用户页口径不一致」
 // 这类只能靠肉眼发现的问题。
 type UserPortrait struct {
+	Insights     []PortraitInsight     `json:"insights"`
 	Scope        string                `json:"scope"`
 	TargetUserID int32                 `json:"targetUserId"`
 	GeneratedAt  time.Time             `json:"generatedAt"`
@@ -411,9 +412,12 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 	if err := fillPortraitDailyAndAccounts(db, normalized, &portrait); err != nil {
 		return UserPortrait{}, err
 	}
+	if err := fillPortraitInventory(db, normalized, &portrait); err != nil {
+		return UserPortrait{}, err
+	}
 
 	portrait.Notes = append(portrait.Notes,
-		"设备指纹数据源不存在（98 §1.1），本页不含设备维度，也不做「新设备/设备农场」类判断。",
+		"设备、令牌、充值和退款分布来自当前记录；设备绑定数包含已移除记录，不作为独立设备指纹或风控结论。",
 		"答题正确率无数据源：billing_records 没有正确性字段，本页只统计量与金额。",
 		"时间/区域/类型分布均来自 billing_records：免费额度内的调用不产生账单行，因此是「计费口径」而非「请求口径」。",
 		"按日趋势统计近 30 个自然日的账单，使用北京时间；仅展示有记录的日期，不补齐空日。账号状态与角色仅统计未归档账号。",
@@ -425,7 +429,7 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 // loadPortraitUser 读目标用户。已归档（软删除）视为不存在。
 func loadPortraitUser(db *gorm.DB, userID int32) (entity.User, error) {
 	var user entity.User
-	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ?", userID).Take(&user).Error; err != nil {
+	if err := db.Session(&gorm.Session{NewDB: true}).Unscoped().Where("id = ?", userID).Take(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return entity.User{}, ErrPortraitUserNotFound
 		}

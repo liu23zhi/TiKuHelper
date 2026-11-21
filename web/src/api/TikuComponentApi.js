@@ -1089,6 +1089,14 @@ export function getTicketRefundDetail(id, signal) {
   return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'get', signal }).then(requireTicketResponse)
 }
 
+export function getTicketRefundRechargeOrders(id, manage, signal) {
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'recharge-orders'), method: 'get', params: { manage }, signal }).then(requireTicketResponse)
+}
+
+export function updateTicketRefund(id, data, signal) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'patch', data, signal })
+}
+
 export function createTicketRefund(data, signal) {
   return ticketRefundRequest({ url: ticketRefundBase, method: 'post', data, signal })
 }

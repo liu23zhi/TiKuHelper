@@ -249,14 +249,18 @@ func TestReferralAdminEndpointsRejectNonAdmin(t *testing.T) {
 	}
 }
 
-// Test 1（HTTP 层）：开关关闭时注册不生成邀请码，且带 inviteCode 不报错。
-func TestReferralRegisterHTTPGeneratesNothingWhenDisabled(t *testing.T) {
+// HTTP 注册即使返佣关闭，也必须创建邀请码并保留有效的邀请归因。
+func TestReferralRegisterHTTPGeneratesCodeAndAttributionWhenRebatesDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newReferralControllerTestDB(t)
 	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
 		t.Fatalf("enable register: %v", err)
 	}
 	// 开关关闭（不写任何 referral 设置项 = 默认 false）。
+	inviter := seedReferralControllerUser(t, db, 990, "disabled-reward-inviter", "user", 0)
+	if err := db.Create(&entity.ReferralInvite{UserID: inviter.ID, Code: "ABCDEFGH"}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	originalConsume := consumeRegisterCaptchaTokenInTx
 	originalVerify := verifyRegisterSMSCodeInTx
@@ -271,29 +275,29 @@ func TestReferralRegisterHTTPGeneratesNothingWhenDisabled(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	// 带一个不存在的邀请码：开关关闭时必须被静默忽略，不能因此拒绝注册。
+	// 邀请关系与奖励开关分别处理；这里验证默认缺配置时的真实注册链路。
 	request := httptest.NewRequest(http.MethodPost, "/api/user/register",
-		bytes.NewBufferString(`{"username":"referral_off_user","password":"Abc12345!","phone":"13800001003","smsCode":"123456","captchaToken":"t","inviteCode":"ZZZZZZZZ"}`))
+		bytes.NewBufferString(`{"username":"referral_off_user","password":"Abc12345!","phone":"13800001003","smsCode":"123456","captchaToken":"t","inviteCode":"ABCDEFGH"}`))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	UserRegister(ctx)
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("disabled switch must ignore inviteCode, got %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("disabled rebates must preserve valid invitation, got %d %s", recorder.Code, recorder.Body.String())
 	}
 	var invites int64
 	if err := db.Model(&entity.ReferralInvite{}).Count(&invites).Error; err != nil {
 		t.Fatalf("count invites: %v", err)
 	}
-	if invites != 0 {
-		t.Fatalf("disabled switch must not create invite codes, got %d", invites)
+	if invites != 2 {
+		t.Fatalf("both inviter and new account must own codes, got %d", invites)
 	}
 	var created entity.User
 	if err := db.Where("username = ?", "referral_off_user").First(&created).Error; err != nil {
 		t.Fatalf("load created user: %v", err)
 	}
-	if created.InvitedByUserID != 0 {
-		t.Fatalf("disabled switch must not bind attribution, got %d", created.InvitedByUserID)
+	if created.InvitedByUserID != inviter.ID {
+		t.Fatalf("valid attribution must persist even when rewards are disabled, got %d", created.InvitedByUserID)
 	}
 }
 

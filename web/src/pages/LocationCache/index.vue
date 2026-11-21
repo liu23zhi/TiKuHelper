@@ -2,7 +2,7 @@
   <div class="console-page location-page"><div v-if="cacheMounted" :key="cacheKey" ref="cacheSurface" :onKeydownCapture="cacheEntry.guardNative" :onInputCapture="cacheEntry.guardNative" :onChangeCapture="cacheEntry.guardNative" :onClickCapture="cacheEntry.guardNative">
     <ConsolePageHeading :title="pageTitle" description="查看、补全和维护已保存的归属地信息。">
       <template #actions><a-space wrap class="section-actions">
-          <AdminDataTransfer v-if="canAct()" :key="kind" :resource="kind === 'ip' ? 'ip_locations' : 'phone_locations'" :title="pageTitle" importable :onImported="cacheEntry.bind(load)" />
+
           <a-button :disabled="isRefreshDisabled() || manualSubmitting" :loading="manualSubmitting" :onClick="cacheEntry.bind(openManual)">手动添加</a-button>
           <a-popconfirm title="删除当前已读取筛选范围的全部归属地缓存？" ok-text="全部删除" cancel-text="取消" :open="allDeletePrompt.open" :onOpenChange="cacheEntry.bind(openAllDelete)" :onConfirm="allDeletePrompt.confirm">
             <a-button danger :disabled="!canAct() || loading" :loading="allDeleting">全部删除</a-button>
@@ -99,6 +99,8 @@
         </a-form-item>
       </a-form>
     </a-modal>
+    <AdminDataTransfer v-if="canAct()" :key="kind" :resource="kind === 'ip' ? 'ip_locations' : 'phone_locations'" :title="pageTitle" importable :onImported="cacheEntry.bind(load)" />
+
   </div></div>
 </template>
 

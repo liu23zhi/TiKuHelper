@@ -5,7 +5,7 @@
       description="按图片内容（SHA256）缓存判定结论。检测记录与每日额度是两件事：额度限制「触发新外呼的图」，本页两者都能看。"
     >
       <template #actions>
-        <AdminDataTransfer v-if="canManage()" resource="sensitive_images" title="敏感图片检测记录" importable :formats="['json', 'xlsx']" accept=".json,.xlsx" import-description="JSON 使用 image_base64 保存图片；Excel 图片内嵌于 image_base64 列对应单元格。已清理的图片只导出检测记录。" @imported="reloadCurrentTab" />
+
         <a-button :loading="loadingQuota" :disabled="!canManage() || busy()" @click="loadQuota">刷新额度</a-button>
         <a-button
           :loading="loadingCurrentTab"
@@ -276,6 +276,8 @@
         </div>
       </a-modal>
     </template>
+    <AdminDataTransfer v-if="canManage()" resource="sensitive_images" title="敏感图片检测记录" importable :formats="['json', 'xlsx']" accept=".json,.xlsx" import-description="JSON 使用 image_base64 保存图片；Excel 图片内嵌于 image_base64 列对应单元格。已清理的图片只导出检测记录。" @imported="reloadCurrentTab" />
+
   </div>
 </template>
 

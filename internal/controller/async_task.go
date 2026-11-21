@@ -307,12 +307,7 @@ func ExportTaskCreate(c *gin.Context) {
 		"masked":    masked,
 		"createdAt": task.CreatedAt,
 	})
-	c.JSON(http.StatusAccepted, gin.H{
-		"taskId": task.TaskID,
-		"status": task.Status,
-		// 前端提示文案要用到：默认脱敏时提醒「已脱敏」。
-		"masked": masked,
-	})
+	c.JSON(http.StatusAccepted, buildAsyncTaskResponse(task))
 }
 
 // ImportTaskCreate 提交一个异步导入任务（管理员）。
@@ -438,13 +433,9 @@ func ImportTaskCreate(c *gin.Context) {
 		"format":   format,
 		"dryRun":   dryRun,
 	})
-	c.JSON(http.StatusAccepted, gin.H{
-		"taskId": task.TaskID,
-		"status": task.Status,
-		"format": format,
-		// 预检总数：前端可以立刻显示「将导入 N 行」。
-		"total": preview.Total,
-	})
+	response := buildAsyncTaskResponse(task)
+	response.Total = preview.Total
+	c.JSON(http.StatusAccepted, response)
 }
 
 func ImportQuestionPreviewCreate(c *gin.Context) {

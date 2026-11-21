@@ -71,6 +71,10 @@ func CreateTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+	if c.GetBool("account_banned") && input.TicketType != service.TicketTypeAccount {
+		c.JSON(http.StatusForbidden, gin.H{"message": "账号封禁期间仅可提交账号申诉工单"})
+		return
+	}
 	// T-209：选了「退款」类型的建单必须真的走退款流程（落 ticket_refunds 行），
 	// 而退款渠道校验器只在 controller 层能拿到（它要读 EPAY 配置）。
 	// 所以这里显式分流，而不是让 service 自己合成一个「永远通过」的桩 ——

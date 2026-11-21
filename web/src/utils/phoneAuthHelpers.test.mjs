@@ -69,3 +69,9 @@ test('limitUsernameInput counts Unicode characters without rewriting invalid con
   assert.equal(limitUsernameInput('中'.repeat(256)), '中'.repeat(255))
   assert.equal(limitUsernameInput('https://example.com'), 'https://example.com')
 })
+
+test('registration normalizes optional invitation without adding it to SMS payloads', () => {
+ const form={username:'new_user',password:'Abc12345!',phone:'13800000000',smsCode:'654321',captchaToken:'token',inviteCode:' abcd2345 '}
+ assert.equal(buildPublicRegisterPayload(form).inviteCode,'ABCD2345')
+ assert.equal(Object.hasOwn(buildPublicSMSCodePayload(form,'register'),'inviteCode'),false)
+})

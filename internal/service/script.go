@@ -904,6 +904,9 @@ func validateScriptLaunchActorWithDB(db *gorm.DB, script entity.UserScript) erro
 	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
 		return ErrScriptTokenInvalid
 	}
+	if banned, err := IsBanned(db, user.ID); err != nil || banned {
+		return ErrScriptTokenInvalid
+	}
 	return validateScriptEntitlementUnusedWithDB(db, script)
 }
 

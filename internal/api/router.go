@@ -385,6 +385,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/tickets/:id", controller.Auth, controller.TicketDetail)
 	apiRouter.POST("/tickets/:id/messages", controller.Auth, controller.AddTicketMessage)
 	apiRouter.PUT("/tickets/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateTicket)
+	apiRouter.POST("/tickets/:id/account-action", controller.Auth, middleware.RequireAdmin, controller.TicketAccountAction)
 	// 工单图片附件：先上传（本地校验 + 加密落库 + 标记待检测），再异步做敏感检测。
 	// 用户端读图只拿得到「非敏感」的字节；敏感图返回占位状态（403 + 明确 code）。
 	// 管理端读图单独一条路由，必须 RequireAdmin，且 handler 内写账户审计。
@@ -403,6 +404,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/ticket-refunds", controller.Auth, controller.TicketRefundList)
 	apiRouter.POST("/ticket-refunds", controller.Auth, controller.CreateTicketRefund)
 	apiRouter.GET("/ticket-refunds/:id", controller.Auth, controller.TicketRefundDetail)
+	apiRouter.PATCH("/ticket-refunds/:id", controller.Auth, controller.UpdateTicketRefund)
+	apiRouter.GET("/ticket-refunds/:id/recharge-orders", controller.Auth, controller.TicketRefundRevisionOrders)
 	apiRouter.POST("/ticket-refunds/:id/decision", controller.Auth, middleware.RequireAdmin, controller.ReviewTicketRefund)
 	apiRouter.POST("/ticket-refunds/:id/process", controller.Auth, middleware.RequireAdmin, controller.ProcessTicketRefund)
 	apiRouter.POST("/ticket-refunds/:id/reconcile", controller.Auth, middleware.RequireAdmin, controller.ReconcileManualTicketRefund)
@@ -438,6 +441,9 @@ func SetAPIRouter(router *gin.Engine) {
 	// 邀请码与充值返佣。本人只能看自己的汇总（handler 内固定用当前账户），
 	// 返佣列表与结算一律管理员（Auth + RequireAdmin）。
 	apiRouter.GET("/user/referral", controller.Auth, controller.ReferralSummary)
+	apiRouter.GET("/admin/referral-settings", controller.Auth, middleware.RequireAdmin, controller.ReferralSettingsGet)
+	apiRouter.PUT("/admin/referral-settings", controller.Auth, middleware.RequireAdmin, controller.ReferralSettingsPut)
+	apiRouter.GET("/admin/referral-invites", controller.Auth, middleware.RequireAdmin, controller.ReferralInviteAdminList)
 	apiRouter.GET("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.ReferralRebateList)
 	apiRouter.POST("/admin/referral-rebates/:id/settle", controller.Auth, middleware.RequireAdmin, controller.SettleReferralRebate)
 	// 管理员手动补录返佣（无需充值订单的一笔），与结算同为管理员权限。

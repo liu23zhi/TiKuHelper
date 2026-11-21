@@ -851,7 +851,8 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 	if status != "" {
 		switch status {
 		case entity.TicketRefundStatusPendingReview, entity.TicketRefundStatusRejected, entity.TicketRefundStatusFrozen,
-			entity.TicketRefundStatusProcessing, entity.TicketRefundStatusUnknown, entity.TicketRefundStatusSucceeded, entity.TicketRefundStatusFailed:
+			entity.TicketRefundStatusProcessing, entity.TicketRefundStatusUnknown, entity.TicketRefundStatusSucceeded,
+			entity.TicketRefundStatusFailed, entity.TicketRefundStatusPartial:
 			base = base.Where("tickets.category = ? AND EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.ticket_id = tickets.id AND ticket_refunds.status = ?)", entity.TicketCategoryRefund, status)
 		default:
 			var err error

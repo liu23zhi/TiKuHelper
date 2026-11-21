@@ -1,7 +1,7 @@
 <template>
   <div class="console-page log-page">
     <ConsolePageHeading title="操作日志" description="按关键词、模块和操作类型查看操作记录。">
-      <template #actions><a-space wrap><AdminDataTransfer v-if="isAdmin" resource="logs" title="操作日志" /><a-button type="primary" :loading="tabLoading" :disabled="!isAdmin" @click="handleLogList">刷新</a-button></a-space></template>
+      <template #actions><a-space wrap><a-button type="primary" :loading="tabLoading" :disabled="!isAdmin" @click="handleLogList">刷新</a-button></a-space></template>
     </ConsolePageHeading>
     <ConsolePanel class="filter-panel">
       <a-form layout="inline" class="filter-form">
@@ -261,6 +261,8 @@
         <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
       </div>
     </ConsolePanel>
+    <AdminDataTransfer v-if="isAdmin" resource="logs" title="操作日志" />
+
   </div>
 </template>
 

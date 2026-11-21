@@ -24,6 +24,7 @@ var (
 	ErrTicketRefundOrderUnavailable    = errors.New("充值订单不可用于此次退款")
 	ErrTicketRefundState               = errors.New("当前退款状态不允许执行该操作")
 	ErrTicketRefundAmount              = errors.New("退款金额不合法或超出授权上限")
+	ErrTicketRefundAllocationMismatch  = errors.New("审核金额须等于订单分配合计。请先点「修改退款申请」调整申请金额和逐笔分配。")
 	ErrTicketRefundInsufficientBalance = errors.New("可用钱包余额不足，未冻结退款")
 	// ErrTicketRefundExceedsRefundablePrincipal 可退本金不足：
 	// 用户已用赠送金额消费掉的服务价值超过了剩余充值本金，超出部分不能退成现金。
@@ -46,6 +47,7 @@ const (
 	TicketRefundStatusProcessing    = entity.TicketRefundStatusProcessing
 	TicketRefundStatusUnknown       = entity.TicketRefundStatusUnknown
 	TicketRefundStatusSucceeded     = entity.TicketRefundStatusSucceeded
+	TicketRefundStatusPartial       = entity.TicketRefundStatusPartial
 	TicketRefundStatusFailed        = entity.TicketRefundStatusFailed
 
 	// A local cancellation proves that the sole dispatch claim was never
@@ -68,6 +70,7 @@ const (
 // transaction. Return an opaque stable channel ref; empty ref and
 // ErrTicketRefundOrderUnavailable are fail-closed nonmatches.
 type TicketRefundOrderVerifier func(*gorm.DB, entity.RechargeOrder) (string, error)
+type TicketRefundManualEvidenceCheck func(*gorm.DB, entity.TicketRefund) error
 
 type TicketRefundOrder struct {
 	ID                        int32     `json:"id"`
@@ -214,7 +217,7 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 		PayoutQrAttachmentID:  input.PayoutQrAttachmentID,
 		SignatureAttachmentID: input.SignatureAttachmentID,
 	}
-	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+	err := ticketRefundTransaction(db, func(tx *gorm.DB) error {
 		var order entity.RechargeOrder
 		if input.OrderID != nil {
 			// Match the recharge callback's lock order: order, then user.
@@ -418,7 +421,7 @@ func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input Cr
 	}
 
 	created := make([]entity.TicketRefund, 0, len(plan))
-	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+	err = ticketRefundTransaction(db, func(tx *gorm.DB) error {
 		for _, item := range plan {
 			one := input
 			one.OrderIDs = nil
@@ -473,10 +476,21 @@ func readTicketRefundTicketID(db *gorm.DB, refundID int64) (*int64, error) {
 // manual request the administrator must review the private evidence before
 // approving; no channel or payout is called from this method.
 func ReviewTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, approve bool, amountCents int64, verify TicketRefundOrderVerifier) (entity.TicketRefund, error) {
-	if (!approve && amountCents != 0) || (approve && !validTicketRefundCents(amountCents)) {
+	if !approve && amountCents == 0 {
+		return ReviewTicketRefundDecisionWithDB(db, admin, id, false, nil, verify)
+	}
+	return ReviewTicketRefundDecisionWithDB(db, admin, id, approve, &amountCents, verify)
+}
+
+func ReviewTicketRefundDecisionWithDB(db *gorm.DB, admin entity.User, id int64, approve bool, amount *int64, verify TicketRefundOrderVerifier, checkEvidence ...TicketRefundManualEvidenceCheck) (entity.TicketRefund, error) {
+	if amount != nil && (!approve || !validTicketRefundCents(*amount)) {
 		return entity.TicketRefund{}, ErrTicketRefundAmount
 	}
 	return changeTicketRefundWithDB(db, admin, id, func(tx *gorm.DB, row *entity.TicketRefund) error {
+		amountCents := row.RequestedCents
+		if amount != nil {
+			amountCents = *amount
+		}
 		if row.Status != entity.TicketRefundStatusPendingReview {
 			if (!approve && row.Status == entity.TicketRefundStatusRejected) ||
 				(approve && row.ApprovedCents == amountCents && row.ReviewedAt != nil) {
@@ -496,10 +510,23 @@ func ReviewTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, approve 
 		}
 		switch row.Kind {
 		case entity.TicketRefundKindOriginal:
-			if err := verifyTicketRefundOriginalOrderInTx(tx, row, verify); err != nil {
+			lines, err := ticketRefundLines(tx, row.ID, true)
+			if err != nil {
+				return err
+			}
+			if len(lines) == 0 {
+				if err := verifyTicketRefundOriginalOrderInTx(tx, row, verify); err != nil {
+					return err
+				}
+			} else if err := freezeTicketRefundLines(tx, *row, lines, amountCents, verify); err != nil {
 				return err
 			}
 		case entity.TicketRefundKindManual:
+			if len(checkEvidence) > 0 {
+				if err := checkEvidence[0](tx, *row); err != nil {
+					return err
+				}
+			}
 			if row.OrderID != nil {
 				order, err := lockTicketRefundOrder(tx, row.UserID, *row.OrderID)
 				if err != nil {
@@ -594,6 +621,15 @@ func CancelUnsentTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64) (e
 		if row.Status != entity.TicketRefundStatusFrozen {
 			return ErrTicketRefundState
 		}
+		lines, err := ticketRefundLines(tx, row.ID, true)
+		if err != nil {
+			return err
+		}
+		if len(lines) > 0 {
+			if err := tx.Model(&entity.TicketRefundOrderLine{}).Where("refund_id = ?", row.ID).Update("status", TicketRefundStatusFailed).Error; err != nil {
+				return err
+			}
+		}
 		amountMicros, err := ticketRefundHoldMicros(tx, *row)
 		if err != nil {
 			return err
@@ -608,6 +644,18 @@ func CancelUnsentTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64) (e
 // response or inquiry. Manual terminal outcomes are staff confirmations
 // of an out-of-band payment or its definitive failure.
 func ReconcileTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, outcome string, reference ...string) (entity.TicketRefund, error) {
+	return reconcileTicketRefundWithOrders(db, admin, id, outcome, nil, nil, false, reference...)
+}
+
+func ReconcileManualTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, outcome, reference string, orders *[]int32, checkEvidence ...TicketRefundManualEvidenceCheck) (entity.TicketRefund, error) {
+	var check TicketRefundManualEvidenceCheck
+	if len(checkEvidence) > 0 {
+		check = checkEvidence[0]
+	}
+	return reconcileTicketRefundWithOrders(db, admin, id, outcome, orders, check, true, reference)
+}
+
+func reconcileTicketRefundWithOrders(db *gorm.DB, admin entity.User, id int64, outcome string, orders *[]int32, checkEvidence TicketRefundManualEvidenceCheck, manualOnly bool, reference ...string) (entity.TicketRefund, error) {
 	if outcome != entity.TicketRefundStatusUnknown && outcome != entity.TicketRefundStatusSucceeded && outcome != entity.TicketRefundStatusFailed {
 		return entity.TicketRefund{}, ErrTicketRefundState
 	}
@@ -622,6 +670,9 @@ func ReconcileTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, outco
 		}
 	}
 	return changeTicketRefundWithDB(db, admin, id, func(tx *gorm.DB, row *entity.TicketRefund) error {
+		if manualOnly && row.Kind != TicketRefundKindManual {
+			return ErrTicketRefundForbidden
+		}
 		if row.Status == entity.TicketRefundStatusSucceeded || row.Status == entity.TicketRefundStatusFailed {
 			if row.Status == outcome && (ref == "" || ref == row.OutcomeReference) {
 				return nil
@@ -630,6 +681,16 @@ func ReconcileTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, outco
 		}
 		if row.Kind != entity.TicketRefundKindOriginal && row.Kind != entity.TicketRefundKindManual {
 			return ErrTicketRefundInvalid
+		}
+		if orders != nil && row.Kind != entity.TicketRefundKindManual {
+			return ErrTicketRefundState
+		}
+		lines, err := ticketRefundLines(tx, row.ID, true)
+		if err != nil {
+			return err
+		}
+		if len(lines) > 0 && row.Kind == TicketRefundKindOriginal {
+			return ErrTicketRefundState
 		}
 		if row.Status != entity.TicketRefundStatusProcessing && row.Status != entity.TicketRefundStatusUnknown &&
 			!(row.Kind == entity.TicketRefundKindManual && row.Status == entity.TicketRefundStatusFrozen) {
@@ -644,6 +705,16 @@ func ReconcileTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, outco
 				return nil
 			}
 			return updateTicketRefund(tx, row, map[string]any{"status": outcome})
+		}
+		if row.Kind == TicketRefundKindManual {
+			if checkEvidence != nil && outcome == TicketRefundStatusSucceeded {
+				if err := checkEvidence(tx, *row); err != nil {
+					return err
+				}
+			}
+			if err := settleManualRefundLines(tx, *row, admin.ID, outcome, orders, lines); err != nil {
+				return err
+			}
 		}
 		return finalizeTicketRefundInTx(tx, row, admin.ID, outcome, ref, amountMicros)
 	})
@@ -714,6 +785,15 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, _ TicketRefundOrd
 		used := make(map[int32]bool, len(usedIDs))
 		for _, id := range usedIDs {
 			used[id] = true
+		}
+		if db.Migrator().HasTable(&entity.TicketRefundOrderLine{}) {
+			if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefundOrderLine{}).
+				Where("order_id IN ?", ids).Pluck("order_id", &usedIDs).Error; err != nil {
+				return nil, err
+			}
+			for _, id := range usedIDs {
+				used[id] = true
+			}
 		}
 		for _, order := range orders {
 			reason := ticketRefundOrderUnavailableReason(order, now)
@@ -905,15 +985,34 @@ func lockTicketRefundOrder(tx *gorm.DB, userID, id int32) (entity.RechargeOrder,
 }
 
 func ensureTicketRefundOrderUnused(tx *gorm.DB, orderID int32) error {
-	var row entity.TicketRefund
-	err := tx.Session(&gorm.Session{NewDB: true}).Select("id").Where("order_id = ?", orderID).Take(&row).Error
-	if err == nil {
+	return ensureTicketRefundOrderUnusedExcept(tx, orderID, 0)
+}
+
+func ensureTicketRefundOrderUnusedExcept(tx *gorm.DB, orderID int32, refundID int64) error {
+	// A locking read uses the committed result of the previous order claimant
+	// even when a MySQL transaction has already established a read snapshot.
+	current := func() *gorm.DB {
+		return tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.Locking{Strength: "UPDATE"}).Select("id")
+	}
+	var legacy entity.TicketRefund
+	result := current().Where("order_id = ? AND id <> ?", orderID, refundID).Limit(1).Find(&legacy)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 0 {
 		return ErrTicketRefundOrderUnavailable
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
+	if tx.Migrator().HasTable(&entity.TicketRefundOrderLine{}) {
+		var line entity.TicketRefundOrderLine
+		result := current().Where("order_id = ? AND refund_id <> ?", orderID, refundID).Limit(1).Find(&line)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 0 {
+			return ErrTicketRefundOrderUnavailable
+		}
 	}
-	return err
+	return nil
 }
 
 func ticketRefundActor(db *gorm.DB, id int32, requireAdmin, lock bool) (entity.User, error) {
@@ -937,12 +1036,22 @@ func ticketRefundActor(db *gorm.DB, id int32, requireAdmin, lock bool) (entity.U
 	return user, nil
 }
 
+func ticketRefundTransaction(db *gorm.DB, mutate func(*gorm.DB) error) error {
+	session := db.Session(&gorm.Session{NewDB: true})
+	if db.Dialector.Name() == "mysql" {
+		// Gift consumption is aggregated after acquiring the wallet lock. It
+		// must include any spend committed while waiting to acquire that lock.
+		return session.Transaction(mutate, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	}
+	return session.Transaction(mutate)
+}
+
 func changeTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, mutate func(*gorm.DB, *entity.TicketRefund) error) (entity.TicketRefund, error) {
 	if db == nil || id <= 0 {
 		return entity.TicketRefund{}, ErrTicketRefundNotFound
 	}
 	var row entity.TicketRefund
-	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+	err := ticketRefundTransaction(db, func(tx *gorm.DB) error {
 		if _, err := ticketRefundActor(tx, admin.ID, true, false); err != nil {
 			return err
 		}
@@ -962,7 +1071,7 @@ func changeTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, mutate f
 	// 会把账务事务的失败面扩大（壳工单写失败会让打款回滚，那是最不该发生的事）。
 	// 因此这里尽力而为，失败只记日志，下一次迁移或回填会修正。
 	syncTicketRefundShellStatusInTx(db, row)
-	if row.Status == TicketRefundStatusSucceeded {
+	if row.Status == TicketRefundStatusSucceeded || row.Status == TicketRefundStatusPartial {
 		// 只有实际退款成功才减少累计充值；评级失败不能撤销已完成的打款。
 		if _, levelErr := ReconcileUserLevelWithDB(db, row.UserID, entity.UserLevelTriggerRefund); levelErr != nil {
 			logger.SysWarn(fmt.Sprintf("退款后等级重评失败（不影响退款）userId=%d: %v", row.UserID, levelErr))
@@ -1056,7 +1165,8 @@ func ticketRefundHoldMicros(tx *gorm.DB, row entity.TicketRefund) (int64, error)
 	}
 	amount := row.ApprovedCents * ticketRefundMicrosPerCent
 	var held entity.TicketRefundLedger
-	err := tx.Session(&gorm.Session{NewDB: true}).Where("refund_id = ? AND kind = ?", row.ID, ticketRefundLedgerFreeze).Take(&held).Error
+	err := tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("refund_id = ? AND kind = ?", row.ID, ticketRefundLedgerFreeze).Take(&held).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, ErrTicketRefundState
 	}

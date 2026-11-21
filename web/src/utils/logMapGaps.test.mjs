@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { LOG_MODULE_OPTIONS, buildLogModuleLabel } from './logListHelpers.mjs';
+import { LOG_MODULE_OPTIONS, buildLogModuleLabel, buildLogActionLabel } from './logListHelpers.mjs';
 import { buildRegisterSourceLabel } from './userPortalHelpers.mjs';
 
 
@@ -63,3 +63,10 @@ test('注册来源 import 有中文标签（import_data.go:1172 会写入这个�
   assert.equal(buildRegisterSourceLabel('admin'), '后台创建');
   assert.equal(buildRegisterSourceLabel('system'), '系统初始化创建');
 });
+
+test('邀请配置与工单账号处理使用对应动作名称，保持验证码动作原语义',()=>{
+  assert.equal(buildLogModuleLabel('referral'),'邀请返佣')
+  assert.equal(buildLogActionLabel(1,'referral'),'邀请配置修改')
+  assert.equal(buildLogActionLabel(20,'ticket'),'工单账号处理')
+  assert.equal(buildLogActionLabel(20,'captcha'),'远程生成')
+})

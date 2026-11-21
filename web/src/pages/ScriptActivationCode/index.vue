@@ -114,6 +114,8 @@
               <span v-if="record.usedBy">{{ record.usedByUsername || '—' }} <span class="hint">#{{ record.usedBy }}</span></span>
               <span v-else>—</span>
             </template>
+            <span v-else-if="column.key === 'usedAt'">{{ formatTime(record.usedAt) || '未使用' }}</span>
+            <span v-else-if="column.key === 'expiresAt'">{{ formatTime(record.expiresAt) || '永不过期' }}</span>
             <template v-else-if="column.key === 'actions'">
               <a-space>
                 <a-button size="small" @click="openDetail(record)">详情</a-button>
@@ -129,12 +131,13 @@
       </ConsolePanel>
     </template>
 
-    <a-drawer
+    <a-modal
+      v-if="detailOpen"
       :open="detailOpen"
       :width="720"
       title="激活码详情"
-      placement="right"
-      @close="closeDetail"
+      :footer="null"
+      @cancel="closeDetail"
     >
       <a-spin :spinning="detailLoading">
         <a-alert v-if="detailError" type="error" show-icon :message="detailError" class="page-alert" />
@@ -176,12 +179,12 @@
           </a-timeline>
         </template>
       </a-spin>
-    </a-drawer>
+    </a-modal>
   </div>
 </template>
 
 <script>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
@@ -208,7 +211,8 @@ export default {
   components: { ConsolePageHeading, ConsolePanel },
   setup() {
     const route = useRoute()
-    const { currentUser } = useCurrentUserDisplay()
+    const { currentUser, captureUpdateGuard } = useCurrentUserDisplay()
+    let alive = true, detailVersion = 0
     // 用 route.name 白名单判「是否仍属本页」，不用挂载时快照 route.path。
     //
     // 原写法 `const mountedPath = route.path` + `route.path === mountedPath` 有两个问题：
@@ -234,7 +238,7 @@ export default {
     }
 
     // 与其它管理页一致：路由、角色、状态任一变化都不再允许操作。
-    const canManage = () => stillOwnRoute() && isAdminUser(currentUser.value)
+    const canManage = () => alive && stillOwnRoute() && isAdminUser(currentUser.value)
       && !['disabled', '0'].includes(String(currentUser.value?.status ?? 'enabled'))
 
     const batchLimit = BATCH_LIMIT
@@ -364,25 +368,29 @@ export default {
 
     const openDetail = async record => {
       if (!canManage()) return
+      const version = ++detailVersion, guard = captureUpdateGuard()
+      const owns = () => alive && version === detailVersion && detailOpen.value && guard() && canManage()
       detailOpen.value = true
       detailLoading.value = true
       detailError.value = ''
       detail.value = null
       try {
         const response = await getScriptActivationCodeDetail(record.id)
+        if (!owns()) return
         if (response?.status === 200) {
           detail.value = response.data
         } else {
           detailError.value = response?.data?.message || '读取详情失败'
         }
-      } catch {
-        detailError.value = '读取详情失败'
+      } catch (error) {
+        if (owns()) detailError.value = error?.response?.data?.message || '读取详情失败'
       } finally {
-        detailLoading.value = false
+        if (owns()) detailLoading.value = false
       }
     }
 
     const closeDetail = () => {
+      detailVersion++
       detailOpen.value = false
       detail.value = null
       detailError.value = ''
@@ -413,6 +421,8 @@ export default {
     }
 
     onMounted(() => { loadCodes() })
+    watch([() => currentUser.value?.id, () => currentUser.value?.role, () => currentUser.value?.status], () => { closeDetail(); codes.value = []; createdCodes.value = [] }, { flush: 'sync' })
+    onBeforeUnmount(() => { closeDetail(); alive = false })
 
     return {
       canManage, batchLimit, loading, writing, loadError, createError,

@@ -337,6 +337,9 @@ func ResolveAccessTokenFromBasicAuth(db *gorm.DB, authorization string) (AccessT
 	if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌所属用户已禁用", ErrInvalidAccessTokenAuthorization)
 	}
+	if banned, err := IsBanned(freshDB, user.ID); err != nil || banned {
+		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌所属账号已封禁或状态无法确认", ErrInvalidAccessTokenAuthorization)
+	}
 
 	return AccessTokenAuthContext{
 		User:        user,

@@ -123,6 +123,9 @@ type RechargeOrderListItem struct {
 	PaymentMethodNameSnapshot string     `json:"paymentMethodNameSnapshot"`
 	Amount                    float64    `json:"amount"`
 	Status                    string     `json:"status"`
+	RefundMarked              bool       `json:"refundMarked"`
+	RefundOrderCapCents       int64      `gorm:"-" json:"refundOrderCapCents"`
+	RefundReserved            bool       `json:"refundReserved"`
 	ThirdPartyOrderNo         string     `json:"thirdPartyOrderNo"`
 	PaidAt                    *time.Time `json:"paidAt"`
 	CreatedAt                 time.Time  `json:"createdAt"`
@@ -285,7 +288,10 @@ type RechargeOrderListQuery struct {
 }
 
 func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeOrderListQuery, page int, pageSize int) (RechargeOrderListResult, error) {
-	baseQuery := applyRechargeOrderFilters(buildRechargeOrderListQuery(db, operator), query)
+	marked := rechargeOrderRefundExists(db, true)
+	reserved := rechargeOrderRefundExists(db, false)
+	effectiveStatus := "CASE WHEN (" + marked + ") THEN 'refunded' ELSE recharge_orders.status END"
+	baseQuery := applyRechargeOrderFilters(buildRechargeOrderListQuery(db, operator), query, effectiveStatus)
 
 	var total int64
 	if err := baseQuery.Count(&total).Error; err != nil {
@@ -303,7 +309,8 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	var records []RechargeOrderListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, recharge_orders.status, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at").
+		Select("recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, " +
+			effectiveStatus + " AS status, (" + marked + ") AS refund_marked, (" + reserved + ") AS refund_reserved, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at").
 		Order("recharge_orders.id desc").
 		Limit(pageSize).
 		Offset(offset).
@@ -312,8 +319,12 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	}
 
 	currentPageAmount := 0.0
-	for _, record := range records {
+	for i := range records {
+		record := &records[i]
 		currentPageAmount += record.Amount
+		if record.Status == rechargeOrderStatusPaid && !record.RefundReserved && record.PaidAt != nil && !record.PaidAt.After(time.Now()) {
+			record.RefundOrderCapCents, _ = ticketRefundOrderAmountCents(record.Amount)
+		}
 	}
 
 	return RechargeOrderListResult{
@@ -326,6 +337,21 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 			CurrentPageAmount: normalizeRechargeAmount(currentPageAmount),
 		},
 	}, nil
+}
+
+func rechargeOrderRefundExists(db *gorm.DB, succeeded bool) string {
+	predicates := []string{"1 = 0"}
+	for _, table := range []string{(&entity.TicketRefund{}).TableName(), (&entity.TicketRefundOrderLine{}).TableName()} {
+		if !db.Migrator().HasTable(table) {
+			continue
+		}
+		where := "refund.order_id = recharge_orders.id"
+		if succeeded {
+			where += " AND refund.status = 'succeeded'"
+		}
+		predicates = append(predicates, "EXISTS (SELECT 1 FROM "+table+" refund WHERE "+where+")")
+	}
+	return strings.Join(predicates, " OR ")
 }
 
 // buildRechargeOrderListQuery 构造充值记录的基础查询。
@@ -342,7 +368,7 @@ func buildRechargeOrderListQuery(db *gorm.DB, operator entity.User) *gorm.DB {
 }
 
 // applyRechargeOrderFilters 把关键词、状态与支付渠道筛选应用到充值记录查询上。
-func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *gorm.DB {
+func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery, effectiveStatus string) *gorm.DB {
 	if filter.UserID > 0 {
 		query = query.Where("recharge_orders.user_id = ?", filter.UserID)
 	}
@@ -365,7 +391,7 @@ func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *g
 		query = query.Where("recharge_orders.amount <= ?", *filter.AmountMax)
 	}
 	if status := strings.TrimSpace(filter.Status); status != "" {
-		query = query.Where("recharge_orders.status = ?", status)
+		query = query.Where("("+effectiveStatus+") = ?", status)
 	}
 	if provider := strings.TrimSpace(filter.PaymentProvider); provider != "" {
 		query = query.Where("recharge_orders.payment_provider = ?", provider)
@@ -1119,7 +1145,7 @@ func UpdateRechargeOrderStatusWithDB(db *gorm.DB, actor entity.User, orderID int
 	var updated entity.RechargeOrder
 	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var order entity.RechargeOrder
-		if err := tx.Where("id = ?", orderID).Take(&order).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", orderID).Take(&order).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrRechargeOrderStatusInvalid
 			}
@@ -1127,6 +1153,14 @@ func UpdateRechargeOrderStatusWithDB(db *gorm.DB, actor entity.User, orderID int
 		}
 		if order.Status == target {
 			return ErrRechargeOrderStatusUnchanged
+		}
+		if tx.Migrator().HasTable(&entity.TicketRefund{}) {
+			if err := ensureTicketRefundOrderUnused(tx, order.ID); err != nil {
+				if errors.Is(err, ErrTicketRefundOrderUnavailable) {
+					return ErrRechargeOrderStatusInvalid
+				}
+				return err
+			}
 		}
 		if !allowedRechargeStatusTransition(order.Status, target) {
 			return ErrRechargeOrderStatusInvalid

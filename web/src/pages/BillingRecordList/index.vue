@@ -1,7 +1,7 @@
 <template>
   <div class="console-page billing-page">
     <ConsolePageHeading :title="pageTitle" :description="pageSubtitle">
-      <template #actions><a-space wrap><AdminDataTransfer v-if="isAdmin" resource="billing" title="账单明细" /><a-button @click="handleLoad" :loading="tableLoading">刷新</a-button></a-space></template>
+      <template #actions><a-space wrap><a-button @click="handleLoad" :loading="tableLoading">刷新</a-button></a-space></template>
     </ConsolePageHeading>
     <ConsoleSummaryGrid>
       <div class="summary-card"><a-statistic title="账单总数（筛选结果）" :value="summary.total" /></div>
@@ -198,6 +198,8 @@
       @statement-visibility-change="handleStatementVisibilityChange"
       @statement-visibility-reconcile="reconcileStatementVisibility"
     />
+    <AdminDataTransfer v-if="isAdmin" resource="billing" title="账单明细" />
+
   </div>
 </template>
 

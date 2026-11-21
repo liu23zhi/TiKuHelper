@@ -109,9 +109,12 @@
         <template #bodyCell="{ column, record }">
           <span v-if="column.key === 'username'">{{ record.username || `用户 #${record.userId || '-'}` }}</span>
           <span v-else-if="column.key === 'amount'" class="money-cell">¥ {{ formatAmount(record.amount) }}</span>
-          <a-tag v-else-if="column.key === 'status'" :color="buildStatusColor(record.status)">
-            {{ buildStatusLabel(record.status) }}
-          </a-tag>
+          <div v-else-if="column.key === 'status'">
+            <a-tag :color="buildStatusColor(record.status)">{{ buildStatusLabel(record.status) }}</a-tag>
+            <div v-if="record.refundMarked">退款工单已核销</div>
+            <div v-else-if="record.refundReserved">已有退款申请</div>
+            <div v-else-if="record.refundOrderCapCents > 0">订单退款上限 ¥{{ formatAmount(record.refundOrderCapCents / 100) }}</div>
+          </div>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
         </template>
         <template #emptyText>
@@ -164,10 +167,13 @@
         </a-form>
       </a-modal>
     </ConsolePanel>
+    <AdminDataTransfer v-if="isAdmin" resource="recharge_orders" title="充值订单" />
+
   </div>
 </template>
 
 <script>
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { computed, defineComponent, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
@@ -185,11 +191,11 @@ function readNonnegativeNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) && number >= 0 ? number : null
 }
-const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
+const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'refundMarked', 'refundReserved', 'refundOrderCapCents', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
 
 export default defineComponent({
   name: 'RechargeOrderList',
-  components: { RequestFailureAlert },
+  components: { AdminDataTransfer, RequestFailureAlert },
   setup() {
     const filterIdPrefix = 'recharge-orders-' + useId()
     const filterFieldId = field => filterIdPrefix + '-' + field
@@ -238,6 +244,7 @@ const statusTarget = reactive({ orderId: 0, orderNo: '', current: '', next: '' }
 const canEditStatus = computed(() => isAdmin.value)
 // openStatusModal 打开改状态弹窗，默认选中当前状态（避免误改）。
 const openStatusModal = (record) => {
+  if (record?.refundReserved || record?.refundMarked) return
   statusTarget.orderId = Number(record?.id) || 0
   statusTarget.orderNo = String(record?.orderNo || '')
   statusTarget.current = String(record?.status || '')

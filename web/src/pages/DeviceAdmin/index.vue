@@ -221,10 +221,13 @@
         <p v-if="banError" class="filter-error" role="alert">{{ banError }}</p>
       </a-modal>
     </template>
+    <AdminDataTransfer v-if="!embedded && canManage()" resource="devices" title="设备绑定记录" />
+
   </div>
 </template>
 
 <script>
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
@@ -254,9 +257,10 @@ const emptyFilters = () => ({ keyword: '', status: '' })
 const emptyDraft = () => ({ deviceId: '', reason: '', permanent: true, durationHours: 24 })
 
 export default {
+  props: { userId: { type: Number, default: 0 }, embedded: Boolean },
   name: 'DeviceAdminPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
-  setup() {
+  components: { AdminDataTransfer, ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  setup(props = {}) {
     const route = useRoute()
     const prefix = 'device-admin-' + useId()
     const fieldId = field => prefix + '-' + field
@@ -285,7 +289,7 @@ export default {
     // 解析失败一律按 0 处理：一个手改的坏 URL 不该让整页报错，显示全部设备是
     // 可接受的降级（与后端 userId 解析失败的口径一致）。
     const scopedUserId = computed(() => {
-      const raw = String(route.query.userId ?? "").trim()
+      const raw = String(props.userId > 0 ? props.userId : route.query.userId ?? "").trim()
       const parsed = Number(raw)
       return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
     })

@@ -2,7 +2,7 @@
   <div class="console-page binding-history-page">
     <ConsolePageHeading :title="pageTitle" :description="pageDescription">
       <template #actions>
-        <AdminDataTransfer v-if="canManage()" :key="kind" :resource="kind === 'wechat' ? 'wechat_bindings' : 'phone_bindings'" :title="pageTitle" />
+
         <a-button :loading="loading" :disabled="!canManage() || loading" @click="load">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -222,6 +222,8 @@
       </a-form>
       <p v-if="voidValidation" class="form-error" role="alert">{{ voidValidation }}</p>
     </a-modal>
+    <AdminDataTransfer v-if="canManage()" :key="kind" :resource="kind === 'wechat' ? 'wechat_bindings' : 'phone_bindings'" :title="pageTitle" />
+
   </div>
 </template>
 

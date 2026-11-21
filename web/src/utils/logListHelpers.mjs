@@ -21,6 +21,7 @@ export const LOG_MODULE_OPTIONS = [
   { label: '题库', value: 'tiku' },
   { label: '考试工具', value: 'userexam_tool' },
   { label: '反馈工单', value: 'ticket' },
+  { label: '邀请返佣', value: 'referral' },
   { label: '公告', value: 'announcement' },
   { label: '黑名单', value: 'blacklist' },
   { label: '白名单', value: 'whitelist' },
@@ -209,6 +210,8 @@ export function buildLogActionLabel(value, module) {
   const normalized = Number(value);
   const normalizedModule = String(module || '').trim().toLowerCase();
   if ((normalizedModule === 'export' || normalizedModule === 'import') && normalized === 1) return '提交任务';
+  if (normalizedModule === 'referral' && normalized === 1) return '邀请配置修改';
+  if (normalizedModule === 'ticket' && normalized === 20) return '工单账号处理';
   if (normalized === 0) return '新增';
   if (normalized === 1) return '更新';
   if (normalized === 2) return '删除';

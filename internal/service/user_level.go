@@ -167,6 +167,17 @@ func ComputeUserLevelTotalsWithDB(db *gorm.DB, userID int32) (UserLevelTotals, e
 			Scan(&refundedCents).Error; err != nil {
 			return UserLevelTotals{}, err
 		}
+		if db.Migrator().HasTable(&entity.TicketRefundOrderLine{}) {
+			var partialCents int64
+			if err := session.Model(&entity.TicketRefundOrderLine{}).
+				Joins("JOIN ticket_refunds ON ticket_refunds.id = ticket_refund_order_lines.refund_id").
+				Where("ticket_refunds.user_id = ? AND ticket_refunds.status <> ? AND ticket_refund_order_lines.status = ?",
+					userID, entity.TicketRefundStatusSucceeded, entity.TicketRefundStatusSucceeded).
+				Select("COALESCE(SUM(ticket_refund_order_lines.cents), 0)").Scan(&partialCents).Error; err != nil {
+				return UserLevelTotals{}, err
+			}
+			refundedCents += partialCents
+		}
 		if refundedCents > 0 {
 			// approved_cents 是「分」，换回元再扣。下限 0：超额退款不可能发生
 			// （退款额受订单实付与钱包余额双重约束），但真出现时宁可定为 0

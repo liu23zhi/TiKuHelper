@@ -887,62 +887,7 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 			return out, nil
 		},
 	},
-	ExportResourceArchivedUsers: {
-		resource: ExportResourceArchivedUsers,
-		// 归档账号只能 Unscoped 才看得到（users.deleted_at 是 GORM 软删除列）。
-		columns: []ExportColumn{
-			exportColumn("id"),
-			exportColumn("username"),
-			exportColumn("archived_reason"),
-			exportColumn("archived_at"),
-			maskedColumn("phone", MaskExportPhone),
-		},
-		load: func(db *gorm.DB, limit int) ([][]string, error) {
-			users := make([]entity.User, 0, 64)
-			if err := exportLimit(db.Unscoped().Where("deleted_at IS NOT NULL").Order("id asc"), limit).
-				Find(&users).Error; err != nil {
-				return nil, err
-			}
-			// 归档元数据（原因 / 时点）在 entity.UserArchive 上：与 entity.User 同一张物理表，
-			// 但列不同，所以单独查一次再按 id 对齐。
-			archives := make([]entity.UserArchive, 0, len(users))
-			if len(users) > 0 {
-				ids := make([]int32, 0, len(users))
-				for _, user := range users {
-					ids = append(ids, user.ID)
-				}
-				if err := db.Where("id IN ?", ids).Find(&archives).Error; err != nil {
-					return nil, err
-				}
-			}
-			archiveByID := make(map[int32]entity.UserArchive, len(archives))
-			for _, archive := range archives {
-				archiveByID[archive.UserID] = archive
-			}
-			out := make([][]string, 0, len(users))
-			for _, user := range users {
-				phone := ""
-				if user.Phone != nil {
-					phone = *user.Phone
-				}
-				archive := archiveByID[user.ID]
-				archivedAt := ""
-				if archive.ArchivedAt != nil {
-					archivedAt = formatExportTime(*archive.ArchivedAt)
-				} else if user.DeletedAt.Valid {
-					archivedAt = formatExportTime(user.DeletedAt.Time)
-				}
-				out = append(out, []string{
-					strconv.FormatInt(int64(user.ID), 10),
-					user.Username,
-					archive.ArchivedReason,
-					archivedAt,
-					phone,
-				})
-			}
-			return out, nil
-		},
-	},
+	ExportResourceArchivedUsers: managementArchivedUsersExportSpec(),
 	ExportResourceAccessTokens: {
 		resource: ExportResourceAccessTokens,
 		// 刻意不含 token_hash：它是「bearer 凭据的哈希」，导出后可直接用于撞库核对。

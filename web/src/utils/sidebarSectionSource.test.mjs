@@ -188,8 +188,7 @@ test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集
   // USER_MENU_ITEMS 里有 my-referral / review-rebate 两条普通用户专属路由，
   // 它们不在 ADMIN_MENU_ITEMS 里（管理员通过「赠送记录」「评价返现管理」看聚合页）。
   // 若写成「shared ⊆ USER_MENU_ITEMS」就漏掉了「管理员组里多塞了非普通项」这一半。
-  const expectedShared = adminKeys.filter((key) => userKeys.includes(key));
-  assert.deepEqual(sorted(sharedKeys), sorted(expectedShared), 'shared 组必须恰好等于 ADMIN ∩ USER 的 key 集');
+  assert.deepEqual(sorted(sharedKeys), sorted(userKeys), '管理员 shared 组必须包含全部普通用户入口');
   // 反向也要成立：ADMIN 里每一个属于 USER 的 key 都必须真的出现在 shared 组里（不能漏项）。
   for (const key of userKeys) {
     if (adminKeys.includes(key)) {
@@ -203,9 +202,9 @@ test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集
   // 管理员侧不得出现「管理员没有该路由」的普通项：USER_MENU_ITEMS 里那两条普通用户专属
   // （我的邀请 / 评价返现）在 router.js 里不是 admin-only 路由，但它们根本不在 ADMIN_MENU_ITEMS 里，
   // 所以 shared 组一个都不能有。这条不会因将来「新增普通用户页面」而误红，只钉真正的泄漏方向。
-  for (const exclusive of ['my-referral', 'review-rebate']) {
-    assert.ok(!sharedKeys.includes(exclusive), `普通用户专属路由 ${exclusive} 泄漏进了管理员 shared 组`);
-    assert.ok(!adminKeys.includes(exclusive), `ADMIN_MENU_ITEMS 不该包含普通用户专属路由 ${exclusive}`);
+  for (const shared of ['my-referral', 'review-rebate']) {
+    assert.ok(sharedKeys.includes(shared), `管理员应能使用本人入口 ${shared}`);
+    assert.ok(adminKeys.includes(shared), `ADMIN_MENU_ITEMS 必须包含普通用户入口 ${shared}`);
   }
 
   // 派生而非手抄：shared 组的 key 与顺序都必须来自 ADMIN_MENU_ITEMS。
@@ -343,8 +342,8 @@ test('模板按标题决定是否渲染分区标题（缺标题即退化为扁�
 test('分区不影响权限判定与选中态：仍以 visibleMenuItems 为准', () => {
   // 红线：不动 isAdminUser 那套权限判定；分区只是渲染分组。
   assert.match(source, /const isAdmin = computed\(\(\) => isAdminUser\(props\.currentUser\)\)/);
-  assert.match(source, /const visibleMenuItems = computed\(\(\) => \(isAdmin\.value \? ADMIN_MENU_ITEMS : USER_MENU_ITEMS\)\)/);
-  assert.match(source, /const menuSections = computed\(\(\) => \(isAdmin\.value \? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS\)\)/);
+  assert.match(source, /const visibleMenuItems = computed\(\(\) => accountBanned\.value \? USER_MENU_ITEMS\.filter\(item => item\.key === 'tickets'\) : \(isAdmin\.value \? ADMIN_MENU_ITEMS : USER_MENU_ITEMS\)\)/);
+  assert.match(source, /const menuSections = computed\(\(\) => accountBanned\.value \? \[\{ key: 'appeal', title: '', items: visibleMenuItems\.value \}\] : \(isAdmin\.value \? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS\)\)/);
 
   // 选中态 / 点击 / watch 仍读 visibleMenuItems 做**权限判定与真实 key 选择**，
   // 不因分区划分而改变「哪个 key 是合法的」。

@@ -76,8 +76,8 @@ test('UserList 的 openDevices 在用户列表弹出指定用户设备', async (
     'openDevices 必须绑定目标用户供弹窗显示');
   assert.match(body, /deviceVisible\.value\s*=\s*true/,
     'openDevices 必须在当前页面打开设备弹窗');
-  assert.match(body, /this\.loadUserDevices\(\)/,
-    '打开设备弹窗后必须读取该用户设备');
+  assert.match(source, /<DeviceAdmin[^>]*:user-id="Number\(deviceTarget\.id\)"[^>]*embedded/,
+    '打开设备弹窗后必须复用完整设备管理并按目标用户读取');
 
   // 非法 id 必须早退，不能带着 NaN 跳过去。
   assert.match(body, /Number\.isSafeInteger\(id\)/,

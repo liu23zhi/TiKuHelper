@@ -288,15 +288,17 @@ test('画像视角文案：单用户视角要能看出是谁', () => {
 // 组 4：结构要求 —— 两个入口，一个页面
 // ---------------------------------------------------------------------------
 
-test('画像页只展示全站 overview，不渲染用户选择或发起逐用户请求', async () => {
+test('全站页无用户选择，嵌入式视图以显式目标复用同一份画像', async () => {
   const source = await readFile(pageSourcePath, 'utf8');
   assert.match(source, /getPortraitOverview/);
-  assert.doesNotMatch(source, /getUserPortrait|a-select|a-auto-complete|userId|useRoute|useRouter/);
+  assert.doesNotMatch(source, /a-select|a-auto-complete|useRoute|useRouter/);
+  assert.match(source, /props:[\s\S]*userId/);
+  assert.match(source, /target > 0 \? await getUserPortrait\(target\) : await getPortraitOverview\(\)/);
   assert.doesNotMatch(source, /查看单个用户画像|输入用户名\s*\/\s*昵称\s*\/\s*ID 搜索|清空选择即回到全站整体画像/);
   assert.match(source, /整体用户画像（全站）/);
   assert.match(source, /buildOverallPortraitTiles/);
   assert.match(source, /buildPortraitBreakdownTables/);
-  assert.match(source, /response\.data\.scope === 'overall'/);
+  assert.match(source, /response\.data\.scope === \(target > 0 \? 'user' : 'overall'\)/);
   assert.doesNotMatch(source, /UserPortraitDetail/);
 });
 
@@ -367,7 +369,7 @@ test('用户管理：画像入口直接打开用户画像弹窗，不再导航�
   const method = source.match(/openPortrait\(record\)\s*\{([\s\S]*?)\n {4}\},/);
   assert.notEqual(method, null, 'openPortrait 方法必须存在');
   assert.match(method[1], /userPortraitVisible\.value\s*=\s*true/);
-  assert.match(method[1], /this\.loadUserPortrait\(\)/);
+  assert.match(source, /<UserPortrait[^>]*:user-id="Number\(userPortraitTarget\.id\)"[^>]*embedded/);
   assert.doesNotMatch(method[1], /\$router|useRouter|userId\s*:/);
   assert.match(method[1], /Number\.isSafeInteger\(id\)/, '必须校验 id');
   assert.match(source, /getUserPortrait/);

@@ -91,6 +91,9 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if banned, err := IsBanned(tx, user.ID); err != nil || banned {
+			return ErrScriptTokenInvalid
+		}
 		if script.BillingMode != "" && lease == nil {
 			return ErrScriptTokenInvalid
 		}
@@ -247,6 +250,9 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, 
 	var user entity.User
 	if err := freshDB.Where("id = ? AND status = ?", session.UserID, "enabled").First(&user).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本所属用户已停用")
+	}
+	if banned, err := IsBanned(freshDB, user.ID); err != nil || banned {
+		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本所属账号已封禁")
 	}
 	return AccessTokenAuthContext{User: user, AccessToken: accessToken}, session, nil
 }

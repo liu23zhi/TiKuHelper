@@ -76,7 +76,8 @@
         <form class="upload-form" @submit.prevent="submit">
           <div class="field">
             <label :for="fieldId('file')">数据库文件（可使用加密库）</label>
-            <input :id="fieldId('file')" type="file" accept=".db,.sqlite,.sqlite3" :disabled="uploading" @change="onFileChange" />
+            <input :id="fieldId('file')" ref="databaseInput" hidden style="display: none" type="file" accept=".db,.sqlite,.sqlite3" :disabled="uploading" @change="onFileChange" />
+            <div class="database-picker"><a-button :disabled="uploading" @click="databaseInput?.click()">选择数据库文件</a-button><span>{{ selectedFile?.name || '尚未选择文件' }}</span></div>
             <div class="hint">加密库会用内置口令自动解密。若解不开，通常是这个库不是考试客户端生成的，或来自尚未适配的客户端版本。</div>
           </div>
           <a-space wrap>
@@ -175,6 +176,7 @@ export default {
     const loadingVersion = ref(false)
     const uploading = ref(false)
     const selectedFile = ref(null)
+    const databaseInput = ref(null)
     const result = ref(null)
     const errorMessage = ref('')
     // errorAction 是「这次失败该做什么」的一句指引（按后端 reason 映射）。
@@ -285,7 +287,7 @@ export default {
     })
 
     return {
-      canManage, fieldId, version, loadingVersion, uploading, selectedFile,
+      canManage, fieldId, version, loadingVersion, uploading, selectedFile, databaseInput,
       result, errorMessage, errorAction, downloadURL, formatSize, loadVersion, onFileChange,
       submit, reset, columnsFor,
     }
@@ -309,4 +311,8 @@ export default {
 .key-alert { margin-top: 12px; }
 .usage-lead { margin: 0 0 10px; line-height: 1.8; }
 .upload-form label { font-size: 13px; color: var(--console-text); }
+.database-picker { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-width:0; padding:16px; border:1px dashed var(--console-border); border-radius:12px; background:var(--console-surface); }
+.database-picker span { overflow-wrap:anywhere; color:var(--console-muted); }
+.upload-form { padding-bottom:20px; }
+.result-summary :deep(.ant-descriptions-item-content), .table-block :deep(td) { overflow-wrap:anywhere; word-break:break-word; }
 </style>

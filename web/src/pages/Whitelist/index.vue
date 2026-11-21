@@ -5,7 +5,7 @@
       description="按 IP / CIDR 放行请求来源：命中的 IP **直接放行且完全不查黑名单**（优先级 白名单 > 黑名单），也不会在黑名单命中记录里留痕。"
     >
       <template #actions>
-        <AdminDataTransfer v-if="canManage()" resource="whitelist" title="白名单规则" importable import-description="支持 IP / CIDR 规则的 CSV / JSON，每次最多 5000 条；相同规则跳过，保留文件中的启停状态。" @imported="loadEntries" />
+
         <a-button :loading="loadingEntries" :disabled="!canManage() || loadingEntries || writing" @click="loadEntries">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -246,6 +246,8 @@
         <p v-if="deleteError" class="filter-error" role="alert">{{ deleteError }}</p>
       </a-modal>
     </template>
+    <AdminDataTransfer v-if="canManage()" resource="whitelist" title="白名单规则" importable import-description="支持 IP / CIDR 规则的 CSV / JSON，每次最多 5000 条；相同规则跳过，保留文件中的启停状态。" @imported="loadEntries" />
+
   </div>
 </template>
 

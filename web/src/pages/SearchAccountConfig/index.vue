@@ -1,6 +1,6 @@
 <template>
   <div v-if="accountMounted" :key="accountKey" ref="accountSurface" class="console-page search-account-page" :onInputCapture="accountEntry.guardNative" :onChangeCapture="accountEntry.guardNative" :onClickCapture="accountEntry.guardNative">
-    <ConsolePageHeading title="默认账号配置" description="控制各题库是否允许调用，并维护默认参数和调用单价。">
+    <ConsolePageHeading title="默认账号配置" description="开启渠道后用户可调用并按单价计费；停用渠道后，即使用户提供自己的密钥也无法调用。默认凭据可单独设置。">
       <template #actions><a-space wrap>
         <a-button :loading="tabLoading" :disabled="!canManageConfigs() || accountDraining || savingAll" :onClick="accountEntry.bind(handleSearchAccountConfigs)">刷新</a-button>
         <a-button type="primary" :loading="savingAll" :disabled="!canManageConfigs() || accountDraining || !configsLoaded || tabLoading || savingAll" :onClick="accountEntry.bind(onSaveAll)">保存全部配置</a-button>
@@ -395,7 +395,7 @@ export default defineComponent({
         { title: 'Provider', dataIndex: 'provider', key: 'provider', width: 140 },
         { title: '默认参数', dataIndex: 'defaultParameter', key: 'defaultParameter', width: 360 },
         { title: '单价', dataIndex: 'unitPrice', key: 'unitPrice', width: 280 },
-        { title: '允许调用', dataIndex: 'callEnabled', key: 'callEnabled', width: 110 },
+        { title: '启用题库渠道', dataIndex: 'callEnabled', key: 'callEnabled', width: 140 },
         { title: '使用默认参数', dataIndex: 'enabled', key: 'enabled', width: 130 },
         { title: '备注', dataIndex: 'remark', key: 'remark', width: 220 },
       ],

@@ -133,7 +133,7 @@
         <!-- 筛选。时间控件**追加在末尾**（在状态、用户 ID 之后）：
              位置选择器（querySelector 取第一个同类元素）在新增同级控件时会选错，
              保持既有控件顺序不变可以避免整类误点。 -->
-        <a-form layout="inline" class="claim-filter-form" :onFinish="reloadClaims">
+        <a-form :model="claimFilters" layout="inline" class="claim-filter-form" :onFinish="reloadClaims">
           <a-form-item label="状态" :html-for="fieldId('claimStatusFilter')">
             <a-select
               :id="fieldId('claimStatusFilter')"
@@ -677,7 +677,7 @@ export default {
     })
 
     // ── 失败态 ──────────────────────────────────────────────────
-    const clearProgramFailure = () => { programFailure.value = null; programFailureOwner = () => false; programFailureContextKey.value += 1 }
+    const clearProgramFailure = () => { programFailure.value = null; programWarning.value = ''; programFailureOwner = () => false; programFailureContextKey.value += 1 }
     const clearRulesFailure = () => { rulesFailure.value = null; rulesFailureOwner = () => false; rulesFailureContextKey.value += 1 }
     const clearClaimsFailure = () => { claimsFailure.value = null; claimsFailureOwner = () => false; claimsFailureContextKey.value += 1 }
     const isCurrentProgramFailure = (source, context) => programFailureOwner() && Boolean(source) && source === programFailure.value && context === programFailureContextKey.value
@@ -848,12 +848,18 @@ export default {
         }
         const res = await (id ? updateReviewRebateProgram(id, payload) : createReviewRebateProgram(payload))
         if (!ownsFailure()) return
-        if (![200, 201].includes(res?.status)) { programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return }
+        if (![200, 201].includes(res?.status)) {
+          if (res?.status === 400 && typeof res.data?.message === 'string') programWarning.value = res.data.message
+          programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return
+        }
         applyProgram(res.data)
         programSaved.value = true
         message.success('活动配置已保存')
       } catch (error) {
-        if (ownsFailure()) { programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(error) }
+        if (ownsFailure()) {
+          if (error?.response?.status === 400 && typeof error.response.data?.message === 'string') programWarning.value = error.response.data.message
+          programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(error)
+        }
       } finally {
         if (owns()) savingProgram.value = false
       }

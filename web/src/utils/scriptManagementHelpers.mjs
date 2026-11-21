@@ -1,5 +1,10 @@
 const DEFAULT_SCHEME = 'https'
 
+export function isRedeemableScriptCode(value) {
+  const code = String(value ?? '').trim()
+  return /^sac_[a-f0-9]{64}$/.test(code) || /^TKA-[a-f0-9]{32}$/.test(code)
+}
+
 function text(value) {
   return String(value ?? '').trim()
 }

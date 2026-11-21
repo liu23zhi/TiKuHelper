@@ -24,6 +24,9 @@
                    @navigation-settled="settleDesktopNavigation" />
       </aside>
       <main ref="contentRoot" id="portal-main-content" class="layout-content" tabindex="-1" aria-label="主要内容">
+        <a-alert v-if="accountBanned" type="error" show-icon message="账号已被封禁" description="当前账号仅可查看封禁提示和提交工单申诉。若有异议，请在工单反馈中提交账号申诉。" style="margin-bottom: 16px">
+          <template #action><a-button @click="router.push('/tickets')">提交工单申诉</a-button></template>
+        </a-alert>
         <router-view v-if="canAccessRoute"></router-view>
       </main>
     </div>
@@ -55,7 +58,7 @@ import SiderMenu from '../components/SiderMenu'
 import StorageWarning from '../components/StorageWarning'
 import { getStorageStatus } from '../api/SystemStatusApi'
 import { useRouter } from 'vue-router'
-import { useCurrentUserDisplay, isAdminUser, resolveHomePath, getCurrentUserLogoutEpoch, getCurrentSessionRevision } from '../utils/currentUser'
+import { useCurrentUserDisplay, setStoredCurrentUser, isAdminUser, resolveHomePath, getCurrentUserLogoutEpoch, getCurrentSessionRevision } from '../utils/currentUser'
 import { currentUserIdentity } from '../utils/currentUserScope'
 import { checkUserSession } from '../api/TikuComponentApi'
 
@@ -81,6 +84,7 @@ export default {
     const desktopNavigation = ref(null)
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const accountBanned = computed(() => String(currentUser.value?.status || '').toLowerCase() === 'banned')
 
     // ── SQLite 悬浮警告（task_doc/108:297、109:474/486）──
     //
@@ -123,7 +127,7 @@ export default {
     ]
     const isAdminOnlyCurrentRoute = computed(() => (router.currentRoute.value?.matched || [])
       .some(record => adminOnlyPrefixes.includes(record.aliasOf?.path || record.path)))
-    const canAccessRoute = computed(() => Boolean(currentUser.value) && (!isAdminOnlyCurrentRoute.value || isAdmin.value))
+    const canAccessRoute = computed(() => Boolean(currentUser.value) && (!accountBanned.value || /^\/tickets(?:\/\d+)?$/.test(router.currentRoute.value.path)) && (!isAdminOnlyCurrentRoute.value || isAdmin.value))
     const triggerElement = () => mobileMenuButton.value?.$el || mobileMenuButton.value
     const focusContent = () => contentRoot.value?.focus({ preventScroll: true })
     const focusTrigger = () => triggerElement()?.focus({ preventScroll: true })
@@ -336,6 +340,11 @@ export default {
       sessionRequest = controller
       try {
         const response = await checkUserSession(controller.signal)
+        if (response?.status === 200 && typeof response.data?.status === 'string'
+          && revision === getCurrentSessionRevision() && owner.every((value, index) => value === desktopFocusOwner()[index])
+          && currentUser.value?.status !== response.data.status) {
+          setStoredCurrentUser({ ...currentUser.value, status: response.data.status })
+        }
         if ((response?.status === 401 || response?.status === 403) && revision === getCurrentSessionRevision()
           && owner.every((value, index) => value === desktopFocusOwner()[index])) stopSessionChecks()
       } catch {
@@ -405,7 +414,7 @@ export default {
     if (!currentUser.value) router.push('/login')
     else if (!isAdmin.value && isAdminOnlyCurrentRoute.value) router.replace(resolveHomePath(currentUser.value))
     return {
-      currentUser, isAdmin, canAccessRoute, isMobile, siderCollapsed, toggleSider,
+      currentUser, isAdmin, accountBanned, router, canAccessRoute, isMobile, siderCollapsed, toggleSider,
       drawerVisible, drawerRendered, mobileMenuButton, contentRoot, navigationDialog,
       mobileDrawerEntry, mobileDrawerAfterChange,
       openMobileMenu, closeMobileMenu, handleMobileNavigate, handleNavigationKeydown,

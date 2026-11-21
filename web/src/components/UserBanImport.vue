@@ -36,7 +36,7 @@ export default {
   emits: ['imported'],
   setup(_, { emit }) {
     const { currentUser, captureUpdateGuard } = useCurrentUserDisplay()
-    const validAdmin = user => isAdminUser(user) && Number.isSafeInteger(Number(user?.id)) && Number(user.id) > 0 && !['disabled', '0'].includes(String(user?.status ?? 'enabled'))
+    const validAdmin = user => isAdminUser(user) && Number.isSafeInteger(Number(user?.id)) && Number(user.id) > 0 && !['disabled', 'banned', '0'].includes(String(user?.status ?? 'enabled').trim().toLowerCase())
     const canManage = computed(() => validAdmin(currentUser.value))
     const visible = ref(false), busy = ref(false), confirmed = ref(false), previewId = ref(''), targets = ref([]), notice = ref('')
     const failure = shallowRef(null), entry = shallowRef({})

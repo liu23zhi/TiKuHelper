@@ -7,6 +7,7 @@ const STATUS_LABELS = Object.freeze({
   processing: '渠道处理中，资金仍冻结',
   unknown: '结果待核对，资金仍冻结',
   succeeded: '退款成功',
+  partially_succeeded: '部分退款成功，其余资金已解冻',
   failed: '退款未完成，冻结已解除',
 })
 export const REFUND_STATUS_OPTIONS = Object.freeze(Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label })))
@@ -46,6 +47,29 @@ export function refundResponseData(response) {
     throw failure
   }
   return response.data
+}
+
+export const REFUND_ALLOCATION_MISMATCH_MESSAGE = '审核金额须等于订单分配合计。请先点「修改退款申请」调整申请金额和逐笔分配。'
+
+const REFUND_FAILURE_MESSAGES = Object.freeze({
+  REFUND_INVALID: '请核对退款参数、金额及订单分配。',
+  REFUND_ALLOCATION_MISMATCH: REFUND_ALLOCATION_MISMATCH_MESSAGE,
+  REFUND_FORBIDDEN: '无权执行此退款操作。',
+  REFUND_VERIFICATION_REQUIRED: '请核对收款信息和承诺书签署。',
+  REFUND_IMAGE_UNAVAILABLE: '收款凭证图片不可用，请核对图片。',
+  REFUND_ORDER_UNAVAILABLE: '充值订单已被使用或不符合退款条件，请重新选择。',
+  REFUND_INSUFFICIENT_BALANCE: '可用余额不足，未冻结资金。',
+  REFUND_PRINCIPAL_UNAVAILABLE: '可退本金不足，已消耗的赠金不能退成现金。',
+  REFUND_PROOF_REQUIRED: '请先核验收款码和签名，或受限凭证。',
+  REFUND_STATE_CONFLICT: '退款状态已变化，请刷新核对。',
+  REFUND_CHANNEL_UNAVAILABLE: '原支付渠道未启用或不可用。',
+})
+
+export function refundFailureMessage(error) {
+  const status = error?.response?.status ?? error?.httpStatus ?? error?.status
+  const code = error?.response?.data?.code ?? error?.code
+  if (!Number.isInteger(status) || status < 400) return ''
+  return REFUND_FAILURE_MESSAGES[code] || (status < 500 ? '退款操作未通过，请核对填写内容和当前状态。' : '')
 }
 
 export function refundListData(payload) {

@@ -17,13 +17,10 @@
     </ConsolePageHeading>
 
     <ConsoleSummaryGrid>
-      <div class="summary-card"><a-statistic title="当前余额" prefix="¥" :value="currentUserBalance" :precision="6" /></div>
-      <!-- 赠送金额（task_doc/70 需求 3）：紧跟「当前余额」之后。
-           注意口径：gift_balance 是**赠金来源标记桶**，赠金已计入 balance
-           （见 entity/users.gen.go:41-51「与 balance 同步增加，但单独记账」
-           「赠金计入 balance，用户可以直接消费 —— 不新增第二个可用钱包」）。
-           所以这里展示的是「余额里有多少来自赠送」，**不是**可分页叠加的第二笔钱。 -->
-      <div class="summary-card"><a-statistic title="赠送金额" prefix="¥" :value="currentUserGiftBalance" :precision="6" /></div>
+      <div class="summary-card"><a-statistic title="账户余额合计" prefix="¥" :value="currentUserTotalBalance" :precision="6" /><p>充值本金与赠送余额合计</p></div>
+      <!-- 本金与赠金是两个独立金额，合计仅用于展示可用余额。 -->
+      <div class="summary-card"><a-statistic title="充值本金（可退款）" prefix="¥" :value="currentUserBalance" :precision="6" /><p>来自充值的本金，按退款规则计算可退金额。</p></div>
+      <div class="summary-card"><a-statistic title="赠送余额（不可退款）" prefix="¥" :value="currentUserGiftBalance" :precision="6" /><p>赠送金额可用于消费，但不能申请退款。</p></div>
       <div class="summary-card"><a-statistic title="账单总数" :value="summary.total" /></div>
       <div class="summary-card"><a-statistic title="当前页条数" :value="summary.currentPageCount" /></div>
       <div class="summary-card"><a-statistic title="当前页消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" /></div>
@@ -43,12 +40,12 @@
         <a-col :xs="24" :lg="10">
           <div class="balance-panel">
             <div class="balance-label">当前账户余额</div>
-            <div class="balance-value">¥ {{ formatMoneyValue(currentUserBalance) }}</div>
+            <div class="balance-value">¥ {{ formatMoneyValue(currentUserTotalBalance) }}</div>
             <div class="balance-meta">账户状态以最新余额为准</div>
             <a-alert v-if="balanceRefreshError" class="balance-refresh-error" type="warning" show-icon :message="balanceRefreshError">
               <template #action><a-button size="small" :loading="currentUserLoading" @click="handleRefreshCurrentUser">重试余额刷新</a-button></template>
             </a-alert>
-            <a-alert v-else-if="!currentUserLoading && currentUserBalance <= 0" class="balance-warning" type="warning" show-icon
+            <a-alert v-else-if="!currentUserLoading && currentUserTotalBalance <= 0" class="balance-warning" type="warning" show-icon
               message="余额不足，新的付费调用将被阻止；已付结果取回仍须通过身份和归属校验。" />
             <section v-if="balanceFailure" data-user-usage-balance-feedback>
               <RequestFailureAlert :key="balanceFailureContextKey" :failure="balanceFailure" message="余额刷新失败，当前显示的是上次读取的余额。" :busy="currentUserLoading" :context-key="balanceFailureContextKey" :is-current="isCurrentBalanceFailure" />
@@ -782,12 +779,12 @@ export default defineComponent({
       return Number.isFinite(balance) ? balance : 0
     })
 
-    // 赠送金额（task_doc/70 需求 3）。口径见模板注释：gift_balance 是
-    // 「余额中来自赠送的部分」，已包含在 balance 内，不是可叠加的第二笔钱。
+    // gift_balance 与充值本金分开保存，按同一六位小数口径展示。
     const currentUserGiftBalance = computed(() => {
       const gift = Number(currentUser.value?.giftBalance || 0)
       return Number.isFinite(gift) ? gift : 0
     })
+    const currentUserTotalBalance = computed(() => Number((currentUserBalance.value + currentUserGiftBalance.value).toFixed(6)))
 
     const pageRefreshing = computed(() => currentUserLoading.value || tableLoading.value || paymentMethodLoading.value)
 
@@ -894,6 +891,7 @@ export default defineComponent({
       toggleSubject: (id) => subjectExpansion.toggle(id, 'subject'),
       summary,
       currentUserBalance,
+      currentUserTotalBalance,
       currentUserGiftBalance,
       pageRefreshing,
       // 等级提升 Tab（T-26）

@@ -121,6 +121,7 @@
               <template v-else-if="column.key === 'action'">
                 <a-space wrap>
                   <a-button type="link" :disabled="loading || restoring" @click="openDetail(record)">详情</a-button>
+                  <UserPortraitDialog :user="record" :disabled="loading || restoring" />
                   <a-button type="link" :disabled="loading || restoring" @click="startRestore(record)">恢复</a-button>
                 </a-space>
               </template>
@@ -130,6 +131,7 @@
       </ConsolePanel>
     </template>
 
+    <AdminDataTransfer resource="archived_users" title="已归档账号" />
     <a-modal
       :open="detailOpen"
       title="已归档账号详情"
@@ -141,26 +143,7 @@
       <a-spin :spinning="detailLoading">
         <a-alert v-if="detailError" type="error" show-icon :message="detailError" class="status-alert" />
         <template v-if="detailUser">
-          <dl class="detail-grid">
-            <div><dt>用户名</dt><dd>{{ detailUser.username || '—' }}</dd></div>
-            <div><dt>昵称</dt><dd>{{ detailUser.nickname || '—' }}</dd></div>
-            <div><dt>账号 ID</dt><dd>{{ detailUser.id }}</dd></div>
-            <div><dt>归档原因</dt><dd>{{ reasonLabel(detailUser.archivedReason) }}</dd></div>
-            <div><dt>归档时间</dt><dd>{{ formatDateTime(detailUser.archivedAt) }}</dd></div>
-            <div><dt>操作者</dt><dd>{{ detailUser.archivedByUserId ? `#${detailUser.archivedByUserId}` : '—' }}</dd></div>
-            <div><dt>余额</dt><dd>{{ moneyText(detailUser.balance) }}</dd></div>
-            <div><dt>赠送余额</dt><dd>{{ moneyText(detailUser.giftBalance) }}</dd></div>
-            <div><dt>注册时间</dt><dd>{{ formatDateTime(detailUser.createdAt) }}</dd></div>
-            <div><dt>账号角色</dt><dd>{{ detailUser.role === 'admin' ? '管理员' : '普通用户' }}</dd></div>
-            <div><dt>账号状态</dt><dd>{{ detailUser.status === 'enabled' ? '正常' : '已禁用' }}</dd></div>
-            <div><dt>注册来源</dt><dd>{{ detailUser.registerSource || '未记录' }}</dd></div>
-            <div><dt>注册 IP</dt><dd>{{ detailUser.registerIp || '未记录' }}</dd></div>
-            <div><dt>最近登录</dt><dd>{{ formatDateTime(detailUser.lastLoginAt) }}</dd></div>
-            <div><dt>登录 IP</dt><dd>{{ detailUser.lastLoginIp || '未记录' }}</dd></div>
-            <div><dt>手机号</dt><dd>{{ identityRevealed ? identityCurrent.phone || '未绑定' : detailUser.phone || '未绑定' }}</dd></div>
-            <div><dt>微信标识</dt><dd>{{ identityRevealed ? identityCurrent.wechatId || '未绑定' : detailUser.wechatId || '未绑定' }}</dd></div>
-            <div><dt>邀请人</dt><dd>{{ detailUser.invitedByUserId ? `#${detailUser.invitedByUserId}` : '无' }}</dd></div>
-          </dl>
+          <UserAccountSummary :user="{ ...detailUser, ...(identityRevealed ? identityCurrent : {}) }" />
           <div class="detail-binding-heading">
             <h3 class="detail-heading">绑定记录历史</h3>
             <a-button v-if="!identityRevealed" size="small" :loading="identityLoading" :disabled="detailLoading || identityLoading" data-action="reveal-archived-identity" @click="revealIdentity">查看身份原文</a-button>
@@ -224,6 +207,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useId,
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
+import UserAccountSummary from '@/components/UserAccountSummary.vue'
+import UserPortraitDialog from '@/components/UserPortraitDialog.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
@@ -246,7 +232,7 @@ const emptyFilters = () => ({ reason: undefined, keyword: '', startTime: '', end
 
 export default {
   name: 'ArchivedUsersPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, UserAccountSummary, UserPortraitDialog, AdminDataTransfer },
   setup() {
     const route = useRoute()
     const prefix = 'archived-users-' + useId()

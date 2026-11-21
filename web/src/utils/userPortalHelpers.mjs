@@ -8,6 +8,7 @@ export function limitUsernameInput(value) {
 }
 
 export function resolveAdapterHomePath(user) {
+  if (String(user?.status || '').trim().toLowerCase() === 'banned') return '/tickets'
   return String(user?.role || '').trim().toLowerCase() === 'admin'
     ? '/component'
     : '/user-usage'

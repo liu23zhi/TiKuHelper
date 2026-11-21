@@ -1,7 +1,8 @@
 <template>
-  <span v-if="canManage">
+  <div v-if="canManage" class="ocr-batch-entry">
     <a-button :onClick="entry.open">批量识别</a-button>
-    <a-modal :open="visible" title="批量识别图片" width="1050px" :footer="null" :mask-closable="false" :closable="!busy" :onCancel="entry.close">
+    <a-modal :open="visible" title="批量识别图片" :width="1050" wrap-class-name="ocr-batch-dialog" :footer="null" :mask-closable="false" :closable="!busy" :onCancel="entry.close">
+      <div class="ocr-batch-content">
       <a-alert type="warning" show-icon message="识别按当前 OCR 单价逐张计费，费用扣除当前管理员余额；命中已有缓存也按现有计费规则处理。上传后先查看清单，点击开始才会识别。" />
       <p>TXT：每行一个图片 URL；Markdown 可直接提取文中的图片 URL，最多 50 条、1 MiB。DOCX / DOC：提取内嵌图片并去重，文档最多 10 MiB、50 张，每张最多 5 MiB；旧版二进制 DOC 请先另存为 DOCX。</p>
       <a-space wrap>
@@ -12,7 +13,7 @@
       <p v-if="validation" role="alert">{{ validation }}</p>
       <RequestFailureAlert v-if="failure" :failure="failure" message="批量处理未完成，请按请求编号核对账单和缓存，勿重复识别结果未确认的图片。" />
       <p v-if="items.length">清单 {{ items.length }} 张，已完成 {{ completedCount }} 张。{{ notice }}</p>
-      <a-table :data-source="items" :columns="columns" row-key="id" size="small" :pagination="{ pageSize: 10 }" :scroll="{ x: 1300 }">
+      <a-table :data-source="items" :columns="columns" row-key="id" size="small" table-layout="fixed" :pagination="{ pageSize: 10 }" :scroll="{ x: 1300 }">
         <template #bodyCell="{ column, record }">
           <span v-if="column.key === 'status'">{{ statusLabel(record.status) }}</span>
           <div v-else-if="column.key === 'result'" class="ocr-batch-result">
@@ -21,8 +22,9 @@
           </div>
         </template>
       </a-table>
+      </div>
     </a-modal>
-  </span>
+  </div>
 </template>
 
 <script>
@@ -133,4 +135,8 @@ export default {
 
 <style scoped>
 .ocr-batch-result { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ocr-batch-content { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.ocr-batch-content p { margin:0; line-height:1.7; }
+.ocr-batch-content :deep(.ant-table-wrapper) { width:100%; min-width:0; }
+.ocr-batch-content :deep(td) { white-space:normal; overflow-wrap:anywhere; }
 </style>

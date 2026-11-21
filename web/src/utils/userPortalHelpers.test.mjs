@@ -334,6 +334,11 @@ test('personal billing detail hides AI pricing metadata while retaining keyword 
   assert.doesNotMatch(html, /显示在用户账单流水/)
 })
 
+test('banned accounts enter only the appeal workspace regardless of former role',()=>{
+ assert.equal(resolveAdapterHomePath({role:'admin',status:'banned'}),'/tickets')
+ assert.equal(resolveAdapterHomePath({role:'user',status:'banned'}),'/tickets')
+})
+
 test('web read fee details prefer the structured URL and retain it in normalized items', () => {
   const record = {
     direction: 'expense',

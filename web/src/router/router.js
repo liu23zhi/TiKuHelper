@@ -21,6 +21,7 @@ const LogList = () => import(/* webpackChunkName: "route-log-list" */ '../pages/
 const SearchAccountConfig = () => import(/* webpackChunkName: "route-search-account-config" */ '../pages/SearchAccountConfig/index.vue')
 const AISearchConfig = () => import(/* webpackChunkName: "route-a-i-search-config" */ '../pages/AISearchConfig/index.vue')
 const SystemSettings = () => import(/* webpackChunkName: "route-system-settings" */ '../pages/SystemSettings/index.vue')
+const ReferralInvites = () => import('../pages/ReferralInvites/index.vue')
 const AccessTokenManagement = () => import(/* webpackChunkName: "route-access-token-management" */ '../pages/AccessTokenManagement/index.vue')
 const ScriptManagement = () => import(/* webpackChunkName: "route-script-management" */ '../pages/ScriptManagement/index.vue')
 const BillingRecordList = () => import(/* webpackChunkName: "route-billing-record-list" */ '../pages/BillingRecordList/index.vue')
@@ -259,6 +260,7 @@ const routes = [
         name: 'system-settings',
         component: SystemSettings,
       },
+      { path: 'referral-invites', name: 'referral-invites', component: ReferralInvites },
       {
         // 我的令牌（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
         // 进来时看到的是自己的令牌，而不是「令牌管理」的全站视图。
@@ -423,6 +425,7 @@ const routes = [
 ];
 
 const ADMIN_ONLY_ROUTE_NAMES = new Set([
+  'referral-invites',
   'component',
   'import',
   'userlist',
@@ -537,6 +540,11 @@ router.beforeEach((to, from, next) => {
   const currentUser = getStoredCurrentUser()
   if (!currentUser) {
     next('/login')
+    return
+  }
+
+  if (String(currentUser.status || '').toLowerCase() === 'banned' && !['tickets', 'ticket-detail'].includes(String(to.name || ''))) {
+    next('/tickets')
     return
   }
 

@@ -98,7 +98,7 @@ func ticketRefundShellStatus(refundStatus string) string {
 	case entity.TicketRefundStatusProcessing, entity.TicketRefundStatusUnknown:
 		return entity.TicketStatusPending
 	case entity.TicketRefundStatusRejected, entity.TicketRefundStatusSucceeded,
-		entity.TicketRefundStatusFailed:
+		entity.TicketRefundStatusFailed, entity.TicketRefundStatusPartial:
 		return entity.TicketStatusClosed
 	default:
 		// 未知状态按「还需管理员看一眼」处理，不要静默归档。
@@ -424,6 +424,16 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 	}
 
 	if multiOrder {
+		if refundMethod == "original" && len(input.RefundOrderAllocations) > 1 {
+			refund, err := createGroupedOriginalTicketRefundWithDB(db, *user, CreateTicketRefundInput{
+				Kind: kind, Allocations: input.RefundOrderAllocations, RequestedCents: input.RefundRequestedCents, Reason: reason,
+				PayoutQrAttachmentID: input.RefundPayoutQrAttachmentID, SignatureAttachmentID: input.RefundSignatureAttachmentID,
+			})
+			if err != nil {
+				return TicketDetail{}, err
+			}
+			return GetTicketWithDB(db, user, *refund.TicketID)
+		}
 		// 多笔：每笔一张退款单（order_id 有唯一索引），
 		// 整批一个事务，任一笔失败全部回滚。
 		targets := input.RefundOrderAllocations

@@ -690,6 +690,7 @@
             :show-status="false"
             :on-changed="detailEntry.bind(reloadDetail)"
           />
+          <TicketAccountActions v-if="isAdmin" :ticket="detailTicket" :active="detailVisible" @updated="reloadDetail" />
           <a-alert
             v-if="isAdmin && notificationText"
             :type="notification?.status === 'failed' ? 'warning' : 'info'"
@@ -931,6 +932,7 @@ const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款操作区（详情内）。原名 TicketRefundPanel 是「整套退款工作台」，
 // 2026-11-18 重构后只保留「单张工单的退款动作」，故改名以示职责收窄。
 const TicketRefundActions = defineAsyncComponent(() => import("./TicketRefundActions.vue"));
+const TicketAccountActions = defineAsyncComponent(() => import("./TicketAccountActions.vue"));
 // 注销引导 / 自助注销：与工单向导的「注销申请」分支、个人中心入口共用同一组件。
 const ClosureGuide = defineAsyncComponent(() => import("./ClosureGuide.vue"));
 const { currentUser } = useCurrentUserDisplay();
@@ -1074,7 +1076,8 @@ const createNeedsRefundFields = computed(() => ticketCreateTypeNeedsRefundFields
 const createNeedsAccountFields = computed(() => draft.ticketType === TICKET_CREATE_TYPE_ACCOUNT);
 // account_closure（注销申请）：只填注销原因（标题固定生成）。
 const createNeedsClosureFields = computed(() => isAccountClosureTicketType(draft.ticketType));
-const createTypeOptions = TICKET_CREATE_TYPE_OPTIONS.map(({ value, label, hint }) => ({ value, label, hint }));
+const bannedApplicant = computed(() => currentUser.value?.status === 'banned');
+const createTypeOptions = computed(() => TICKET_CREATE_TYPE_OPTIONS.filter(item => !bannedApplicant.value || item.value === TICKET_CREATE_TYPE_ACCOUNT).map(({ value, label, hint }) => ({ value, label, hint })));
 const createIssueOptions = TICKET_ACCOUNT_ISSUE_OPTIONS.map(({ value, label }) => ({ value, label }));
 // 第一步「下一步」是否可用：必须选了一个**白名单内**的类型。
 const createTypeChosen = computed(() => ticketWizardCanAdvanceFromType(draft.ticketType));
@@ -1569,7 +1572,7 @@ function effectiveStatusLabel(ticket) {
 }
 function effectiveStatusColor(ticket) {
   return ticket?.refund
-    ? ({ pending_review: 'gold', frozen: 'blue', processing: 'blue', unknown: 'orange', succeeded: 'green', rejected: 'red', failed: 'red' }[ticket.refund.status] || 'default')
+    ? ({ pending_review: 'gold', frozen: 'blue', processing: 'blue', unknown: 'orange', partially_succeeded: 'orange', succeeded: 'green', rejected: 'red', failed: 'red' }[ticket.refund.status] || 'default')
     : ticketStatusColor(ticket?.status);
 }
 function responseMessage(error, fallback) {
@@ -1666,7 +1669,7 @@ function openCreate() {
   createVersion += 1; createLoading.value = false; createSaved.value = false;
   refundOrdersVersion += 1; refundOrdersLoading.value = false;
   refundOrderOptions.value = [];
-  draft.ticketType = "";
+  draft.ticketType = bannedApplicant.value ? TICKET_CREATE_TYPE_ACCOUNT : "";
   draft.subject = "";
   draft.body = "";
   draft.requestedYuan = "";
@@ -1680,6 +1683,7 @@ function openCreate() {
   // 用户下次发起退款会自动带出上次那张，避免每次重传。
   // 真正的清除入口是图片左上角的删除按钮。
   draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE;
+  if (bannedApplicant.value) draft.subject = '【封禁申诉】账号问题';
   createStep.value = ticketWizardInitialStep();
   // 选择人工退款时，收款码组件查询后端并尝试本机设备验证。
   resetRefundDraft();
@@ -1690,6 +1694,7 @@ function openCreate() {
 // 只改 draft.ticketType，**不**自动前进：向导的「下一步」是用户的显式动作
 // （选错类型要能改回来，自动跳步会让他被迫回退）。
 function selectCreateType(value) {
+  if (bannedApplicant.value && value !== TICKET_CREATE_TYPE_ACCOUNT) return;
   draft.ticketType = String(value ?? "").trim().toLowerCase();
   retireCreateValidation();
 }

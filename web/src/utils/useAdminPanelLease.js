@@ -10,7 +10,7 @@ export function useAdminPanelLease(currentUser, { disabled = () => false, resour
   const canManage = computed(() => {
     const user = currentUser.value, id = Number(user?.id)
     return alive && !disabled() && Number.isSafeInteger(id) && id > 0 && id <= 2147483647 &&
-      isAdminUser(user) && !['0', 'disabled'].includes(String(user?.status || 'enabled')) &&
+      isAdminUser(user) && !['0', 'disabled', 'banned'].includes(String(user?.status || 'enabled')) &&
       getCurrentUserLogoutEpoch() === mountedLogoutEpoch
   })
   const capture = () => { const owner = lease; return () => owner === lease && canManage.value }

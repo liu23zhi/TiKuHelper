@@ -85,7 +85,7 @@ func StoreTicketRefundProofWithDB(db *gorm.DB, actor entity.User, id int64, data
 	if refund.UserID != actor.ID || refund.Kind != TicketRefundKindManual {
 		return ErrTicketRefundForbidden
 	}
-	if refund.Status != TicketRefundStatusPendingReview {
+	if !ticketRefundCanAddProof(refund) {
 		return ErrTicketRefundState
 	}
 	aead, err := ticketRefundProofCipher()
@@ -108,7 +108,7 @@ func StoreTicketRefundProofWithDB(db *gorm.DB, actor entity.User, id int64, data
 		if err != nil {
 			return err
 		}
-		if current.Status != TicketRefundStatusPendingReview {
+		if !ticketRefundCanAddProof(current) {
 			return ErrTicketRefundState
 		}
 		var owner entity.User
@@ -128,6 +128,11 @@ func StoreTicketRefundProofWithDB(db *gorm.DB, actor entity.User, id int64, data
 		return tx.Create(&entity.TicketRefundProof{RefundID: id, UserID: actor.ID,
 			MediaType: mimeType, Nonce: nonce, Ciphertext: ciphertext}).Error
 	})
+}
+
+func ticketRefundCanAddProof(refund entity.TicketRefund) bool {
+	return refund.Status == TicketRefundStatusPendingReview ||
+		(refund.Status == TicketRefundStatusFrozen && refund.StartedAt == nil)
 }
 
 func ReadTicketRefundProofWithDB(db *gorm.DB, actor entity.User, id int64) (string, []byte, error) {

@@ -3,7 +3,9 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const Module = require('node:module')
 require('../helpers/vue-dom.cjs')
-const { mount, flushPromises } = require('@vue/test-utils')
+const { mount, flushPromises, config } = require('@vue/test-utils')
+for (const name of ['ConsolePageHeading', 'ConsolePanel', 'ConsoleSummaryGrid', 'ConsoleTableShell']) delete config.global.components[name]
+const { registerConsoleUI } = require('../../src/registerUI.js')
 const { nextTick } = require('vue')
 const Antd = require('ant-design-vue')
 const axios = require('axios')
@@ -26,7 +28,7 @@ const Detect = require('../../src/components/SensitiveImageDetectButton.vue')
 const admin = id => ({ id, role: 'admin', status: 'enabled', balance: 1 })
 async function settle() { await nextTick(); await flushPromises(); await nextTick() }
 async function mounted(Component, props = {}) {
-  const wrapper = mount(Component, { props, attachTo: document.body, global: { plugins: [Antd] } })
+  const wrapper = mount(Component, { props, attachTo: document.body, global: { plugins: [{ install: registerConsoleUI }] } })
   wrappers.push(wrapper); await settle(); return wrapper
 }
 afterEach(async () => {
@@ -86,6 +88,67 @@ for (const spec of [
     pending[1].resolve(spec.response(spec.body)); await settle()
     await wrapper.setProps({ disabled: true }); await settle()
     assert.equal(wrapper.find('form').exists(), false); assert.equal(wrapper.vm.loaded, false)
+  })
+
+  test(spec.name + ': same administrator ban hides and clears the panel, retiring pending reads, writes and native callbacks', async () => {
+    const account = admin(80006)
+    user.setStoredCurrentUser(account)
+    const wrapper = await mounted(spec.Component)
+    assert.equal(pending.length, 1)
+    const initialRead = pending[0]
+    const firstSubmit = wrapper.findComponent(Antd.Form).vm.$.vnode.props.onFinish
+    user.setStoredCurrentUser({ ...account, status: 'banned' })
+    assert.equal(wrapper.vm.canManage, false, 'same id and role must lose management synchronously')
+    assert.equal(wrapper.vm.loaded, false)
+    assert.equal(wrapper.vm.busy, false)
+    await settle()
+    assert.equal(wrapper.find('form').exists(), false)
+    assert.equal(pending.length, 1, 'ban must not dispatch an automatic configuration read')
+    initialRead.resolve(spec.response({ ...spec.body, maxAgeDays: 999 }))
+    await firstSubmit(); await settle()
+    assert.equal(pending.length, 1, 'old native submit cannot write while banned')
+    assert.equal(wrapper.vm.loaded, false)
+    assert.equal(wrapper.vm.form.maxAgeDays, spec.value, 'late read cannot restore private configuration')
+    assert.equal(wrapper.find('form').exists(), false)
+
+    user.setStoredCurrentUser(account); await settle()
+    assert.equal(pending.length, 2, 'unban requires a fresh owned configuration read')
+    await firstSubmit(); await settle()
+    assert.equal(pending.length, 2, 'same-account unban cannot revive the old callback')
+    pending[1].resolve(spec.response(spec.body)); await settle()
+    const input = wrapper.findAll('input').find(item => item.element.value === String(spec.value))
+    await input.setValue('77'); await input.trigger('blur'); await settle()
+    const oldSubmit = wrapper.findComponent(Antd.Form).vm.$.vnode.props.onFinish
+    const oldInput = wrapper.findAllComponents(Antd.InputNumber)[0].vm.$.vnode.props['onUpdate:value']
+    const button = wrapper.get('button[type="submit"]').element
+    assert.equal(button.disabled, false)
+    button.click(); await settle()
+    assert.equal(pending.length, 3)
+    assert.equal(pending[2].config.method, 'put', 'native button must reach the actual save API')
+    assert.deepEqual(pending[2].payload, { ...spec.body, maxAgeDays: 77 })
+
+    user.setStoredCurrentUser({ ...account, status: 'banned' })
+    assert.equal(wrapper.vm.canManage, false)
+    assert.equal(wrapper.vm.form.maxAgeDays, spec.value, 'ban clears the unsent/private form immediately')
+    assert.equal(wrapper.vm.loaded, false)
+    assert.equal(wrapper.vm.busy, false)
+    await settle()
+    assert.equal(wrapper.find('form').exists(), false)
+    await oldSubmit(); oldInput(555); button.click(); await settle()
+    assert.equal(pending.length, 3, 'captured callbacks and detached native button cannot write')
+    pending[2].resolve(spec.response({ ...spec.body, maxAgeDays: 777 })); await settle()
+    assert.equal(wrapper.vm.loaded, false)
+    assert.equal(wrapper.vm.form.maxAgeDays, spec.value)
+    assert.equal(wrapper.vm.feedback, '', 'retired write cannot publish a success notice')
+    assert.equal(wrapper.find('form').exists(), false, 'late write must not reopen the banned panel')
+
+    user.setStoredCurrentUser(account); await settle()
+    assert.equal(pending.length, 4)
+    await oldSubmit(); oldInput(555); await settle()
+    assert.equal(pending.length, 4, 'unbanned account still cannot reuse the prior write lease')
+    pending[3].resolve(spec.response(spec.body)); await settle()
+    assert.equal(wrapper.vm.loaded, true)
+    assert.equal(wrapper.vm.form.maxAgeDays, spec.value)
   })
 }
 

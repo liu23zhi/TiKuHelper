@@ -297,6 +297,7 @@
     <CacheRetentionSettings :key="'cache-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <LogRetentionSettingsPanel :key="'logs-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <RefundAgreementPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
+    <ReferralSettingsPanel :disabled="!canManageSettings() || settingsDraining" />
 
     <PaymentMethodPanel
       :key="settingsFormKey"
@@ -369,6 +370,7 @@ import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import PaymentMethodPanel from './PaymentMethodPanel.vue';
 import RefundAgreementPanel from './RefundAgreementPanel.vue';
+import ReferralSettingsPanel from '@/components/ReferralSettingsPanel.vue';
 import TicketNotificationSettingsPanel from '@/components/TicketNotificationSettingsPanel.vue';
 import CacheRetentionSettings from '@/components/CacheRetentionSettings.vue';
 import LogRetentionSettingsPanel from '@/components/LogRetentionSettingsPanel.vue';
@@ -503,7 +505,7 @@ const projectSettingsSaveFailure = source => {
 
 export default defineComponent({
   name: 'SystemSettings',
-  components: { PaymentMethodPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
+  components: { PaymentMethodPanel, ReferralSettingsPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
   setup() {
     const settingsFormId = `system-settings-${useId()}`
     const fieldId = field => `${settingsFormId}-${field}`

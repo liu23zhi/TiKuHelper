@@ -149,6 +149,8 @@ func writeScriptActivationCodeError(c *gin.Context, err error) {
 		status, code, message = http.StatusForbidden, "SCRIPT_ACTIVATION_FORBIDDEN", service.ErrScriptForbidden.Error()
 	case errors.Is(err, service.ErrScriptActivationCodeInvalid):
 		status, code, message = http.StatusBadRequest, "SCRIPT_ACTIVATION_CODE_INVALID", service.ErrScriptActivationCodeInvalid.Error()
+	case errors.Is(err, service.ErrAdminScriptActivationCodeInvalid), errors.Is(err, service.ErrAdminScriptActivationCodeDisabled), errors.Is(err, service.ErrAdminScriptActivationCodeExpired), errors.Is(err, service.ErrAdminScriptActivationCodeUsed):
+		status, code, message = http.StatusBadRequest, "SCRIPT_ACTIVATION_CODE_INVALID", err.Error()
 	case errors.Is(err, service.ErrScriptActivationPriceInvalid):
 		status, code, message = http.StatusBadRequest, "SCRIPT_ACTIVATION_PRICE_INVALID", service.ErrScriptActivationPriceInvalid.Error()
 	case errors.Is(err, service.ErrScriptActivationPriceChanged):

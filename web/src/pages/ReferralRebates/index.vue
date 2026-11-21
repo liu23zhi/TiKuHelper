@@ -15,7 +15,7 @@
     />
 
     <template v-if="canManage()">
-      <AdminDataTransfer resource="gifts" title="赠送记录导出" />
+
       <ConsoleSummaryGrid class="rebate-summary">
         <div>
           <div class="summary-label">筛选结果</div>
@@ -295,6 +295,8 @@
         </ConsoleTableShell>
       </ConsolePanel>
     </template>
+    <AdminDataTransfer resource="gifts" title="赠送记录导出" />
+
   </div>
 </template>
 

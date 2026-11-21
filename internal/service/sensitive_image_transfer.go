@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/xuri/excelize/v2"
@@ -154,6 +156,16 @@ func importSensitiveImages(db *gorm.DB, opts ImportDataOptions, format string) (
 		status, valid := normalizeImageTransferStatus(value("status"))
 		if !valid {
 			detail.Reason = "检测状态必须为 clean、sensitive 或 error"
+		} else if value("image_base64") == "" {
+			skipped, restoreErr := restoreSensitiveImageMetadata(db, opts.DryRun, value("image_sha256"), status, value("content_type"), value("reason"), value("updated_at"))
+			if restoreErr != nil {
+				detail.Reason = restoreErr.Error()
+			} else if skipped {
+				detail.Result, detail.Reason = ImportRowSkipped, "已有较新或同一结论，或图片仍在检测中，保留现有记录"
+				result.Skipped++
+				result.Details = append(result.Details, detail)
+				continue
+			}
 		} else {
 			encoded := sensitiveImageTransferEncodedValue(value("image_base64"))
 			var plain []byte
@@ -218,6 +230,90 @@ func importSensitiveImages(db *gorm.DB, opts ImportDataOptions, format string) (
 	}
 	result.ErrorReport = buildImportErrorReport(result.Details)
 	return result, nil
+}
+
+// A backup without bytes restores history only. It cannot claim that an upload
+// passed a scan, change a blob, or replace an equally recent/newer verdict.
+func restoreSensitiveImageMetadata(db *gorm.DB, dryRun bool, sha, status, contentType, reason, updated string) (bool, error) {
+	sha = strings.ToLower(sha)
+	decoded, err := hex.DecodeString(sha)
+	if err != nil || len(decoded) != sha256.Size {
+		return false, fmt.Errorf("无原图的记录必须提供有效的 64 位 image_sha256")
+	}
+	checkedAt, err := time.Parse(time.RFC3339Nano, updated)
+	if err != nil || checkedAt.IsZero() {
+		return false, fmt.Errorf("无原图的记录必须提供有效的 RFC3339 updated_at")
+	}
+	checkedAt = checkedAt.UTC()
+	if contentType != "" && contentType != "image/png" && contentType != "image/jpeg" && contentType != "image/gif" && contentType != "image/webp" {
+		return false, fmt.Errorf("content_type 必须是受支持的图片类型")
+	}
+	if !utf8.ValidString(reason) || utf8.RuneCountInString(reason) > 255 {
+		return false, fmt.Errorf("检测原因不能超过 255 字")
+	}
+	skipped := false
+	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var current entity.SensitiveImageCacheEntry
+		read := tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("image_sha256 = ?", sha).Take(&current)
+		found := read.Error == nil
+		if read.Error != nil && !errors.Is(read.Error, gorm.ErrRecordNotFound) {
+			return read.Error
+		}
+		if found && (current.Status == entity.SensitiveImageCacheStatusPending || !current.UpdatedAt.Before(checkedAt)) {
+			skipped = true
+			return nil
+		}
+		// Pending attachment/blob state is an active detection, not historical
+		// evidence. Inserting a clean cache here could let its worker reuse it.
+		if tx.Migrator().HasTable(&entity.TicketAttachment{}) {
+			var pending int64
+			if err := tx.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachment{}).Where("sha256 = ? AND scan_state IN ?", sha, []string{entity.TicketAttachmentScanPending, entity.TicketAttachmentScanScanning}).Count(&pending).Error; err != nil {
+				return err
+			}
+			if pending > 0 {
+				skipped = true
+				return nil
+			}
+			var history []SensitiveImageHistoryEntry
+			if err := SensitiveImageHistoryQuery(tx).Where("image_sha256 = ?", sha).Find(&history).Error; err != nil {
+				return err
+			}
+			for _, row := range history {
+				if !row.UpdatedAt.Before(checkedAt) {
+					skipped = true
+					return nil
+				}
+			}
+		}
+		if tx.Migrator().HasTable(&entity.TicketAttachmentBlob{}) {
+			var blob entity.TicketAttachmentBlob
+			read := tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.Locking{Strength: "UPDATE"}).Where("sha256 = ?", sha).Take(&blob)
+			if read.Error != nil && !errors.Is(read.Error, gorm.ErrRecordNotFound) {
+				return read.Error
+			}
+			if read.Error == nil && (blob.ScanState == entity.TicketAttachmentScanPending || blob.ScanState == entity.TicketAttachmentScanScanning || (blob.CheckedAt != nil && !blob.CheckedAt.Before(checkedAt))) {
+				skipped = true
+				return nil
+			}
+		}
+		if dryRun {
+			return nil
+		}
+		if found {
+			// Include the observed version so a concurrent detector never loses
+			// its result, even on databases where FOR UPDATE is unavailable.
+			write := tx.Session(&gorm.Session{NewDB: true}).Model(&entity.SensitiveImageCacheEntry{}).
+				Where("image_sha256 = ? AND status = ? AND updated_at = ?", sha, current.Status, current.UpdatedAt).
+				Updates(map[string]any{"status": status, "reason": reason, "provider": "admin-backup", "updated_at": checkedAt})
+			skipped = write.RowsAffected == 0
+			return write.Error
+		}
+		entry := entity.SensitiveImageCacheEntry{ImageSHA256: sha, Status: status, Reason: reason, ContentType: contentType, Provider: "admin-backup", FirstSeenAt: checkedAt, UpdatedAt: checkedAt}
+		write := tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.OnConflict{DoNothing: true}).Create(&entry)
+		skipped = write.RowsAffected == 0
+		return write.Error
+	})
+	return skipped, err
 }
 
 func sensitiveImageTransferEncodedValue(value string) string {

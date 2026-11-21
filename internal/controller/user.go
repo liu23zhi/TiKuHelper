@@ -259,7 +259,11 @@ func Auth(c *gin.Context) {
 		})
 		return
 	}
-	if !isUserSessionAllowed(user) {
+	if err := refreshSessionBan(user); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(user) {
 		c.AbortWithStatusJSON(401, gin.H{
 			"message": "用户已被禁用",
 		})
@@ -276,6 +280,16 @@ func Auth(c *gin.Context) {
 	if cookieCredential && !cookieRequestContextAllowed(c.Request) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
 		return
+	}
+	if strings.EqualFold(user.Status, "banned") {
+		c.Set("account_banned", true)
+		if !bannedSessionRouteAllowed(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": "ACCOUNT_BANNED", "message": "账号已被封禁，仅可查看封禁提示和提交工单申诉"})
+			return
+		}
+		// Appeal access never inherits administrator permissions, even if the
+		// banned account used to be an administrator.
+		user.Role = "user"
 	}
 	// 滑动续期（2026-11-19）：所有校验通过后，若这枚令牌已走过半程，就重发一次。
 	//
@@ -358,7 +372,12 @@ func AuthAccessToken(c *gin.Context) {
 
 // UserSession is a read-only heartbeat; Auth already checked the current session.
 func UserSession(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+	user, _ := c.Get("user")
+	status := ""
+	if value, ok := user.(*entity.User); ok && value != nil {
+		status = value.Status
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "ok", "status": status})
 }
 
 // UserInfo 获取用户信息
@@ -434,7 +453,11 @@ func UserLogin(c *gin.Context) {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
-	if !isUserSessionAllowed(user) {
+	if err := refreshSessionBan(user); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(user) {
 		loginGate.failAccount(payload.Username, "用户已被禁用")
 		return
 	}
@@ -765,8 +788,7 @@ func evaluateUserLevelAfterRegister(userID int32) {
 // applyReferralOnRegister 在注册事务内完成邀请归因并生成新用户自己的邀请码。
 //
 // 语义（对应 04 稿 3.6 节）：
-//   - 总开关关闭：整段跳过，不生成邀请码、不绑定邀请人、也不因为带了
-//     inviteCode 而报错（老客户端可能带着历史码）；
+//   - 注册始终生成邀请码并保留有效邀请关系；返佣开关只控制奖励发放。
 //   - inviteCode 为空：只生成自己的邀请码；
 //   - inviteCode 非法 / 自邀：返回业务错误，整个注册事务回滚（用户必须改输入重来）；
 //   - 生成邀请码失败：**不阻断注册** —— 邀请码是附加权益，下次可补发。
@@ -774,9 +796,6 @@ func evaluateUserLevelAfterRegister(userID int32) {
 // 邀请码只在注册时生效，注册后不可改绑（绑定入口只有这里）。
 func applyReferralOnRegister(tx *gorm.DB, user *entity.User, inviteCode string) error {
 	if tx == nil || user == nil || user.ID <= 0 {
-		return nil
-	}
-	if !service.GetReferralRebateEnabledWithDB(tx) {
 		return nil
 	}
 	if code := strings.TrimSpace(inviteCode); code != "" {
@@ -1197,7 +1216,11 @@ func UserSMSLogin(c *gin.Context) {
 		return
 	}
 	user := users[0]
-	if !isUserSessionAllowed(&user) {
+	if err := refreshSessionBan(&user); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(&user) {
 		loginGate.failAccount(phone, "用户已被禁用")
 		return
 	}

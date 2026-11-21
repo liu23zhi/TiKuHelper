@@ -1,8 +1,8 @@
 <template>
   <div class="console-page user-portrait-page">
-    <ConsolePageHeading title="整体用户画像（全站）" description="全站用户的行为画像总览。">
+    <ConsolePageHeading :title="userId ? '用户画像' : '整体用户画像（全站）'" :description="userId ? '当前用户的账户、设备和行为数据，与全站画像使用相同统计口径。' : '全站用户的账户、设备和行为画像总览。'">
       <template #actions>
-        <a-button @click="reload" :loading="loading">刷新</a-button>
+        <a-button @click="reload" :loading="loading" :disabled="!canViewPortrait">刷新</a-button>
       </template>
     </ConsolePageHeading>
 
@@ -12,7 +12,7 @@
       v-if="canViewPortrait && failure"
       :key="failureContextKey"
       :failure="failure"
-      message="获取整体用户画像失败"
+      :message="userId ? '获取用户画像失败' : '获取整体用户画像失败'"
       retryable
       :busy="loading"
       :context-key="failureContextKey"
@@ -21,15 +21,25 @@
 
     <div v-if="canViewPortrait && loading && !portrait" class="portrait-loading" role="status" aria-live="polite">
       <a-spin />
-      <span>正在读取全站画像</span>
+      <span>{{ userId ? '正在读取用户画像' : '正在读取全站画像' }}</span>
     </div>
     <a-empty
       v-else-if="canViewPortrait && !portrait && !failure"
-      description="暂无全站画像数据"
+      :description="userId ? '暂无用户画像数据' : '暂无全站画像数据'"
       class="portrait-empty"
     />
 
     <template v-if="canViewPortrait && portrait">
+      <a-descriptions v-if="portrait.base" :column="2" bordered size="small" class="portrait-summary">
+        <a-descriptions-item label="用户">#{{ portrait.base.userId }} {{ portrait.base.nickname || portrait.base.username }}</a-descriptions-item>
+        <a-descriptions-item label="账号">{{ portrait.base.username }}</a-descriptions-item>
+        <a-descriptions-item label="充值本金">¥ {{ formatMoneyValue(portrait.base.balance) }}</a-descriptions-item>
+        <a-descriptions-item label="赠送余额">¥ {{ formatMoneyValue(portrait.base.giftBalance) }}</a-descriptions-item>
+        <a-descriptions-item label="注册时间">{{ displayTime(portrait.base.createdAt) }}</a-descriptions-item>
+        <a-descriptions-item label="上次登录">{{ displayTime(portrait.base.lastLoginAt) }}</a-descriptions-item>
+        <a-descriptions-item label="注册地区">{{ portrait.base.registerRegion || '未记录' }}</a-descriptions-item>
+        <a-descriptions-item label="登录地区">{{ portrait.base.lastLoginRegion || '未记录' }}</a-descriptions-item>
+      </a-descriptions>
       <ConsoleSummaryGrid class="portrait-summary">
         <a-card v-for="tile in tiles" :key="tile.key" :bordered="false" class="summary-card">
           <a-statistic :title="tile.title" :value="tile.missing ? PORTRAIT_EMPTY_HINT : tile.value" />
@@ -55,7 +65,7 @@
 
       <section class="portrait-section" aria-labelledby="portrait-breakdown-title">
         <div class="portrait-section__heading">
-          <h2 id="portrait-breakdown-title">全站分布明细</h2>
+          <h2 id="portrait-breakdown-title">{{ userId ? '用户分布明细' : '全站分布明细' }}</h2>
           <p>区域为账单 IP 的本地归属地聚合；注册地区与注册来源按用户记录统计。</p>
         </div>
         <div class="portrait-tables">
@@ -97,10 +107,10 @@
 </template>
 
 <script>
-import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { message } from 'ant-design-vue'
 
-import { getPortraitOverview } from '@/api/UserPortraitApi'
+import { getPortraitOverview, getUserPortrait } from '@/api/UserPortraitApi'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
@@ -115,21 +125,25 @@ import {
   buildPortraitBreakdownTables,
   buildPortraitCharts,
   buildOverallPortraitTiles,
+  buildPortraitSeries,
 } from '@/utils/portraitCharts.mjs'
 import {
   PORTRAIT_HOURS_TITLE,
   PORTRAIT_TYPES_TITLE,
   PORTRAIT_WEEKDAYS_TITLE,
   buildPortraitAllOptions,
+  buildPortraitTypesOption,
   readPortraitPalette,
 } from './portraitChartOptions.mjs'
 
 export default defineComponent({
   name: 'UserPortrait',
   components: { ConsolePageHeading, ConsoleSummaryGrid, RequestFailureAlert, PortraitChart },
-  setup() {
+  props: { userId: { type: Number, default: 0 }, embedded: Boolean },
+  setup(props = {}) {
     const { currentUser } = useCurrentUserDisplay()
-    const canViewPortrait = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
+    const canViewPortrait = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value) &&
+      !['0', 'disabled', 'banned'].includes(String(currentUser.value?.status || 'enabled').trim().toLowerCase()))
 
     const themeController = inject(THEME_CONTROLLER_KEY, null)
     const themeResolved = ref(themeController?.getState().resolved || 'light')
@@ -200,6 +214,7 @@ export default defineComponent({
         ['userStatuses', '账号状态', '按未归档账号的当前状态统计用户数。'],
         ['userRoles', '账号角色', '普通用户与管理员均以实际账号记录为准。'],
       ].map(([key, title, hint]) => ({ key, title, hint, ariaLabel: `${title}分布图`, options: chartOptions.value[key] })),
+      ...(portrait.value?.insights || []).map(item => ({ key: item.key, title: item.title, hint: `当前范围内共 ${item.total} 条记录；历史状态以数据库记录为准。`, ariaLabel: item.title, options: buildPortraitTypesOption(buildPortraitSeries(item.items), palette.value) })),
     ])
     const tableViewList = computed(() => buildPortraitBreakdownTables(portrait.value || {}))
     const generatedAt = computed(() => {
@@ -223,9 +238,11 @@ export default defineComponent({
       loading.value = true
       clearFailure()
       try {
-        const response = await getPortraitOverview()
+        const target = props.userId
+        const response = target > 0 ? await getUserPortrait(target) : await getPortraitOverview()
         if (!isCurrent()) return false
-        if (Number(response?.status) === 200 && response.data && typeof response.data === 'object' && response.data.scope === 'overall') {
+        if (target !== props.userId) return false
+        if (Number(response?.status) === 200 && response.data && typeof response.data === 'object' && response.data.scope === (target > 0 ? 'user' : 'overall')) {
           portrait.value = response.data
           return true
         }
@@ -250,6 +267,9 @@ export default defineComponent({
       if (value === null || value === undefined || value === '') return '—'
       return typeof value === 'number' ? value.toLocaleString('zh-CN') : value
     }
+    const displayTime = value => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '未记录'
+    watch(canViewPortrait, allowed => { clearOwnedData(); if (allowed) void load() }, { flush: 'sync' })
+    watch(() => props.userId, () => { clearOwnedData(); void load() })
 
     onMounted(() => {
       if (!canViewPortrait.value) {
@@ -277,6 +297,7 @@ export default defineComponent({
       generatedAt,
       reload,
       displayCell,
+      displayTime,
       formatMoneyValue,
     }
   },

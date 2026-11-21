@@ -4,9 +4,7 @@
       <template #actions>
       <a-space wrap class="section-actions">
         <a-button @click="handleUserList" :loading="tabLoading">刷新</a-button>
-        <a-button :disabled="!canManageUsers || userTransferLoading" @click="openUserImport"><UploadOutlined />导入用户</a-button>
         <a-button :disabled="!canManageUsers || userTransferLoading" :loading="userTransferLoading" @click="exportUsers"><DownloadOutlined />导出用户</a-button>
-        <a-button :disabled="!canManageUsers || userTransferLoading" :loading="userTemplateLoading" @click="downloadUserTemplate">下载用户模板</a-button>
         <a-button type="primary" @click="openCreateModal">新增用户</a-button>
       </a-space>
       </template>
@@ -50,35 +48,7 @@
         message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称、手机号与微信绑定。"
       />
 
-      <section v-if="canManageUsers" class="user-transfer-panel" aria-label="用户异步导入导出任务">
-        <div class="user-transfer-heading">
-          <div><h2>数据导入 / 导出</h2><p>支持 CSV、JSON、Excel 文件。导出任务完成后可下载结果。</p></div>
-          <a-button :loading="userTasksLoading" :disabled="userTasksLoading" @click="refreshUserTasks">刷新任务</a-button>
-        </div>
-        <a-alert v-if="userTransferNotice" class="page-alert" type="info" show-icon :message="userTransferNotice" />
-        <a-alert v-if="userTransferError" class="page-alert" type="error" show-icon :message="userTransferError" />
-        <a-table
-          :data-source="userTasks"
-          :columns="userTaskColumns"
-          :pagination="false"
-          row-key="taskId"
-          size="small"
-          table-layout="fixed"
-          :scroll="{ x: 700 }"
-        >
-          <template #bodyCell="{ column, record }">
-            <span v-if="column.key === 'createdAt'">{{ formatDateTime(record.createdAt) }}</span>
-            <span v-else-if="column.key === 'type'">{{ record.type === 'import' ? '导入' : '导出' }} · {{ record.format?.toUpperCase?.() || '文件' }}</span>
-            <span v-else-if="column.key === 'status'">{{ describeUserTask(record) }}</span>
-            <a v-else-if="column.key === 'result' && asyncTaskDownloadUrl(record)" :href="asyncTaskDownloadUrl(record)">下载结果</a>
-            <span v-else-if="column.key === 'result'">—</span>
-            <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
-          </template>
-          <template #emptyText>
-            <a-empty :description="userTasksLoading ? '正在读取异步任务' : '暂无用户导入或导出任务'" />
-          </template>
-        </a-table>
-      </section>
+
 
       <a-form layout="inline" class="filter-form">
         <a-form-item label="关键词" :html-for="fieldId('filter-keyword')">
@@ -225,6 +195,43 @@
         />
       </div>
     </a-card>
+
+    <section v-if="canManageUsers" class="user-transfer-footer">
+      <h2>用户数据导入与任务</h2>
+      <a-space wrap>
+        <a-button :disabled="!canManageUsers || userTransferLoading" @click="openUserImport"><UploadOutlined />导入用户</a-button>
+        <a-button :disabled="!canManageUsers || userTransferLoading" :loading="userTemplateLoading" @click="downloadUserTemplate">下载用户模板</a-button>
+      </a-space>
+      <section v-if="canManageUsers" class="user-transfer-panel" aria-label="用户异步导入导出任务">
+        <div class="user-transfer-heading">
+          <div><h2>数据导入 / 导出</h2><p>支持 CSV、JSON、Excel 文件。导出任务完成后可下载结果。</p></div>
+          <a-button :loading="userTasksLoading" :disabled="userTasksLoading" @click="refreshUserTasks">刷新任务</a-button>
+        </div>
+        <a-alert v-if="userTransferNotice" class="page-alert" type="info" show-icon :message="userTransferNotice" />
+        <a-alert v-if="userTransferError" class="page-alert" type="error" show-icon :message="userTransferError" />
+        <a-table
+          :data-source="userTasks"
+          :columns="userTaskColumns"
+          :pagination="false"
+          row-key="taskId"
+          size="small"
+          table-layout="fixed"
+          :scroll="{ x: 700 }"
+        >
+          <template #bodyCell="{ column, record }">
+            <span v-if="column.key === 'createdAt'">{{ formatDateTime(record.createdAt) }}</span>
+            <span v-else-if="column.key === 'type'">{{ record.type === 'import' ? '导入' : '导出' }} · {{ record.format?.toUpperCase?.() || '文件' }}</span>
+            <span v-else-if="column.key === 'status'">{{ describeUserTask(record) }}</span>
+            <a v-else-if="column.key === 'result' && asyncTaskDownloadUrl(record)" :href="asyncTaskDownloadUrl(record)">下载结果</a>
+            <span v-else-if="column.key === 'result'">—</span>
+            <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
+          </template>
+          <template #emptyText>
+            <a-empty :description="userTasksLoading ? '正在读取异步任务' : '暂无用户导入或导出任务'" />
+          </template>
+        </a-table>
+      </section>
+    </section>
 
     <a-modal
       v-model:open="visible"
@@ -504,21 +511,7 @@
       :footer="null"
       @cancel="closeDeviceModal"
     >
-      <RequestFailureAlert v-if="deviceFailure" :failure="deviceFailure" message="" :retryable="true" :busy="deviceLoading" :context-key="deviceFailureContext" :is-current="isCurrentDeviceFailure" @retry="loadUserDevices" />
-      <a-spin :spinning="deviceLoading">
-        <a-table v-if="deviceRows.length" :data-source="deviceRows" :columns="deviceColumns" :pagination="false" row-key="id" size="small" table-layout="fixed" :scroll="{ x: 1060 }">
-          <template #bodyCell="{ column, record }">
-            <span v-if="column.key === 'device'">{{ record.deviceLabel || record.deviceId || '未命名设备' }}</span>
-            <span v-else-if="column.key === 'firstSeenAt'">{{ formatDateTime(record.firstSeenAt) }}</span>
-            <span v-else-if="column.key === 'lastSeenAt'">{{ formatDateTime(record.lastSeenAt) }}</span>
-            <span v-else-if="column.key === 'firstIp'" class="location-value">{{ deviceIpText(record.firstIp) || '—' }}</span>
-            <span v-else-if="column.key === 'lastIp'" class="location-value">{{ deviceIpText(record.lastIp) || '—' }}</span>
-            <a-tag v-else-if="column.key === 'status'" :color="record.status === 'active' ? 'green' : record.status === 'banned' ? 'red' : 'default'">{{ record.status === 'active' ? '使用中' : record.status === 'banned' ? '已拉黑' : '已停用' }}</a-tag>
-            <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
-          </template>
-        </a-table>
-        <a-empty v-else-if="!deviceLoading && !deviceFailure" description="该用户没有设备记录" />
-      </a-spin>
+      <DeviceAdmin v-if="deviceVisible" :key="deviceTarget.id" :user-id="Number(deviceTarget.id)" embedded />
     </a-modal>
 
     <a-modal
@@ -529,28 +522,7 @@
       :footer="null"
       @cancel="closeUserPortrait"
     >
-      <RequestFailureAlert v-if="userPortraitFailure" :failure="userPortraitFailure" message="" :retryable="true" :busy="userPortraitLoading" :context-key="userPortraitFailureContext" :is-current="isCurrentUserPortraitFailure" @retry="loadUserPortrait" />
-      <a-spin :spinning="userPortraitLoading">
-        <template v-if="userPortrait">
-          <a-descriptions v-if="userPortrait.base" :column="2" size="small" bordered class="user-portrait-summary">
-            <a-descriptions-item label="用户">#{{ userPortrait.base.userId }} {{ userPortrait.base.nickname || userPortrait.base.username }}</a-descriptions-item>
-            <a-descriptions-item label="角色 / 状态">{{ roleText(userPortrait.base.role) }} · {{ statusText(userPortrait.base.status) }}</a-descriptions-item>
-            <a-descriptions-item label="注册时间">{{ formatDateTime(userPortrait.base.createdAt) }}</a-descriptions-item>
-            <a-descriptions-item label="注册来源">{{ registerSourceText(userPortrait.base.registerSource) }}</a-descriptions-item>
-          </a-descriptions>
-          <ConsoleSummaryGrid class="user-portrait-tiles">
-            <a-card v-for="tile in userPortraitTiles" :key="tile.key" :bordered="false" class="summary-card"><a-statistic :title="tile.title" :value="tile.missing ? '暂无数据' : tile.value" /></a-card>
-          </ConsoleSummaryGrid>
-          <div class="user-portrait-breakdowns">
-            <section v-for="section in userPortraitBreakdowns" :key="section.key" class="user-portrait-breakdown">
-              <h3>{{ section.title }}</h3>
-              <a-empty v-if="!section.items.length" description="暂无数据" />
-              <a-table v-else :data-source="section.items" :columns="portraitBreakdownColumns" :pagination="false" row-key="label" size="small" table-layout="fixed" :scroll="{ x: 460 }" />
-            </section>
-          </div>
-        </template>
-        <a-empty v-else-if="!userPortraitLoading && !userPortraitFailure" description="暂无用户画像数据" />
-      </a-spin>
+      <UserPortrait v-if="userPortraitVisible" :key="userPortraitTarget.id" :user-id="Number(userPortraitTarget.id)" embedded />
     </a-modal>
 
     <a-modal
@@ -563,6 +535,7 @@
       :closable="!bindingsLoading"
       @cancel="closeBindingsModal"
     >
+      <UserAccountSummary :user="bindingsTarget" />
       <section v-if="bindingsFailure" class="page-alert">
         <RequestFailureAlert
           :key="bindingsFailureContextKey"
@@ -649,6 +622,9 @@ import {
 import { getAdminUserBindings, revealBindingValue } from '@/api/UserBindingApi';
 import { getAdminDevices } from '@/api/DeviceAdminApi';
 import { getUserPortrait } from '@/api/UserPortraitApi';
+import UserPortrait from '@/pages/UserPortrait/index.vue';
+import DeviceAdmin from '@/pages/DeviceAdmin/index.vue';
+import UserAccountSummary from '@/components/UserAccountSummary.vue';
 import {
   submitImportTask, submitExportTask, listAsyncTasks, fetchImportTemplate,
   describeTask, taskDownloadUrl as asyncTaskDownloadUrl,
@@ -1400,7 +1376,7 @@ function resetWechatResolveState() {
 
 export default defineComponent({
   name: 'UserList',
-  components: { MainlandPhoneInput, TableColumnSettings, RequestFailureAlert, DownloadOutlined, UploadOutlined },
+  components: { MainlandPhoneInput, TableColumnSettings, RequestFailureAlert, DownloadOutlined, UploadOutlined, UserPortrait, DeviceAdmin, UserAccountSummary },
   setup() {
     // Stable UI-only IDs keep labels unique across dialogs and sibling UserList instances.
     const fieldIdPrefix = `user-list-${useId()}`
@@ -1930,6 +1906,7 @@ export default defineComponent({
       // 状态来自 userListContext（与 resetPasswordVisible 同一处），因此这里
       // 解构出来再下发；方法里一律走 this.userListContext。xxx，不用这些本地名。
       bindingsVisible: userListContext.bindingsVisible,
+      bindingsTarget: userListContext.bindingsTarget,
       bindingsModalKey: userListContext.bindingsModalKey,
       bindingsLoading: userListContext.bindingsLoading,
       bindingsRows: userListContext.bindingsRows,
@@ -2338,7 +2315,6 @@ export default defineComponent({
       ctx.userPortraitFailure.value = null
       ctx.userPortraitFailureContext.value += 1
       ctx.userPortraitVisible.value = true
-      this.loadUserPortrait()
     },
     async loadUserPortrait() {
       const ctx = this.userListContext
@@ -2383,7 +2359,6 @@ export default defineComponent({
       ctx.deviceFailure.value = null
       ctx.deviceFailureContext.value += 1
       ctx.deviceVisible.value = true
-      this.loadUserDevices()
     },
     async loadUserDevices() {
       const ctx = this.userListContext
@@ -2567,7 +2542,7 @@ export default defineComponent({
         return
       }
       const ctx = this.userListContext
-      ctx.bindingsTarget.value = { id, username: String(target.username || '') }
+      ctx.bindingsTarget.value = { ...target, id }
       ctx.bindingsRows.value = []
       // 换用户必须先把明文全部退回脱敏态：否则上一个用户的手机号会留在
       // 这个用户的弹窗里（resetBindingReveals 的三个调用点之一）。
