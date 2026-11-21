@@ -21,7 +21,7 @@ const ADMIN = { id: 77941, role: 'admin', username: 'SYNTHETIC_SETTINGS_ACCESSIB
 const detail = {
   siteName: '合成只读站点', maxLogSizeBytes: 2 * 1024 * 1024 * 1024, registerEnabled: true, newUserBonusAmount: 0.123456, minRechargeAmount: 1.25,
   epayVersion: 'v2', epayGatewayUrl: 'https://synthetic-pay.invalid/submit.php', epayPartnerId: 'SYNTHETIC_PID', epayPlatformPublicKey: 'SYNTHETIC_PLATFORM', epayMerchantPrivateKey: 'SYNTHETIC_PRIVATE',
-  epayNotifyUrl: 'https://synthetic-site.invalid/adapter-service/payment/notify', epayReturnUrl: 'https://synthetic-site.invalid/adapter/recharge/result',
+  epayNotifyUrl: 'https://synthetic-site.invalid/api/payment/notify', epayReturnUrl: 'https://synthetic-site.invalid/adapter/recharge/result',
   smsProvider: 'smsbao', smsbaoUsername: 'SYNTHETIC_SMS_USER', smsbaoSecret: 'SYNTHETIC_SMS_SECRET', smsCodeSignName: '合成签名', smsCodeTemplate: 'SYNTHETIC {sign} {code}', smsLoginEnabled: true,
   wechatLoginEnabled: true, wechatScanLoginEnabled: true, wechatCodeLoginEnabled: true, wechatDefaultLoginMode: 'code', wechatCodeStaticQrcodeUrl: 'https://synthetic-static.invalid/qr.png',
   wechatApiBaseUrl: 'https://synthetic-wechat.invalid', wechatApiBearerToken: 'SYNTHETIC_BEARER', captchaProvider: 'remote', captchaApiBaseUrl: 'https://synthetic-captcha.invalid', captchaApiKey: 'SYNTHETIC_CAPTCHA', captchaType: 'ROTATE',
@@ -29,7 +29,7 @@ const detail = {
 }
 const zero = { hits: 0, misses: 0, shared: 0 }
 const metrics = { schemaVersion: 1, startedAt: '2026-10-29T00:00:00Z', uptimeSeconds: 1, http: { total: 7, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: zero, fallback: zero }, billing: { attempts: 0, successes: 0, failures: 0 } }
-const LABELS = ["网站名称", "最大日志大小", "允许公开注册", "新用户赠送金额", "充值最低金额", "开启短信登录", "开启微信登录", "启用充值阶梯赠送", "启用账户设备池上限", "启用敏感词检测", "微信扫描", "微信验证码", "默认微信方式", "微信 API 地址", "Bearer Token", "验证码二维码", "验证码提供方", "远程服务地址", "远程服务 Key", "验证码类型", "UApiPro API 密钥", "接口版本", "网关地址", "商户编号", "平台公钥", "商户私钥", "网站 Base 地址", "异步通知地址", "同步跳转地址", "短信提供方", "短信宝用户名", "短信宝密钥", "凭证类型", "发送区域", "短信签名", "验证码模板"]
+const LABELS = ["网站名称", "最大日志大小", "允许公开注册", "新用户赠送金额", "充值最低金额", "开启短信登录", "开启微信登录", "启用充值阶梯赠送", "启用账户设备池上限", "启用黑名单", "启用敏感词检测", "微信扫描", "微信验证码", "默认微信方式", "微信 API 地址", "Bearer Token", "验证码二维码", "验证码提供方", "远程服务地址", "远程服务 Key", "验证码类型", "UApiPro API 密钥", "接口版本", "网关地址", "商户编号", "平台公钥", "商户私钥", "网站 Base 地址", "异步通知地址", "同步跳转地址", "短信提供方", "短信宝用户名", "短信宝密钥", "凭证类型", "发送区域", "短信签名", "验证码模板"]
 const SECRET_LABELS = ['Bearer Token', '远程服务 Key', 'UApiPro API 密钥', '平台公钥', '商户私钥', '短信宝密钥']
 const wrappers = [], reads = [], mutations = [], network = [], runtimeErrors = []
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -38,7 +38,7 @@ function denyIO(kind) { network.push(kind); throw new Error('FORBIDDEN_SETTINGS_
 function denyMutation(name) { mutations.push(name); throw new Error('FORBIDDEN_SETTINGS_FORM_MUTATION_' + name) }
 function read(name, data) { reads.push({ name, actorId: user.getStoredCurrentUser()?.id }); return Promise.resolve({ status: 200, data: clone(data) }) }
 const apiPath = path.join(web, 'src/api/TikuComponentApi.js'), api = new Module(apiPath); api.loaded = true
-const getters = { getSystemSettings: () => read('getSystemSettings', detail), getPaymentMethods: () => read('getPaymentMethods', []), getSystemMetrics: () => read('getSystemMetrics', metrics) }
+const getters = { getRefundAgreement: () => Promise.resolve({status:200,data:{text:'fixture',defaultText:'fixture',isDefault:true}}), getSystemSettings: () => read('getSystemSettings', detail), getPaymentMethods: () => read('getPaymentMethods', []), getSystemMetrics: () => read('getSystemMetrics', metrics) }
 api.exports = new Proxy(getters, { get(target, key) { if (key === '__esModule' || key === 'then') return undefined; return key in target ? target[key] : () => denyMutation(String(key)) } })
 require.cache[apiPath] = api
 window.XMLHttpRequest.prototype.open = function () { return denyIO('XHR') }
@@ -48,6 +48,16 @@ for (const name of ['node:http', 'node:https']) { const transport = require(name
 for (const name of ['node:net', 'node:tls']) { const transport = require(name); transport.connect = () => denyIO(name); if ('createConnection' in transport) transport.createConnection = () => denyIO(name) }
 window.addEventListener('error', event => runtimeErrors.push(String(event.error?.stack || event.message)))
 window.addEventListener('unhandledrejection', event => runtimeErrors.push(String(event.reason?.stack || event.reason)))
+// The page mounts adjacent real panels; permit only their known synthetic GETs.
+const siblingRead = require('../helpers/settings-panel-reads.cjs').settingsPanelRead
+const siblingAxios = require('axios'), originalSiblingAdapter = siblingAxios.defaults.adapter, unplannedSiblingReads = []
+siblingAxios.defaults.adapter = async config => {
+  const reply = siblingRead(config)
+  if (!reply) { unplannedSiblingReads.push([config.method,config.url]); throw new Error('Unplanned settings-panel request') }
+  return reply
+}
+require('node:test').afterEach(() => assert.deepEqual(unplannedSiblingReads.splice(0), []))
+require('node:test').after(() => { siblingAxios.defaults.adapter = originalSiblingAdapter })
 const Page = require(path.join(web, 'src/pages/SystemSettings/index.vue'))
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
 function visible(node) {
@@ -99,7 +109,7 @@ async function mountPages(count = 1) {
   assert.equal(pages.length, count)
   for (const page of pages) { assert.equal(page.vm.settingsLoaded, true); assert.equal(page.vm.paymentMethodsLoaded, true); assert.deepEqual([...page.vm.paymentMethods], []); assert.equal(page.vm.paymentMethodVisible, false) }
   assert.equal(document.querySelector('.ant-modal'), null, 'no payment dialog opened')
-  assert.equal(reads.length, count * 3, 'only original settings/payment-empty/metrics reads')
+  assert.equal(reads.length, count * 2, 'only settings/payment reads; diagnostics belong to server details')
   return pages
 }
 function type(control, value) { control.value = value; control.dispatchEvent(new Event('input', { bubbles: true })); control.dispatchEvent(new Event('change', { bubbles: true })) }
@@ -119,14 +129,14 @@ test('Settings original positives preserve 2 GB, six-decimal bonus, fixed/derive
   const secretFields = ['wechatApiBearerToken', 'captchaApiKey', 'uapiApiKey', 'epayPlatformPublicKey', 'epayMerchantPrivateKey', 'smsbaoSecret']
   SECRET_LABELS.forEach((text, index) => { const control = field(w, text).controls[0]; assert.equal(control.type, 'password'); assert.equal(control.value, detail[secretFields[index]]) })
   assert.equal(w.vm.hasUnsavedChanges, false)
-  assert.deepEqual(reads.map(entry => entry.name).sort(), ['getPaymentMethods', 'getSystemMetrics', 'getSystemSettings'].sort())
+  assert.deepEqual(reads.map(entry => entry.name).sort(), ['getPaymentMethods', 'getSystemSettings'].sort())
 })
-test('Settings all 36 visible Chinese FormItem labels associate their own 37 actual controls', async () => {
+test('Settings all 37 visible Chinese form labels cover 38 actual controls', async () => {
   const [w] = await mountPages(), entries = fields(w)
   assert.deepEqual(entries.map(entry => entry.text), LABELS)
-  assert.equal(entries.length, 36); assert.equal(entries.reduce((sum, entry) => sum + entry.controls.length, 0), 37)
+  assert.equal(entries.length, LABELS.length); assert.equal(entries.reduce((sum, entry) => sum + entry.controls.length, 0), 38)
   for (const entry of entries) for (const control of entry.controls) associated(entry, control)
-  assert.equal(new Set(ids(w)).size, 37, 'no duplicate actual control IDs')
+  assert.equal(new Set(ids(w)).size, 38, 'no duplicate actual control IDs')
 })
 test('Settings maximum log size has separately precise visible value/unit names and exact focus targets', async () => {
   const [w] = await mountPages(), entry = field(w, '最大日志大小')
@@ -157,7 +167,7 @@ test('Settings original single-control labels focus native enabled controls with
 })
 test('Settings two instances in one Vue app have distinct stable IDs, own focus and independent models', async () => {
   const [a, b] = await mountPages(2), aIds = ids(a), bIds = ids(b)
-  assert.equal(new Set([...aIds, ...bIds]).size, 74, 'same-app instance IDs never collide')
+  assert.equal(new Set([...aIds, ...bIds]).size, 76, 'same-app instance IDs never collide')
   const aa = field(a, '网站名称'), bb = field(b, '网站名称'); associated(aa, aa.controls[0]); associated(bb, bb.controls[0])
   bb.label.click(); await nextTick(); assert.equal(document.activeElement, bb.controls[0])
   type(aa.controls[0], '合成实例A独立草稿'); await settle()
@@ -170,7 +180,7 @@ test('Settings conditional remote-captcha controls reuse stable IDs after ordina
   const [w] = await mountPages(), before = ids(w), snapshot = clone(w.vm.formState)
   w.vm.$forceUpdate(); await settle(); assert.deepEqual(ids(w), before)
   w.vm.updateSetting('captchaProvider', 'local'); await settle()
-  assert.equal(fields(w).length, 33); assert.equal(field(w, '验证码提供方').controls[0].getAttribute('role'), 'combobox')
+  assert.equal(fields(w).length, LABELS.length - 3); assert.equal(field(w, '验证码提供方').controls[0].getAttribute('role'), 'combobox')
   w.vm.updateSetting('captchaProvider', 'remote'); await settle()
   assert.deepEqual(ids(w), before); assert.deepEqual(clone(w.vm.formState), snapshot)
 })
