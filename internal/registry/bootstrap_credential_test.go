@@ -1,11 +1,8 @@
 package registry
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -15,91 +12,39 @@ import (
 	"gorm.io/gorm"
 )
 
-func generatedAdminFile(t *testing.T, dir string) (string, string) {
+func checkInitialAdminRace(t *testing.T, d *gorm.DB) {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, "admin-bootstrap-*.password"))
-	if err != nil || len(paths) != 1 {
-		t.Fatalf("expected one operator-only initial password file, got %d", len(paths))
-	}
-	info, err := os.Lstat(paths[0])
-	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
-		t.Fatal("initial password is not a private regular file")
-	}
-	raw, err := os.ReadFile(paths[0])
+	plan, err := resolveAdminBootstrap(d, "production", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	password := strings.TrimSpace(string(raw))
-	if len(password) < 26 || validateBootstrapPassword(password) != nil {
-		t.Fatal("operator credential does not meet the generated password policy")
+	if err = applyAdminBootstrap(d.Session(&gorm.Session{DryRun: true}), plan); err != nil {
+		t.Fatal(err)
 	}
-	return paths[0], password
-}
-
-func TestProductionGeneratesPrivateInstanceCredential(t *testing.T) {
-	t.Setenv("SQL_DSN", "")
-	t.Setenv("TIKU_APP_MODE", "production")
-	var prior []string
-	for _, supplied := range []string{"", " 123456 ", "changeme"} {
-		t.Run("instance", func(t *testing.T) {
-			t.Setenv("TIKU_ADMIN_PASSWORD", supplied)
-			resetRegistryDBState(t)
-			t.Cleanup(func() { resetRegistryDBState(t) })
-			dir := filepath.Join(t.TempDir(), "instance")
-			config := configs.Config{Database: configs.DatabaseConfig{Path: filepath.Join(dir, "fixture.db")}}
-			if _, err := preflightAdminBootstrap(config, "production", supplied); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(dir); !os.IsNotExist(err) {
-				t.Fatal("preflight wrote to disk")
-			}
-			d, err := RegisterDBWithError(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var admin entity.User
-			if err := d.First(&admin, 1).Error; err != nil {
-				t.Fatal(err)
-			}
-			for _, invalid := range []string{"123456", "changeme"} {
-				if ok, _ := util.VerifyPassword(admin.Password, invalid); ok {
-					t.Fatal("a shared placeholder still authenticates")
-				}
-			}
-			path, secret := generatedAdminFile(t, dir)
-			if ok, upgrade := util.VerifyPassword(admin.Password, secret); !ok || upgrade {
-				t.Fatal("operator password does not authenticate with bcrypt")
-			}
-			for _, old := range prior {
-				if secret == old {
-					t.Fatal("distinct fresh databases shared an initial password")
-				}
-			}
-			prior = append(prior, secret)
-			// Even a different environment must not reset the committed account or replace its file.
-			t.Setenv("TIKU_ADMIN_PASSWORD", "replacement")
-			resetRegistryDBState(t)
-			d, err = RegisterDBWithError(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var restarted entity.User
-			if err = d.First(&restarted, 1).Error; err != nil || restarted.Password != admin.Password {
-				t.Fatal("restart changed existing credentials")
-			}
-			reopened, existing := generatedAdminFile(t, dir)
-			if reopened != path || secret != existing {
-				t.Fatal("restart replaced initial password file")
-			}
-		})
+	start := make(chan struct{})
+	results := make(chan error, 6)
+	for i := 0; i < cap(results); i++ {
+		go func() { <-start; results <- applyAdminBootstrap(d, plan) }()
+	}
+	close(start)
+	for i := 0; i < cap(results); i++ {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var admin entity.User
+	if err = d.First(&admin, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ok, upgrade := util.VerifyPassword(admin.Password, util.FactoryAdminPassword); !ok || upgrade {
+		t.Fatal("concurrent startup lost factory credential")
 	}
 }
 
-func TestGeneratedBootstrapDryRunAndConcurrentPlans(t *testing.T) {
+func TestInitialAdministratorRaceDryRunAndEmptyRow(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	path := filepath.Join(dir, "fixture.db")
-	d, err := gorm.Open(sqlite.Open(util.SQLiteConcurrentDSN(path)), &gorm.Config{})
+	d, err := gorm.Open(sqlite.Open(util.SQLiteConcurrentDSN(filepath.Join(dir, "fixture.db"))), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,147 +56,95 @@ func TestGeneratedBootstrapDryRunAndConcurrentPlans(t *testing.T) {
 	if err = d.Create(&entity.User{ID: 1, Username: "original", Password: "", Role: "admin"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	plan, err := resolveAdminBootstrap(d, "production", "")
-	if err != nil {
-		t.Fatal(err)
+	checkInitialAdminRace(t, d)
+	var a entity.User
+	if err = d.First(&a, 1).Error; err != nil || a.Username != "original" {
+		t.Fatal("existing administrator replaced")
 	}
-	if err = applyAdminBootstrap(d.Session(&gorm.Session{DryRun: true}), plan); err != nil {
-		t.Fatal("dry run must not materialize a password")
-	}
-	if paths, _ := filepath.Glob(filepath.Join(dir, "admin-bootstrap-*.password")); len(paths) != 0 {
-		t.Fatal("dry run published a credential")
-	}
-	start := make(chan struct{})
-	results := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		go func() { <-start; results <- applyAdminBootstrap(d, plan) }()
-	}
-	close(start)
-	for i := 0; i < 2; i++ {
-		if err := <-results; err != nil {
-			t.Fatalf("simultaneous instance bootstrap failed: %v", err)
-		}
-	}
-	_, secret := generatedAdminFile(t, dir)
-	var admin entity.User
-	if err = d.First(&admin, 1).Error; err != nil || admin.Username != "original" {
-		t.Fatal("empty-credential administrator was replaced")
-	}
-	if ok, _ := util.VerifyPassword(admin.Password, secret); !ok {
-		t.Fatal("concurrent bootstrap published a different credential than it committed")
+	if files, _ := filepath.Glob(filepath.Join(dir, "admin-bootstrap-*.password")); len(files) != 0 {
+		t.Fatal("bootstrap created a password file")
 	}
 }
 
-func TestMemoryDatabaseNeverReusesOtherInitialCredential(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	set := map[string]bool{}
-	for i := 0; i < 2; i++ {
-		d, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sqlDB, _ := d.DB()
-		sqlDB.SetMaxOpenConns(1)
-		if err = d.AutoMigrate(&entity.User{}); err != nil {
-			t.Fatal(err)
-		}
-		plan, err := resolveAdminBootstrap(d, "production", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = applyAdminBootstrap(d, plan); err != nil {
-			t.Fatal(err)
-		}
-		var admin entity.User
-		if err = d.First(&admin, 1).Error; err != nil {
-			t.Fatal(err)
-		}
-		_ = sqlDB.Close()
-		paths, _ := filepath.Glob(filepath.Join(dir, "data", "admin-bootstrap-*.password"))
-		if len(paths) != i+1 {
-			t.Fatal("ephemeral instances did not publish separate operator files")
-		}
-		for _, p := range paths {
-			raw, err := os.ReadFile(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			value := string(bytes.TrimSpace(raw))
-			match, _ := util.VerifyPassword(admin.Password, value)
-			if _, known := set[value]; match == known {
-				t.Fatal("credential identity crossed ephemeral instance boundary")
-			}
-			if match {
-				set[value] = true
-			}
-		}
-	}
-}
-
-func TestGeneratedBootstrapDoesNotCommitInaccessibleCredential(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	if err := os.WriteFile("data", []byte("not a directory"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	d, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, _ := d.DB()
-	s.SetMaxOpenConns(1)
-	t.Cleanup(func() { s.Close() })
-	if err = d.AutoMigrate(&entity.User{}); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := resolveAdminBootstrap(d, "production", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = applyAdminBootstrap(d, plan); err == nil {
-		t.Fatal("unreadable operator credential accepted")
-	}
-	var count int64
-	if err = d.Model(&entity.User{}).Count(&count).Error; err != nil || count != 0 {
-		t.Fatal("unrecoverable administrator committed")
-	}
-	if got, err := os.ReadFile("data"); err != nil || string(got) != "not a directory" {
-		t.Fatal("non-owned file changed")
-	}
-}
-
-func TestMariaDBConcurrentGeneratedAdministrator(t *testing.T) {
-	d := mysqlTestFreshDB(t) // isolated integration database; normal -short jobs without a DSN skip
+func TestMariaDBConcurrentInitialAdministrator(t *testing.T) {
+	d := mysqlTestFreshDB(t)
 	mustAutoMigrate(t, d, &entity.User{})
 	s, err := d.DB()
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.SetMaxOpenConns(8)
+	checkInitialAdminRace(t, d)
+}
+
+func TestLocalSetupDoesNotCreateMissingDatabaseOrAttachToMemory(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	plan, err := resolveAdminBootstrap(d, "production", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	results := make(chan error, 6)
-	for i := 0; i < cap(results); i++ {
-		go func() { <-start; results <- applyAdminBootstrap(d, plan) }()
-	}
-	close(start)
-	for i := 0; i < cap(results); i++ {
-		if err := <-results; err != nil {
-			t.Errorf("parallel bootstrap failed: %v", err)
+	t.Setenv("SQL_DSN", "")
+	for _, p := range []string{"missing.db", ":memory:", "file:temporary?mode=memory&cache=shared"} {
+		if err := CompleteLocalAdminSetup(configs.Config{Database: configs.DatabaseConfig{Path: p}}, util.FactoryAdminPassword, "KnownFixture-246!"); err == nil {
+			t.Fatal("uninitialized database accepted operator command")
 		}
 	}
-	_, secret := generatedAdminFile(t, filepath.Join(dir, "data"))
-	var admin entity.User
-	if err = d.First(&admin, 1).Error; err != nil {
-		t.Fatal(err)
+	items, err := os.ReadDir(dir)
+	if err != nil || len(items) != 0 {
+		t.Fatal("local setup created files instead of opening an existing database")
 	}
-	if ok, _ := util.VerifyPassword(admin.Password, secret); !ok {
-		t.Fatal("published file differs from the committed credential")
+}
+
+func TestLocalAdminSetupIsOneShotAndDoesNotResetOtherUsers(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("SQL_DSN", "")
+	for _, current := range []string{util.FactoryAdminPassword, "ChangeMe"} {
+		p := filepath.Join(t.TempDir(), "fixture.db")
+		cfg := configs.Config{Database: configs.DatabaseConfig{Path: p}}
+		d, err := gorm.Open(sqlite.Open(util.SQLiteConcurrentDSN(p)), &gorm.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, _ := d.DB()
+		t.Cleanup(func() { s.Close() })
+		if err = d.AutoMigrate(&entity.User{}); err != nil {
+			t.Fatal(err)
+		}
+		hashed, err := util.HashPassword(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := entity.User{ID: 1, Username: "admin", Role: "admin", Password: hashed, LoginSessionID: "previous-session"}
+		other := entity.User{ID: 2, Username: "other", Role: "user", Password: hashed}
+		if err = d.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err = d.Create(&other).Error; err != nil {
+			t.Fatal(err)
+		}
+		const replacement = "SelectedFixture!246"
+		for _, bad := range [][2]string{{"wrong", replacement}, {current, util.FactoryAdminPassword}, {current, "CHANGEME"}, {current, ""}} {
+			if err = CompleteLocalAdminSetup(cfg, bad[0], bad[1]); err == nil {
+				t.Fatal("wrong current or reserved replacement accepted")
+			}
+		}
+		if err = d.First(&a, 1).Error; err != nil || a.Password != hashed {
+			t.Fatal("refused attempt changed stored credentials")
+		}
+		if err = CompleteLocalAdminSetup(cfg, current, replacement); err != nil {
+			t.Fatal(err)
+		}
+		if err = d.First(&a, 1).Error; err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := util.VerifyAccountLoginPassword(a.ID, a.Role, a.Password, replacement); !ok || a.LoginSessionID == "previous-session" || a.LoginSessionID == "" {
+			t.Fatal("personalized password or session retirement failed")
+		}
+		if err = d.First(&other, 2).Error; err != nil || other.Password != hashed {
+			t.Fatal("another account changed")
+		}
+		for _, claimed := range []string{current, replacement} {
+			if err = CompleteLocalAdminSetup(cfg, claimed, "AnotherFixture!246"); err == nil {
+				t.Fatal("local setup reset a personalized administrator")
+			}
+		}
 	}
 }

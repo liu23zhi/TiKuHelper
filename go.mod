@@ -24,6 +24,7 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
 	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.47.0
 	golang.org/x/time v0.16.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gen v0.3.29

@@ -480,7 +480,7 @@ func UserLogin(c *gin.Context) {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
-	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, payload.Password)
+	passwordMatches, needsUpgrade := util.VerifyAccountLoginPassword(user.ID, user.Role, user.Password, payload.Password)
 	if !passwordMatches {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return

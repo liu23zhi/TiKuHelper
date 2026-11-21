@@ -30,7 +30,7 @@ func ResolveApplicationMode(configured string) (string, error) {
 }
 
 type adminBootstrapPlan struct {
-	exists, generate   bool
+	exists, initial    bool
 	original, password string
 	// defaultCredential 表示「库里仍是已知默认密码 123456」。
 	//
@@ -103,14 +103,12 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 	}
 	password := strings.TrimSpace(environment)
 
-	// The public factory value and the common "changeme" placeholder are not
-	// operator credentials. Preflight only records intent; it must never publish a file.
-	if mode == "production" && (password == "" || password == "123456" || strings.EqualFold(password, "changeme")) {
-		plan.generate = true
-		return plan, nil
-	}
+	plan.initial = true
 	if password == "" {
-		password = "123456" // explicit development compatibility only
+		password = util.FactoryAdminPassword
+	}
+	if util.IsPublicAdminSetupPassword(password) {
+		logger.SysLog("内置管理员仍使用本地初始化凭据；请在部署主机运行 tiku-adapter --init-admin-password，再通过网页登录。")
 	} else if mode == "production" {
 		if err := validateBootstrapPassword(password); err != nil {
 			logger.SysLog("[WARN] 初始管理员密码强度不足（" + err.Error() +
@@ -129,11 +127,13 @@ func applyAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
 	if database.DryRun {
 		return nil
 	}
-	if plan.generate {
-		return generateInitialAdminCredential(database, plan)
+	if plan.initial {
+		return applyInitialAdminCredential(database, plan)
 	}
 	if plan.exists && plan.password == "" {
-		reportInitialAdminFile(database, plan.original)
+		if plan.defaultCredential {
+			logger.SysLog("内置管理员尚待本地设置；请运行 tiku-adapter --init-admin-password。")
+		}
 		return nil
 	}
 	return writeAdminBootstrap(database, plan)

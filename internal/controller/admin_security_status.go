@@ -38,7 +38,7 @@ var securityStatusDB = func() *gorm.DB {
 
 // defaultAdminPassword 是历史遗留的已知默认密码。
 //
-// 它只用于**比较**，不用于生成 —— 生产新库使用显式 TIKU_ADMIN_PASSWORD 或实例专属随机口令
+// 它只用于**比较**，不用于生成 —— 生产新库使用显式 TIKU_ADMIN_PASSWORD 或仅供本地设置的出厂口令
 // （开发模式仍兼容此默认值；见 registry.resolveAdminBootstrap）。
 const defaultAdminPassword = "123456"
 
