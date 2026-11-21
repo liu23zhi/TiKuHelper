@@ -52,11 +52,12 @@
          仅管理员可见（canManage），与原来 ConsolePanel 的可见条件一致。 -->
     <a-modal
       v-if="canManage()"
+      :key="pageEpoch"
       :open="notificationConfigVisible"
       title="企业微信工单提醒"
       :footer="null"
       :width="560"
-      :onUpdate:open="pageEntry.bind(setNotificationConfigVisible)"
+      :onUpdate:open="notificationEntry.bind(setNotificationConfigVisible)"
       data-testid="ticket-notification-config-modal"
     >
       <p class="config-modal-lead">
@@ -72,12 +73,12 @@
         :model="notificationConfig"
         :disabled="!configLoaded || !canManage()"
         layout="vertical"
-        :onFinish="pageEntry.bind(saveNotificationConfig)"
+        :onFinish="notificationEntry.bind(saveNotificationConfig)"
       >
         <div class="config-grid">
           <a-form-item label="启用提醒"
             ><a-switch
-              :checked="notificationConfig.enabled" :onUpdate:checked="pageEntry.bind(setConfig, 'enabled')"
+              :checked="notificationConfig.enabled" :onUpdate:checked="notificationEntry.bind(setConfig, 'enabled')"
               checked-children="开启"
               un-checked-children="关闭"
           /></a-form-item>
@@ -86,7 +87,7 @@
             help="只接受企业微信机器人 HTTPS 地址；留空表示保持已保存地址。"
           >
             <a-input
-              :value="notificationConfig.webhookUrl" :onUpdate:value="pageEntry.bind(setConfig, 'webhookUrl')"
+              :value="notificationConfig.webhookUrl" :onUpdate:value="notificationEntry.bind(setConfig, 'webhookUrl')"
               type="url"
               allow-clear
               placeholder="输入新地址以替换已保存地址"
@@ -105,21 +106,21 @@
                 type="link"
                 danger
                 size="small"
-                :onClick="pageEntry.bind(clearSavedWebhook)"
+                :onClick="notificationEntry.bind(clearSavedWebhook)"
                 >清除已保存地址</a-button
               >
               <a-button
                 v-else
                 type="link"
                 size="small"
-                :onClick="pageEntry.bind(keepSavedWebhook)"
+                :onClick="notificationEntry.bind(keepSavedWebhook)"
                 >保留已保存地址</a-button
               >
             </div>
           </a-form-item>
           <a-form-item label="@成员 ID" help="多个成员用逗号分隔，可填写 @all。"
             ><a-input
-              :value="notificationConfig.mentionedList" :onUpdate:value="pageEntry.bind(setConfig, 'mentionedList')"
+              :value="notificationConfig.mentionedList" :onUpdate:value="notificationEntry.bind(setConfig, 'mentionedList')"
               allow-clear
               placeholder="成员 ID，可选"
           /></a-form-item>
@@ -130,7 +131,7 @@
           ><a-button
             :loading="configTesting"
             :disabled="!configLoaded || !canManage() || configSaving"
-            :onClick="pageEntry.bind(testNotification)"
+            :onClick="notificationEntry.bind(testNotification)"
             >发送测试消息</a-button
           ><span v-if="notificationConfig.configured" class="config-hint"
             >当前已配置 Webhook</span
@@ -929,7 +930,7 @@ import {
   validateTicketAttachmentFile,
   TICKET_ATTACHMENT_MAX_PER_MESSAGE,
 } from "@/utils/ticketAttachmentHelpers.mjs";
-import { useCurrentUserDisplay, isAdminUser } from "@/utils/currentUser";
+import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch, getCurrentSessionRevision } from "@/utils/currentUser";
 import { useCurrentUserRequestScope } from "@/utils/currentUserScope";
 import {
   buildTicketListParams,
@@ -1000,6 +1001,20 @@ const TicketRefundActions = defineAsyncComponent(() => import("./TicketRefundAct
 // 注销引导 / 自助注销：与工单向导的「注销申请」分支、个人中心入口共用同一组件。
 const ClosureGuide = defineAsyncComponent(() => import("./ClosureGuide.vue"));
 const { currentUser } = useCurrentUserDisplay();
+const notificationConfigVisible = ref(false);
+let authorizedLogoutEpoch = getCurrentUserLogoutEpoch(), seenLogoutEpoch = authorizedLogoutEpoch, loggedOutRevision = "";
+// A failed localStorage.removeItem may leave the old display object readable.
+// Explicit logout still retires this page until a different identity or fresh login.
+watch(currentUser, (next, previous) => {
+  const epoch = getCurrentUserLogoutEpoch();
+  if (epoch !== seenLogoutEpoch) {
+    seenLogoutEpoch = epoch; loggedOutRevision = getCurrentSessionRevision();
+  } else if (epoch !== authorizedLogoutEpoch && next?.id &&
+      (next.id !== previous?.id || getCurrentSessionRevision() !== loggedOutRevision)) {
+    authorizedLogoutEpoch = epoch;
+  }
+}, { flush: "sync" });
+
 const route = useRoute();
 const router = useRouter();
 let listRequestVersion = 0;
@@ -1358,10 +1373,10 @@ function closePageReadFailure(error, context) { if (actionFailures.pageRead.clos
 
 function canUseTickets() {
   const id = Number(currentUser.value?.id);
-  return active && Number.isInteger(id) && id > 0 && id <= 2147483647
+  return active && authorizedLogoutEpoch === getCurrentUserLogoutEpoch() && Number.isInteger(id) && id > 0 && id <= 2147483647
     && String(currentUser.value?.status || "enabled") === "enabled";
 }
-function canManage() { return canUseTickets() && isAdmin.value; }
+function canManage() { return canUseTickets() && isAdmin.value && isAdminRoleUser.value; }
 function canCreateTickets() { return canUseTickets() && !isAdmin.value; }
 // 收款码组件按草稿生命周期隔离；设备私钥只在服务端记忆注册成功后保存。
 const payoutQrComponent = ref(null), payoutQrBusy = ref(false)
@@ -1467,6 +1482,7 @@ function resetRefundDraft() {
   refundOrdersVersion += 1; refundOrdersLoading.value = false; refundOrdersError.value = '';
 }
 function clearOwned() {
+  notificationConfigVisible.value = false;
   resetRefundDraft();
   draft.refundPayoutQrAttachmentId = null;
   payoutQrBusy.value = false;
@@ -1532,8 +1548,12 @@ function entry(capture) { return { bind(action, ...args) {
 const pageEntry = entry(capturePage), createEntry = entry(captureCreate), detailEntry = entry(captureDetail);
 function setKeyword(value) { if (canUseTickets()) keywordInput.value = value; }
 function setFilter(key, value) { if (canUseTickets()) filters[key] = value; }
-// 通知设置弹窗开关。默认收起：它是配置，不该和工单列表抢版面。
-const notificationConfigVisible = ref(false);
+// Ant Form may emit a queued finish after its actor/role changed. Capture the
+// authority of the mounted form, not the authority present when it fires.
+const notificationEntry = { bind(action, ...args) {
+  const owns = capturePage(true);
+  return (...events) => { if (owns()) return action(...args, ...events); };
+} };
 function openNotificationConfig() { if (canManage()) notificationConfigVisible.value = true; }
 function setNotificationConfigVisible(value) { if (!value) notificationConfigVisible.value = false; }
 function setConfig(key, value) {

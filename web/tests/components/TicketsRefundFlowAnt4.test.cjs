@@ -143,8 +143,8 @@ function allocation(id) { return document.querySelector(`[data-ticket-refund-all
 function writes() { return calls.filter(call => call.method === 'post' && call.url === '/api/tickets') }
 async function openPage() {
   currentUser.setStoredCurrentUser(owner)
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/adapter/tickets', component: { render: () => null } }] })
-  await router.push('/adapter/tickets'); await router.isReady()
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/tickets', component: { render: () => null } }] })
+  await router.push('/tickets'); await router.isReady()
   const wrapper = mount(Tickets, {
     attachTo: document.body,
     global: { plugins: [Antd, router], config: { errorHandler: error => runtime.push(error) } },
