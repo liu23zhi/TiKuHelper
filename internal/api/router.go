@@ -99,6 +99,12 @@ func SetAPIRouter(router *gin.Engine) {
 	// 「当使用 Sqlite 启动时候，需要给与警告」）。挂上就永远只有管理员看得到，需求只兑现一半。
 	// 这也是最容易被「顺手补一个管理员校验」改回去的地方，所以 auth 只到 Auth 这一层。
 	apiRouter.GET("/system/storage-status", controller.Auth, controller.StorageStatus)
+	// 扩展只可向自己的题库服务提交预定义诊断事件；可读路由单独走管理会话。
+	apiRouter.POST("/extension-logs", middleware.BodyLimit(64<<10), controller.UploadExtensionLogs)
+	apiRouter.GET("/admin/extension-logs", controller.Auth, middleware.RequireAdmin, controller.AdminExtensionLogs)
+	apiRouter.GET("/admin/extension-logs/settings", controller.Auth, middleware.RequireAdmin, controller.GetExtensionLogPolicy)
+	apiRouter.PUT("/admin/extension-logs/settings", controller.Auth, middleware.RequireAdmin, controller.SetExtensionLogPolicy)
+
 	apiRouter.GET("/script-escrow-policy", controller.Auth, controller.GetScriptEscrowPolicy)
 	apiRouter.PUT("/script-escrow-policy", controller.Auth, middleware.RequireAdmin, controller.PutScriptEscrowPolicy)
 	apiRouter.GET("/script-activation-code-price", controller.Auth, controller.GetScriptActivationCodePrice)
