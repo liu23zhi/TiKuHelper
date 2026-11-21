@@ -17,6 +17,7 @@ const okay = data => ({ status: 200, data })
 const reads = [], writes = [], purchases = [], redemptions = [], updates = [], policyWrites = [], deletes = [], shortWrites = [], mounts = []
 let holdReads = false, holdWrites = false, activationPriceFixture = 12.345678
 let allowFullNeverExpire = true, allowShortNeverExpire = false
+let domainFormatsFixture = ['*.example.test']
 let listFixture = [row('现有脚本', 111)]
 
 const apiPath = path.resolve(__dirname, '../../src/api/TikuComponentApi.js')
@@ -28,7 +29,7 @@ api.exports = {
   },
   getScriptVersions: async () => okay([{ id: 5, version: 'synthetic', nativeLeaseProtocol: true, isCurrent: true }]),
   getScriptDomainSettings: async () => okay({ domains: ['*.example.test'] }),
-  getScriptDomainFormats: async () => okay({ formats: [{ raw: '*.example.test', kind: 'wildcard', host: 'example.test', slot: 'prefix' }], allowFullNeverExpire, allowShortNeverExpire }),
+  getScriptDomainFormats: async () => okay({ formats: domainFormatsFixture.map(raw => ({ raw })), allowFullNeverExpire, allowShortNeverExpire }),
   configureScriptShortAuthorization(id, payload) { return new Promise(resolve => shortWrites.push({ id, payload, resolve })) },
   configureScriptLauncherAuthorization(id, payload) { return new Promise(resolve => shortWrites.push({ id, payload, kind: 'full', resolve })) },
   getScriptEscrowPolicy: async () => okay({ targetMicros: 80000000, minimumMicros: 60000000, multiplierMicros: 1000000 }),
@@ -75,6 +76,7 @@ afterEach(async () => {
   reads.length = writes.length = purchases.length = redemptions.length = updates.length = policyWrites.length = deletes.length = shortWrites.length = 0; holdReads = holdWrites = false; activationPriceFixture = 12.345678
   listFixture = [row('现有脚本', 111)]
   allowFullNeverExpire = true; allowShortNeverExpire = false
+  domainFormatsFixture = ['*.example.test']
 })
 
 const activeLease = id => ({ status: 409, data: { code: 'SCRIPT_ACTIVE_LEASE_CONFIRM_REQUIRED', activeRunSessionId: id } })
@@ -133,13 +135,13 @@ test('command actions switch from short generation to settings and copy without 
   assert.equal([...own.querySelectorAll('button')].find(button => button.textContent.replace(/\s/g, '') === '复制短命令').disabled, true)
 })
 
-test('native short address input is normalized to HTTPS and restored after saving', async () => {
+test('native short subdomain slot builds HTTPS and restores the slot after saving', async () => {
   const { state } = await open()
   state.openShortAuthorization(state.rows[0])
   await settle()
   const input = document.querySelector('[data-script-short-address]')
-  assert.ok(input, 'user can choose the short hostname instead of a random slot')
-  input.value = 'a.example.test'
+  assert.ok(input, 'user chooses the short subdomain within the selected format')
+  input.value = 'a'
   input.dispatchEvent(new Event('input', { bubbles: true }))
   await settle()
   const operation = state.saveShortAuthorization(true)
@@ -147,7 +149,7 @@ test('native short address input is normalized to HTTPS and restored after savin
   const grant = { status: 'active', address: 'https://a.example.test', command: 'powershell -c "iex(irm https://a.example.test -MaximumRedirection 0 -TimeoutSec 15)"', expiresAt: new Date(Date.now() + 300000).toISOString() }
   shortWrites[0].resolve(okay(grant)); await operation
   state.closeShortAuthorization(); await settle(); state.openShortAuthorization(state.rows[0]); await settle()
-  assert.equal(document.querySelector('[data-script-short-address]').value, grant.address)
+  assert.equal(document.querySelector('[data-script-short-address]').value, 'a')
 })
 
 test('both authorization dialogs explicitly select limited or permanent time and retain scheduled start', async () => {
@@ -222,6 +224,171 @@ test('invalid custom addresses show a local error and cannot issue authorization
     await state.saveShortAuthorization(true); await settle()
     assert.equal(shortWrites.length, 0)
     assert.match(document.querySelector('.ant-modal [role="alert"].form-error').textContent, /HTTPS 短地址/)
+  }
+})
+
+test('short address chooses an allowed format and edits only its subdomain or path slot', async () => {
+  domainFormatsFixture = ['*.example.test', 'launch.example.test/*']
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  assert.ok(document.querySelector('[data-script-short-format]'), 'format selection is visible before the slot')
+  assert.equal(document.querySelector('[data-script-short-address]').value, '')
+  state.setShortAuthorizationField('slot', 'my-client'); await settle()
+  assert.match(document.querySelector('[data-script-short-preview]').textContent, /https:\/\/my-client\.example\.test/)
+  state.setShortAuthorizationField('domainFormat', 'launch.example.test/*'); await settle()
+  state.setShortAuthorizationField('slot', 'team/run'); await settle()
+  assert.match(document.querySelector('[data-script-short-preview]').textContent, /https:\/\/launch\.example\.test\/team\/run/)
+  const request = state.saveShortAuthorization(true)
+  assert.equal(shortWrites[0].payload.address, 'https://launch.example.test/team/run')
+  shortWrites[0].resolve(okay({ status: 'active', address: shortWrites[0].payload.address })); await request
+  state.closeShortAuthorization(); await settle(); state.openShortAuthorization(state.rows[0]); await settle()
+  assert.equal(state.shortAuthorizationForm.domainFormat, 'launch.example.test/*')
+  assert.equal(document.querySelector('[data-script-short-address]').value, 'team/run')
+})
+
+test('a stored short address outside changed rules remains visible until an explicit format switch', async () => {
+  listFixture = [{ ...row('旧地址脚本', 111), shortAuthorization: { status: 'active', address: 'https://old.other.test', expiresAt: null } }]
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  assert.match(document.querySelector('[data-script-short-existing]').textContent, /https:\/\/old\.other\.test/)
+  assert.equal(state.authorizationAddress, 'https://old.other.test')
+  state.setShortAuthorizationField('domainFormat', '*.example.test'); await settle()
+  state.setShortAuthorizationField('slot', 'new'); await settle()
+  assert.equal(state.authorizationAddress, 'https://new.example.test')
+})
+
+test('empty allowed formats retain the same-site custom path fallback and reject invalid slots', async () => {
+  domainFormatsFixture = []
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  assert.equal(state.shortAuthorizationForm.domainFormat, 'localhost/*')
+  for (const slot of ['', '../bad', 'bad?key=value', 'https://elsewhere.test/run', 'two//parts']) {
+    state.setShortAuthorizationField('slot', slot)
+    await state.saveShortAuthorization(true)
+    assert.equal(shortWrites.length, 0, slot)
+  }
+  const input = document.querySelector('[data-script-short-address]')
+  input.value = 'team/run'; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+  const operation = state.saveShortAuthorization(true)
+  assert.equal(shortWrites[0].payload.address, 'https://localhost/team/run')
+  shortWrites[0].resolve(okay({ status: 'active', address: shortWrites[0].payload.address })); await operation
+})
+
+test('both command dialogs submit only explicit windows and one shared usage limit, then restore them', async () => {
+  const { state } = await open(admin, 'self')
+  for (const mode of ['full', 'short']) {
+    state.openShortAuthorization(state.rows[0], mode); await settle()
+    const choice = document.querySelector('.ant-modal input[type="radio"][value="windows"]')
+    assert.ok(choice, 'multiple time windows are an explicit authorization mode')
+    choice.click(); await settle()
+    state.setShortAuthorizationField('slot', 'a')
+    state.setAuthorizationWindowField(0, 'startsAt', '2026-12-01T12:00')
+    state.setAuthorizationWindowField(0, 'expiresAt', '2026-12-01T13:00')
+    state.addAuthorizationWindow(); await settle()
+    state.setAuthorizationWindowField(1, 'startsAt', '2026-12-02T12:00')
+    state.setAuthorizationWindowField(1, 'expiresAt', '2026-12-02T13:00')
+    state.setShortAuthorizationField('maxUses', 3)
+    const operation = state.saveShortAuthorization(true)
+    const payload = shortWrites.at(-1).payload
+    const windows = ['2026-12-01', '2026-12-02'].map(day => ({ startsAt: new Date(day + 'T12:00').toISOString(), expiresAt: new Date(day + 'T13:00').toISOString() }))
+    assert.deepEqual(payload, { enabled: true, ...(mode === 'short' ? { address: 'https://a.example.test' } : {}), windows, maxUses: 3 })
+    shortWrites.at(-1).resolve(okay({ status: 'paused', windows, maxUses: 3, usedCount: 1, address: 'https://a.example.test', command: mode === 'full' ? ownerCommand : 'powershell -c "iex(irm https://a.example.test)"', startsAt: windows[0].startsAt, expiresAt: windows[1].expiresAt }))
+    await operation; await settle()
+    assert.match(document.querySelector('.ant-modal').textContent, /等待下一时段/)
+    assert.ok([...document.querySelectorAll('.ant-modal button')].find(button => button.textContent.includes('撤销授权')))
+    if (mode === 'full') assert.equal(state.mayCopyCommand(state.rows[0]), true)
+    state.closeShortAuthorization(); await settle(); state.openShortAuthorization(state.rows[0], mode); await settle()
+    assert.equal(state.shortAuthorizationForm.durationMode, 'windows')
+    assert.equal(document.querySelectorAll('[data-script-authorization-window]').length, 2)
+    assert.equal(state.shortAuthorizationForm.windows[1].expiresAt, '2026-12-02T13:00')
+    assert.equal(state.shortAuthorizationForm.maxUses, 3)
+    state.closeShortAuthorization(); await settle()
+  }
+})
+
+test('overlapping windows show an inline error without issuing a request and adjacent windows are accepted', async () => {
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0], 'short'); await settle()
+  state.setShortAuthorizationField('slot', 'a')
+  state.setShortAuthorizationField('durationMode', 'windows')
+  state.setAuthorizationWindowField(0, 'startsAt', '2026-12-01T12:00')
+  state.setAuthorizationWindowField(0, 'expiresAt', '2026-12-01T13:00')
+  state.addAuthorizationWindow()
+  state.setAuthorizationWindowField(1, 'startsAt', '2026-12-01T12:30')
+  state.setAuthorizationWindowField(1, 'expiresAt', '2026-12-01T14:00')
+  await state.saveShortAuthorization(true); await settle()
+  assert.equal(shortWrites.length, 0)
+  assert.match(document.querySelector('.ant-modal [role="alert"].form-error').textContent, /重叠/)
+  state.setAuthorizationWindowField(1, 'startsAt', '2026-12-01T13:00')
+  const operation = state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 1)
+  shortWrites[0].resolve(okay({ status: 'scheduled', windows: shortWrites[0].payload.windows })); await operation
+})
+
+test('native window controls add, edit and delete dated rows, and switching to finite mode excludes windows', async () => {
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0], 'full'); await settle()
+  document.querySelector('.ant-modal input[type="radio"][value="windows"]').click(); await settle()
+  const inputs = document.querySelectorAll('[data-script-authorization-window] input[type="datetime-local"]')
+  for (const [index, value] of ['2026-12-03T11:00', '2026-12-03T12:00'].entries()) {
+    inputs[index].value = value; inputs[index].dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  await settle()
+  assert.equal(state.shortAuthorizationForm.windows[0].startsAt, '2026-12-03T11:00')
+  ;[...document.querySelectorAll('.ant-modal button')].find(button => button.textContent.includes('添加时段')).click(); await settle()
+  assert.equal(document.querySelectorAll('[data-script-authorization-window]').length, 2)
+  document.querySelectorAll('[data-script-authorization-window] button')[1].click(); await settle()
+  assert.equal(state.shortAuthorizationForm.windows.length, 1)
+  document.querySelector('.ant-modal input[type="radio"][value="limited"]').click(); await settle()
+  state.setShortAuthorizationField('durationMinutes', 15)
+  const operation = state.saveShortAuthorization(true)
+  assert.deepEqual(shortWrites[0].payload, { enabled: true, durationMinutes: 15, startsAt: null, maxUses: 0 })
+  shortWrites[0].resolve(okay({ status: 'active', command: ownerCommand })); await operation
+})
+
+test('consumed activation scripts show the one-run state without disabling the existing client or exposing usable command actions', async () => {
+  listFixture = [{ ...row('已运行的一次性脚本', 111), billingMode: 'activation_code', runConsumedAt: '2026-11-21T09:00:00Z', shortAuthorization: { status: 'active', address: 'https://a.example.test', command: 'powershell -c "iex(irm https://a.example.test)"', expiresAt: null } }]
+  const { state, page } = await open(admin, 'self')
+  const cell = page.find('.command-cell')
+  assert.match(cell.text(), /一次性资格已使用，仅当前客户端可继续本次运行/)
+  assert.doesNotMatch(cell.text(), /powershell/)
+  assert.equal(state.rows[0].enabled, true, 'the original client must stay enabled')
+  for (const button of cell.findAll('button')) assert.equal(button.element.disabled, true)
+  state.openShortAuthorization(state.rows[0], 'full'); await settle()
+  assert.equal(document.querySelector('.ant-modal'), null)
+  assert.equal(state.mayCopyCommand(state.rows[0]), false)
+})
+
+test('an authorization already open cannot submit after its one-time qualification is consumed', async () => {
+  listFixture = [{ ...row('待启动的一次性脚本', 111), billingMode: 'activation_code' }]
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0], 'full'); await settle()
+  state.rows[0].runConsumedAt = '2026-11-21T09:00:00Z'
+  await settle()
+  assert.match(document.querySelector('.ant-modal').textContent, /一次性资格已使用/)
+  await state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 0)
+  assert.equal(state.rows[0].enabled, true)
+  assert.equal([...document.querySelectorAll('.ant-modal button')].find(button => /启用授权|更新授权/.test(button.textContent)).disabled, true)
+})
+
+test('reopening a dated authorization and editing only its use count preserves exact RFC3339 boundaries', async () => {
+  const windows = [{ startsAt: '2026-12-01T12:00:31.123456789Z', expiresAt: '2026-12-01T12:00:59.987654321Z' }]
+  const grant = { status: 'scheduled', address: 'https://a.example.test', command: ownerCommand, windows, maxUses: 1, usedCount: 0, startsAt: windows[0].startsAt, expiresAt: windows[0].expiresAt }
+  listFixture = [{ ...row('带秒的时段', 111), launcherAuthorization: grant, shortAuthorization: grant }]
+  const { state } = await open(admin, 'self')
+  for (const mode of ['full', 'short']) {
+    state.openShortAuthorization(state.rows[0], mode); await settle()
+    const inputs = document.querySelectorAll('[data-script-authorization-window] input[type="datetime-local"]')
+    assert.equal(inputs[0].step, 'any')
+    assert.match(inputs[0].value, /:31\.123$/)
+    assert.match(inputs[1].value, /:59\.987$/)
+    state.setShortAuthorizationField('maxUses', 2)
+    const operation = state.saveShortAuthorization(true)
+    assert.deepEqual(shortWrites.at(-1).payload.windows, windows)
+    assert.equal(shortWrites.at(-1).payload.maxUses, 2)
+    shortWrites.at(-1).resolve(okay({ ...grant, maxUses: 2 })); await operation
+    state.closeShortAuthorization(); await settle()
   }
 })
 

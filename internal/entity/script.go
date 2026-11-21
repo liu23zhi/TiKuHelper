@@ -79,6 +79,7 @@ type UserScript struct {
 	LauncherGeneration int64      `gorm:"column:launcher_generation;not null;default:0" json:"-"`
 	LauncherStartsAt   *time.Time `gorm:"column:launcher_starts_at" json:"-"`
 	LauncherExpiresAt  *time.Time `gorm:"column:launcher_expires_at" json:"-"`
+	LauncherWindows    string     `gorm:"column:launcher_windows;type:text" json:"-"`
 	LauncherMaxUses    int64      `gorm:"column:launcher_max_uses;not null;default:0" json:"-"`
 	LauncherUsedCount  int64      `gorm:"column:launcher_used_count;not null;default:0" json:"-"`
 	// NULL frees the short address after exhaustion/revocation.
@@ -87,6 +88,7 @@ type UserScript struct {
 	ShortEntryExpiresAt  *time.Time `gorm:"column:short_entry_expires_at;index" json:"-"`
 	ShortEntryUsedAt     *time.Time `gorm:"column:short_entry_used_at" json:"-"`
 	ShortEntryStartsAt   *time.Time `gorm:"column:short_entry_starts_at" json:"-"`
+	ShortEntryWindows    string     `gorm:"column:short_entry_windows;type:text" json:"-"`
 	ShortEntryMaxUses    int64      `gorm:"column:short_entry_max_uses;not null;default:0" json:"-"`
 	ShortEntryUsedCount  int64      `gorm:"column:short_entry_used_count;not null;default:0" json:"-"`
 	ShortEntryGeneration int64      `gorm:"column:short_entry_generation;not null;default:0" json:"-"`

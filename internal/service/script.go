@@ -138,6 +138,7 @@ type ScriptListItem struct {
 	ShortAuthorization    *ScriptShortAuthorizationView `gorm:"-" json:"shortAuthorization,omitempty"`
 	LauncherAuthorization *ScriptShortAuthorizationView `gorm:"-" json:"launcherAuthorization,omitempty"`
 	EscrowAvailableMicros *int64                        `json:"escrowAvailableMicros,omitempty"`
+	RunConsumedAt         *time.Time                    `gorm:"-" json:"runConsumedAt,omitempty"`
 	// RevokeNotice 是「我的脚本」通知区的一条提示；nil = 无需提示。
 	//
 	// 用指针而不是值：前端要能区分「后端说没事」（字段存在且为空）
@@ -533,7 +534,11 @@ func loadScriptListItemWithDB(db *gorm.DB, scriptID, userID int32) (ScriptListIt
 	item = decorateScriptItem(item)
 	item.ShortAuthorization = scriptShortAuthorizationView(item.UserScript)
 	item.LauncherAuthorization = scriptLauncherAuthorizationView(item.UserScript)
-	return item, nil
+	items := []ScriptListItem{item}
+	if err := attachScriptRunConsumption(db, items); err != nil {
+		return ScriptListItem{}, err
+	}
+	return items[0], nil
 }
 
 func attachScriptEscrowBalanceWithDB(db *gorm.DB, item *ScriptListItem) error {
@@ -591,6 +596,9 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 			result[i].ShortAuthorization = scriptShortAuthorizationView(result[i].UserScript)
 			result[i].LauncherAuthorization = scriptLauncherAuthorizationView(result[i].UserScript)
 		}
+	}
+	if err := attachScriptRunConsumption(db, result); err != nil {
+		return nil, err
 	}
 	// 撤销通知（2026-11-17）：一次批量查询覆盖全部脚本，不做 N+1。
 	//
@@ -751,6 +759,11 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			item.ShortAuthorization = scriptShortAuthorizationView(item.UserScript)
 			item.LauncherAuthorization = scriptLauncherAuthorizationView(item.UserScript)
 		}
+		items := []ScriptListItem{item}
+		if err := attachScriptRunConsumption(tx, items); err != nil {
+			return err
+		}
+		item = items[0]
 		return nil
 	})
 	return item, err

@@ -119,7 +119,12 @@ export function buildScriptDownloadURL(record = {}) {
 // The authenticated API constructs the launcher and controls whether the caller
 // may receive one. Do not reconstruct executable code from a draft, a URL, or
 // the legacy instruction field.
+export function isScriptRunConsumed(record = {}) {
+  return record.billingMode === 'activation_code' && Boolean(record.runConsumedAt)
+}
+
 export function buildScriptCommand(record = {}) {
+  if (isScriptRunConsumed(record)) return ''
   const command = typeof record.command === 'string' ? record.command : ''
   if (command.length > 16384) return ''
   if (/^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command)) return command
@@ -128,8 +133,9 @@ export function buildScriptCommand(record = {}) {
 }
 
 export function buildScriptShortCommand(record = {}, now = Date.now()) {
+  if (isScriptRunConsumed(record)) return ''
   const grant = record.shortAuthorization
-  if (!['active', 'scheduled'].includes(grant?.status)) return ''
+  if (!['active', 'scheduled', 'paused'].includes(grant?.status)) return ''
   if (grant.expiresAt != null && (!Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now)) return ''
   if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
   const address = String(grant.address || '')

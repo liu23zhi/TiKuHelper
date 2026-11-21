@@ -26,26 +26,28 @@ var (
 )
 
 type ConfigureScriptShortAuthorizationInput struct {
-	Enabled         bool       `json:"enabled"`
-	Address         string     `json:"address"`
-	DomainFormat    string     `json:"domainFormat"`
-	DurationMinutes int        `json:"durationMinutes"`
-	StartsAt        *time.Time `json:"startsAt"`
-	ExpiresAt       *time.Time `json:"expiresAt"`
-	MaxUses         int64      `json:"maxUses"`
-	RequestHost     string     `json:"-"`
-	RequestHTTPS    bool       `json:"-"`
+	Enabled         bool                        `json:"enabled"`
+	Address         string                      `json:"address"`
+	DomainFormat    string                      `json:"domainFormat"`
+	DurationMinutes int                         `json:"durationMinutes"`
+	StartsAt        *time.Time                  `json:"startsAt"`
+	ExpiresAt       *time.Time                  `json:"expiresAt"`
+	MaxUses         int64                       `json:"maxUses"`
+	Windows         []ScriptAuthorizationWindow `json:"windows,omitempty"`
+	RequestHost     string                      `json:"-"`
+	RequestHTTPS    bool                        `json:"-"`
 }
 
 type ScriptShortAuthorizationView struct {
-	Address   string     `json:"address"`
-	Command   string     `json:"command"`
-	Status    string     `json:"status"`
-	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
-	UsedAt    *time.Time `json:"usedAt,omitempty"`
-	StartsAt  *time.Time `json:"startsAt,omitempty"`
-	MaxUses   int64      `json:"maxUses"`
-	UsedCount int64      `json:"usedCount"`
+	Address   string                      `json:"address"`
+	Command   string                      `json:"command"`
+	Status    string                      `json:"status"`
+	ExpiresAt *time.Time                  `json:"expiresAt,omitempty"`
+	UsedAt    *time.Time                  `json:"usedAt,omitempty"`
+	StartsAt  *time.Time                  `json:"startsAt,omitempty"`
+	MaxUses   int64                       `json:"maxUses"`
+	UsedCount int64                       `json:"usedCount"`
+	Windows   []ScriptAuthorizationWindow `json:"windows,omitempty"`
 }
 
 func scriptShortAuthorizationView(script entity.UserScript) *ScriptShortAuthorizationView {
@@ -53,11 +55,11 @@ func scriptShortAuthorizationView(script entity.UserScript) *ScriptShortAuthoriz
 		return nil
 	}
 	view := &ScriptShortAuthorizationView{Address: script.ShortEntryAddress, ExpiresAt: script.ShortEntryExpiresAt, StartsAt: script.ShortEntryStartsAt, UsedAt: script.ShortEntryUsedAt, MaxUses: script.ShortEntryMaxUses, UsedCount: script.ShortEntryUsedCount}
-	view.Status = scriptAuthorizationStatus(script.ShortEntryAddressKey != nil && script.Enabled && script.DeletedAt == nil && script.EscrowClosingAt == nil, view.StartsAt, view.ExpiresAt, view.MaxUses, view.UsedCount, time.Now())
+	view.Status, view.Windows = storedScriptAuthorizationStatus(script, true, time.Now())
 	if script.ShortEntryMaxUses > 0 && script.ShortEntryUsedCount >= script.ShortEntryMaxUses {
 		view.Status = "exhausted"
 	}
-	if view.Status == "active" || view.Status == "scheduled" {
+	if view.Status == "active" || view.Status == "scheduled" || view.Status == "paused" {
 		view.Command = buildScriptAddressCommand(script.ShortEntryAddress)
 	}
 	return view
@@ -173,7 +175,7 @@ func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, 
 		}
 		updates := map[string]any{"short_entry_address_key": nil, "short_entry_generation": gorm.Expr("short_entry_generation + 1")}
 		if input.Enabled {
-			starts, expires, err := scriptAuthorizationWindow(tx, input, true)
+			starts, expires, windows, err := configureScriptAuthorizationSchedule(tx, input, true)
 			if err != nil {
 				return err
 			}
@@ -196,7 +198,8 @@ func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, 
 				if err := tx.Model(&entity.ScriptAddressReservation{}).Where("address_key = ?", key).Count(&prior).Error; err != nil {
 					return err
 				}
-				live := script.ShortEntryAddress == normalized && script.ShortEntryAddressKey != nil && *script.ShortEntryAddressKey == key && (script.ShortEntryExpiresAt == nil || time.Now().Before(*script.ShortEntryExpiresAt)) && (script.ShortEntryMaxUses == 0 || script.ShortEntryUsedCount < script.ShortEntryMaxUses)
+				status, _ := storedScriptAuthorizationStatus(script, true, time.Now())
+				live := script.ShortEntryAddress == normalized && script.ShortEntryAddressKey != nil && *script.ShortEntryAddressKey == key && (status == "active" || status == "scheduled" || status == "paused")
 				if prior > 0 && !live {
 					return ErrScriptShortAddressInUse
 				}
@@ -207,6 +210,7 @@ func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, 
 			}
 			updates["short_entry_address"], updates["short_entry_address_key"], updates["short_entry_expires_at"] = address, key, expires
 			updates["short_entry_starts_at"], updates["short_entry_max_uses"], updates["short_entry_used_count"], updates["short_entry_used_at"] = starts, input.MaxUses, 0, nil
+			updates["short_entry_windows"] = windows
 		}
 		if err := tx.Model(&script).Updates(updates).Error; err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -266,7 +270,8 @@ func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath
 		if blocked > 0 {
 			return ErrScriptShortAuthorizationInactive
 		}
-		if scriptAuthorizationStatus(true, script.ShortEntryStartsAt, script.ShortEntryExpiresAt, script.ShortEntryMaxUses, script.ShortEntryUsedCount, now) != "active" || script.EscrowClosingAt != nil {
+		status, _ := storedScriptAuthorizationStatus(script, true, now)
+		if status != "active" {
 			return ErrScriptShortAuthorizationInactive
 		}
 		address, origin, err := validateScriptShortAddressWithDB(tx, script.ShortEntryAddress, host)

@@ -84,8 +84,8 @@ func scriptAuthorizationWindow(db *gorm.DB, input ConfigureScriptShortAuthorizat
 
 func scriptLauncherAuthorizationView(script entity.UserScript) *ScriptShortAuthorizationView {
 	view := &ScriptShortAuthorizationView{Address: BuildScriptCommandURL(script), StartsAt: script.LauncherStartsAt, ExpiresAt: script.LauncherExpiresAt, MaxUses: script.LauncherMaxUses, UsedCount: script.LauncherUsedCount}
-	view.Status = scriptAuthorizationStatus(!script.LauncherDisabled && script.Enabled && script.DeletedAt == nil && script.EscrowClosingAt == nil, view.StartsAt, view.ExpiresAt, view.MaxUses, view.UsedCount, time.Now())
-	if view.Status == "active" || view.Status == "scheduled" {
+	view.Status, view.Windows = storedScriptAuthorizationStatus(script, false, time.Now())
+	if view.Status == "active" || view.Status == "scheduled" || view.Status == "paused" {
 		view.Command = BuildScriptCommand(script)
 	}
 	return view
@@ -109,11 +109,12 @@ func ConfigureScriptLauncherAuthorizationWithDB(db *gorm.DB, operator entity.Use
 			if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
 				return err
 			}
-			starts, expires, err := scriptAuthorizationWindow(tx, input, false)
+			starts, expires, windows, err := configureScriptAuthorizationSchedule(tx, input, false)
 			if err != nil {
 				return err
 			}
 			updates["launcher_starts_at"], updates["launcher_expires_at"], updates["launcher_max_uses"], updates["launcher_used_count"] = starts, expires, input.MaxUses, 0
+			updates["launcher_windows"] = windows
 			if script.LauncherLocator != nil {
 				locator, err := rotateScriptLocatorInTx(tx, script)
 				if err != nil {
@@ -136,7 +137,8 @@ func ConfigureScriptLauncherAuthorizationWithDB(db *gorm.DB, operator entity.Use
 }
 
 func consumeScriptLauncherAuthorizationInTx(tx *gorm.DB, script entity.UserScript, now time.Time) error {
-	if scriptAuthorizationStatus(!script.LauncherDisabled && script.EscrowClosingAt == nil, script.LauncherStartsAt, script.LauncherExpiresAt, script.LauncherMaxUses, script.LauncherUsedCount, now) != "active" {
+	status, _ := storedScriptAuthorizationStatus(script, false, now)
+	if status != "active" {
 		return ErrScriptNotFound
 	}
 	claimed := tx.Model(&entity.UserScript{}).Where("id = ? AND launcher_generation = ? AND launcher_used_count = ? AND launcher_disabled = ?", script.ID, script.LauncherGeneration, script.LauncherUsedCount, false).UpdateColumn("launcher_used_count", gorm.Expr("launcher_used_count + 1"))
@@ -154,18 +156,28 @@ func consumeScriptLauncherAuthorizationInTx(tx *gorm.DB, script entity.UserScrip
 // expiry still apply without charging a second use for the same start.
 func validateIssuedScriptAuthorization(script entity.UserScript, grant entity.ScriptExchangeToken, now time.Time) error {
 	var starts, expires *time.Time
+	var raw string
 	switch grant.AuthorizationKind {
 	case "full":
 		if script.LauncherDisabled || script.LauncherGeneration != grant.AuthorizationGeneration {
 			return ErrScriptTokenInvalid
 		}
 		starts, expires = script.LauncherStartsAt, script.LauncherExpiresAt
+		raw = script.LauncherWindows
 	case "short":
 		if script.ShortEntryGeneration != grant.AuthorizationGeneration {
 			return ErrScriptTokenInvalid
 		}
 		starts, expires = script.ShortEntryStartsAt, script.ShortEntryExpiresAt
+		raw = script.ShortEntryWindows
 	default:
+		return nil
+	}
+	if raw != "" {
+		windows, err := decodeScriptAuthorizationWindows(raw, grant.AuthorizationKind == "short")
+		if err != nil || scriptAuthorizationWindowsStatus(true, windows, 0, 0, now) != "active" {
+			return ErrScriptTokenInvalid
+		}
 		return nil
 	}
 	if (starts != nil && now.Before(*starts)) || (expires != nil && !now.Before(*expires)) {
