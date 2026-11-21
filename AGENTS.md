@@ -6,8 +6,8 @@
 
 | 仓库 | 相对位置 | 职责 |
 | --- | --- | --- |
-| TiKuHelper（本地目录仍为 `tikuAdapter`） | `.` | 题库服务端、管理界面与接口 |
-| chaoxing_plus | `../chaoxing_plus/` | 调用题库服务的扩展与客户端 |
+| TiKuHelper | `.` | 题库服务端、管理界面与接口 |
+| ChaoXing-Plus | `../ChaoXing-Plus/` | 调用题库服务的扩展与客户端 |
 | TikuDoc | `../TikuDoc/` | 两个代码仓库的统一文档 |
 
 涉及接口或跨端行为时，同时检查关联仓库的实现与兼容性；三个仓库各自维护 Git 状态和提交。
@@ -15,9 +15,9 @@
 ## 文档统一存放
 
 - 设计、规格、实施计划、排查记录、验证报告、任务清单和跨轮次记录统一写入 `../TikuDoc/`，不要在本仓库新建这些文档或恢复 `docs/`、`tasks/` 文档目录。
-- TikuDoc 的 `tikuAdapter/` 是既有归档目录名；新旧路径仍按此目录映射，不因 Git 仓库更名而整体搬动历史文档。原 `docs/<文件>` 对应 `../TikuDoc/tikuAdapter/docs/<文件>`；原 `tasks/<文件>` 对应 `../TikuDoc/tikuAdapter/tasks/<文件>`。
-- 当前开发清单入口为 `../TikuDoc/tikuAdapter/TASKLIST.md`；文档维护规则见 `../TikuDoc/README.md`。
-- 技能默认要求生成 `docs/superpowers/specs/` 或 `docs/superpowers/plans/` 时，分别写入 `../TikuDoc/tikuAdapter/docs/superpowers/specs/` 与 `../TikuDoc/tikuAdapter/docs/superpowers/plans/`，并在 TikuDoc 仓库提交。
+- TikuDoc 中的项目目录按当前仓库名 `TiKuHelper/` 维护。原 `docs/<文件>` 对应 `../TikuDoc/TiKuHelper/docs/<文件>`；原 `tasks/<文件>` 对应 `../TikuDoc/TiKuHelper/tasks/<文件>`。
+- 当前开发清单入口为 `../TikuDoc/TiKuHelper/TASKLIST.md`；文档维护规则见 `../TikuDoc/README.md`。
+- 技能默认要求生成 `docs/superpowers/specs/` 或 `docs/superpowers/plans/` 时，分别写入 `../TikuDoc/TiKuHelper/docs/superpowers/specs/` 与 `../TikuDoc/TiKuHelper/docs/superpowers/plans/`，并在 TikuDoc 仓库提交。
 - 本文件与随代码维护的 README 等目录说明可以保留在代码仓库；它们不作为设计、计划或验证文档的替代存放位置。
 
 ## 路径与协作

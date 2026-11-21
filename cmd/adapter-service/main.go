@@ -18,6 +18,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/api"
 	"github.com/itihey/tikuAdapter/internal/controller"
 	"github.com/itihey/tikuAdapter/internal/diagnostics"
+	"github.com/itihey/tikuAdapter/internal/extensionlogs"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/timer"
@@ -151,6 +152,9 @@ func main() {
 	// 后不用重启即可生效（用 Timer 而非 Ticker 的全部理由）。传固定值会把周期焊死。
 	stopLogRetention := service.StartLogRetentionCleanup(mg.GetDB(), 0)
 	defer stopLogRetention()
+	extensionlogs.Default.RunCleanup(shutdownContext, func(err error) {
+		logger.SysError("清理扩展诊断日志失败：" + err.Error())
+	})
 
 	// 工单图片清理（T-11：按时间 180 天 + 按总占用 20 GiB）。
 	// 与日志清理的一处刻意差异：启动后**先立即跑一轮**再进入定时 —— 服务重启往往
