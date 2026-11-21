@@ -144,6 +144,8 @@ const (
 	// **操作者**的地址（entity/users.gen.go 的字段注释原话），不是注册者来源。
 	// 算进去会让「管理员批量建号」直接触发。
 	RiskRuleIDRegisterBurst = "register_burst"
+	// Independent of IP-segment registration bursts and authenticated device quotas.
+	RiskRuleIDDeviceRegisterBurst = "device_register_burst"
 	// RiskRuleIDAnswerPatternRepeat 是 97 §5.1 L326 的 R17「同题重复」：
 	// 同一用户对**同一道题**在窗口内重复到阈值次数。
 	//
@@ -342,7 +344,7 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		// 三个数字均来自 96 号文档 L107，**不是拍的**。
 		Threshold:       10,
 		ThrottleSeconds: 60 * 60,
-		Description:     "同一账号**或**同一 IP 在 10 分钟滑动窗口内登录失败达到阈值次数（默认 10 次），是被定向爆破的特征。与「撞库」的区别是攻击**深度 vs 广度**：本规则看的是对同一个目标反复试（同一账号，或同一 IP 反复来），而撞库看的是同一 IP 试了很多不同账号。为避免与撞库重复告警，IP 维度会跳过「已然是撞库形态」的 IP（窗口内不同账号数已达撞库阈值），交给撞库规则报。窗口内所有失败原因同等计入（含验证码失败、账号已禁用），因为排除任何一类都会产生绕过面。只告警不处置。",
+		Description:     "同一账号**或**同一 IP 在 10 分钟滑动窗口内登录失败达到阈值次数（默认 10 次），是被定向爆破的特征。与「撞库」的区别是攻击**深度 vs 广度**：本规则看的是对同一个目标反复试（同一账号，或同一 IP 反复来），而撞库看的是同一 IP 试了很多不同账号。为避免与撞库重复告警，IP 维度会跳过「已然是撞库形态」的 IP（窗口内不同账号数已达撞库阈值），交给撞库规则报。窗口内所有失败原因同等计入（含验证码失败、账号已禁用），因为排除任何一类都会产生绕过面。默认仅通知；仅来源 IP 维度的密码凭据失败也达到阈值时，才可按显式策略临时封 IP。账号维度不自动处置。",
 	},
 	{
 		RuleID:   RiskRuleIDRefundAbuse,
@@ -373,6 +375,14 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       3,
 		ThrottleSeconds: 6 * 60 * 60,
 		Description:     "同一 /24 IP 段在 1 小时滑动窗口内**自助注册**（register_source=public）达到阈值个账号（默认 3 个），常见于批量注册养号。五条已知限制：① 段粒度是 **/24**（256 个地址）——公司、学校、园区的出口占一个 /24 是常见情形，正常情况下同段多人注册也会命中，所以本规则更适合作为「排查线索」而非「确凿证据」；② 只统计**自助注册**，管理员与系统建号不计入（它们的 register_ip 记的是操作者地址，算进去会让后台批量建号直接触发）；③ 私网与保留地址一律跳过（如 Docker 的 172.18.0.1）——否则同一台宿主机上的账号会天然同段；④ **IPv6 不参与**（/24 对 IPv6 无意义，按 /64 聚合会把同一个人的多设备当成多人）；⑤ 同一段 6 小时内只告警一次。只告警不处置。",
+	},
+	{
+		RuleID:          RiskRuleIDDeviceRegisterBurst,
+		Name:            "同一浏览器批量注册",
+		Severity:        RiskSeverityMedium,
+		Threshold:       3,
+		ThrottleSeconds: 6 * 60 * 60,
+		Description:     "同一浏览器在 1 小时内完成至少指定个数的不同账号自助注册。仅识别回传本站注册 Cookie 的浏览器，不识别物理设备；换浏览器或清除 Cookie 后无法关联。共享设备可能正常命中，默认仅通知。",
 	},
 	{
 		RuleID:   RiskRuleIDAnswerPatternRepeat,
@@ -472,7 +482,7 @@ func (*RiskRuleAudit) TableName() string { return TableNameRiskRuleAudit }
 //
 // 两条不可协商的性质：
 //
-//  1. **只告警不拦截**（96 C1）：本表的写入绝不改用户状态、绝不拒绝请求。
+//  1. 告警是证据，本表自身的写入不改用户状态或拒绝请求。核心保护的网络处置另存记录并由黑名单执行。
 //     读它就是「看过」，不读它就是「没看」，不影响任何业务判定。
 //  2. **Detail 是证据快照**（96 §2.3 关键段）：写触发时刻的计数、阈值、关联账号，
 //     不是「实时查询结果」。告警要能复盘，事后资产变了也必须能看到当时的证据。

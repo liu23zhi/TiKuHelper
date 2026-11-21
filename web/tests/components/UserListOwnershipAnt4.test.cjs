@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 const {test,beforeEach,afterEach}=require('node:test')
 const assert=require('node:assert/strict'),path=require('node:path'),Module=require('node:module')
 const web=process.env.TIKU_WEB_SOURCE||path.resolve(__dirname,'../..')

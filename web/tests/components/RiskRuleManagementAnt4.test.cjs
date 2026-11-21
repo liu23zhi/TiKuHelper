@@ -18,6 +18,7 @@ const response = (config, data, status = 200) => ({ config, data, status, header
 axios.defaults.adapter = async config => {
   const body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
   calls.push({ method: config.method, url: config.url, body })
+  if (config.url.startsWith('/api/risk/response-policies/')) return response(config, { data: { mode: 'notify', durationMinutes: 30, blacklistEnabled: false } })
   if (config.url === '/api/risk/alerts') return response(config, { data: [], total: 0, page: 1, pageSize: 20 })
   if (config.url === '/api/risk/webhook') return response(config, { data: { enabled: false, configured: false, webhookUrl: '', preview: '', mentionedList: [] } })
   const threshold = () => ({ key: 'risk_rule_debt_user_threshold', ruleId: 'debt_user', label: '用户欠费阈值', value: thresholdValue, defaultValue: 10, unit: '元', configured: true })
@@ -34,7 +35,7 @@ axios.defaults.adapter = async config => {
     configValue = config.method === 'delete' ? '' : body.value
     return response(config, { message: '已保存', item: setting() })
   }
-  if (config.url === '/api/risk/rule-types') return response(config, { data: [{ type: 'debt_user', name: '用户欠费', defaultThreshold: 10, thresholdUnit: '元', description: '达到欠费阈值时告警' }] })
+  if (config.url === '/api/risk/rule-types') return response(config, { data: [{ type: 'debt_user', name: '用户欠费', defaultThreshold: 10, defaultSeverity: 'high', defaultThrottleSeconds: 3600, hasThreshold: true, thresholdUnit: '元', description: '达到欠费阈值时告警' }] })
   if (config.url === '/api/risk/rules' && config.method === 'get') {
     // Real endpoint deliberately retains the old compact shape alongside editable records.
     return response(config, { items: records.map(({ ruleId, enabled, threshold }) => ({ ruleId, enabled, threshold })), data: records.map(item => ({ ...item })) })
@@ -68,7 +69,7 @@ axios.defaults.adapter = async config => {
 const RiskAdmin = require('../../src/pages/RiskAdmin/index.vue')
 
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
-async function openPage() {
+async function openPage(otherRules = true) {
   records = [builtin(), custom()]; calls = []; holdSave = holdThreshold = null; failSave = ''; thresholdValue = 10; configValue = 'AS15169'
   currentUser.setStoredCurrentUser({ id: 7, role: 'admin', username: 'synthetic-admin' })
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: RiskAdmin }] })
@@ -77,6 +78,7 @@ async function openPage() {
   const wrapper = mount(RiskAdmin, { attachTo: document.body, global: { plugins: [router, Antd] } })
   wrappers.push(wrapper)
   await settle()
+  if (otherRules) { await wrapper.get('button[data-risk-nav="other"]').trigger('click'); await settle() }
   return wrapper
 }
 function button(wrapper, text) {
@@ -189,6 +191,7 @@ test('a pending save cannot close or overwrite the next administrator rule edito
   holdSave = new Promise(resolve => { release = resolve })
   const saving = wrapper.vm.saveRule(); await settle()
   currentUser.setStoredCurrentUser({ id: 8, role: 'admin', username: 'next-admin' }); await settle()
+  await wrapper.get('button[data-risk-nav="other"]').trigger('click'); await settle()
   assert.equal(wrapper.vm.ruleEditorOpen, false, 'switching administrator clears old draft')
   assert.equal(wrapper.vm.ruleWriting, false)
   await wrapper.vm.openCreateRule(); await settle()
@@ -225,9 +228,21 @@ test('retired threshold completion cannot update the next admin status or start 
   holdThreshold = new Promise(resolve => { release = resolve })
   const saving = wrapper.vm.saveThreshold(wrapper.vm.thresholds[0]); await settle()
   currentUser.setStoredCurrentUser({ id: 8, role: 'admin', username: 'next-admin' }); await settle()
+  await wrapper.get('button[data-risk-nav="other"]').trigger('click'); await settle()
   assert.equal(wrapper.vm.thresholdWriting, false)
   const count = calls.length
   release(); await saving; await settle()
   assert.equal(calls.length, count)
   assert.equal(wrapper.vm.thresholdSuccess, '')
+})
+
+test('核心保护是默认入口；其他规则保留，新增时继承类型实际的级别与节流', async () => {
+  const wrapper = await openPage(false)
+  assert.equal(wrapper.get('button[data-risk-nav="core"]').attributes('aria-pressed'), 'true')
+  assert.equal(wrapper.findAll('[data-risk-policy]').length, 2)
+  assert.equal(wrapper.findAll('.risk-rule-row').length, 0, '财务规则不混入核心保护')
+  await wrapper.get('button[data-risk-nav="other"]').trigger('click')
+  await button(wrapper, '新增规则').trigger('click'); await settle()
+  assert.equal(wrapper.vm.ruleDraft.severity, 'high')
+  assert.equal(wrapper.vm.ruleDraft.throttleSeconds, 3600)
 })

@@ -261,7 +261,8 @@ func SetAPIRouter(router *gin.Engine) {
 	// 两套限流各自可解（45-*.md §0.1.4 五-8：「解除账号锁定」与「解除 IP 锁定」两个操作）。
 	apiRouter.GET("/admin/login-lockouts", controller.Auth, middleware.RequireAdmin, controller.LoginLockoutList)
 	apiRouter.DELETE("/admin/login-lockout/:scope/:key", controller.Auth, middleware.RequireAdmin, controller.ClearLoginLockout)
-	apiRouter.POST("/user/logout", controller.UserLogout)     // 清理浏览器会话
+	apiRouter.POST("/user/logout", controller.UserLogout) // 清理浏览器会话
+	apiRouter.GET("/user/register/status", controller.PublicRegistrationBrowserStatus)
 	apiRouter.POST("/user/register", controller.UserRegister) // 公开注册接口
 	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
 	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
@@ -670,6 +671,13 @@ func SetAPIRouter(router *gin.Engine) {
 	// 规则的启用/停用（risk_rules.enabled）。此前这一列同样没有写接口。
 	// 接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
 	apiRouter.GET("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.RiskRuleStateList)
+	apiRouter.GET("/risk/offhours-window", controller.Auth, middleware.RequireAdmin, controller.RiskOffhoursWindowGet)
+	apiRouter.PUT("/risk/offhours-window", controller.Auth, middleware.RequireAdmin, controller.RiskOffhoursWindowPut)
+	apiRouter.DELETE("/risk/offhours-window", controller.Auth, middleware.RequireAdmin, controller.RiskOffhoursWindowReset)
+	apiRouter.GET("/risk/response-policies/:detector", controller.Auth, middleware.RequireAdmin, controller.RiskResponsePolicyGet)
+	apiRouter.PUT("/risk/response-policies/:detector", controller.Auth, middleware.RequireAdmin, controller.RiskResponsePolicyPut)
+	apiRouter.GET("/risk/alerts/:id/response", controller.Auth, middleware.RequireAdmin, controller.RiskAlertResponseGet)
+	apiRouter.POST("/risk/alerts/:id/response", controller.Auth, middleware.RequireAdmin, controller.RiskAlertResponseApply)
 	apiRouter.GET("/risk/rule-types", controller.Auth, middleware.RequireAdmin, controller.RiskRuleTypeList)
 	apiRouter.POST("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.CreateRiskRule)
 	apiRouter.PUT("/risk/rules/:ruleId", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskRule)
