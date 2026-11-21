@@ -150,6 +150,7 @@ func ScriptDomainFormats(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"formats":               views,
+		"reservedPrefixes":      service.ScriptReservedPrefixes(),
 		"allowFullNeverExpire":  settings.AllowFullNeverExpire,
 		"allowShortNeverExpire": settings.AllowShortNeverExpire,
 	})
@@ -728,7 +729,7 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 	switch {
 	case errors.Is(err, service.ErrScriptShortAddressInUse):
 		status, message = http.StatusConflict, err.Error()
-	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
+	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptReservedPrefix), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyPending):
 		status, message = http.StatusConflict, err.Error()

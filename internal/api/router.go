@@ -840,6 +840,13 @@ func collectReservedPrefixes(router *gin.Engine) ([]string, int) {
 	return prefixes, len(routes)
 }
 
+// Health and web routes register after the main API snapshot. Refresh after
+// each registration phase so no earlier prefix snapshot can grant their paths.
+func refreshScriptReservedPrefixes(router *gin.Engine) {
+	prefixes, _ := collectReservedPrefixes(router)
+	service.SetReservedScriptPrefixes(prefixes)
+}
+
 // firstRouteSegment 取路由第一段；首段是 gin 参数/通配则返回空串。
 func firstRouteSegment(routePath string) string {
 	for _, part := range strings.Split(strings.TrimPrefix(routePath, "/"), "/") {
@@ -1036,4 +1043,5 @@ func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)
 	})
+	refreshScriptReservedPrefixes(router)
 }

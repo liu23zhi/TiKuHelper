@@ -72,7 +72,7 @@ func TestScriptShortAuthorizationEnforcesOwnerDomainExpiryAndRevocation(t *testi
 	if _, err := ConfigureScriptShortAuthorizationWithDB(db, admin, script.ID, input); !errors.Is(err, ErrScriptNotFound) {
 		t.Fatalf("admin must not mint another owner's launcher: %v", err)
 	}
-	for _, address := range []string{"evil.test/a", "muioi.com", "muioi.com/api/a", "muioi.com/a/../b", "muioi.com/a?key=x", "http://muioi.com/a", "muioi.com:443/a", "a.muioi.com/path", "muioi.com/a%2Fb"} {
+	for _, address := range []string{"evil.test/a", "muioi.com", "muioi.com/api/a", "muioi.com/a/../b", "muioi.com/a?key=x", "http://muioi.com/a", "muioi.com:8443/a", "a.muioi.com/path", "muioi.com/a%2Fb"} {
 		input.Address = address
 		if _, err := ConfigureScriptShortAuthorizationWithDB(db, owner, script.ID, input); err == nil {
 			t.Fatalf("unapproved address accepted: %s", address)

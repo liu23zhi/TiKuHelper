@@ -283,6 +283,7 @@
             <a-form-item label="短地址格式" :html-for="fieldId('shortFormat')" required>
               <a-select :id="fieldId('shortFormat')" :value="shortAuthorizationForm.domainFormat" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'domainFormat')" :options="authorizationFormatChoices" option-filter-prop="label" :show-search="authorizationFormatChoices.length > 5" data-script-short-format />
               <p class="hint">先选择管理员允许的格式，再填写子域名或路径。完整地址会自动补上 HTTPS。</p>
+              <p class="hint">短地址全站唯一，已被占用的地址不能抢占，是否可用以保存结果为准。</p>
             </a-form-item>
             <a-form-item v-if="selectedAuthorizationFormat" :label="selectedAuthorizationFormat.kind === 'wildcard' ? '子域名' : '路径'" :html-for="fieldId('shortAddress')" required>
               <div class="short-address-slot">
@@ -297,6 +298,7 @@
               <p class="hint">此地址不在当前允许格式中，已保留原值。选择上方的新格式后才会替换，是否可继续使用由服务端校验。</p>
             </div>
             <p class="short-address-preview" data-script-short-preview>完整地址：<code>{{ authorizationAddress || '填写后显示完整地址' }}</code></p>
+            <p v-if="authorizationReservedError" class="form-error" role="alert">{{ authorizationReservedError }}</p>
           </template>
           <a-form-item label="有效期" :html-for="fieldId('authorizationDurationMode')">
             <a-radio-group :id="fieldId('authorizationDurationMode')" class="authorization-mode-options" :value="shortAuthorizationForm.durationMode" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'durationMode')" button-style="solid">
@@ -432,6 +434,8 @@ const emptyAuthorizationWindow = () => ({ key: ++authorizationWindowKey, startsA
 const emptyAuthorizationForm = () => ({ address: '', domainFormat: '', slot: '', durationMode: 'limited', durationMinutes: 5, startMode: 'immediate', startsAt: '', maxUses: 1, windows: [emptyAuthorizationWindow()] })
 const shortAuthorizationForm = reactive(emptyAuthorizationForm())
 const authorizationError = ref('')
+const DEFAULT_RESERVED_SHORT_PREFIXES = Object.freeze(['api', 'adapter-service', 'sqp', 'health', 'healthz', 'readyz', 'metrics', 'assets', 'static', 'dist', 'css', 'js', 'img', 'fonts', 'adapter', 'favicon.ico', 'index.html', 'theme-init.js'])
+const reservedShortPrefixes = ref([...DEFAULT_RESERVED_SHORT_PREFIXES])
 const authorizationAddress = computed(() => {
   if (selectedAuthorizationFormat.value) return normalizeShortAuthorizationAddress(buildScriptDomainFromFormat(selectedAuthorizationFormat.value, shortAuthorizationForm.slot))
   return shortAuthorizationForm.domainFormat === '__existing__' ? normalizeShortAuthorizationAddress(shortAuthorizationForm.address) : ''
@@ -551,6 +555,14 @@ const authorizationFormatChoices = computed(() => [
   ...(shortAuthorizationForm.domainFormat === '__existing__' ? [{ value: '__existing__', label: '保留现有短地址（不在当前允许格式中）' }] : []),
   ...authorizationDomainFormats.value.map(format => ({ value: format.raw, label: `${format.kind === 'wildcard' ? '子域名' : '路径'} · ${format.raw}` })),
 ])
+const authorizationReservedError = computed(() => {
+  if (shortAuthorizationMode.value !== 'short') return ''
+  let path = ''
+  if (selectedAuthorizationFormat.value?.kind === 'path') path = shortAuthorizationForm.slot
+  else if (shortAuthorizationForm.domainFormat === '__existing__' && authorizationAddress.value) path = new URL(authorizationAddress.value).pathname
+  const prefix = String(path || '').trim().replace(/^\/+/, '').split('/')[0].toLowerCase()
+  return prefix && reservedShortPrefixes.value.includes(prefix) ? `路径首段“${prefix}”为系统保留路径，请更换后再保存。` : ''
+})
 let purchaseIntentKey = '', purchaseIntentQuote = ''
 const canBuyActivationCode = computed(() => modalOpen.value && !editing.value && form.billingMode === 'activation_code'
   && !saving.value && !activationBusy.value && !purchasedCode.value && !form.entitlementId
@@ -1075,6 +1087,7 @@ async function saveShortAuthorization(enabled) {
   const scheduled = shortAuthorizationForm.startMode === 'scheduled'
   const startsAt = scheduled && shortAuthorizationForm.startsAt ? new Date(shortAuthorizationForm.startsAt) : null
   if (enabled && !full && !authorizationAddress.value) { authorizationError.value = '请填写有效的 HTTPS 短地址：选择格式后填写子域名或路径。'; return }
+  if (enabled && !full && authorizationReservedError.value) return
   const checkedWindows = multiple ? validateScriptAuthorizationWindows(shortAuthorizationForm.windows.map(window => ({ startsAt: window.startsAtSource || window.startsAt, expiresAt: window.expiresAtSource || window.expiresAt })), { maxDurationMinutes: full ? 525600 : 1440 }) : null
   if (enabled && checkedWindows?.error) { authorizationError.value = checkedWindows.error; return }
   if (enabled && ((!multiple && ((!permanent && (!Number.isSafeInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > (full ? 525600 : 1440))) || (permanent && !authorizationAllowsForever.value) || (scheduled && !startsAt) || (startsAt && (Number.isNaN(startsAt.getTime()) || startsAt.getTime() > Date.now() + 365 * 86400000)))) || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > 1000000)) { authorizationError.value = '请填写有效的授权时间与使用次数，生效时间不晚于未来 365 天。'; message.warning(authorizationError.value); return }
@@ -1084,7 +1097,7 @@ async function saveShortAuthorization(enabled) {
   try {
     const response = await (full ? configureScriptLauncherAuthorization : configureScriptShortAuthorization)(record.id, payload)
     if (!current()) return
-    if (response?.status !== 200 || !response.data?.status) { message.error(response?.data?.message || '命令授权结果未确认，请刷新核对。'); return }
+    if (response?.status !== 200 || !response.data?.status) { authorizationError.value = response?.data?.message || '命令授权结果未确认，请刷新核对。'; message.error(authorizationError.value); return }
     record[full ? 'launcherAuthorization' : 'shortAuthorization'] = response.data
     if (full) {
       record.command = response.data.command || ''; record.instruction = record.command
@@ -1152,9 +1165,10 @@ async function loadDomainFormats() {
   try {
     const response = await getScriptDomainFormats()
     if (!owns()) return
-    if (response?.status !== 200) { domainFormats.value = []; return }
+    if (response?.status !== 200) { domainFormats.value = []; reservedShortPrefixes.value = [...DEFAULT_RESERVED_SHORT_PREFIXES]; return }
     allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
     allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true
+    reservedShortPrefixes.value = [...new Set([...DEFAULT_RESERVED_SHORT_PREFIXES, ...(Array.isArray(response.data?.reservedPrefixes) ? response.data.reservedPrefixes : [])].map(prefix => String(prefix || '').trim().toLowerCase()).filter(Boolean))]
     const list = Array.isArray(response.data?.formats) ? response.data.formats : []
     // 只保留能解析的新语法条目：服务端已过滤，这里再挡一次是为了让
     // 「界面给了一个填不出域名的选项」这种不可用状态不可能出现。
@@ -1162,7 +1176,7 @@ async function loadDomainFormats() {
       .map((item) => parseScriptDomainFormat(item?.raw ?? item?.pattern ?? ''))
       .filter(Boolean)
   } catch {
-    if (owns()) domainFormats.value = []
+    if (owns()) { domainFormats.value = []; reservedShortPrefixes.value = [...DEFAULT_RESERVED_SHORT_PREFIXES] }
   }
 }
 
@@ -1299,6 +1313,7 @@ function retireScope() {
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
   domainText.value = ''; domainReady.value = false; domainSaving.value = false; domainError.value = ''
   domainFormats.value = []
+  reservedShortPrefixes.value = [...DEFAULT_RESERVED_SHORT_PREFIXES]
   lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
   escrowPolicy.value = null; activationPrice.value = null; policyError.value = ''; priceForm.value = ''
   Object.assign(policyForm, { target: '', minimum: '', multiplier: '' }); savingPolicy.value = false; savingPrice.value = false

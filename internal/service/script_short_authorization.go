@@ -68,6 +68,20 @@ func scriptShortAuthorizationView(script entity.UserScript) *ScriptShortAuthoriz
 // fallbackHost limits a new short entry to the console host when no formats
 // are configured. A persisted grant passes its own already validated host.
 func validateScriptShortAddressWithDB(db *gorm.DB, address, fallbackHost string) (string, string, error) {
+	return validateScriptShortAddressForUseWithDB(db, address, fallbackHost, false)
+}
+
+// The exception is only used after loading an existing grant/ticket. Missing
+// static resources used to be valid entry paths; new grants may not claim them.
+func legacyScriptResourcePrefix(prefix string) bool {
+	switch strings.ToLower(prefix) {
+	case "css", "js", "img", "fonts", "adapter":
+		return true
+	}
+	return false
+}
+
+func validateScriptShortAddressForUseWithDB(db *gorm.DB, address, fallbackHost string, existing bool) (string, string, error) {
 	address = strings.TrimSpace(address)
 	if !strings.Contains(address, "://") {
 		address = "https://" + address
@@ -81,8 +95,11 @@ func validateScriptShortAddressWithDB(db *gorm.DB, address, fallbackHost string)
 		return "", "", ErrScriptShortAddressInvalid
 	}
 	path, err := cleanScriptRequestPath(parsed.Path)
-	if err != nil || (path != "" && path != parsed.Path) || scriptReservedPrefix(scriptFirstPathSegment(path)) {
+	if err != nil || (path != "" && path != parsed.Path) {
 		return "", "", ErrScriptShortAddressInvalid
+	}
+	if prefix := scriptFirstPathSegment(path); scriptReservedPrefix(prefix) && !(existing && legacyScriptResourcePrefix(prefix)) {
+		return "", "", fmt.Errorf("%w：/%s 不能用作短命令，请更换路径", ErrScriptReservedPrefix, strings.ToLower(prefix))
 	}
 	if path != "" {
 		normalized, err := normalizeScriptDomainSlot(ScriptDomainFormatPath, strings.TrimPrefix(path, "/"))
@@ -97,7 +114,7 @@ func validateScriptShortAddressWithDB(db *gorm.DB, address, fallbackHost string)
 	if len(formats) == 0 && path != "" && host == normalizeScriptLauncherHost(fallbackHost) {
 		return "https://" + host + path, "https://" + host, nil
 	}
-	if parsed.Port() != "" {
+	if parsed.Port() != "" && parsed.Port() != "443" {
 		return "", "", ErrScriptShortAddressInvalid
 	}
 	for _, format := range formats {
@@ -238,7 +255,8 @@ func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath
 	var grant ScriptExchangeGrant
 	host := normalizeScriptLauncherHost(requestHost)
 	path, err := cleanScriptRequestPath(requestPath)
-	if host == "" || err != nil || scriptReservedPrefix(scriptFirstPathSegment(path)) {
+	prefix := scriptFirstPathSegment(path)
+	if host == "" || err != nil || (scriptReservedPrefix(prefix) && !legacyScriptResourcePrefix(prefix)) {
 		return script, grant, ErrScriptNotFound
 	}
 	key := shortEntryAddressKey(host, path)
@@ -274,7 +292,7 @@ func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath
 		if status != "active" {
 			return ErrScriptShortAuthorizationInactive
 		}
-		address, origin, err := validateScriptShortAddressWithDB(tx, script.ShortEntryAddress, host)
+		address, origin, err := validateScriptShortAddressForUseWithDB(tx, script.ShortEntryAddress, host, true)
 		if err != nil {
 			return ErrScriptShortAuthorizationInactive
 		}

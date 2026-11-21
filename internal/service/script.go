@@ -961,7 +961,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 			if err != nil {
 				return ErrScriptTokenInvalid
 			}
-			_, origin, err := validateScriptShortAddressWithDB(tx, grant.LaunchAddress, address.Host)
+			_, origin, err := validateScriptShortAddressForUseWithDB(tx, grant.LaunchAddress, address.Host, true)
 			if err != nil {
 				return ErrScriptTokenInvalid
 			}

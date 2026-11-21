@@ -52,6 +52,17 @@ var baselineReservedScriptPrefixes = []string{
 	"favicon.ico",
 	"health",
 	"metrics",
+	// Probes register after SetAPIRouter, and static middleware serves these
+	// without Gin routes. They must remain protected independently of order.
+	"healthz",
+	"readyz",
+	"adapter",
+	"css",
+	"js",
+	"img",
+	"fonts",
+	"index.html",
+	"theme-init.js",
 }
 
 var (

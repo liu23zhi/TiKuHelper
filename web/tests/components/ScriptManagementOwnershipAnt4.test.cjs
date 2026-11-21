@@ -18,6 +18,7 @@ const reads = [], writes = [], purchases = [], redemptions = [], updates = [], p
 let holdReads = false, holdWrites = false, activationPriceFixture = 12.345678
 let allowFullNeverExpire = true, allowShortNeverExpire = false
 let domainFormatsFixture = ['*.example.test']
+let reservedPrefixesFixture
 let listFixture = [row('现有脚本', 111)]
 
 const apiPath = path.resolve(__dirname, '../../src/api/TikuComponentApi.js')
@@ -29,7 +30,7 @@ api.exports = {
   },
   getScriptVersions: async () => okay([{ id: 5, version: 'synthetic', nativeLeaseProtocol: true, isCurrent: true }]),
   getScriptDomainSettings: async () => okay({ domains: ['*.example.test'] }),
-  getScriptDomainFormats: async () => okay({ formats: domainFormatsFixture.map(raw => ({ raw })), allowFullNeverExpire, allowShortNeverExpire }),
+  getScriptDomainFormats: async () => okay({ formats: domainFormatsFixture.map(raw => ({ raw })), allowFullNeverExpire, allowShortNeverExpire, reservedPrefixes: reservedPrefixesFixture }),
   configureScriptShortAuthorization(id, payload) { return new Promise(resolve => shortWrites.push({ id, payload, resolve })) },
   configureScriptLauncherAuthorization(id, payload) { return new Promise(resolve => shortWrites.push({ id, payload, kind: 'full', resolve })) },
   getScriptEscrowPolicy: async () => okay({ targetMicros: 80000000, minimumMicros: 60000000, multiplierMicros: 1000000 }),
@@ -77,6 +78,7 @@ afterEach(async () => {
   listFixture = [row('现有脚本', 111)]
   allowFullNeverExpire = true; allowShortNeverExpire = false
   domainFormatsFixture = ['*.example.test']
+  reservedPrefixesFixture = undefined
 })
 
 const activeLease = id => ({ status: 409, data: { code: 'SCRIPT_ACTIVE_LEASE_CONFIRM_REQUIRED', activeRunSessionId: id } })
@@ -272,6 +274,58 @@ test('empty allowed formats retain the same-site custom path fallback and reject
   const operation = state.saveShortAuthorization(true)
   assert.equal(shortWrites[0].payload.address, 'https://localhost/team/run')
   shortWrites[0].resolve(okay({ status: 'active', address: shortWrites[0].payload.address })); await operation
+})
+
+test('reserved path prefixes from the service and fallback are rejected immediately without disabling editing', async () => {
+  domainFormatsFixture = ['launch.example.test/*', '*.example.test']
+  reservedPrefixesFixture = ['custom-prefix']
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  assert.match(document.querySelector('.ant-modal').textContent, /全站唯一.*不能抢占/)
+  const input = document.querySelector('[data-script-short-address]')
+  for (const slot of ['CUSTOM-prefix/run', 'API/v1', 'healthz', 'readyz', 'css/app.css', 'img/icon.png', 'adapter/scripts', 'index.html', 'theme-init.js']) {
+    input.value = slot; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+    assert.match(document.querySelector('.ant-modal .form-error[role="alert"]').textContent, /保留/)
+    assert.equal(input.disabled, false)
+    await state.saveShortAuthorization(true)
+    assert.equal(shortWrites.length, 0, slot)
+    assert.equal(input.value, slot)
+  }
+  state.setShortAuthorizationField('domainFormat', '*.example.test')
+  state.setShortAuthorizationField('slot', 'api'); await settle()
+  assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]'), null, 'path reservations do not prohibit the same subdomain label')
+  const operation = state.saveShortAuthorization(true)
+  assert.equal(shortWrites[0].payload.address, 'https://api.example.test')
+  shortWrites[0].resolve(okay({ status: 'active', address: shortWrites[0].payload.address })); await operation
+})
+
+test('reserved and occupied server errors keep the selected short address format and slot editable', async () => {
+  domainFormatsFixture = ['launch.example.test/*']
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  state.setShortAuthorizationField('slot', 'my-launcher')
+  for (const status of [400, 403, 409]) {
+    const operation = state.saveShortAuthorization(true)
+    const detail = status === 409 ? '短地址已被占用，不能抢占。' : '该短地址使用系统保留路径。'
+    shortWrites.at(-1).resolve({ status, data: { message: detail } })
+    await operation; await settle()
+    assert.equal(state.shortAuthorizationForm.domainFormat, 'launch.example.test/*')
+    assert.equal(document.querySelector('[data-script-short-address]').value, 'my-launcher')
+    assert.equal(document.querySelector('[data-script-short-address]').disabled, false)
+    assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]').textContent, detail)
+  }
+})
+
+test('changing the account resets dynamic reserved prefixes to the safe baseline', async () => {
+  reservedPrefixesFixture = ['custom-prefix']
+  const { state } = await open(admin, 'self')
+  assert.ok(state.reservedShortPrefixes.includes('custom-prefix'))
+  reservedPrefixesFixture = undefined
+  listFixture = [row('下一账户脚本', normal.id)]
+  user.setStoredCurrentUser(normal)
+  await settle()
+  assert.equal(state.reservedShortPrefixes.includes('custom-prefix'), false)
+  for (const prefix of ['api', 'healthz', 'readyz', 'css', 'js', 'img', 'fonts', 'adapter', 'index.html', 'theme-init.js']) assert.ok(state.reservedShortPrefixes.includes(prefix), prefix)
 })
 
 test('both command dialogs submit only explicit windows and one shared usage limit, then restore them', async () => {
