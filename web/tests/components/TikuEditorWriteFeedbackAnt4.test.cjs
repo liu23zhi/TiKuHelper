@@ -6,6 +6,7 @@ const assert = require('node:assert/strict'), path = require('node:path'), fs = 
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter); Module._initPaths()
 require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/question-transfer-read.cjs')(web)
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises, DOMWrapper } = require('@vue/test-utils'), { nextTick } = require('vue'), { createRouter, createMemoryHistory } = require('vue-router'), Antd = require('ant-design-vue')

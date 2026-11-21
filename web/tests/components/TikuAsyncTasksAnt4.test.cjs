@@ -12,7 +12,7 @@ test('题库传输区使用单一上传入口并在确认后提交导入', () =>
   assert.match(panel, /previewQuestionImport/)
   assert.match(panel, /getQuestionImportPreview/)
   assert.match(panel, /confirmQuestionImport/)
-  assert.match(panel, /@change="loadPreviewPage"/)
+  assert.match(panel, /<a-pagination\b[^\n]*:onChange="bind\(loadPreviewPage\)"/)
   assert.doesNotMatch(panel, /dryRun|仅预览|单批导入上限|单次导出上限/)
 })
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -132,20 +133,23 @@ func TestExportQuestionsSupportsJSONXMLHTMLAndXLSX(t *testing.T) {
 
 func TestExportQuestionIDsRestrictsOutput(t *testing.T) {
 	db := newImportTestDB(t)
-	if _, err := ImportDataWithDB(db, ImportDataOptions{Resource: ImportResourceQuestions, Format: ImportFormatJSON, Content: []byte(`[{"question":"保留题","options":[],"answer":[]},{"question":"未选题","options":[],"answer":[]}]`)}); err != nil {
+	if _, err := ImportDataWithDB(db, ImportDataOptions{Resource: ImportResourceQuestions, Format: ImportFormatJSON, Content: []byte(`[{"question":"保留题","type":0,"options":["A","B"],"answer":["B"],"course_name":"合成课程","extra":"附注","source_name":"合成来源"},{"question":"未选题","options":[],"answer":[]}]`)}); err != nil {
 		t.Fatal(err)
 	}
 	var rows []struct {
 		ID       int64
 		Question string
+		Hash     string
 	}
-	if err := db.Table("tiku").Select("id, question").Find(&rows).Error; err != nil {
+	if err := db.Table("tiku").Select("id, question, hash").Find(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
 	var keepID int64
+	var keepHash string
 	for _, row := range rows {
 		if row.Question == "保留题" {
 			keepID = row.ID
+			keepHash = row.Hash
 		}
 	}
 	result, err := ExportDataWithDB(db, ExportDataOptions{Resource: ExportResourceQuestions, Format: ExportFormatJSON, QuestionIDs: []int64{keepID}})
@@ -156,7 +160,8 @@ func TestExportQuestionIDsRestrictsOutput(t *testing.T) {
 	if err := json.Unmarshal(result.Content, &items); err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0]["question"] != "保留题" {
+	want := map[string]any{"id": float64(keepID), "question": "保留题", "type": float64(0), "options": []any{"A", "B"}, "answer": []any{"B"}, "course_name": "合成课程", "extra": "附注", "source_name": "合成来源", "hash": keepHash}
+	if keepHash == "" || len(items) != 1 || !reflect.DeepEqual(items[0], want) {
 		t.Fatalf("items = %#v", items)
 	}
 }

@@ -44,6 +44,7 @@ const originalConsoleError=console.error,originalConsoleWarn=console.warn,origin
 console.error=function(...args){consoleErrors.push(args.map(x=>String(x?.stack||x)).join(' '));return Reflect.apply(originalConsoleError,this,args)}
 console.warn=function(...args){consoleWarnings.push(args.map(x=>String(x?.stack||x)).join(' '));return Reflect.apply(originalConsoleWarn,this,args)}
 for(const level of ['success','error','warning','info']){originalMessages[level]=Antd.message[level];Antd.message[level]=function(...args){const text=String(args[0]?.content||args[0]||'');notices.push({level,successForOne:text==='成功更新 1 条题目的课程名称',successForTwo:text==='成功更新 2 条题目的课程名称',firstRowFailure:text==='题目 701 更新课程名称失败'});return Reflect.apply(originalMessages[level],this,args)}}
+require('../helpers/question-transfer-read.cjs')(web)
 const Page=require(path.join(web,'src/pages/TikuComponent/index.vue'))
 async function settle(){await nextTick();await flushPromises();await new Promise(r=>setTimeout(r,10));await nextTick();await flushPromises()}
 async function until(predicate,label){const end=Date.now()+7000;while(Date.now()<end){if(predicate())return;await settle()}assert.fail('native prerequisite: '+label)}

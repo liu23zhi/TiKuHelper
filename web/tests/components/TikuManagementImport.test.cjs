@@ -33,7 +33,7 @@ test('题库管理使用单一上传入口，预览分页后确认异步导入',
   assert.equal((panel.match(/type="file"/g) || []).length, 1)
   assert.match(panel, /预览识别结果/)
   assert.match(panel, /:pagination="false"/)
-  assert.match(panel, /@change="loadPreviewPage"/)
+  assert.match(panel, /<a-pagination\b[^\n]*:onChange="bind\(loadPreviewPage\)"/)
   assert.match(panel, /confirmQuestionImport/)
   assert.match(panel, /创建导出任务/)
   assert.match(panel, /describeTransferTask\(task\)/)

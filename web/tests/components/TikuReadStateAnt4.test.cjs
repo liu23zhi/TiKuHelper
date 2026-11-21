@@ -35,7 +35,7 @@ const FAILED = '暂时无法读取题目列表，请使用上方重试。'
 const UNCONFIRMED = '题目列表尚未确认，请使用管理员账号登录。'
 const PRIVATE = 'SYNTHETIC_PRIVATE_UPSTREAM_URL_CONFIG_QUESTION'
 const DIAGNOSTIC = '1234567890abcdef1234567890abcdef'
-const QUERY = { type: -1, pageSize: 10, pageNo: 0, question: '', source: 0, extra: '', onlyShowEmptyAnswer: false }
+const QUERY = { type: -1, pageSize: 10, pageNo: 0, question: '', courseName: '', source: 0, extra: '', onlyShowEmptyAnswer: false }
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 const ok = rows => ({ status: 200, data: { items: rows, total: rows.length } })
 const row = (question, id = 101, type = 4) => ({ id, question, type, course_name: 'SYNTHETIC课程', options: '[]', answer: '["自由文本答案","自由文本答案"]', source: 0, source_name: 'SYNTHETIC来源', extra: 'SYNTHETIC低频字段', fixture_zero: 0 })
@@ -54,6 +54,7 @@ const actualAPI = apiSource.match(/export function getQuestions\(data\) \{([\s\S
 assert.match(actualAPI, /url: `\/api\/questions\/search`/)
 assert.match(actualAPI, /method: 'post'/)
 const api = new Proxy({ getQuestions, getCourses: () => { courseCalls.push({ name: 'getCourses', method: 'GET', path: '/api/courses', synthetic: true }); return Promise.resolve({ status: 200, data: [] }) } }, { get(value, name) { if (name === '__esModule' || name === 'then') return undefined; return name in value ? value[name] : () => deny('API_' + String(name)) } })
+require('../helpers/question-transfer-read.cjs')(fallbackWeb)
 const originalLoad = Module._load
 Module._load = function (request, parent, main) {
   // The only relative page imports are its existing OptionBox/AnswerBox; load
@@ -101,7 +102,8 @@ function visibleText(node) {
   return compact(parts.join(' '))
 }
 function nativeButton(w, label, enabled = true) {
-  const buttons = [...w.element.querySelectorAll('button')].filter(node => visible(node) && visibleText(node).replace(/\s/g, '') === label.replace(/\s/g, ''))
+  const scope = label === '刷新' ? w.element.querySelector('.console-page-heading') : w.element
+  const buttons = [...scope.querySelectorAll('button')].filter(node => visible(node) && visibleText(node).replace(/\s/g, '') === label.replace(/\s/g, ''))
   assert.equal(buttons.length, 1, 'ONE_VISIBLE_NATIVE_BUTTON_' + label)
   assert.ok(buttons[0].classList.contains('ant-btn'), 'REAL_ANTD_BUTTON_' + label)
   assert.equal(buttons[0].disabled, !enabled, 'NATIVE_BUTTON_PERMISSION_' + label)

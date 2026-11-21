@@ -5,6 +5,7 @@ const path = require('node:path')
 const Module = require('node:module')
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 require(path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/question-transfer-read.cjs')(web)
 // Match the existing helper's pseudo-free jsdom adapter on the global entry point too.
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises } = require('@vue/test-utils')
@@ -35,9 +36,22 @@ function button(w, label) {
 }
 async function click(node) { node.click(); await settle() }
 function complete(request, items, total = items.length) { request.resolve({ status: 200, data: { items, total } }) }
-function bulkStates(w) { return ['导出 JSON', '批量编辑课程名', '批量删除'].map(label => button(w, label).disabled) }
+function bulkButtons(w) { return ['批量编辑课程名', '批量删除'].map(label => button(w, label).disabled) }
+async function bulkStates(w) {
+  // Export now offers both all rows and selected rows. Only the latter is selection-dependent.
+  await click(button(w, '导出'))
+  const dialog = [...document.querySelectorAll('.ant-modal')].find(el => el.textContent.includes('创建导出任务') && el.closest('.ant-modal-wrap')?.style.display !== 'none')
+  assert.ok(dialog, 'real export dialog')
+  const choice = [...dialog.querySelectorAll('label')].find(el => el.textContent.includes('上方选中的'))
+  const input = choice?.querySelector('input[type=radio]')
+  assert.ok(input, 'native selected-rows export option')
+  const disabled = input.disabled
+  const cancel = dialog.querySelector('.ant-modal-close')
+  assert.ok(cancel); await click(cancel)
+  return [disabled, ...bulkButtons(w)]
+}
 function witness(name, w) {
-  console.log('TIKU_LIFETIME_WITNESS ' + JSON.stringify({ name, questions: w.find('tbody').text(), selected: [...w.vm.selectedRowKeys], loading: w.vm.tabLoading, selectAllLoading: w.vm.selectAllLoading, disabled: bulkStates(w), queries: pending.map(x => x.query), writes: writes.length, nativeBrowser: false }))
+  console.log('TIKU_LIFETIME_WITNESS ' + JSON.stringify({ name, questions: w.find('tbody').text(), selected: [...w.vm.selectedRowKeys], loading: w.vm.tabLoading, selectAllLoading: w.vm.selectAllLoading, bulkEditDeleteDisabled: bulkButtons(w), queries: pending.map(x => x.query), writes: writes.length, nativeBrowser: false }))
 }
 async function search(w, text) {
   await w.find('input[placeholder="搜索问题"]').setValue(text)
@@ -113,7 +127,7 @@ test('TL04 filter reset retires pending select-all and late rows cannot re-enabl
   complete(all, [row(101, '旧范围题目')]); await settle()
   witness('TL04-filter-reset-retires-all-pages', w)
   assert.deepEqual([...w.vm.selectedRowKeys], [], 'TL04_OLD_FILTER_CANNOT_RESELECT')
-  assert.deepEqual(bulkStates(w), [true, true, true])
+  assert.deepEqual(await bulkStates(w), [true, true, true])
   assert.equal(w.vm.selectAllLoading, false)
 }))
 test('TL05 explicit cancel-all retires pending select-all and honors the newer user intent', () => fixture(async w => {
@@ -125,7 +139,7 @@ test('TL05 explicit cancel-all retires pending select-all and honors the newer u
   complete(all, [row(101, '初始题目'), row(202, '跨页题目')]); await settle()
   witness('TL05-user-cancel-wins', w)
   assert.deepEqual([...w.vm.selectedRowKeys], [], 'TL05_CANCEL_ALL_CANNOT_BE_UNDONE_BY_LATE_READ')
-  assert.deepEqual(bulkStates(w), [true, true, true])
+  assert.deepEqual(await bulkStates(w), [true, true, true])
   assert.equal(w.vm.selectAllLoading, false)
 }))
 test('TL06 unmount retires pending list errors without late toasts', async () => {
@@ -152,7 +166,7 @@ test('TL07 healthy multi-page select-all snapshots the submitted filter and pres
   assert.equal(w.vm.selectedRowKeys.length, 101)
   assert.equal(w.vm.selectedQuestions.length, 101)
   assert.equal(w.vm.allRowsSelected, true)
-  assert.deepEqual(bulkStates(w), [false, false, false])
+  assert.deepEqual(await bulkStates(w), [false, false, false])
 }))
 test('TL08 a cancelled older select-all cannot clear loading or selection of a newer select-all', () => fixture(async w => {
   await click(w.find('tbody input[type="checkbox"]').element)
