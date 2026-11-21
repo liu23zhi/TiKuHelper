@@ -7,6 +7,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), path = re
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter); Module._initPaths()
 require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/transfer-history-read.cjs')(web, ['billing'])
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 for (const name of ['DOMParser', 'HTMLInputElement', 'HTMLButtonElement', 'HTMLDivElement', 'CustomEvent']) globalThis[name] = window[name]
