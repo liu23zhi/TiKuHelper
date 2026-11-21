@@ -30,7 +30,7 @@ func ResolveApplicationMode(configured string) (string, error) {
 }
 
 type adminBootstrapPlan struct {
-	exists             bool
+	exists, generate   bool
 	original, password string
 	// defaultCredential 表示「库里仍是已知默认密码 123456」。
 	//
@@ -103,23 +103,14 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 	}
 	password := strings.TrimSpace(environment)
 
-	// 2026-11-19 用户拍板：**永久删除**「初始密码强度不足就拒绝启动」。
-	//
-	// 原行为：mode == production 且全新库时，TIKU_ADMIN_PASSWORD 不满足
-	// 8 位 + 大写 + 小写 + 数字 + 特殊字符就返回 error，进程 FATAL 退出。
-	// 后果与 2026-11-10 删掉的那条（默认密码 123456 拒绝启动）完全同构：
-	// 用户拿默认配置一键起 docker，容器起来就退出，提示只有一句英文，
-	// 既不知道要设什么，也没机会进后台改密码。
-	//
-	// 现在改成：强度不足只**告警**，启动照常。真正的安全杠杆是登录后的
-	// 「修改密码」入口与 WebUI 的默认密码告警，而不是把人在门外。
-	// validateBootstrapPassword 本身保留（供改密接口复用同一套规则），
-	// 只是不再作为启动闸门。
+	// The public factory value and the common "changeme" placeholder are not
+	// operator credentials. Preflight only records intent; it must never publish a file.
+	if mode == "production" && (password == "" || password == "123456" || strings.EqualFold(password, "changeme")) {
+		plan.generate = true
+		return plan, nil
+	}
 	if password == "" {
-		// 未提供时回退到默认值 —— 与开发模式同一个值，是刻意的：
-		// 两种情况本质都是「用户没指定初始密码」，不该因 TIKU_APP_MODE
-		// 不同而让同一份 docker-compose 行为不一致。
-		password = "123456"
+		password = "123456" // explicit development compatibility only
 	} else if mode == "production" {
 		if err := validateBootstrapPassword(password); err != nil {
 			logger.SysLog("[WARN] 初始管理员密码强度不足（" + err.Error() +
@@ -135,10 +126,21 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 }
 
 func applyAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
+	if database.DryRun {
+		return nil
+	}
+	if plan.generate {
+		return generateInitialAdminCredential(database, plan)
+	}
+	if plan.exists && plan.password == "" {
+		reportInitialAdminFile(database, plan.original)
+		return nil
+	}
+	return writeAdminBootstrap(database, plan)
+}
+
+func writeAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
 	if plan.exists {
-		if plan.password == "" {
-			return nil
-		}
 		// Credential versions are byte identities, not text values under the
 		// database's potentially case-insensitive collation.
 		var predicate string
@@ -161,7 +163,11 @@ func applyAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
 		}
 		return nil
 	}
-	return database.Create(&entity.User{ID: 1, Username: "admin", Password: plan.password, Nickname: "管理员", Role: "admin", Status: "enabled", Balance: 0, RegisterSource: "system"}).Error
+	return database.Create(initialAdministrator(plan.password)).Error
+}
+
+func initialAdministrator(password string) *entity.User {
+	return &entity.User{ID: 1, Username: "admin", Password: password, Nickname: "管理员", Role: "admin", Status: "enabled", Balance: 0, RegisterSource: "system"}
 }
 
 // SQLite file URI paths are decoded exactly once. url.Parse already decodes
@@ -200,10 +206,7 @@ func preflightAdminBootstrap(config configs.Config, mode, environment string) (a
 	if db != nil {
 		return resolveAdminBootstrap(db, mode, environment)
 	}
-	dsn := config.Mysql
-	if dsn == "" {
-		dsn = os.Getenv("SQL_DSN")
-	}
+	dsn, _ := resolveDatabaseDSN(config.Mysql, os.Getenv("SQL_DSN"))
 	var conn gorm.Dialector
 	if dsn != "" {
 		conn = mysql.Open(dsn)

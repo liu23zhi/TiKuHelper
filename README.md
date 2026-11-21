@@ -39,17 +39,13 @@ Windows 上 `core.autocrlf=true` 会让工作树是 CRLF，`gofmt -l` 因此误�
 .\scripts\local-gofmt.ps1 -Fix   # 修 REAL，写回 LF
 ```
 
-## 默认账号
+## 首次登录
 
-首次启动会自动创建管理员账号（`internal/registry` 初始化逻辑）：
+账号为 `admin`。生产环境首次创建管理员或补齐空凭据时：
 
-| 用户名 | 密码 |
-| --- | --- |
-| `admin` | `123456` |
-
-- 这是**出厂默认值**，登录后请立即修改。
-- 库里的密码字段兼容明文（`util.VerifyPassword` 保留 legacy plaintext 分支），
-  所以本地调试直接把 `users.password` 设为明文即可，不必先生成 bcrypt。
+- 可预先通过 `TIKU_ADMIN_PASSWORD` 指定自己的密码（最多 72 个 UTF-8 字节）。
+- 未指定，或留下 `123456` / `changeme` 占位值时，服务照常启动并生成本实例独有的随机初始密码。启动日志只给出**确切的本机文件路径**，不打印密码；在服务器上以服务账号读取，登录改密后删除该文件。SQLite 文件库使用数据库所在目录，MySQL / 内存库使用工作目录下的 `data/`；数据目录应仅允许受信任的运维账号写入。
+- 重启和修改环境变量均不会重置已有管理员密码。只要当前初始密码文件还在，重启会再次提示其路径；它不是登录一次即失效的令牌，**改密后**才不能再用于登录。仅显式开发模式兼容旧的无配置默认密码，请勿用于对外服务。
 - 登录需要人机验证（`captcha_provider=remote`）。本地脚本化调试可往
   `captcha_tokens` 插一条 `scene=login_password`、`status=active`、未过期的记录，
   然后把它作为 `captchaToken` 提交。

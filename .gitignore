@@ -74,3 +74,6 @@ password.txt
 # 本地构建产物（124MB，绝不入库）
 run/tikuAdapter.exe
 run/*.exe
+
+# Instance-only initial administrator credential (may sit beside any SQLite file).
+admin-bootstrap-*.password

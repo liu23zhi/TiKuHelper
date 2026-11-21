@@ -59,6 +59,7 @@ func TestS04ProductionAdminPlan(t *testing.T) {
 		{"dev_existing_default", "123456", "FixtureAdmin123!", "development", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
 			wantDefaultCredential := tc.stored == "123456" || tc.stored == "HASH_DEFAULT"
 			d, err := gorm.Open(sqlite.Open("file:"+tc.name+"?mode=memory&cache=shared"), &gorm.Config{})
 			if err != nil {
@@ -124,7 +125,9 @@ func TestS04ProductionAdminPlan(t *testing.T) {
 			want := plain
 			if tc.stored == "" {
 				want = strings.TrimSpace(tc.env)
-				if want == "" {
+				if tc.mode == "production" && (want == "" || want == "123456") {
+					_, want = generatedAdminFile(t, "data")
+				} else if want == "" {
 					want = "123456"
 				}
 			}

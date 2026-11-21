@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,6 +36,8 @@ const (
 	environmentPassword = "S04-New-Fixture!2026"
 	legacyBalance       = 12.345678
 )
+
+var initialPasswordFilename = regexp.MustCompile("^admin-bootstrap-[0-9a-f]{32}\\.password$")
 
 var legacyCreatedAt = time.Date(2025, time.January, 2, 3, 4, 5, 0, time.FixedZone("S04+08", 8*3600))
 
@@ -53,6 +56,7 @@ type databaseObservation struct {
 	Operation                  string `json:"operation"`
 	QuickCheck                 string `json:"quickCheck"`
 	Bcrypt                     bool   `json:"bcrypt"`
+	FactoryPasswordRejected    bool   `json:"factoryPasswordRejected"`
 	ExpectedPasswordMatches    bool   `json:"expectedPasswordMatches"`
 	EnvironmentPasswordMatches bool   `json:"environmentPasswordMatches"`
 	UnrelatedFieldsPreserved   bool   `json:"unrelatedFieldsPreserved"`
@@ -176,6 +180,29 @@ func inspectDatabase(p, kind string) (databaseObservation, error) {
 	expected := environmentPassword
 	if kind == "legacy" {
 		expected = legacyPassword
+	} else if kind == "generated" {
+		files, err := filepath.Glob(filepath.Join(filepath.Dir(p), "admin-bootstrap-*.password"))
+		if err != nil || len(files) != 1 || !initialPasswordFilename.MatchString(filepath.Base(files[0])) {
+			return report, errors.New("expected one instance-specific operator file")
+		}
+		st, err := os.Lstat(files[0])
+		if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+			return report, errors.New("initial password file is not private")
+		}
+		links, err := unixStatValue(st, "Nlink")
+		if err != nil || links != 1 {
+			return report, errors.New("unexpected initial password file hardlink")
+		}
+		raw, err := os.ReadFile(files[0])
+		if err != nil {
+			return report, errors.New("cannot read synthetic initial password")
+		}
+		expected = strings.TrimSpace(string(raw))
+		known, _ := util.VerifyPassword(row.Password, "123456")
+		report.FactoryPasswordRejected = !known
+		if len(expected) < 26 || !report.FactoryPasswordRejected {
+			return report, errors.New("factory credential or insufficiently long generated password")
+		}
 	}
 	report.ExpectedPasswordMatches, _ = util.VerifyPassword(row.Password, expected)
 	report.EnvironmentPasswordMatches, _ = util.VerifyPassword(row.Password, environmentPassword)
@@ -233,7 +260,7 @@ func readWriteProbe(p string) ([]int, error) {
 	return counts, nil
 }
 func verifyDatabase(p, kind string) (databaseObservation, error) {
-	if kind != "new" && kind != "legacy" && kind != "development" {
+	if kind != "new" && kind != "legacy" && kind != "development" && kind != "generated" {
 		return databaseObservation{}, errors.New("unknown synthetic verification mode")
 	}
 	report, err := inspectDatabase(p, kind)
@@ -426,6 +453,8 @@ func ownershipEntries(p string, uid, gid int, fixedRoot string) ([]ownershipEntr
 			switch parts[1] {
 			case "fixture.db", "fixture.db-wal", "fixture.db-shm", "fixture.db-journal":
 				allowed = info.Mode().IsRegular()
+			default:
+				allowed = initialPasswordFilename.MatchString(parts[1]) && info.Mode().IsRegular() && info.Mode().Perm() == 0600
 			}
 		case len(parts) == 2 && parts[0] == "logs":
 			if parts[1] == "archive" {
@@ -546,7 +575,7 @@ func run(args []string, out io.Writer) int {
 		return emit(report)
 	}
 	switch operation {
-	case "verify-new", "verify-legacy", "verify-development":
+	case "verify-new", "verify-legacy", "verify-development", "verify-generated":
 		report, err := verifyDatabase(*db, strings.TrimPrefix(operation, "verify-"))
 		if err != nil {
 			return fail(operation, err)
