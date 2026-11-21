@@ -12,7 +12,7 @@ const user = require('../../src/utils/currentUser.js')
 const admin = { id: 111, role: 'admin', username: 'fixture_admin' }
 const normal = { id: 222, role: 'user', username: 'fixture_user' }
 const ownerCommand = 'powershell -EncodedCommand ZgA='
-const row = (name, ownerId) => ({ id: 7, ownerId, name, scheme: 'https', baseDomain: 'example.test', shortCode: 'a', versionId: 5, command: ownerCommand })
+const row = (name, ownerId) => ({ id: 7, ownerId, name, scheme: 'https', baseDomain: 'fixture.example.test', shortCode: 'a', versionId: 5, command: ownerCommand })
 const okay = data => ({ status: 200, data })
 const reads = [], writes = [], purchases = [], redemptions = [], updates = [], policyWrites = [], deletes = [], mounts = []
 let holdReads = false, holdWrites = false, activationPriceFixture = 12.345678
@@ -26,6 +26,7 @@ api.exports = {
     return new Promise(resolve => reads.push({ params, resolve }))
   },
   getScriptVersions: async () => okay([{ id: 5, version: 'synthetic', nativeLeaseProtocol: true, isCurrent: true }]),
+  getScriptDomainFormats: async () => okay({ formats: [{ raw: '*.example.test', kind: 'wildcard', host: 'example.test', slot: 'prefix' }] }),
   getScriptDomainSettings: async () => okay({ domains: ['example.test'], allowWildcard: true }),
   getScriptEscrowPolicy: async () => okay({ targetMicros: 80000000, minimumMicros: 60000000, multiplierMicros: 1000000 }),
   getScriptActivationCodePrice: async () => okay({ enabled: true, price: activationPriceFixture }),
@@ -51,11 +52,12 @@ async function settle() { await nextTick(); await flushPromises(); await nextTic
 async function open(account = admin) {
   user.setStoredCurrentUser(account)
   const history = createMemoryHistory(), router = createRouter({ history, routes: [
-    { path: '/adapter/scripts', component: PAGE },
+    { path: '/scripts', name: 'scripts', meta: { viewMode: 'self' }, component: PAGE },
+    { path: '/script-admin', name: 'script-admin', meta: { viewMode: 'admin' }, component: PAGE },
     { path: '/other', component: { render: () => h('div', 'Other') } },
     { path: '/login', component: { render: () => h('div', 'Login') } },
   ] })
-  await router.push('/adapter/scripts'); await router.isReady()
+  await router.push(account.role === 'admin' ? '/script-admin' : '/scripts'); await router.isReady()
   const wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router, Antd] } })
   mounts.push({ wrapper, history })
   await settle()
@@ -179,7 +181,8 @@ test('script save deduplicates clicks and retains the idempotency key only for a
   state.openCreate()
   await settle()
   state.setFormField('name', '合成脚本')
-  state.setFormField('baseDomain', 'example.test')
+  state.setDomainRowFormat(0, '*.example.test')
+  state.setDomainRowSlot(0, 'fixture')
   const editor = page.findComponent(Antd.Modal)
   assert.ok(editor.exists())
   editor.vm.$emit('ok')
@@ -215,7 +218,7 @@ test('leaving the script page asks before discarding a draft but never traps log
   assert.ok(cancel)
   cancel.click()
   await navigation
-  assert.equal(router.currentRoute.value.path, '/adapter/scripts')
+  assert.equal(router.currentRoute.value.path, '/script-admin')
   assert.equal(state.form.name, '待保留草稿')
   await router.push('/login')
   await settle()
@@ -289,7 +292,8 @@ test('redeeming sends code only to redemption; creation uses entitlement and edi
   state.openCreate()
   state.setFormField('billingMode', 'activation_code')
   state.setFormField('name', '一次合成脚本')
-  state.setFormField('baseDomain', 'example.test')
+  state.setDomainRowFormat(0, '*.example.test')
+  state.setDomainRowSlot(0, 'fixture')
   state.setFormField('runDurationMinutes', 35)
   state.setFormField('notifyOnDenied', true)
   await settle()
