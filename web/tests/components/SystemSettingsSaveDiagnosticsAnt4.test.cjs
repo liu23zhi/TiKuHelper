@@ -24,6 +24,7 @@ const oldAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'actual request loads after inert adapter')
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url);calls.push({method,url})
+ const aux=require('../helpers/settings-panel-reads.cjs').settingsPanelRead(config);if(aux)return Promise.resolve(aux)
  const response=(status,data,id)=>({status,data,headers:id?{'x-request-id':id}:{},config,request:{memoryOnly:true}})
  if(method==='get'&&url==='/api/system-settings')return Promise.resolve(response(200,detail()))
  if(method==='get'&&url==='/api/payment-methods')return Promise.resolve(response(200,[]))

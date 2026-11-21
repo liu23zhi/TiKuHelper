@@ -51,6 +51,16 @@ for (const kind of ['success', 'error', 'warning']) {
 }
 const nativeConfirm = Antd.Modal.confirm.bind(Antd.Modal)
 Antd.Modal.confirm = options => { confirms.push(options); return nativeConfirm(options) }
+// The page mounts adjacent real panels; permit only their known synthetic GETs.
+const siblingRead = require('../helpers/settings-panel-reads.cjs').settingsPanelRead
+const siblingAxios = require('axios'), originalSiblingAdapter = siblingAxios.defaults.adapter, unplannedSiblingReads = []
+siblingAxios.defaults.adapter = async config => {
+  const reply = siblingRead(config)
+  if (!reply) { unplannedSiblingReads.push([config.method,config.url]); throw new Error('Unplanned settings-panel request') }
+  return reply
+}
+require('node:test').afterEach(() => assert.deepEqual(unplannedSiblingReads.splice(0), []))
+require('node:test').after(() => { siblingAxios.defaults.adapter = originalSiblingAdapter })
 const Page = require(path.join(root, 'src/pages/SystemSettings/index.vue'))
 const PaymentPanel = require(path.join(root, 'src/pages/SystemSettings/PaymentMethodPanel.vue'))
 const IconPicker = require(path.join(root, 'src/pages/SystemSettings/components/PaymentMethodIconPicker.vue'))

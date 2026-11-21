@@ -24,6 +24,7 @@ function sameObject(a,b){const x=Object.keys(a).sort(),y=Object.keys(b).sort();r
 const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),actor=user.getStoredCurrentUser(),call={method,url,actor:actor?.id||null,role:actor?.role||null};calls.push(call)
+ const aux=require('../helpers/settings-panel-reads.cjs').settingsPanelRead(config);if(aux)return Promise.resolve(aux)
  const allowed=method==='get'&&['/api/system-settings','/api/payment-methods','/api/refund-agreement','/api/tickets/config','/api/admin/ticket-image-cache/settings','/api/admin/log-settings'].includes(url)||method==='put'&&url==='/api/system-settings'
  if(!allowed){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  let body
@@ -160,7 +161,7 @@ register('SC05 explicit logout with cache removal denied still retires exposed s
  oldInput('SYNTHETIC_RETIRED_CACHED_LOGOUT_EDIT')
  check(w.vm.formState.siteName!=='SYNTHETIC_RETIRED_CACHED_LOGOUT_EDIT','captured old input entry cannot edit after explicit cached logout')
  oldSave.click();oldRefresh();await settle()
- check(calls.length===before&&calls.filter(c=>c.method==='put').length===0,'old native save and captured refresh before tick cannot dispatch private GET/PUT after cached logout')
+ check(calls.length===before&&calls.filter(c=>c.method==='put').length===0,'old native save/refresh cannot dispatch private GET/PUT after cached logout: '+JSON.stringify(calls.slice(before).map(c=>[c.method,c.url])))
  oldRefresh();oldSave.click();await settle()
  check(calls.length===before&&calls.filter(c=>c.method==='put').length===0&&!w.vm.canManageSettings(),'after ticks old private entries stay irreversibly retired, not restored by retained cache')
  cur.observations.push({label:'cached logout, no raw secret or full form recorded',logoutEpochAdvanced:user.getCurrentUserLogoutEpoch()!==epoch,cachedAdminStillPresent:user.getStoredCurrentUser()?.id===A.id,oldInputEmpty:n.value.length===0,oldInputMasked:n.type==='password',oldInputVisible:visible(n),permission:w.vm.canManageSettings(),privateCallsBefore:before,privateCallsAfter:calls.length,siteChangedFromPrelogout:w.vm.formState.siteName!==siteBefore,state:view(w)})

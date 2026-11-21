@@ -17,8 +17,9 @@ import { currentUserIdentity } from '@/utils/currentUserScope'
 import { useCurrentUserDisplay, getCurrentUserLogoutEpoch, isAdminUser } from '@/utils/currentUser'
 const props=defineProps({disabled:Boolean})
 const {currentUser}=useCurrentUserDisplay(), form=reactive({enabled:false,percent:0}),loading=ref(false),saving=ref(false),loaded=ref(false),error=ref('')
+const mountedLogoutEpoch = getCurrentUserLogoutEpoch()
 let alive=true,version=0
-const allowed=()=>alive&&!props.disabled&&isAdminUser(currentUser.value)&&!['banned','disabled'].includes(String(currentUser.value?.status||''))
+const allowed=()=>alive&&getCurrentUserLogoutEpoch()===mountedLogoutEpoch&&!props.disabled&&isAdminUser(currentUser.value)&&!['banned','disabled'].includes(String(currentUser.value?.status||''))
 const owner=()=>{const key=version,identity=currentUserIdentity(currentUser.value),logout=getCurrentUserLogoutEpoch();return()=>allowed()&&key===version&&identity===currentUserIdentity(currentUser.value)&&logout===getCurrentUserLogoutEpoch()}
 async function load(){if(!allowed()||loading.value||saving.value)return;const owns=owner();loading.value=true;error.value='';try{const res=await request({url:'/api/admin/referral-settings',method:'get',errorFeedback:'local'});if(!owns())return;if(res.status!==200)throw res;Object.assign(form,{enabled:res.data.enabled===true,percent:Number(res.data.rate)*100});loaded.value=true}catch(e){if(owns())error.value=e?.data?.message||'邀请配置读取失败'}finally{if(owns())loading.value=false}}
 async function save(){if(!allowed()||!loaded.value||saving.value)return;const owns=owner();saving.value=true;error.value='';try{const res=await request({url:'/api/admin/referral-settings',method:'put',errorFeedback:'local',data:{enabled:form.enabled,rate:Number(form.percent)/100}});if(!owns())return;if(res.status!==200)throw res;message.success('邀请配置已保存')}catch(e){if(owns())error.value=e?.data?.message||'邀请配置保存失败'}finally{if(owns())saving.value=false}}
