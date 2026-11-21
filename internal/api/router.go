@@ -100,6 +100,8 @@ func SetAPIRouter(router *gin.Engine) {
 	// 这也是最容易被「顺手补一个管理员校验」改回去的地方，所以 auth 只到 Auth 这一层。
 	apiRouter.GET("/system/storage-status", controller.Auth, controller.StorageStatus)
 	// 扩展只可向自己的题库服务提交预定义诊断事件；可读路由单独走管理会话。
+	apiRouter.GET("/extension-logs/policy", controller.GetExtensionIngestPolicy)
+	apiRouter.POST("/extension-logs/start", middleware.BodyLimit(4096), controller.StartExtensionLogs)
 	apiRouter.POST("/extension-logs", middleware.BodyLimit(64<<10), controller.UploadExtensionLogs)
 	apiRouter.GET("/admin/extension-logs", controller.Auth, middleware.RequireAdmin, controller.AdminExtensionLogs)
 	apiRouter.GET("/admin/extension-logs/settings", controller.Auth, middleware.RequireAdmin, controller.GetExtensionLogPolicy)

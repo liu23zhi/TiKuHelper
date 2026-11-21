@@ -25,6 +25,8 @@ func TestExtensionLogsUploadReadAndConfigure(t *testing.T) {
 	}
 	r := gin.New()
 	r.POST("/api/extension-logs", UploadExtensionLogs)
+	r.POST("/api/extension-logs/start", StartExtensionLogs)
+	r.GET("/api/extension-logs/policy", GetExtensionIngestPolicy)
 	admin := r.Group("/api/admin", func(c *gin.Context) {
 		if role := c.GetHeader("X-Test-Role"); role != "" {
 			c.Set("user", &entity.User{ID: 9, Role: role})
@@ -43,7 +45,7 @@ func TestExtensionLogsUploadReadAndConfigure(t *testing.T) {
 		r.ServeHTTP(res, q)
 		return res.Code, res.Body.String()
 	}
-	batch := `{"version":"1.2.3","entries":[{"time":"2026-11-21T08:00:00Z","level":"warn","event":"network.offline"}]}`
+	batch := `{"version":"1.2.3","device_id":"fixture-device","launch_id":"11111111-1111-4111-8111-111111111111","entries":[{"time":"2026-11-21T08:00:00Z","level":"warn","event":"network.offline"}]}`
 	base := "/api/extension-logs"
 	adm := "/api/admin/extension-logs"
 	for _, key := range []string{"", "Bearer invalid"} {
@@ -54,6 +56,21 @@ func TestExtensionLogsUploadReadAndConfigure(t *testing.T) {
 	for _, b := range []string{strings.Replace(batch, `"warn"`, `"warn","email":"do-not-store"`, 1), batch + " {}", strings.Replace(batch, "network.offline", "unsupported", 1)} {
 		if code, _ := call("POST", base, b, "Bearer fixture-only", ""); code != 400 {
 			t.Fatalf("invalid event accepted %d", code)
+		}
+	}
+	meta := `{"version":"1.2.3","device_id":"fixture-device","launch_id":"11111111-1111-4111-8111-111111111111"}`
+	if code, _ := call("GET", base+"/policy", "", "", ""); code != 401 {
+		t.Fatalf("anonymous policy %d", code)
+	}
+	if code, body := call("GET", base+"/policy", "", "Bearer fixture-only", ""); code != 200 || body != `{"enabled":true}` {
+		t.Fatalf("policy leaks fields: %d %s", code, body)
+	}
+	if code, body := call("POST", base, batch, "Bearer fixture-only", ""); code != 409 || !strings.Contains(body, "need_start") {
+		t.Fatalf("missing launch not detected: %d %s", code, body)
+	}
+	for _, code := range []int{201, 200} {
+		if c, _ := call("POST", base+"/start", meta, "Bearer fixture-only", ""); c != code {
+			t.Fatalf("idempotent start %d, want %d", c, code)
 		}
 	}
 	if c, _ := call("POST", base, batch, "Bearer fixture-only", ""); c != 201 {
@@ -67,16 +84,35 @@ func TestExtensionLogsUploadReadAndConfigure(t *testing.T) {
 	}
 	c, raw := call("GET", adm+"/settings", "", "", "admin")
 	var p extensionlogs.Policy
-	if c != 200 || json.Unmarshal([]byte(raw), &p) != nil || p != (extensionlogs.Policy{RetentionDays: 7, MaxGB: 10}) {
+	if c != 200 || json.Unmarshal([]byte(raw), &p) != nil || p != (extensionlogs.Policy{Enabled: true, RetentionDays: 7, MaxGB: 10}) {
 		t.Fatalf("defaults %d %s", c, raw)
 	}
-	if c, _ = call("PUT", adm+"/settings", `{"retention_days":5,"max_gb":3}`, "", "user"); c != 403 {
+	if c, _ = call("PUT", adm+"/settings", `{"enabled":false,"retention_days":5,"max_gb":3}`, "", "user"); c != 403 {
 		t.Fatalf("nonadmin edit %d", c)
 	}
-	if c, _ = call("PUT", adm+"/settings", `{"retention_days":0,"max_gb":3}`, "", "admin"); c != 400 {
+	if c, _ = call("PUT", adm+"/settings", `{"enabled":false,"retention_days":0,"max_gb":3}`, "", "admin"); c != 400 {
 		t.Fatalf("invalid policy %d", c)
 	}
-	if c, raw = call("PUT", adm+"/settings", `{"retention_days":5,"max_gb":3}`, "", "admin"); c != 200 || !strings.Contains(raw, `"max_gb":3`) {
+	if c, raw = call("PUT", adm+"/settings", `{"enabled":false,"retention_days":5,"max_gb":3}`, "", "admin"); c != 200 || !strings.Contains(raw, `"max_gb":3`) {
 		t.Fatalf("policy update %d %s", c, raw)
 	}
+	if c, _ = call("POST", base, batch, "Bearer fixture-only", ""); c != 403 {
+		t.Fatalf("disabled ingest %d", c)
+	}
+	if c, _ = call("POST", base+"/start", meta, "Bearer fixture-only", ""); c != 403 {
+		t.Fatalf("disabled start %d", c)
+	}
+	if c, raw = call("GET", adm+"?user_id=17&device_id=fixture-device&launch_id=11111111-1111-4111-8111-111111111111", "", "", "admin"); c != 200 || !strings.Contains(raw, "session.start") {
+		t.Fatalf("missing launch: %d", c)
+	}
+	if c, raw = call("GET", adm+"?user_id=18", "", "", "admin"); c != 200 || strings.Contains(raw, "fixture-device") {
+		t.Fatalf("filter ignored: %d", c)
+	}
+	if c, _ = call("GET", adm+"?user_id=-1", "", "", "admin"); c != 400 {
+		t.Fatal("invalid account id")
+	}
+	if c, _ = call("GET", adm, "", "Bearer fixture-only", ""); c != 403 {
+		t.Fatal("extension bearer allowed log read")
+	}
+
 }
