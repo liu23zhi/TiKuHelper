@@ -3,7 +3,7 @@
 # 用法：
 #   1) 先把证书放进 ./nginx/ssl（fullchain.pem / privkey.key），
 #      扫码图放进 ./nginx/html（可选，对应 /api/Wechat_qc_code）。
-#   2) 生产新建/空凭据管理员先设置 TIKU_ADMIN_PASSWORD；已有凭据不会被该变量重置。
+#   2) 生产首次启动可设置 TIKU_ADMIN_PASSWORD；不设置则生成随机初始密码，见下方。
 #      同时显式设置 TRUSTED_PROXIES=none 或实际 nginx IP/CIDR；也可显式选择
 #      TRUSTED_PROXIES_FILE=/app/trusted_proxies.txt（TRUSTED_PROXIES 留空时使用）。
 #   3) docker compose up -d --build
@@ -29,8 +29,8 @@ services:
     environment:
       TIKU_APP_MODE: "${TIKU_APP_MODE:-production}"
       JWT_SECRET: "${JWT_SECRET:-}"
-      # 生产新建/空凭据管理员须强密码：至少8字符且大写/小写/数字/特殊字符齐全，UTF-8不超过72字节。
-      # 已有有效凭据不要求该变量，也不会被其重置；是否需初始化由后端判定。
+      # 生产新建/空凭据管理员：留空或保留 123456 / changeme 占位值则自动生成随机密码。
+      # 日志只提示 /app/data 内的具体文件（默认配置对应宿主 ./data）；改密后删除。已有凭据不重置。
       TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
       # 生产须显式选 none（不信任转发头）或实际受限 IP/CIDR；不补入本机/私网默认段。
       # 空/非法/合并覆盖整个地址族的列表会拒绝启动，不是信任所有来源。

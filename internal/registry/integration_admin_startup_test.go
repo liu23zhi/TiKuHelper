@@ -40,19 +40,11 @@ func TestIntegrationAdminBootstrapChild(t *testing.T) {
 func TestIntegrationAdminBootstrap(t *testing.T) {
 	cases := []struct {
 		name, mode, password, seed, expected string
-		reject, missing                      bool
+		generated                            bool
 	}{
-		// 2026-11-19 用户拍板：**永久删除**「初始密码强度不足就拒绝启动」。
-		//
-		// 这两条原来是 reject: true（生产模式下不给密码 / 给弱密码 → 进程 FATAL
-		// 退出、连库文件都不创建）。但那条闸门与 2026-11-10 已删掉的「默认密码
-		// 123456 拒绝启动」同构：用户拿默认配置起 docker，容器起来就退出，
-		// 提示只有一句英文，既不知道要设什么也没机会进后台改密码。
-		//
-		// 现在的语义：两种情况都**启动成功**，密码回退到默认 123456，
-		// 强度不足只在日志里告警（validateBootstrapPassword 仍保留，供改密接口复用）。
-		{name: "missing_production_password_defaults", expected: "123456"},
-		{name: "weak_production_password_accepted", password: "123456", expected: "123456"},
+		{name: "missing_production_password_is_private", generated: true},
+		{name: "factory_placeholder_is_private", password: "123456", generated: true},
+		{name: "operator_weak_non_placeholder_is_not_rejected", password: "mine", expected: "mine"},
 		{name: "explicit_development_compat", mode: "development", expected: "123456"},
 		{name: "strong_production_bootstrap", password: "Create#123", expected: "Create#123"},
 		{name: "legacy_same_secret_upgrade_not_environment_reset", password: "Replace#456", seed: "Original#123", expected: "Original#123"},
@@ -83,18 +75,8 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 			c := exec.Command(os.Args[0], "-test.run=^TestIntegrationAdminBootstrapChild$", "-log-dir", filepath.Join(t.TempDir(), "logs"))
 			c.Env = append(os.Environ(), "ADMIN_INTEGRATION_CHILD=1", "ADMIN_INTEGRATION_DB="+path, "TIKU_APP_MODE="+tc.mode, "TIKU_ADMIN_PASSWORD="+tc.password, "SQL_DSN=")
 			out, err := c.CombinedOutput()
-			if tc.reject {
-				if err == nil {
-					t.Fatalf("production policy accepted unsafe startup; child=%s", out)
-				}
-				if tc.missing {
-					if _, e := os.Stat(path); !os.IsNotExist(e) {
-						t.Fatal("rejected startup created SQLite file")
-					}
-					return
-				}
-			} else if err != nil {
-				t.Fatalf("valid fixture rejected: %v child=%s", err, out)
+			if err != nil {
+				t.Fatalf("valid fixture rejected: %v", err)
 			}
 			d := integrationAdminDB(t, path)
 			defer func() { s, _ := d.DB(); _ = s.Close() }()
@@ -102,13 +84,20 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 			if e := d.Where("id=?", 1).First(&row).Error; e != nil {
 				t.Fatal(e)
 			}
-			if tc.reject {
-				if row.Password != tc.seed {
-					t.Fatal("refused credential was reset")
+			expected := tc.expected
+			if tc.generated {
+				file, secret := generatedAdminFile(t, filepath.Dir(path))
+				if !strings.Contains(string(out), file) || strings.Contains(string(out), secret) {
+					t.Fatal("operator was not told the exact local file, or logs disclosed the secret")
 				}
-				return
+				if factory, _ := util.VerifyPassword(row.Password, "123456"); factory {
+					t.Fatal("factory credential accepted")
+				}
+				expected = secret
+			} else if paths, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "admin-bootstrap-*.password")); len(paths) != 0 {
+				t.Fatal("explicit or existing credential published a password")
 			}
-			matched, _ := util.VerifyPassword(row.Password, tc.expected)
+			matched, _ := util.VerifyPassword(row.Password, expected)
 			if !matched {
 				t.Fatal("stored credential does not preserve intended secret")
 			}

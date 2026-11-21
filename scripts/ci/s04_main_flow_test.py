@@ -47,6 +47,15 @@ class S04MainFlowContracts(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(AssertionError):
                 flow.check_probe(json.dumps(bad), 'verify-legacy')
 
+    def test_generated_requires_an_authenticating_private_file_and_rejected_factory_password(self):
+        good = {'ok': True, 'operation': 'verify-generated', 'quickCheck': 'ok', 'bcrypt': True,
+                'expectedPasswordMatches': True, 'environmentPasswordMatches': False, 'factoryPasswordRejected': True,
+                'unrelatedFieldsPreserved': True, 'rwProbe': [0, 1, 0], 'userCount': 1, 'readonlyInspection': True}
+        self.assertEqual(flow.check_probe(json.dumps(good), 'verify-generated'), good)
+        for key in ('expectedPasswordMatches', 'factoryPasswordRejected', 'environmentPasswordMatches'):
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                flow.check_probe(json.dumps(dict(good, **{key: not good[key]})), 'verify-generated')
+
     def test_owner_probe_requires_real_preflight_and_post_chown_verification(self):
         good = {'ok': True, 'operation': 'fixture-owner', 'uid': 1000, 'gid': 1000,
                 'allOwned': True, 'symlinksRejected': True, 'hardlinksRejected': True,
