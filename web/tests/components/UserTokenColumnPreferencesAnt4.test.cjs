@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 const { test, afterEach } = require('node:test')
 const assert = require('node:assert/strict'), path = require('node:path'), Module = require('node:module')
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
@@ -19,10 +20,14 @@ api.exports = {
  getPhoneLocations: () => Promise.resolve(ok({})), getIpLocations: () => Promise.resolve(ok({})),
  ...Object.fromEntries(['addUser', 'updateUser', 'adjustUserBalance', 'resetUserPassword', 'delUser', 'createWechatLoginQRCode', 'resolveAdminWechatIDByScan', 'resolveAdminWechatIDByCode', 'createAccessToken', 'updateAccessToken', 'deleteAccessToken'].map(name => [name, () => Promise.resolve(ok({}))])),
 }; require.cache[apiPath] = api
+require('../helpers/token-level-read.cjs').install(web)
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
 async function page(name, account = admin) {
  user.setStoredCurrentUser(account)
- const w = mount(require(path.join(web, 'src/pages', name, 'index.vue')), { attachTo: document.body, global: { plugins: [Antd] } }); wrappers.push(w)
+ const component = require(path.join(web, 'src/pages', name, 'index.vue'))
+ const router = name === 'AccessTokenManagement' ? await require('../helpers/token-view-router.cjs')(component) : null
+ const w = mount(component, { attachTo: document.body, global: { plugins: router ? [Antd, router] : [Antd] } })
+ w.fixtureRouter = router; wrappers.push(w)
  await settle(); return w
 }
 function keys(w) { return w.vm.columns.map(column => column.key) }
@@ -31,7 +36,7 @@ async function choose(w, selected) { settings(w).vm.$emit('update:modelValue', s
 function storedPreferences() { return ['localStorage', 'sessionStorage'].flatMap(area => Array.from({ length: window[area].length }, (_, index) => [area, window[area].key(index), window[area].getItem(window[area].key(index))]).filter(([, key]) => key !== 'adapter_current_user')) }
 afterEach(async () => {
  console.log('USER_TOKEN_COLUMN_LEDGER ' + JSON.stringify({ calls, session: storedPreferences() }))
- for (const w of wrappers) if (w.exists()) w.unmount(); wrappers.length = 0
+ for (const w of wrappers) { if (w.exists()) w.unmount(); w.fixtureRouter?.options.history.destroy() }; wrappers.length = 0
  user.clearStoredCurrentUser(); window.sessionStorage.clear(); window.localStorage.clear(); Antd.message.destroy(); Antd.Modal.destroyAll(); await settle(); document.body.replaceChildren(); calls.length = 0
 })
 
@@ -69,11 +74,11 @@ test('token table preferences preserve token name and operation while recalculat
  settings(w).vm.$emit('reset'); await settle(); assert.deepEqual(keys(w), original)
 })
 test('all-token view keeps a required owner column and cannot import it into ordinary-user views', async () => {
- const w = await page('AccessTokenManagement'); w.vm.toggleAllTokens(); await settle(); assert.ok(keys(w).includes('username'))
+ const w = await page('AccessTokenManagement'); await w.fixtureRouter.push('/token-admin'); await settle(); assert.ok(keys(w).includes('username'))
  await choose(w, ['name', 'operation', 'tokenValue']); assert.ok(keys(w).includes('username'), 'owner stays visible for administrative all-token view')
  user.setStoredCurrentUser({ ...admin, role: 'user' }); await settle(); assert.equal(w.vm.showAllTokens, false); assert.ok(!keys(w).includes('username'))
  await choose(w, ['name', 'operation', 'username']); assert.deepEqual(keys(w), ['name', 'operation'])
- const count = calls.length; w.vm.toggleAllTokens(); await settle(); assert.equal(calls.length, count); assert.ok(!keys(w).includes('username'))
+ const count = calls.length; await w.fixtureRouter.push('/token-admin'); await settle(); assert.equal(calls.length, count); assert.ok(!keys(w).includes('username'))
  console.log('TOKEN_ROLE_COLUMN_OBSERVED ' + JSON.stringify({ allView: w.vm.showAllTokens, columns: keys(w), unprivilegedIO: calls.length - count }))
 })
 test('token column choices restore in the same tab without persisting token plaintext visibility or another identity', async () => {

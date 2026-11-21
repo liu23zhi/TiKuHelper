@@ -31,13 +31,8 @@ async function page(account = admin, realDialog = false, withRoutes = false) {
  const plugins = [Antd]
  let router
  if (withRoutes) {
-  const { createRouter, createMemoryHistory } = require('vue-router')
-  router = createRouter({ history: createMemoryHistory(), routes: [
-   { path: '/my-tokens', component: PAGE, meta: { viewMode: 'self' } },
-   { path: '/token-admin', component: PAGE, meta: { viewMode: 'admin' } },
-  ] })
-  await router.push('/my-tokens'); await router.isReady()
-  plugins.push(router)
+  router = await require('../helpers/token-view-router.cjs')(PAGE)
+    plugins.push(router)
  }
  const w = mount(PAGE, { attachTo: document.body, global: { plugins } }); wrappers.push(w)
  w.fixtureRouter = router
