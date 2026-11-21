@@ -17,7 +17,7 @@ import * as ticketAttachmentHelpers from "./ticketAttachmentHelpers.mjs";
 // 这里是把它注入到被执行的 script 作用域里（与 ticketHelpers 同样的注入方式）。
 import * as ticketCreateTypeHelpers from "../pages/Tickets/createTicketTypeHelpers.mjs";
 import * as refundTicketHelpers from "../pages/Tickets/refundTicketHelpers.mjs";
-import { isAdminUser, getCurrentUserLogoutEpoch } from "./currentUser.js";
+import { isAdminUser, getCurrentUserLogoutEpoch, getCurrentSessionRevision } from "./currentUser.js";
 import { ensureRequestFailure } from "./requestFailureView.mjs";
 
 const require = createRequire(import.meta.url);
@@ -84,6 +84,8 @@ async function loadTicketPage(overrides = {}) {
     useCurrentUserDisplay: () => ({ currentUser }),
     useCurrentUserRequestScope,
     isAdminUser,
+    getCurrentUserLogoutEpoch,
+    getCurrentSessionRevision,
     message: { success() {}, error() {}, warning() {} },
     getTickets: async () => ({ data: { data: { items: [] } } }),
     getTicket: async (id) => ({
@@ -111,7 +113,7 @@ async function loadTicketPage(overrides = {}) {
   const state = scope.run(() =>
     new Function(
       ...Object.keys(dependencies),
-      `${script}\nreturn {loadDetail, loadTickets, submitReply, saveStatus, detailTicket, detailStatus, messages, replyBody, tickets, notificationConfig, configSaving, configTesting, saveNotificationConfig, testNotification, loadNotificationConfig, pageEntry, configLoaded, canManage, setConfig, clearSavedWebhook, keepSavedWebhook};`
+      `${script}\nreturn {loadDetail, loadTickets, submitReply, saveStatus, detailTicket, detailStatus, messages, replyBody, tickets, notificationConfig, configSaving, configTesting, saveNotificationConfig, testNotification, loadNotificationConfig, notificationEntry, configLoaded, canManage, setConfig, clearSavedWebhook, keepSavedWebhook};`
     )(...Object.values(dependencies))
   );
   return { ...state, close: () => { unmount.forEach(callback => callback()); scope.stop(); } };
@@ -168,7 +170,7 @@ async function mountNotificationForm(page) {
   });
   const app = renderer.createApp({ setup: () => ({
     config: page.notificationConfig,
-    entry: page.pageEntry,
+    entry: page.notificationEntry,
     loaded: page.configLoaded,
     disabled: Vue.computed(() => !page.canManage()),
     saving: page.configSaving,

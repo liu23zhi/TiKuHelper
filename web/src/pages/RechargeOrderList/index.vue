@@ -28,7 +28,7 @@
         type="info"
         show-icon
         class="page-alert"
-        :message="isAdmin ? '人工核对不会入账或执行退款。历史入账待核对的订单，请按订单号核对支付渠道与账单流水；不要重复加款。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
+        :message="isAdmin ? '管理员可查看全部充值记录。人工核对不会入账或执行退款。历史入账待核对的订单，请按订单号核对支付渠道与账单流水；不要重复加款。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
       />
 
       <RequestFailureAlert v-if="loadFailure" :failure="loadFailure" :message="loadFailureMessage"

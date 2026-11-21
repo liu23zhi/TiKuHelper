@@ -27,25 +27,10 @@ const stripComments = (source) =>
 test('令牌管理页的「显示全部」默认值必须跟随 viewMode=admin', async () => {
   const raw = await read('pages/AccessTokenManagement/index.vue');
   const source = stripComments(raw);
-  // 判定的是「有没有一条路径会在 admin 视图下把 showAllTokens 设为 true」，
-  // 不钉具体写法（ref 初值 / watch immediate 都算合格）。
-  //
-  // 为什么钉行为而不是钉写法：我最初写的是 ref(routeViewMode.value === 'admin')，
-  // 但 routeViewMode 在下方才定义，直接引用会踩 TDZ，所以实现改成了
-  // watch(routeViewMode, ..., {immediate:true})。钉写法的断言会在这种等价重构下假红。
-  assert.match(
-    source,
-    /showAllTokens\.value\s*=\s*true/,
-    '必须有代码在管理员视图下把 showAllTokens 置 true —— ' +
-      '否则管理员进「令牌管理」只看到自己的令牌，必须再点一次按钮才看全站（用户抱怨的就是这个）',
-  );
-  // 关键：那条置 true 必须与 admin 视图判断挂在一起，不能是无条件置 true
-  // （无条件置 true 会让「我的令牌」也请求全站数据，属于越权）。
-  assert.match(
-    source,
-    /mode\s*===\s*'admin'[\s\S]{0,120}?showAllTokens\.value\s*=\s*true|showAllTokens\.value\s*=\s*true[\s\S]{0,120}?mode\s*===\s*'admin'/,
-    '置 true 必须受 admin 视图判断约束（无条件置 true 会让「我的令牌」越权看全站）',
-  );
+  // UI scope is selected by the actual route AND current role. Native route
+  // and stale-response behavior is also covered by FasttrackTokenOwnership.
+  assert.match(source, /showAllTokens\.value\s*=\s*mode\s*===\s*'admin'\s*&&\s*isAdminUser\(currentUser\.value\)/,
+    '只有管理入口且当前账号是管理员时才默认读取全站');
 });
 
 test('切到用户入口必须仍然复位成「只看自己」（防越权，这条不能被上面的改动破坏）', async () => {
