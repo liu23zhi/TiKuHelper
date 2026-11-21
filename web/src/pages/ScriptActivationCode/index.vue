@@ -2,7 +2,7 @@
   <div class="console-page script-activation-code-page">
     <ConsolePageHeading
       title="脚本一次性激活码"
-      description="管理员预生成的一次性脚本激活码。列表只显示后 4 位；详情才显示全码并附完整使用记录（兑换 / 下载 / 运行），便于客服处理工单。"
+      description="管理员预生成的一次性脚本激活码。列表只显示后 4 位；详情显示全码与兑换、创建和运行记录。兑换后 30 分钟未创建脚本可重新使用。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || loading || writing" @click="loadCodes">刷新</a-button>
@@ -19,7 +19,7 @@
 
     <template v-if="canManage()">
       <ConsolePanel title="生成激活码" description="单次最多 100 个。生成的码只在生成结果里显示一次全码。">
-        <a-form layout="vertical" :onFinish="submitCreate">
+        <a-form layout="vertical" :model="createForm" @finish="submitCreate">
           <a-row :gutter="16">
             <a-col :xs="24" :md="6">
               <a-form-item label="生成数量">
@@ -114,6 +114,8 @@
               <span v-if="record.usedBy">{{ record.usedByUsername || '—' }} <span class="hint">#{{ record.usedBy }}</span></span>
               <span v-else>—</span>
             </template>
+            <span v-else-if="column.key === 'usedAt'">{{ formatTime(record.usedAt) || '未使用' }}</span>
+            <span v-else-if="column.key === 'expiresAt'">{{ formatTime(record.expiresAt) || '永不过期' }}</span>
             <template v-else-if="column.key === 'actions'">
               <a-space>
                 <a-button size="small" @click="openDetail(record)">详情</a-button>
@@ -129,12 +131,13 @@
       </ConsolePanel>
     </template>
 
-    <a-drawer
+    <a-modal
+      v-if="detailOpen"
       :open="detailOpen"
       :width="720"
       title="激活码详情"
-      placement="right"
-      @close="closeDetail"
+      :footer="null"
+      @cancel="closeDetail"
     >
       <a-spin :spinning="detailLoading">
         <a-alert v-if="detailError" type="error" show-icon :message="detailError" class="page-alert" />
@@ -176,12 +179,12 @@
           </a-timeline>
         </template>
       </a-spin>
-    </a-drawer>
+    </a-modal>
   </div>
 </template>
 
 <script>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
@@ -208,11 +211,34 @@ export default {
   components: { ConsolePageHeading, ConsolePanel },
   setup() {
     const route = useRoute()
-    const { currentUser } = useCurrentUserDisplay()
-    const mountedPath = route.path
+    const { currentUser, captureUpdateGuard } = useCurrentUserDisplay()
+    let alive = true, detailVersion = 0
+    // 用 route.name 白名单判「是否仍属本页」，不用挂载时快照 route.path。
+    //
+    // 原写法 `const mountedPath = route.path` + `route.path === mountedPath` 有两个问题：
+    //   ① 它是**一次性快照**：组件实例被 Vue 复用到另一条路由时（拆路由后很常见），
+    //      route.path 变了而 mountedPath 不变 → canManage 恒 false → 页面所有按钮静默禁用；
+    //   ② route.path 不含 query，所以带 ?userId=1 不会误判，但 `:id?` 这类动态段会。
+    //
+    // 仓库里已经踩过一次同一个坑并改好了：ScriptManagement/index.vue 的
+    // OWN_ROUTE_NAMES + stillOwnRoute()。这里照搬那套，保持两页判据一致。
+    //
+    // 本页当前只有一条路由（router.js 的 script-activation-codes），所以**现状不会误判**；
+    // 改它是为了「将来给它加第二条路由时不会静默失效」——那种失效表现为按钮全灰，
+    // 没有任何报错，极难定位。
+    const OWN_ROUTE_NAMES = Object.freeze(['script-activation-codes'])
+
+    // route.name 为空（未命名路由/初次解析中）时退回 matched 比对：
+    // 当前匹配链里是否还挂着本页的路由记录。
+    const stillOwnRoute = () => {
+      const name = String(route?.name || '')
+      if (name) return OWN_ROUTE_NAMES.includes(name)
+      const matched = route?.matched || []
+      return matched.some(record => OWN_ROUTE_NAMES.includes(String(record?.name || '')))
+    }
 
     // 与其它管理页一致：路由、角色、状态任一变化都不再允许操作。
-    const canManage = () => route.path === mountedPath && isAdminUser(currentUser.value)
+    const canManage = () => alive && stillOwnRoute() && isAdminUser(currentUser.value)
       && !['disabled', '0'].includes(String(currentUser.value?.status ?? 'enabled'))
 
     const batchLimit = BATCH_LIMIT
@@ -237,6 +263,7 @@ export default {
     const statusOptions = [
       { label: '全部状态', value: '' },
       { label: '未使用', value: 'unused' },
+      { label: '已兑换，待创建', value: 'frozen' },
       { label: '已使用', value: 'used' },
       { label: '已禁用', value: 'disabled' },
       { label: '已过期', value: 'expired' },
@@ -342,25 +369,29 @@ export default {
 
     const openDetail = async record => {
       if (!canManage()) return
+      const version = ++detailVersion, guard = captureUpdateGuard()
+      const owns = () => alive && version === detailVersion && detailOpen.value && guard() && canManage()
       detailOpen.value = true
       detailLoading.value = true
       detailError.value = ''
       detail.value = null
       try {
         const response = await getScriptActivationCodeDetail(record.id)
+        if (!owns()) return
         if (response?.status === 200) {
           detail.value = response.data
         } else {
           detailError.value = response?.data?.message || '读取详情失败'
         }
-      } catch {
-        detailError.value = '读取详情失败'
+      } catch (error) {
+        if (owns()) detailError.value = error?.response?.data?.message || '读取详情失败'
       } finally {
-        detailLoading.value = false
+        if (owns()) detailLoading.value = false
       }
     }
 
     const closeDetail = () => {
+      detailVersion++
       detailOpen.value = false
       detail.value = null
       detailError.value = ''
@@ -391,6 +422,8 @@ export default {
     }
 
     onMounted(() => { loadCodes() })
+    watch([() => currentUser.value?.id, () => currentUser.value?.role, () => currentUser.value?.status], () => { closeDetail(); codes.value = []; createdCodes.value = [] }, { flush: 'sync' })
+    onBeforeUnmount(() => { closeDetail(); alive = false })
 
     return {
       canManage, batchLimit, loading, writing, loadError, createError,

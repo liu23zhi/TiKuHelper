@@ -7,6 +7,7 @@
       </div>
     </div>
     <a-menu
+      :key="accountBanned ? 'appeal' : isAdmin ? 'admin' : 'user'"
       :id="navigationId"
       mode="inline"
       :theme="resolvedTheme"
@@ -103,10 +104,20 @@ import {
 // 这不是绕过检查 —— 那条断言的语义是「CloudServerOutlined 确实被引入」，单独 import 同样满足。
 import { LaptopOutlined } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
+import { useReviewRebateAvailability } from '../../utils/reviewRebateAvailability';
 import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
 
 const ADMIN_MENU_ITEMS = [
   { key: 'profile', label: '个人中心', icon: UserOutlined },
+  // 「我的设备」是**账号权益页**，不是运营页：设备上限由 users.level_id → user_levels.device_limit
+  // 计算，管理员自己同样有上限、同样会被挡在外面（137 §5 第 6 步的文案就是
+  // 「请到「我的设备」移除不用的设备」）。因此它必须与 USER_MENU_ITEMS 里同 key 的那项
+  // 构成 shared 组的双入口 —— 只登记在 USER_MENU_ITEMS 会让管理员完全没有自助入口，
+  // 只能去「设备管理」页对全站设备操作，既越权也找不到自己那台。
+  //
+  // ⚠️ 与 device-admin 的分工不能混：这是「我自己的设备」，device-admin 是「全站设备」。
+  // 前者任何角色都可进（后端 /user/devices* 恒取当前登录用户），后者仅管理员。
+  { key: 'my-devices', label: '我的设备', icon: LaptopOutlined },
   { key: 'component', label: '题库总览', icon: PieChartOutlined },
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
@@ -124,6 +135,10 @@ const ADMIN_MENU_ITEMS = [
   // 已归档账号管理（task_doc/76 §3.2.3）：管理员删除与用户注销的账号都归到这里。
   { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
+  // 充值记录：**仅管理员**。它是充值订单的运营视图（含改状态、退款入口），
+  // 普通用户看的是「个人使用 → 账单流水」（自己的消费与入账明细）。
+  // 2026-11-19 修正：它原先同时出现在用户菜单里，两侧共用同一个 key，
+  // 导致「仅管理员可见」的入口被普通用户看到 —— 见下方 USER_MENU_ITEMS。
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-admin', label: '账单明细', icon: AccountBookOutlined },
   { key: 'ip-location-cache', label: 'IP 归属地信息管理', icon: GlobalOutlined },
@@ -142,6 +157,9 @@ const ADMIN_MENU_ITEMS = [
   // 路由 key 仍是 referral-rebates：改名只动用户可见文案，不动路由名与权限注册。
   { key: 'referral-rebates', label: '赠送记录', icon: GiftOutlined },
   { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
+  { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
+  { key: 'referral-invites', label: '邀请码管理', icon: ShareAltOutlined },
+  { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
   // 白名单（T-04 / T-05）。紧跟黑名单：两者规则结构相同，管理员要能并排看。
   { key: 'whitelist', label: '白名单管理', icon: SafetyCertificateOutlined },
@@ -189,6 +207,7 @@ const ADMIN_MENU_ITEMS = [
   // 「两个路由、两个视图」的成对关系 —— 本页没有管理员专属视图，两侧看到同一份摘要。
   // ⚠️ 因此它**不是** ADMIN_ONLY_ROUTE_NAMES 的成员。
   { key: 'service-status', label: '服务器状态', icon: CloudServerOutlined },
+  { key: 'service-status-admin', label: '服务器状态详情', icon: CloudServerOutlined },
 ]
 
 const USER_MENU_ITEMS = [
@@ -197,7 +216,10 @@ const USER_MENU_ITEMS = [
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'my-tokens', label: '我的令牌', icon: SafetyCertificateOutlined },
   { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
-  { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
+  // 2026-11-19：普通用户**不再**有独立的「充值记录」入口。
+  // 原因：该页是运营视图（订单状态管理 + 退款），不属于自助功能；
+  // 用户想看的「我充了多少钱、什么时候到账」在「个人使用 → 账单流水」里，
+  // 那里按账本口径展示每一笔入账，比订单表更准确（含赠送与消费冲抵）。
   { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
   { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
@@ -299,9 +321,19 @@ export default defineComponent({
       unsubscribeTheme?.();
     });
     const isAdmin = computed(() => isAdminUser(props.currentUser));
-    const visibleMenuItems = computed(() => (isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS));
-    // 分区只影响渲染分组，不影响权限判定与选中/跳转逻辑：两者都仍以 visibleMenuItems 为准。
-    const menuSections = computed(() => (isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS));
+    const accountBanned = computed(() => String(props.currentUser?.status || '').toLowerCase() === 'banned');
+    const reviewRebateEnabled = useReviewRebateAvailability(() => props.currentUser);
+    const visibleMenuItems = computed(() => {
+      if (accountBanned.value) return USER_MENU_ITEMS.filter(item => item.key === 'tickets');
+      const items = isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS;
+      return items.filter(item => item.key !== 'review-rebate' || reviewRebateEnabled.value);
+    });
+    const menuSections = computed(() => {
+      if (accountBanned.value) return [{ key: 'appeal', title: '', items: visibleMenuItems.value }];
+      const sections = isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS;
+      const visibleKeys = new Set(visibleMenuItems.value.map(item => item.key));
+      return sections.map(section => ({ ...section, items: section.items.filter(item => visibleKeys.has(item.key)) }));
+    });
 
     // 分区里 menu-item 的 key 带分区前缀（见模板注释），选中态要还原成真实 key。
     const REAL_KEY_SEPARATOR = ':';
@@ -363,6 +395,7 @@ export default defineComponent({
       selectedKeys,
       resolvedTheme,
       visibleMenuItems,
+      accountBanned,
       menuSections,
       isAdmin,
       handleSelect,

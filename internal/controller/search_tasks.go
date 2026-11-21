@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/middleware"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -74,12 +75,20 @@ type searchTaskStore struct {
 }
 
 type searchTaskResponse struct {
-	Success   bool                  `json:"success"`
-	Status    string                `json:"status"`
-	TaskID    string                `json:"taskId,omitempty"`
-	StatusURL string                `json:"statusUrl,omitempty"`
-	Result    *model.SearchResponse `json:"result,omitempty"`
-	Error     *model.SearchError    `json:"error,omitempty"`
+	Success      bool                        `json:"success"`
+	Status       string                      `json:"status"`
+	TaskID       string                      `json:"taskId,omitempty"`
+	StatusURL    string                      `json:"statusUrl,omitempty"`
+	Result       *model.SearchResponse       `json:"result,omitempty"`
+	Error        *model.SearchError          `json:"error,omitempty"`
+	DeviceAccess *searchDeviceAccessResponse `json:"deviceAccess,omitempty"`
+}
+
+type searchDeviceAccessResponse struct {
+	Allowed bool   `json:"allowed"`
+	Limit   int32  `json:"limit"`
+	Used    int    `json:"used"`
+	Reason  string `json:"reason"`
 }
 
 func newSearchTaskStore(ttl time.Duration, now func() time.Time) *searchTaskStore {
@@ -337,7 +346,16 @@ func GetSearchTaskHealth(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return
 	}
-	c.JSON(http.StatusOK, buildSearchTaskResponse(defaultSearchTaskStore.healthProbeForActor(userID, scriptRunActorScope(c))))
+	response := buildSearchTaskResponse(defaultSearchTaskStore.healthProbeForActor(userID, scriptRunActorScope(c)))
+	if value, ok := c.Get(middleware.DeviceAccessProbeContextKey); ok {
+		if decision, ok := value.(service.DevicePoolDecision); ok && decision.Allowed &&
+			decision.Reason == service.DevicePoolReasonAlreadyRegistered && decision.Limit > 0 && decision.Used > int(decision.Limit) {
+			response.DeviceAccess = &searchDeviceAccessResponse{
+				Allowed: true, Limit: decision.Limit, Used: decision.Used, Reason: decision.Reason,
+			}
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // GetSearchTaskStatus returns a task snapshot without executing search work.

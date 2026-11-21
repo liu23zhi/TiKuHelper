@@ -203,11 +203,11 @@ func TestTicketAttachmentBlobWiringSameImageUploadedTwiceDedups(t *testing.T) {
 	if err := db.Where("id = ?", secondID).First(&secondRow).Error; err != nil {
 		t.Fatal(err)
 	}
-	firstPlain, err := openTicketAttachmentPlain(firstRow)
+	firstPlain, err := openTicketAttachmentPlain(db, firstRow)
 	if err != nil {
 		t.Fatalf("open first attachment: %v", err)
 	}
-	secondPlain, err := openTicketAttachmentPlain(secondRow)
+	secondPlain, err := openTicketAttachmentPlain(db, secondRow)
 	if err != nil {
 		t.Fatalf("open second attachment: %v", err)
 	}

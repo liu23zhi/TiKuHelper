@@ -40,6 +40,22 @@ const ReferralRebateBillingRecordType = "referral_rebate"
 // 删行会丢掉「曾经发过钱」的事实，改小会让 balance_before/after 与真实钱包对不上。
 const ReferralRebateReversalBillingRecordType = "referral_rebate_reversal"
 
+// 非消费流水可改变钱包，但不代表用户购买了服务。账单汇总与等级累计消费
+// 共用这一口径，避免手动调整余额、退款冲回或撤回赠金造成虚假升级。
+var nonConsumptionBillingRecordTypes = []string{
+	rechargeBillingRecordType,
+	registrationBonusBillingRecordType,
+	rechargePromotionBillingRecordType,
+	ReviewRebateBillingRecordType,
+	ReviewRebateClawbackBillingType,
+	ReferralRebateBillingRecordType,
+	ReferralRebateReversalBillingRecordType,
+	balanceAdjustmentBillingRecordType,
+	scriptRefundBillingRecordType,
+	RegistrationBonusClawbackBillingRecordType,
+	registrationBonusRevokedBillingRecordType,
+}
+
 type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
 	ProviderLabel string  `json:"providerLabel"`
@@ -199,6 +215,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值赠送"
 	case ReviewRebateBillingRecordType:
 		return "评价返现"
+	case ReviewRebateClawbackBillingType:
+		return "评价返现追缴"
 	case ReferralRebateBillingRecordType:
 		return "邀请返佣"
 	case ReferralRebateReversalBillingRecordType:
@@ -1208,7 +1226,7 @@ func loadBillingRecordSummary(db *gorm.DB, operator entity.User, filter BillingR
 			THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
 				THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
 			ELSE 0 END) AS cached_input_tokens`, util.MoneyPrecision).
-		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, rechargePromotionBillingRecordType, ReviewRebateBillingRecordType, ReferralRebateBillingRecordType, ReferralRebateReversalBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType, RegistrationBonusClawbackBillingRecordType, registrationBonusRevokedBillingRecordType}).
+		Where("TRIM(billing_records.type) NOT IN ?", nonConsumptionBillingRecordTypes).
 		Group(`billing_records.user_id, billing_records.type, billing_records.request_id,
 			CASE WHEN billing_records.type = 'normal_search' AND TRIM(COALESCE(billing_records.request_id, '')) <> ''
 				THEN 0 ELSE billing_records.id END`)
@@ -1251,7 +1269,7 @@ func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
 		if row.Direction == "income" || row.Type == balanceAdjustmentBillingRecordType {
 			continue
 		}
-		if row.Type == RegistrationBonusClawbackBillingRecordType || row.Type == registrationBonusRevokedBillingRecordType {
+		if row.Type == RegistrationBonusClawbackBillingRecordType || row.Type == registrationBonusRevokedBillingRecordType || row.Type == ReviewRebateClawbackBillingType {
 			continue
 		}
 		if amount := row.Amount; amount > 0 {

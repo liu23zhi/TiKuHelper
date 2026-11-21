@@ -143,6 +143,16 @@ func TestDevicePoolBindingSchemaCreatesColumnsAndBlockTable(t *testing.T) {
 			t.Fatalf("account_device_bindings 缺列 %s（A1-2）", column)
 		}
 	}
+	// 第三批的 last_ip（「我的设备」显示来源 IP）。
+	//
+	// 断言字面量而不是从 devicePoolBindingColumnSpecs 里取：期望值若引用被测常量，
+	// 常量被删掉时两侧同步漂移 → 断言恒真（本仓交付过假钉子）。
+	if !db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+		t.Fatal("account_device_bindings 缺列 last_ip（「我的设备」的来源 IP 列）")
+	}
+	if !db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "first_ip") {
+		t.Fatal("account_device_bindings 缺列 first_ip（首次使用 IP）")
+	}
 	// 拉黑表 + 唯一索引（137 §3.3）。
 	if !db.Migrator().HasTable(entity.TableNameUserDeviceBlock) {
 		t.Fatal("user_device_blocks 表必须建出来（A1-2 / 137 §3.3）")
@@ -166,6 +176,34 @@ func TestDevicePoolBindingSchemaCreatesColumnsAndBlockTable(t *testing.T) {
 	}
 	if err := db.Create(&entity.UserDeviceBlock{UserID: 1, DeviceID: "dev-a"}).Error; err == nil {
 		t.Fatal("同一 (user_id, device_id) 重复拉黑必须被唯一索引拒绝（幂等锚点）")
+	}
+}
+
+func TestDeviceFirstIPMigrationPreservesUnknownHistory(t *testing.T) {
+	db := newA1RegistryDB(t)
+	if err := ensureAccountDeviceBindingsSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("ALTER TABLE " + entity.TableNameAccountDeviceBinding + " DROP COLUMN first_ip").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO " + entity.TableNameAccountDeviceBinding + " (user_id, device_id, last_ip) VALUES (1, 'historical-device', '172.18.0.1')").Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := ensureDevicePoolBindingSchema(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var row struct {
+		FirstIP string
+		LastIP  string
+	}
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Select("first_ip, last_ip").Where("device_id = ?", "historical-device").Scan(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.FirstIP != "" || row.LastIP != "172.18.0.1" {
+		t.Fatalf("migration invented history or lost last IP: %#v", row)
 	}
 }
 
@@ -231,13 +269,15 @@ func TestDevicePoolBindingSchemaBackfillsColumnsAfterFlagSet(t *testing.T) {
 		t.Fatalf("insert legacy row: %v", err)
 	}
 	var row struct {
-		OwnerKind     string     `gorm:"column:owner_kind"`
-		TokenID       int32      `gorm:"column:token_id"`
-		RevokedAt     *string    `gorm:"column:revoked_at"`
-		RevokedReason string     `gorm:"column:revoked_reason"`
+		OwnerKind     string  `gorm:"column:owner_kind"`
+		TokenID       int32   `gorm:"column:token_id"`
+		RevokedAt     *string `gorm:"column:revoked_at"`
+		RevokedReason string  `gorm:"column:revoked_reason"`
+		LastIP        string  `gorm:"column:last_ip"`
 	}
 	if err := db.Table(entity.TableNameAccountDeviceBinding).
-		Select("owner_kind AS owner_kind, token_id AS token_id, revoked_at AS revoked_at, revoked_reason AS revoked_reason").
+		Select("owner_kind AS owner_kind, token_id AS token_id, revoked_at AS revoked_at, "+
+			"revoked_reason AS revoked_reason, last_ip AS last_ip").
 		Where("device_id = ?", "legacy-dev").Take(&row).Error; err != nil {
 		t.Fatalf("read backfilled row: %v", err)
 	}
@@ -252,6 +292,11 @@ func TestDevicePoolBindingSchemaBackfillsColumnsAfterFlagSet(t *testing.T) {
 	}
 	if row.RevokedReason != "" {
 		t.Fatalf("revoked_reason 默认必须是空串，实际 %q", row.RevokedReason)
+	}
+	// last_ip 补列后既有行必须是空串：既不能是 NULL（Go 侧要判指针），
+	// 也不能是任何伪造地址（会显示成「这台设备从某处连进来」的假事实）。
+	if row.LastIP != "" {
+		t.Fatalf("last_ip 的列默认值必须是空串（老行没有采过 IP），实际 %q", row.LastIP)
 	}
 }
 

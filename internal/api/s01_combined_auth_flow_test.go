@@ -419,7 +419,7 @@ func s01CompositionWorker(t *testing.T) {
 		if hasOrigin {
 			want = "*"
 		}
-		return h.Get("Access-Control-Allow-Origin") == want && h.Get("Access-Control-Allow-Credentials") == "" && h.Get("Access-Control-Allow-Headers") == "Authorization, Content-Type, Idempotency-Key" && h.Get("Access-Control-Expose-Headers") == "X-Request-ID, Retry-After" && h.Get("Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS" && h.Get("Vary") == "Accept-Encoding"
+		return h.Get("Access-Control-Allow-Origin") == want && h.Get("Access-Control-Allow-Credentials") == "" && h.Get("Access-Control-Allow-Headers") == "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity" && h.Get("Access-Control-Expose-Headers") == "X-Request-ID, Retry-After" && h.Get("Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS" && h.Get("Vary") == "Accept-Encoding"
 	}
 	record := func(name string, status, want int, checks bool) {
 		passed := status == want && checks

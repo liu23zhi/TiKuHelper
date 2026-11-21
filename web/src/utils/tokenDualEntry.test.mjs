@@ -72,6 +72,9 @@ function prepare() {
   stub(path.join(webRoot, 'src', 'api', 'TikuComponentApi.js'), tokenApi)
   stub(path.join(webRoot, 'src', 'api', 'UserLevelApi.js'), new Proxy({}, { get: () => never }))
   stub(path.join(webRoot, 'src', 'utils', 'request.js'), { default: never })
+  // Each mounted case must capture this case's API recorder, rather than the
+  // first compiled page module's closed-over mock from an earlier case.
+  delete require.cache[path.join(webRoot, 'src', 'pages', 'AccessTokenManagement', 'index.vue')]
 
   require(path.join(webRoot, 'tests', 'helpers', 'vue-dom.cjs'))
 
@@ -162,7 +165,7 @@ test('页面标题/说明按入口切换，两侧文案点明数据范围', () =
   assert.match(source, /'令牌管理' : '我的令牌'/, 'pageTitle 必须按入口在两支之间切换')
   // 用户侧必须点明「只显示你自己的令牌」，否则用户无法判断范围。
   assert.match(source, /只显示你自己的令牌/)
-  assert.match(source, /管理全站访问令牌/)
+  assert.match(source, /管理全部用户的访问令牌/)
 })
 
 // ══════════════════════════════════════════════════════════════
@@ -203,7 +206,7 @@ test('管理员进 my-tokens 看到自己的视图（标题「我的令牌」、
       `用户入口不得请求全站数据，实际发了 ${scoped.length} 次 scope=all`)
   })
 
-test('管理员进 token-admin 看到管理视图（标题「令牌管理」、有显示全部开关）',
+test('管理员进 token-admin 固定看到全部令牌，且不提供我的令牌切换',
   { skip: behaviourSkip }, async () => {
     const env = prepare()
     env.user.setStoredCurrentUser({ id: 9891, username: 'SYNTH_ADMIN', role: 'admin', status: 'enabled', balance: 1 })
@@ -217,15 +220,26 @@ test('管理员进 token-admin 看到管理视图（标题「令牌管理」、�
         return {
           isAdmin: typeof state.isAdmin === 'boolean' ? state.isAdmin : null,
           pageTitle: typeof state.pageTitle === 'string' ? state.pageTitle : null,
-          hasShowAllButton: w.html().includes('显示全部令牌'),
-        }
-      })
+        // 开关文案是**切换式**（showAllTokens ? '只看我的令牌' : '显示全部令牌'）。
+        // 只找其中一个文案会让「默认值全站/只看自己」的变更表现为「按钮不见了」。
+        // 2026-11-16 用户诉求「令牌管理需要显示所有用户的数据」→ 默认值改为
+        // viewMode=admin 时 true，于是首屏文案变成「只看我的令牌」。
+        hasShowAllButton: w.html().includes('显示全部令牌') || w.html().includes('只看我的令牌'),
+        // 钉住新语义：管理入口进来就应该已经是全站视图，不需要再点一次。
+        defaultsToAll: state.showAllTokens === true,
+      }
+    })
     wrapper.unmount()
 
     assert.equal(result.isAdmin, true, '管理员 + admin 入口 ⇒ 管理视图')
     assert.equal(result.pageTitle, '令牌管理', '标题必须是「令牌管理」')
-    assert.equal(result.hasShowAllButton, true,
-      '管理入口必须有「显示全部令牌」开关 —— 那是全站视图的入口')
+    assert.equal(result.hasShowAllButton, false,
+      '管理入口固定为全站数据，不提供只看自己开关')
+    assert.ok(env.listCalls.some(params => params?.scope === 'all'), '管理员列表必须实际请求全站令牌')
+    assert.equal(result.defaultsToAll, true,
+      '管理入口默认就必须是全站视图 —— 用户诉求「令牌管理要显示所有用户数据」，' +
+      '默认 false 会让管理员进来只看到自己那一条，必须再点一次按钮（用户报的就是这个）')
+
   })
 
 test('普通用户进 my-tokens 也是用户视图（身份与入口一致，最常规路径）',

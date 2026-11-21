@@ -77,7 +77,8 @@ import (
 
 const (
 	// TicketAttachmentRetentionKeyPrefix 是全部工单图片保留策略键的统一前缀。
-	TicketAttachmentRetentionKeyPrefix = "ticket_attachment_retention_"
+	TicketAttachmentRetentionKeyPrefix      = "ticket_attachment_retention_"
+	TicketAttachmentRetentionModeSettingKey = "ticket_attachment_retention_mode"
 	// TicketAttachmentRetentionMaxAgeDaysSettingKey 是按时间清理的天数（>0）。
 	TicketAttachmentRetentionMaxAgeDaysSettingKey = "ticket_attachment_retention_max_age_days"
 	// TicketAttachmentRetentionMaxTotalGiBSettingKey 是全部附件密文总量上限，单位 **GiB**。
@@ -131,6 +132,7 @@ var ErrTicketAttachmentRetentionNoDatabase = errors.New("工单图片保留策�
 // 单位写进字段名后缀（GiB / Days / Minutes），前端不用猜；MaxTotalBytes 是
 // 只读派生值，供页面显示「当前占用 3.2 GB / 20 GiB」这类精确文案。
 type TicketAttachmentRetentionSettings struct {
+	Mode string `json:"mode"`
 	// MaxAgeDays 是按时间清理的天数（>0）。
 	MaxAgeDays int `json:"maxAgeDays"`
 	// MaxTotalGiB 是全部附件密文总量上限，单位 GiB。
@@ -153,11 +155,18 @@ type TicketAttachmentRetentionConfig struct {
 
 // Config 把设置形态换算成生效形态（唯一的 GiB → 字节换算点）。
 func (s TicketAttachmentRetentionSettings) Config() TicketAttachmentRetentionConfig {
-	return TicketAttachmentRetentionConfig{
+	config := TicketAttachmentRetentionConfig{
 		MaxAgeDays:      s.MaxAgeDays,
 		MaxTotalBytes:   s.MaxTotalGiB * ticketAttachmentRetentionGiB,
 		CleanupInterval: time.Duration(s.CleanupIntervalMinutes) * time.Minute,
 	}
+	if s.Mode == "size" {
+		config.MaxAgeDays = 0
+	}
+	if s.Mode == "time" {
+		config.MaxTotalBytes = 0
+	}
+	return config
 }
 
 // TicketAttachmentRetentionResult 汇总一次清理的产出。
@@ -182,11 +191,16 @@ type TicketAttachmentRetentionResult struct {
 // 会让按大小清理退化成「删光全部附件」。
 func GetTicketAttachmentRetentionSettingsWithDB(db *gorm.DB) TicketAttachmentRetentionSettings {
 	settings := TicketAttachmentRetentionSettings{
+		Mode:                   "both",
 		MaxAgeDays:             DefaultTicketAttachmentRetentionMaxAgeDays,
 		MaxTotalGiB:            DefaultTicketAttachmentRetentionMaxTotalGiB,
 		CleanupIntervalMinutes: DefaultTicketAttachmentRetentionCleanupIntervalMinutes,
 	}
 	if db != nil {
+		mode := getSystemSettingStringWithDefault(db, TicketAttachmentRetentionModeSettingKey, "both")
+		if mode == "time" || mode == "size" || mode == "both" {
+			settings.Mode = mode
+		}
 		settings.MaxAgeDays = int(getTicketAttachmentRetentionInt64Setting(
 			db, TicketAttachmentRetentionMaxAgeDaysSettingKey,
 			DefaultTicketAttachmentRetentionMaxAgeDays, MaxTicketAttachmentRetentionAgeDays))
@@ -502,6 +516,7 @@ func selectTicketAttachmentRetentionCandidates(db *gorm.DB, where string, args .
 	var ids []int64
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachment{}).
 		Where(where, args...).
+		Scopes(excludeRememberedRefundPayoutQr).
 		Order("created_at ASC, id ASC").
 		Limit(TicketAttachmentRetentionBatchSize).
 		Pluck("id", &ids).Error; err != nil {
@@ -593,6 +608,7 @@ func pruneTicketAttachmentIDs(db *gorm.DB, ids []int64, now time.Time, freeBudge
 			result := tx.Session(&gorm.Session{NewDB: true}).
 				Model(&entity.TicketAttachment{}).
 				Where("id = ? AND purged_at IS NULL", id).
+				Scopes(excludeRememberedRefundPayoutQr).
 				Updates(map[string]any{
 					"ciphertext": nil,
 					"nonce":      nil,
@@ -633,6 +649,29 @@ func pruneTicketAttachmentIDs(db *gorm.DB, ids []int64, now time.Time, freeBudge
 		return purged, freedBytes, err
 	}
 	return purged, freedBytes, nil
+}
+
+// The current remembered source is retained until the user replaces or deletes
+// it. Recheck during UPDATE because it can become remembered after selection.
+func excludeRememberedRefundPayoutQr(db *gorm.DB) *gorm.DB {
+	schemaDB := db.Session(&gorm.Session{NewDB: true})
+	memoryReady := schemaDB.Migrator().HasTable(&entity.RefundPayoutQrMemory{})
+	if memoryReady {
+		db = db.Where("id NOT IN (?)", db.Session(&gorm.Session{NewDB: true}).Model(&entity.RefundPayoutQrMemory{}).Select("attachment_id").Where("attachment_id > 0"))
+	}
+	if schemaDB.Migrator().HasTable(&entity.TicketRefund{}) {
+		latestIDs := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+			Select("MAX(id)").Where("payout_qr_attachment_id IS NOT NULL AND payout_qr_attachment_id > 0").Group("user_id")
+		legacy := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+			Select("payout_qr_attachment_id").Where("id IN (?)", latestIDs)
+		if memoryReady {
+			// A memory row, including a deletion marker, permanently supersedes
+			// legacy fallback. Only unmigrated users keep their latest old QR.
+			legacy = legacy.Where("user_id NOT IN (?)", db.Session(&gorm.Session{NewDB: true}).Model(&entity.RefundPayoutQrMemory{}).Select("user_id"))
+		}
+		db = db.Where("id NOT IN (?)", legacy)
+	}
+	return db
 }
 
 // ticketAttachmentLiveBytesWithDB 统计**仍占着存储**的附件密文总量（字节）。

@@ -172,6 +172,8 @@ type deviceLimitTestRequest struct {
 	//
 	// 非空时才会驱动 141 §4 的冲突检测：同 device_id + 不同 instance ⇒ 409。
 	clientInstance string
+	// sourceIP 模拟设备换网后的直接连接地址，不使用可伪造的转发头。
+	sourceIP string
 	// authorization / scriptIdentity 走中间件自己的凭据解析路径（模拟 /api/search 这种无鉴权中间件的路由）。
 	authorization  string
 	scriptIdentity string
@@ -202,6 +204,9 @@ func doDeviceLimitRequest(t *testing.T, db *gorm.DB, req deviceLimitTestRequest)
 	})
 
 	httpReq := httptest.NewRequest(http.MethodPost, "/probe", strings.NewReader(`{}`))
+	if req.sourceIP != "" {
+		httpReq.RemoteAddr = req.sourceIP + ":12345"
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if req.deviceID != "" {
 		httpReq.Header.Set(DeviceIDHeader, req.deviceID)
@@ -245,17 +250,14 @@ func assertDeviceLimitHeadlessRejected(t *testing.T, out *httptest.ResponseRecor
 
 // ─────────────────────── 前置：总开关 ───────────────────────
 
-// 判据：开关关闭（默认）时，限设备账号的无头请求必须放行。
-//
-// 这是「代码先上、开关后开」的部署前提：关着的时候全站行为必须与引入本中间件
-// 之前**完全一致**，否则上线本 PR 就等于上线限制。
-func TestDeviceLimitSwitchOffAllowsEverything(t *testing.T) {
+// 设备池开关已移除：未配置历史字段时，限设备账号仍须提供设备标识。
+func TestDeviceLimitDefaultEnabledRejectsHeadlessLimitedAccount(t *testing.T) {
 	db := newDeviceLimitTestDB(t)
 	levelID := seedDeviceLimitLevel(t, db, 1, 1)
 	user := seedDeviceLimitUser(t, db, "switch-off", levelID, -1)
-	// 不写 device_limit_enabled ⇒ 默认关闭。
+	// 不写 device_limit_enabled，也按启用处理。
 	out := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user})
-	assertDeviceLimitAllowed(t, out, "开关关闭 + 限设备账号 + 无 device 头")
+	assertDeviceLimitHeadlessRejected(t, out, "默认启用 + 限设备账号 + 无 device 头")
 }
 
 // 判据：开关打开 + 限设备账号 + 无 device 头 ⇒ 403（S12）。
@@ -526,6 +528,31 @@ func TestDeviceLimitAllowsAlreadyBoundDeviceWhenFull(t *testing.T) {
 
 	out := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user, deviceID: "known-device"})
 	assertDeviceLimitAllowed(t, out, "已登记设备 + 额度已满")
+}
+
+func TestDeviceLimitRefreshesRecentIPWithoutChangingFirstUse(t *testing.T) {
+	db := newDeviceLimitTestDB(t)
+	setDeviceLimitSwitch(t, db, true)
+	levelID := seedDeviceLimitLevel(t, db, 1, 1)
+	user := seedDeviceLimitUser(t, db, "changing-device-network", levelID, -1)
+	first := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user, deviceID: "known-device", sourceIP: "172.18.0.1"})
+	assertDeviceLimitAllowed(t, first, "首次登记设备")
+	var before entity.AccountDeviceBinding
+	if err := db.Where("user_id = ?", user.ID).First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	second := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user, deviceID: "known-device", sourceIP: "198.51.100.7"})
+	assertDeviceLimitAllowed(t, second, "已登记设备换网")
+	var after entity.AccountDeviceBinding
+	if err := db.Where("user_id = ?", user.ID).First(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.FirstIP != "172.18.0.1" || after.LastIP != "198.51.100.7" || !after.FirstSeenAt.Equal(before.FirstSeenAt) || after.LastSeenAt.Before(before.LastSeenAt) {
+		t.Fatalf("first use must stay fixed while recent use follows requests: before=%+v after=%+v", before, after)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatal("activity refresh must not change the row modification timestamp")
+	}
 }
 
 // 判据：有空槽时放行**并且落一条绑定行**。

@@ -44,7 +44,7 @@ test('four anchored AI regions plus upstream OCR cache panel preserve exact head
 test('upstream field order, fixed readonly sampling, and draft changes survive four-region composition', async () => {
   const w = await start()
   const labels = w.findAll('.ai-config-form .ant-form-item-label').map(x => x.text())
-  assert.deepEqual(labels, ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表', '模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '本地题库检索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数', 'Prompt 设置', '温度', 'Top P'])
+  assert.deepEqual(labels, ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表', '模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数', 'Prompt 设置', '温度', 'Top P'])
   for (const label of ['温度', 'Top P']) {
     const item = w.findAll('.ant-form-item').find(x => x.find('.ant-form-item-label').exists() && x.find('.ant-form-item-label').text() === label)
     const input = item.find('input'); assert.equal(input.element.value, '0'); assert.equal(input.element.readOnly, true); assert.equal(input.element.disabled, true)

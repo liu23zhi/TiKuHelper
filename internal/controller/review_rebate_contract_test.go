@@ -80,9 +80,9 @@ func keysOfReviewRebate(set map[string]struct{}) []string {
 //
 // 前端读的具体名字（见 web/src/pages/ReviewRebate/index.vue）：
 //
-//	body.program / body.usage / body.rules / body.authorshipVerified
-//	program.name / storeUrl / maxClaimsPerUser / maxAmountPerUser / minAgentConfidence / enabled
-//	usage.approvedCount / approvedAmount / pendingCount / rejectedCount
+//	body.program / body.usage / body.stores / body.canClaim
+//	program.name / source / storeUrl / maxClaimsPerUser / enabled
+//	usage.approvedCount / pendingCount / rejectedCount
 //	claims 列表：[...] 或 {data:[...]} —— 实际是 {data,total,page,pageSize}
 func TestReviewRebateHTTPProgramContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -102,12 +102,11 @@ func TestReviewRebateHTTPProgramContract(t *testing.T) {
 		t.Fatalf("program view: %d %s", recorder.Code, recorder.Body.String())
 	}
 	body := decodeJSONObject(t, recorder.Body.Bytes())
-	assertJSONKeys(t, "program view", body, "program", "rules", "usage", "authorshipVerified", "notice")
+	assertJSONKeys(t, "program view", body, "program", "usage", "authorshipVerified", "canClaim", "stores")
 
 	program := body["program"].(map[string]any)
 	assertJSONKeys(t, "program", program,
-		"id", "enabled", "name", "storeUrl", "maxClaimsPerUser", "maxAmountPerUser",
-		"minAgentConfidence", "policyVersion", "tutorialVersionId")
+		"id", "source", "enabled", "name", "storeUrl", "maxClaimsPerUser", "tutorialVersionId")
 	// 关键：enabled 必须真的下发为 true（前端靠它决定显示规则表还是「未开启」）。
 	if program["enabled"] != true {
 		t.Fatalf("program.enabled must be true, got %v", program["enabled"])
@@ -119,8 +118,7 @@ func TestReviewRebateHTTPProgramContract(t *testing.T) {
 
 	usage := body["usage"].(map[string]any)
 	assertJSONKeys(t, "usage", usage,
-		"claimedCount", "approvedCount", "approvedAmount", "pendingCount",
-		"rejectedCount", "remainingClaims", "remainingAmount")
+		"claimedCount", "approvedCount", "pendingCount", "rejectedCount", "remainingClaims")
 	if usage["approvedCount"] != usage["claimedCount"] {
 		t.Fatalf("approvedCount must mirror claimedCount: %v", usage)
 	}
@@ -482,7 +480,10 @@ func TestReviewRebateHTTPAdminClaimsExposeReviewFields(t *testing.T) {
 func TestReviewRebateHTTPDisabledShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newReviewRebateControllerTestDB(t)
-	seedReviewRebateControllerProgram(t, db)
+	program, _ := seedReviewRebateControllerProgram(t, db)
+	if err := db.Model(&program).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
 	member := seedReviewRebateControllerUser(t, db, 695, "rr-disabled-shape", "user")
 	installReviewRebateTestDB(t, db)
 

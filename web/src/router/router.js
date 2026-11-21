@@ -21,6 +21,7 @@ const LogList = () => import(/* webpackChunkName: "route-log-list" */ '../pages/
 const SearchAccountConfig = () => import(/* webpackChunkName: "route-search-account-config" */ '../pages/SearchAccountConfig/index.vue')
 const AISearchConfig = () => import(/* webpackChunkName: "route-a-i-search-config" */ '../pages/AISearchConfig/index.vue')
 const SystemSettings = () => import(/* webpackChunkName: "route-system-settings" */ '../pages/SystemSettings/index.vue')
+const ReferralInvites = () => import('../pages/ReferralInvites/index.vue')
 const AccessTokenManagement = () => import(/* webpackChunkName: "route-access-token-management" */ '../pages/AccessTokenManagement/index.vue')
 const ScriptManagement = () => import(/* webpackChunkName: "route-script-management" */ '../pages/ScriptManagement/index.vue')
 const BillingRecordList = () => import(/* webpackChunkName: "route-billing-record-list" */ '../pages/BillingRecordList/index.vue')
@@ -58,6 +59,8 @@ const DeviceAdmin = () => import(/* webpackChunkName: "route-device-admin" */ '.
 // 数据源是 /api/service-status/summary（后端走 AuthOrAccessToken）——
 // 它只返回聚合数字，不返回逐分钟明细；明细留在管理员的 /api/admin/service-status。
 const ServiceStatus = () => import(/* webpackChunkName: "route-service-status" */ '../pages/ServiceStatus/index.vue')
+// 管理员服务器状态详情：逐分钟失败分类与进程指标，仅管理员可见。
+const AdminServiceStatus = () => import(/* webpackChunkName: "route-admin-service-status" */ '../pages/AdminServiceStatus/index.vue')
 // 脚本一次性激活码管理（用户诉求：「在侧边栏仅管理员可见添加一个脚本一次性
 // 激活码管理，用于查看，修改和创建」，并能看换取令牌/下载脚本等使用情况）。
 // 管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
@@ -257,6 +260,7 @@ const routes = [
         name: 'system-settings',
         component: SystemSettings,
       },
+      { path: 'referral-invites', name: 'referral-invites', component: ReferralInvites },
       {
         // 我的令牌（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
         // 进来时看到的是自己的令牌，而不是「令牌管理」的全站视图。
@@ -280,7 +284,8 @@ const routes = [
         // 按角色分流到对应的新入口 —— 普通用户去 my-tokens，管理员去 token-admin。
         path: 'access-tokens',
         name: 'access-tokens',
-        redirect: () => (isAdminUser(getStoredCurrentUser()) ? '/adapter/token-admin' : '/adapter/my-tokens'),
+        alias: '/adapter/access-tokens',
+        redirect: () => ({ name: isAdminUser(getStoredCurrentUser()) ? 'token-admin' : 'my-tokens' }),
       },
       {
         // 我的脚本（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
@@ -396,6 +401,12 @@ const routes = [
         component: ServiceStatus,
       },
       {
+        path: 'service-status-admin',
+        name: 'service-status-admin',
+        component: AdminServiceStatus,
+        meta: { viewMode: 'admin' },
+      },
+      {
         // 我的设备（137-设备体系设计 §9.1 / 批次 A2-5）。普通用户可见。
         //
         // 为什么它在这里而不是管理区：设备上限是**用户自己**的权益约束，
@@ -415,12 +426,19 @@ const routes = [
 ];
 
 const ADMIN_ONLY_ROUTE_NAMES = new Set([
+  'referral-invites',
   'component',
   'import',
   'userlist',
   // 已归档账号：列表里有账号快照与绑定记录，只能管理员看（task_doc/76 §3.2.3）。
   'archived-users',
   'loglist',
+  'service-status-admin',
+  // 充值记录（2026-11-19）：**管理员专属**。它是充值订单的运营视图
+  // （改状态、发起退款），普通用户看自己的入账在「个人使用 → 账单流水」。
+  // 此前它既没登记在这里、又同时挂在用户菜单上，等于普通用户可直接进；
+  // 只从菜单删掉不够 —— 直接敲 URL 仍能打开，必须在这里一并登记。
+  'recharge-orders',
   'search-account-config',
   'ai-search-config',
   'ocr-cache',
@@ -523,6 +541,11 @@ router.beforeEach((to, from, next) => {
   const currentUser = getStoredCurrentUser()
   if (!currentUser) {
     next('/login')
+    return
+  }
+
+  if (String(currentUser.status || '').toLowerCase() === 'banned' && !['tickets', 'ticket-detail'].includes(String(to.name || ''))) {
+    next('/tickets')
     return
   }
 

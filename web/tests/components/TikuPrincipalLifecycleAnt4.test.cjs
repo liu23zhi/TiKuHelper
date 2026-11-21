@@ -95,10 +95,6 @@ function state(w) {
     courseName: w.vm.bulkCourseName, courses: w.vm.courses, loading: w.vm.tabLoading, allLoading: w.vm.selectAllLoading })
 }
 function witness(name, w) { console.log('TIKU_PRINCIPAL_OBSERVED ' + JSON.stringify({ name, state: state(w), calls, downloads: downloads.length, revoked, swal: swalCalls.map(c => c.title), nativeBrowser: false })) }
-function importEvent(text = JSON.stringify([row()])) {
-  const target = { value: 'synthetic-file.json', files: [{ name: 'synthetic-file.json', text: () => Promise.resolve(text) }] }
-  return { target }
-}
 afterEach(async () => {
   for (const w of wrappers) if (w.exists()) w.unmount()
   wrappers = []; deferred.clear()
@@ -114,18 +110,17 @@ afterEach(async () => {
   Antd.message.destroy(); Antd.Modal.destroyAll(); await settle(); document.body.replaceChildren(); delete require.cache[PAGE]
 })
 
-test('TP01 healthy actor retains literal filters, low-frequency fields, native selection and JSON export', async () => {
+test('TP01 healthy actor retains literal filters, low-frequency fields and selected question scope', async () => {
   const w = await page()
   w.vm.typeValue = 4
-  Object.assign(w.vm.searchValue, { question: '筛选词', source: '7', extra: '拓展筛选', onlyShowEmptyAnswer: true })
+  Object.assign(w.vm.searchValue, { question: '筛选词', courseName: '原始课程', source: '7', extra: '拓展筛选', onlyShowEmptyAnswer: true })
   await click(named(w, '搜索'))
-  assert.deepEqual(calls.filter(c => c.kind === 'getQuestions').at(-1).payload, { type: 4, pageSize: 10, pageNo: 0, question: '筛选词', source: 7, extra: '拓展筛选', onlyShowEmptyAnswer: true })
+  assert.deepEqual(calls.filter(c => c.kind === 'getQuestions').at(-1).payload, { type: 4, pageSize: 10, pageNo: 0, question: '筛选词', courseName: '原始课程', source: 7, extra: '拓展筛选', onlyShowEmptyAnswer: true })
   assert.ok(w.vm.columns.some(c => c.key === 'extra') && w.vm.columns.some(c => c.key === 'source_name'))
-  await select(w); await click(named(w, '导出选中'))
-  assert.equal(downloads.length, 1); assert.match(downloads[0].filename, /\.json$/)
-  assert.deepEqual(JSON.parse(await blobs[0].text()), [row()])
-  assert.deepEqual(revoked, ['blob:synthetic-tiku-principal-1']); assert.equal(writes().length, 0)
-  witness('positive-filters-export', w)
+  await select(w)
+  assert.equal(w.get('.question-transfer').text().includes('已选 1 道题'), true)
+  assert.equal(downloads.length, 0); assert.equal(writes().length, 0)
+  witness('positive-filters-selected-transfer', w)
 })
 
 for (const transition of ['admin-B', 'role-revoked', 'logout']) test('TP02 sync principal retirement clears rows selection cached payload form files courses: ' + transition, async () => {
@@ -187,13 +182,15 @@ test('TP06 unmounted list and courses cannot overwrite same-module re-entry', as
   assert.deepEqual(state(b), before, 'REENTRY_STATE_OWNED_BY_NEW_MOUNT')
 })
 
-test('TP07 changing native edit draft then Cancel does not alias table or selection export cache', async () => {
+test('TP07 changing native edit draft then Cancel does not alias table or selection transfer scope', async () => {
   const w = await page(); await select(w); await open(w)
   await input(dialog().querySelector('textarea'), '未保存的题面草稿')
   assert.equal(w.vm.data[0].question, '原始题目', 'DRAFT_NOT_TABLE_ALIAS')
   assert.equal(w.vm.selectedQuestions[0].question, '原始题目', 'DRAFT_NOT_SELECTION_CACHE_ALIAS')
-  await click(modalButton('取消')); await click(named(w, '导出选中'))
-  assert.equal(JSON.parse(await blobs[0].text())[0].question, '原始题目'); assert.equal(writes().length, 0)
+  await click(modalButton('取消'))
+  assert.equal(w.vm.data[0].question, '原始题目')
+  assert.deepEqual([...w.vm.selectedRowKeys], [101])
+  assert.equal(writes().length, 0)
 })
 
 test('TP08 healthy non-objective update preserves repeated answers and low fields without logging answer text', async () => {
@@ -305,73 +302,23 @@ test('TP16 healthy serial bulk course retains cache-backed off-page records and 
   assert.equal(count('getQuestions'), reads + 1); assert.deepEqual([...w.vm.selectedRowKeys], []); assert.equal(w.vm.bulkCourseVisible, false)
 })
 
-test('TP17 File.text completion after principal retirement cannot start import dry-run', async () => {
-  const w = await page(); let resolveText
-  const e = importEvent(); e.target.files[0].text = () => new Promise(resolve => { resolveText = resolve })
-  const work = w.vm.handleJsonImportChange(e); user.setStoredCurrentUser(B); await settle()
-  resolveText(JSON.stringify([row()])); await work; await settle()
-  assert.equal(count('importDryRun'), 0, 'RETIRED_FILE_TEXT_NO_PREFLIGHT'); assert.equal(count('importExecute'), 0)
-})
-
-test('TP18 retired import dry-run response cannot prompt or dispatch execute', async () => {
-  const w = await page(); deferred.add('importDryRun')
-  const work = w.vm.handleJsonImportChange(importEvent()); await settle(); const old = last('importDryRun')
-  user.setStoredCurrentUser(B); await settle(); old.resolve(ok({ existingIds: [101] })); await work; await settle()
-  assert.equal(count('importExecute'), 0, 'RETIRED_DRY_RUN_NO_EXECUTE'); assert.equal(swalCalls.length, 0, 'RETIRED_DRY_RUN_NO_PROMPT')
-})
-
-test('TP19 retired duplicate-import Swal confirmation cannot dispatch execute', async () => {
-  const w = await page(); deferSwal = true
-  const work = w.vm.handleJsonImportChange(importEvent()); await settle(); assert.equal(swalPending.length, 1)
-  const old = swalPending.shift(); user.setStoredCurrentUser(B); await settle()
-  deferSwal = false; old.resolve({ isConfirmed: true }); await work; await settle()
-  assert.equal(count('importExecute'), 0, 'RETIRED_IMPORT_CONFIRM_NO_EXECUTE')
-})
-
-test('TP20 retired already-entered import execute cannot publish success or refresh B', async () => {
-  const w = await page(); deferred.add('importExecute')
-  const work = w.vm.handleJsonImportChange(importEvent()); await settle(); const old = last('importExecute')
-  user.setStoredCurrentUser(B); await settle(); const reads = count('getQuestions'), prompts = swalCalls.length
-  old.resolve(ok({ created: 1 })); await work; await settle()
-  assert.equal(count('getQuestions'), reads, 'RETIRED_EXECUTE_NO_REFRESH'); assert.equal(swalCalls.length, prompts, 'RETIRED_EXECUTE_NO_SUCCESS_POPUP')
-})
-
-test('TP21 healthy JSON import deny preserves no-overwrite payload; cancel remains zero writes', async () => {
-  const w = await page(); swalAnswer = { isDismissed: true }
-  await w.vm.handleJsonImportChange(importEvent()); await settle(); assert.equal(count('importExecute'), 0)
-  swalAnswer = { isDenied: true }; const reads = count('getQuestions'); const e = importEvent()
-  await w.vm.handleJsonImportChange(e); await settle()
-  assert.deepEqual(calls.find(c => c.kind === 'importDryRun').payload, { dryRun: true, overwrite: false, items: [row()] })
-  assert.deepEqual(calls.find(c => c.kind === 'importExecute').payload, { overwrite: false, items: [row()] })
-  assert.equal(count('getQuestions'), reads + 1); assert.equal(e.target.value, '')
-})
-
-test('TP22 old native row and export buttons in the same tick cannot resolve B state as their owner', async () => {
+test('TP17 old native row buttons in the same tick cannot resolve B state as their owner', async () => {
   const w = await page(); await select(w)
-  const oldEdit = named(w, '编辑'), oldDelete = named(w, '删除'), oldExport = named(w, '导出选中')
-  user.setStoredCurrentUser(B); oldEdit.click(); oldDelete.click(); oldExport.click(); await settle()
+  const oldEdit = named(w, '编辑'), oldDelete = named(w, '删除')
+  user.setStoredCurrentUser(B); oldEdit.click(); oldDelete.click(); await settle()
   assert.equal(writes().length, 0, 'OLD_NATIVE_ROW_NO_WRITE'); assert.equal(swalCalls.length, 0, 'OLD_NATIVE_ROW_NO_PROMPT')
   assert.equal(w.vm.visible, false, 'OLD_NATIVE_ROW_NO_B_EDITOR'); assert.equal(downloads.length, 0)
 })
 
-test('TP23 scope retirement during Blob URL creation revokes URL without cross-scope download', async () => {
-  const w = await page(); await select(w)
-  exportHook = () => user.setStoredCurrentUser(B)
-  await click(named(w, '导出选中'))
-  assert.equal(blobs.length, 1, 'export reached actual Blob URL boundary'); assert.equal(downloads.length, 0, 'RETIRED_EXPORT_NO_DOWNLOAD')
-  assert.deepEqual(revoked, ['blob:synthetic-tiku-principal-1'])
-  assert.equal(document.body.textContent.includes('已导出'), false)
-})
-
-test('TP24 role loss and logout refuse direct residual handlers and do not reopen editor or dispatch any API', async () => {
+test('TP18 role loss and logout refuse direct residual handlers and do not reopen editor or dispatch any API', async () => {
   const w = await page(); await select(w); await open(w)
   for (const principal of [{ ...A, role: 'user' }, null]) {
     if (principal) user.setStoredCurrentUser(principal); else user.clearStoredCurrentUser()
     await settle(); const before = calls.length
-    w.vm.showModal(row(), 1); w.vm.openBulkCourseModal(); w.vm.triggerJsonImport(); w.vm.handleExportSelected()
+    w.vm.showModal(row(), 1); w.vm.openBulkCourseModal()
     await w.vm.fetchData(); await w.vm.getCourses(); await w.vm.deleteQuestion(101)
     await w.vm.handleDeleteSelected(); await w.vm.handleBulkCourseSubmit(); await w.vm.confirm()
-    await w.vm.handleJsonImportChange(importEvent()); await w.vm.handleSelectAll(); await settle()
+    await w.vm.handleSelectAll(); await settle()
     assert.equal(calls.length, before, 'NO_ADMIN_RESIDUAL_IO'); assert.equal(w.vm.visible, false); assert.equal(w.vm.bulkCourseVisible, false)
   }
 })
@@ -417,13 +364,6 @@ test('TP28 old list/course failures after B starts do not publish diagnostics or
   assert.equal(document.body.textContent.includes('获取课程列表失败') || document.body.textContent.includes('获取题目列表失败'), false)
 })
 
-test('TP29 captured old native JSON file change is inert in same-tick principal transition', async () => {
-  const w = await page(); const oldInput = w.find('input[type="file"]').element
-  Object.defineProperty(oldInput, 'files', { configurable: true, value: importEvent().target.files })
-  user.setStoredCurrentUser(B); oldInput.dispatchEvent(new Event('change', { bubbles: true })); await settle()
-  assert.equal(count('importDryRun'), 0, 'OLD_NATIVE_FILE_NO_PREFLIGHT'); assert.equal(count('importExecute'), 0)
-})
-
 test('TP30 old bulk modal native save cannot borrow B scope or overwrite B course draft', async () => {
   const w = await page(); await select(w); await click(named(w, '批量编辑课程名'))
   await input(dialog('批量编辑课程名称').querySelector('input'), 'A旧课程')
@@ -441,13 +381,6 @@ test('TP31 captured modal onOk callback cannot submit a newly opened B editor', 
   user.setStoredCurrentUser(B); await settle(); await open(w); await input(dialog().querySelector('textarea'), 'B新题面')
   const before = state(w); oldOK(); await settle()
   assert.equal(writes().length, 0, 'OLD_MODAL_CALLBACK_CANNOT_SUBMIT_B'); assert.deepEqual(state(w), before)
-})
-
-test('TP32 healthy import overwrite confirmation retains all fields and explicit true choice', async () => {
-  const w = await page(); await w.vm.handleJsonImportChange(importEvent()); await settle()
-  const execute = calls.find(c => c.kind === 'importExecute')
-  assert.deepEqual(execute.payload, { overwrite: true, items: [row()] }); assert.equal(execute.principal.id, A.id)
-  assert.ok(swalCalls.some(s => s.title === '检测到重复题目')); assert.ok(swalCalls.some(s => s.title === 'JSON 导入成功'))
 })
 
 test('TP33 already-entered single delete completion cannot remove B same-ID selection or refresh B', async () => {

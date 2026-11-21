@@ -23,10 +23,10 @@ assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'real 
 axios.defaults.adapter=async config=>{
  const verb=String(config.method).toLowerCase(),url=String(config.url);calls.push({verb,url,syntheticOnly:true})
  const response=(status,data,headers={})=>({status,data,headers,config,request:{syntheticOnly:true}})
- if(verb==='get'&&url==='/adapter-service/user/info')return response(200,{...(user.getStoredCurrentUser()||A)})
- if(verb==='get'&&url==='/adapter-service/billing-records')return response(200,{data:[],total:0,page:1,pageSize:10})
- if(verb==='get'&&url==='/adapter-service/payment-methods')return response(200,paymentRows)
- assert.ok(verb==='post'&&url==='/adapter-service/recharge-orders','only approved inert adapter route')
+ if(verb==='get'&&url==='/api/user/info')return response(200,{...(user.getStoredCurrentUser()||A)})
+ if(verb==='get'&&url==='/api/billing-records')return response(200,{data:[],total:0,page:1,pageSize:10})
+ if(verb==='get'&&url==='/api/payment-methods')return response(200,paymentRows)
+ assert.ok(verb==='post'&&url==='/api/recharge-orders','only approved inert adapter route')
  const payload=typeof config.data==='string'?JSON.parse(config.data):config.data,key=config.headers?.get?.('Idempotency-Key')||config.headers?.['Idempotency-Key'],id=(++serial).toString(16).padStart(32,'0')
  orders.push({payloadKeys:Object.keys(payload).sort(),amount:payload.amount,paymentMethodId:payload.paymentMethodId,keyPresent:typeof key==='string'&&key.length>0,keySHA:typeof key==='string'?crypto.createHash('sha256').update(key).digest('hex'):null,id,mode,syntheticOnly:true})
  if(mode==='network'){const error=new Error('Network Error');error.code='ERR_NETWORK';throw error}

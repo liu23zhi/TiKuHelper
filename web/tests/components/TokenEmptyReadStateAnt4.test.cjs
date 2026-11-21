@@ -61,6 +61,7 @@ Module._load = function (request, parent, main) {
   try { filename = Module._resolveFilename(request, parent, main) } catch { return originalLoad.call(this, request, parent, main) }
   if (typeof filename === 'string' && (filename.startsWith(path.join(fallbackWeb, 'src/api') + path.sep) || filename.startsWith(path.join(targetWeb, 'src/api') + path.sep))) {
     if (path.basename(filename) === 'TikuComponentApi.js') return api
+    if (path.basename(filename) === 'UserLevelApi.js') return require('../helpers/token-level-read.cjs').levelApi
     return new Proxy({}, { get(_, name) { if (name === '__esModule' || name === 'then') return undefined; return () => deny('OTHER_API_' + String(name)) } })
   }
   return originalLoad.call(this, request, parent, main)
@@ -184,7 +185,7 @@ after(() => { record(); Module._load = originalLoad })
 
 for (const actor of [A, ADMIN]) scenario(actor.role + ' original successful empty remains the actual Antd Empty positive', async result => {
   const w = await open(actor), read = calls.at(-1)
-  assert.deepEqual(read.payload, {}); assert.equal(read.actor, actor.id)
+  assert.deepEqual(read.payload, actor.role === 'admin' ? { scope: 'all' } : {}); assert.equal(read.actor, actor.id)
   await finish(read, ok([])); confirmedEmpty(result, snapshot(w, result, 'HTTP200 empty'), 'SUCCESS')
   expect(result, calls.length - result.readStart === 1, 'NO_AUTOMATIC_EXTRA_GET')
 })

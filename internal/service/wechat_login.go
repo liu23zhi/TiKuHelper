@@ -382,7 +382,7 @@ func ProbeWechatScanStatusWithDB(db *gorm.DB, input WechatScanProbeInput) (Wecha
 	var user entity.User
 	err = db.Where("wechat_id = ?", upstream.WechatID).First(&user).Error
 	if err == nil {
-		if !isServiceUserEnabled(&user) {
+		if !isServiceUserEnabled(&user) && !strings.EqualFold(strings.TrimSpace(user.Status), "banned") {
 			return WechatScanProbeResult{}, fmt.Errorf("用户已被禁用")
 		}
 		return WechatScanProbeResult{Status: WechatLoginStatusSuccess}, nil
@@ -516,7 +516,7 @@ func resolveWechatStatusResultByID(db *gorm.DB, store *WechatBindTokenStore, wec
 	}
 	var user entity.User
 	if err := db.Where("wechat_id = ?", wechatID).First(&user).Error; err == nil {
-		if !isServiceUserEnabled(&user) {
+		if !isServiceUserEnabled(&user) && !strings.EqualFold(strings.TrimSpace(user.Status), "banned") {
 			return WechatLoginStatusResult{}, fmt.Errorf("用户已被禁用")
 		}
 		if bindOnly {
@@ -567,7 +567,7 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	if err := util.ValidateBcryptPasswordBytes(password); err != nil {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
-	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, password)
+	passwordMatches, needsUpgrade := util.VerifyAccountLoginPassword(user.ID, user.Role, user.Password, password)
 	if !passwordMatches {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}

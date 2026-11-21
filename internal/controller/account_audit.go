@@ -54,7 +54,10 @@ func optionalLogoutUser(c *gin.Context) *entity.User {
 	if dao.User == nil {
 		return nil
 	}
-	token := strings.TrimSpace(c.GetHeader("Authorization"))
+	// 与 controller.Auth 保持一致：header 接受 `Bearer <jwt>` 与裸 token
+	// （2026-11-18 兼容需求）。审计侧的解析若不同步，会出现「请求被放行、
+	// 但审计记录里没有操作人」的静默失配。
+	token := stripBearerTokenPrefix(c.GetHeader("Authorization"))
 	if token == "" {
 		token, _ = c.Cookie(authCookieName)
 	}

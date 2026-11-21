@@ -6,6 +6,7 @@ const assert = require('node:assert/strict'), path = require('node:path'), fs = 
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter); Module._initPaths()
 require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/question-transfer-read.cjs')(web)
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises, DOMWrapper } = require('@vue/test-utils'), { nextTick } = require('vue'), { createRouter, createMemoryHistory } = require('vue-router'), Antd = require('ant-design-vue')
@@ -63,7 +64,7 @@ async function typeQuestion(w, value) {
 }
 async function open(w, operation = 'update') { await click(named(w, operation === 'create' ? '添加' : '编辑')); await waitEditor(w); await typeQuestion(w, DRAFT) }
 async function issue(w) { const before = writes().length; await click(modalButton(w, '确定')); assert.equal(writes().length, before + 1, 'one current native OK admits one mock mutation'); return writes().at(-1) }
-function unknown(operation) { const original = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK', config: { url: PRIVATE }, detail: PRIVATE }); const error = toUserRequestError({ method: operation === 'create' ? 'post' : 'put', url: '/adapter-service/questions' }, original); error.diagnosticId = PRIVATE; assert.equal(error.code, 'UNKNOWN_OUTCOME'); assert.equal(getTransportRequestId(error), undefined); return error }
+function unknown(operation) { const original = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK', config: { url: PRIVATE }, detail: PRIVATE }); const error = toUserRequestError({ method: operation === 'create' ? 'post' : 'put', url: '/api/questions' }, original); error.diagnosticId = PRIVATE; assert.equal(error.code, 'UNKNOWN_OUTCOME'); assert.equal(getTransportRequestId(error), undefined); return error }
 function httpFailure(status, fulfilled) { const response = { status, headers: { 'x-request-id': ID }, data: { message: PRIVATE, detail: PRIVATE, diagnosticId: PRIVATE, ...(status === 400 ? { error: { code: 'INVALID_INPUT' } } : {}) } }; return fulfilled ? buildResponsePayload(response) : captureTransportRequestError(Object.assign(new Error(PRIVATE), { response, config: { url: PRIVATE } })) }
 function draft(w) { const c = w.findComponent(OptionBox).exists() ? w.findComponent(OptionBox) : w.findComponent(AnswerBox); return { form: copy(w.vm.formData), child: copy(c.vm.data), files: copy(w.vm.fileList) } }
 function safe(w, original, kind) {

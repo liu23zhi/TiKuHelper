@@ -2,10 +2,11 @@ package controller
 
 // 「我的设备」用户端接口（137-设备体系设计 §8.1 / A2 批次）。
 //
-// 六个端点：
+// 七个端点：
 //
 //	GET    /user/devices                我的设备列表（含已撤销、标注拉黑状态）
 //	POST   /user/devices/:id/remove     移除（**软撤销**：写 revoked_at，不删行）
+//	PUT    /user/devices/:id/label      重命名该设备（只写 device_label 一列）
 //	POST   /user/devices/:id/block      拉黑该设备（写 user_device_blocks）
 //	DELETE /user/devices/blocks/:id     解除拉黑（**删行**）
 //	GET    /user/device-limit           当前生效上限 + 来源 + 等级值
@@ -44,6 +45,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -112,6 +114,9 @@ type deviceUserBindingRow struct {
 	ID            int64      `gorm:"column:id"`
 	DeviceID      string     `gorm:"column:device_id"`
 	DeviceLabel   string     `gorm:"column:device_label"`
+	FirstIP       string     `gorm:"column:first_ip"`
+	LastIP        string     `gorm:"column:last_ip"`
+	FirstSeenAt   *time.Time `gorm:"column:first_seen_at"`
 	LastSeenAt    *time.Time `gorm:"column:last_seen_at"`
 	RevokedAt     *time.Time `gorm:"column:revoked_at"`
 	RevokedReason string     `gorm:"column:revoked_reason"`
@@ -124,6 +129,8 @@ type deviceUserBindingRow struct {
 type deviceUserColumnState struct {
 	hasLabel   bool // device_label
 	hasRevoked bool // revoked_at + revoked_reason
+	hasLastIP  bool // last_ip
+	hasFirstIP bool // first_ip
 }
 
 func deviceUserReadColumnState(db *gorm.DB) deviceUserColumnState {
@@ -134,6 +141,8 @@ func deviceUserReadColumnState(db *gorm.DB) deviceUserColumnState {
 	state.hasLabel = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label")
 	state.hasRevoked = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_at") &&
 		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_reason")
+	state.hasLastIP = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip")
+	state.hasFirstIP = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "first_ip")
 	return state
 }
 
@@ -146,13 +155,21 @@ func deviceUserBindingSelect(state deviceUserColumnState) string {
 	if state.hasLabel {
 		label = "device_label AS device_label"
 	}
+	lastIP := "'' AS last_ip"
+	if state.hasLastIP {
+		lastIP = "last_ip AS last_ip"
+	}
+	firstIP := "'' AS first_ip"
+	if state.hasFirstIP {
+		firstIP = "first_ip AS first_ip"
+	}
 	revokedAt, revokedReason := "NULL AS revoked_at", "'' AS revoked_reason"
 	if state.hasRevoked {
 		revokedAt = "revoked_at AS revoked_at"
 		revokedReason = "revoked_reason AS revoked_reason"
 	}
-	return "id AS id, device_id AS device_id, " + label + ", last_seen_at AS last_seen_at, " +
-		revokedAt + ", " + revokedReason
+	return "id AS id, device_id AS device_id, " + label + ", " + firstIP + ", " + lastIP +
+		", first_seen_at AS first_seen_at, last_seen_at AS last_seen_at, " + revokedAt + ", " + revokedReason
 }
 
 // deviceUserBlocksTableAvailable 判断拉黑表是否就绪。
@@ -171,6 +188,9 @@ type deviceUserDeviceItem struct {
 	ID            int64      `json:"id"`
 	DeviceID      string     `json:"deviceId"`
 	DeviceLabel   string     `json:"deviceLabel"`
+	FirstIP       string     `json:"firstIp"`
+	LastIP        string     `json:"lastIp"`
+	FirstSeenAt   *time.Time `json:"firstSeenAt"`
 	LastSeenAt    *time.Time `json:"lastSeenAt"`
 	Status        string     `json:"status"`
 	StatusText    string     `json:"statusText"`
@@ -186,6 +206,8 @@ type deviceUserDeviceItem struct {
 	BlockOnly bool `json:"blockOnly"`
 	// Removable=当前是否可点「移除」（已撤销的行没有意义再撤销一次）。
 	Removable bool `json:"removable"`
+	// Deletable 仅对已撤销且未拉黑的历史记录为 true，允许用户清理历史。
+	Deletable bool `json:"deletable"`
 }
 
 // deviceUserStatusText 把状态翻译成界面文案（137 §9.1：使用中 / 已移除 / 已拉黑）。
@@ -346,6 +368,9 @@ func UserDevices(c *gin.Context) {
 			ID:            row.ID,
 			DeviceID:      row.DeviceID,
 			DeviceLabel:   row.DeviceLabel,
+			FirstIP:       row.FirstIP,
+			LastIP:        row.LastIP,
+			FirstSeenAt:   row.FirstSeenAt,
 			LastSeenAt:    row.LastSeenAt,
 			RevokedAt:     row.RevokedAt,
 			RevokedReason: row.RevokedReason,
@@ -366,6 +391,7 @@ func UserDevices(c *gin.Context) {
 		}
 		item.StatusText = deviceUserStatusText(item.Status)
 		item.Removable = row.RevokedAt == nil
+		item.Deletable = row.RevokedAt != nil && !item.Blocked
 		devices = append(devices, item)
 	}
 
@@ -398,6 +424,115 @@ func UserDevices(c *gin.Context) {
 		"blocked":     blocked,
 		"schemaReady": true,
 	}})
+}
+
+// UserDeviceDelete 删除本人已移除的设备历史记录。
+//
+// DELETE /api/user/devices/:id
+//
+// 移除动作仍然是软撤销，保留撤销时间与原因；本端点是用户明确点击删除后的
+// 历史清理，只允许已撤销且未拉黑的本人记录，避免清理仍参与准入判定的设备。
+func UserDeviceDelete(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, ok := deviceUserParseID(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法删除设备记录"})
+		return
+	}
+	row, err := deviceUserFindBinding(db, operator.ID, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+		return
+	}
+	if row == nil {
+		deviceUserNotFound(c)
+		return
+	}
+	if row.RevokedAt == nil {
+		c.JSON(http.StatusConflict, gin.H{"message": "只能删除已移除的设备"})
+		return
+	}
+	if blocks, err := deviceUserLoadBlocks(db, operator.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备拉黑记录失败"})
+		return
+	} else if _, blocked := blocks[row.DeviceID]; blocked {
+		c.JSON(http.StatusConflict, gin.H{"message": "已拉黑设备请先解除拉黑"})
+		return
+	}
+	deleteQuery := db.Table(entity.TableNameAccountDeviceBinding).
+		Where("id = ? AND user_id = ? AND revoked_at IS NOT NULL", id, operator.ID)
+	if deviceUserBlocksTableAvailable(db) {
+		// 拉黑记录可能在前面的读取之后插入；在实际 DELETE 内再次判断，
+		// 让新出现的拉黑记录保留其绑定历史，而不是先删绑定再留下孤儿拉黑。
+		deleteQuery = deleteQuery.Where("NOT EXISTS (SELECT 1 FROM user_device_blocks WHERE user_device_blocks.user_id = ? AND user_device_blocks.device_id = account_device_bindings.device_id)", operator.ID)
+	}
+	result := deleteQuery.Delete(&entity.AccountDeviceBinding{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "删除设备记录失败"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		latest, findErr := deviceUserFindBinding(db, operator.ID, id)
+		if findErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+			return
+		}
+		if latest != nil {
+			c.JSON(http.StatusConflict, gin.H{"message": "设备状态已变化，请刷新后重试"})
+			return
+		}
+		deviceUserNotFound(c)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": id, "deviceId": row.DeviceID, "deleted": true}})
+}
+
+// UserDeviceExpiryGet/Put 读取和保存当前用户的设备闲置自动移除时间。
+func UserDeviceExpiryGet(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法读取设备过期策略"})
+		return
+	}
+	maxDays := service.GetDeviceIdleRevokeAfterDaysWithDB(db)
+	days, customized := service.GetUserDeviceIdleRevokeAfterDaysWithDB(db, operator.ID)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"days": days, "maxDays": maxDays, "customized": customized, "allowDisable": service.GetDeviceIdleRevokeAllowUserDisableWithDB(db)}})
+}
+
+func UserDeviceExpiryPut(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法保存设备过期策略"})
+		return
+	}
+	var input struct {
+		Days *int `json:"days"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Days == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供设备自动移除天数"})
+		return
+	}
+	if err := service.SaveUserDeviceIdleRevokeAfterDaysWithDB(db, operator.ID, *input.Days); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	days, customized := service.GetUserDeviceIdleRevokeAfterDaysWithDB(db, operator.ID)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"days": days, "maxDays": service.GetDeviceIdleRevokeAfterDaysWithDB(db), "customized": customized, "allowDisable": service.GetDeviceIdleRevokeAllowUserDisableWithDB(db)}})
 }
 
 // sortDeviceUserItems 按 device_id 升序排（只用于孤儿行，保证顺序稳定）。
@@ -506,6 +641,134 @@ func UserDeviceRemove(c *gin.Context) {
 		"revokedReason":  deviceUserRevokeReasonUserRemoved,
 		"alreadyRevoked": false,
 	}})
+}
+
+// UserDeviceRename 给设备起一个自己能认出来的名字（写 device_label）。
+//
+//	PUT /api/user/devices/:id/label   {"label":"家里的笔记本"}
+//
+// ## 为什么是 PUT /label 而不是改设备行的通用 PUT
+//
+// 设备行里**唯一允许用户编辑**的字段就是 label。开一个通用 PUT 意味着
+// 「将来任何人往 deviceUserDeviceItem 加字段，就顺手多了一个可以被用户改的入口」——
+// device_id 被改会让唯一索引语义崩溃（两台设备合成一台），
+// last_seen_at 被改会让「10 天闲置解绑」失效，revoked_at 被改等于自己给自己解封。
+// 只给一个窄端点，写入面就是这一列，没有扩散余地。
+//
+// ## 与登记路径的覆盖关系（谁说了算）
+//
+// 登录/请求时 `RegisterDeviceWithOptions` 也会写 device_label，但**只在
+// 上报值非空时写**（见那里的「空不覆盖」注释）。客户端不上报 label 的常态下，
+// 用户在这里起的名字不会被后续请求抹掉。若客户端确实上报了 label，
+// 语义上是「客户端自报的设备名」覆盖「用户手填名」—— 这是有意的：
+// 用户手动改名是一次性动作，而客户端每次请求都在描述事实。
+// （若将来要改成「用户命名优先」，正确做法是加一个 user_labeled 标记列，
+// 而不是在这里猜。本轮不引入该列。）
+//
+// ## 空 label = 清空回「未命名的设备」
+//
+// 允许空串（等价于恢复默认显示），不报 400：用户想取消自己起的名字是合理需求，
+// 而拒绝它只会逼用户随便填一个字符。
+func UserDeviceRename(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, ok := deviceUserParseID(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法重命名设备"})
+		return
+	}
+	row, err := deviceUserFindBinding(db, operator.ID, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+		return
+	}
+	if row == nil {
+		// 不存在 / 不属于自己 / 表未就绪 —— 对外一律 404（红线 1）。
+		deviceUserNotFound(c)
+		return
+	}
+	state := deviceUserReadColumnState(db)
+	if !state.hasLabel {
+		// 列还没补：如实 503。静默返回成功会让用户以为改了名，
+		// 而刷新后又变回「未命名的设备」。
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "设备表尚未就绪，暂时无法重命名设备"})
+		return
+	}
+
+	var input struct {
+		Label string `json:"label"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供设备名称"})
+		return
+	}
+	label, err := normalizeDeviceUserLabel(input.Label)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	// 用 UpdateColumn 而不是 Updates：后者会顺带刷新 updated_at，
+	// 把「用户改了名字」与「设备被使用过」两种事实混在一起
+	// （last_seen_at 才是活跃度的唯一数据源）。
+	if err := db.Table(entity.TableNameAccountDeviceBinding).
+		Where("id = ? AND user_id = ?", id, operator.ID).
+		UpdateColumn("device_label", label).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "重命名设备失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"id":          row.ID,
+		"deviceId":    row.DeviceID,
+		"deviceLabel": label,
+	}})
+}
+
+// deviceUserLabelMaxRunes 是设备名的字符上限，与列宽 device_label VARCHAR(64) 一致。
+//
+// ⚠️ 按**字符**（rune）而不是字节：列宽 64 在 MySQL utf8mb4 下是 64 个字符，
+// 按字节截断会让「64 个汉字的设备名」被砍成 21 个汉字（每字 3 字节），
+// 而 SQLite 完全不限制 —— 两地方言行为不一致，且只在生产暴露。
+const deviceUserLabelMaxRunes = 64
+
+// normalizeDeviceUserLabel 校验并归一化用户输入的设备名。
+//
+// 三件事：去首尾空白、拒绝控制字符、按字符截断。
+//
+// ## 为什么拒绝控制字符而不是替换成空格
+//
+// 设备名会原样渲染到表格里。`\r` / `\n` 会破坏行高、`\x00` 会让 MySQL 直接
+// 报错（严格模式下 "Incorrect string value"），而 `\t` 会让列宽算错。
+// 直接 400 比「悄悄替换掉」更诚实：用户粘贴了一段带换行的文本，应当知道
+// 「这里只能填一行」。
+//
+// ## 为什么不拒绝 emoji / 中文
+//
+// 它们是合法的设备名（「客厅的 iPad 🛋️」）。列宽按字符算，
+// emoji 在 utf8mb4 下占 1 个字符（4 字节），64 字符装得下。
+func normalizeDeviceUserLabel(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		// 空 = 恢复默认显示，是合法输入（见 UserDeviceRename 的说明）。
+		return "", nil
+	}
+	for _, r := range trimmed {
+		if r == '\r' || r == '\n' || r == '\t' || r == 0 || (r < 0x20) || r == 0x7f {
+			return "", errors.New("设备名称不能包含换行或控制字符")
+		}
+	}
+	runes := []rune(trimmed)
+	if len(runes) > deviceUserLabelMaxRunes {
+		return "", fmt.Errorf("设备名称最多 %d 个字符", deviceUserLabelMaxRunes)
+	}
+	return trimmed, nil
 }
 
 // UserDeviceBlock 拉黑一台设备（写 `user_device_blocks` 一行）。

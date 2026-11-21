@@ -9,6 +9,10 @@ module.exports = defineConfig({
   },
   devServer: {
     proxy: {
+      "/api": {
+        target: 'http://127.0.0.1:8060',
+        changeOrigin: true,
+      },
       "/adapter-service": {
         target: 'http://127.0.0.1:8060',
         changeOrigin: true,

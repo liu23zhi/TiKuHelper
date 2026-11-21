@@ -123,8 +123,8 @@ export function describeRetention(retention) {
   const totalGiB = readCacheCount(source.maxTotalGiB);
   const intervalMinutes = readCacheCount(source.cleanupIntervalMinutes);
   return {
-    ageText: ageDays === null ? '—' : `${ageDays} 天`,
-    sizeText: totalGiB === null ? '—' : `${totalGiB} GiB`,
+    ageText: retention?.mode === 'size' ? '未启用按时间清理' : ageDays === null ? '—' : `${ageDays} 天`,
+    sizeText: retention?.mode === 'time' ? '未启用按大小清理' : totalGiB === null ? '—' : `${totalGiB} GiB`,
     intervalText: intervalMinutes === null ? '—' : `${intervalMinutes} 分钟`,
     // 总量上限的字节形态：页面用它算「当前占用 / 上限」的占比条。
     limitBytes: readCacheCount(source.maxTotalBytes) ?? (

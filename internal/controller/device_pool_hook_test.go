@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -164,7 +165,9 @@ func waitForDeviceRows(t *testing.T, db *gorm.DB, userID int32, want int) []enti
 func drainDeviceWrites(t *testing.T, userID int32, deviceID string) {
 	t.Helper()
 	for i := 0; i < 3; i++ {
-		_ = registerAccountDeviceBindingNow(userID, deviceID)
+		// 传空 IP：drain 的职责只是排空队列，不该顺带写 last_ip
+		// （那会让「注入必失败」的用例多一个无关变量）。
+		_ = registerAccountDeviceBindingNow(userID, deviceID, "")
 		time.Sleep(2 * time.Millisecond)
 	}
 }
@@ -263,25 +266,24 @@ func TestDevicePoolLoginRecordsBinding(t *testing.T) {
 		t.Fatalf("登录响应必须含 jwt：%s", recorder.Body.String())
 	}
 
-	rows := waitForDeviceRows(t, db, user.ID, 1)
-	expected := service.NormalizeDevicePoolDeviceID(
-		BuildDevicePoolDeviceID(service.ClientKindUnknown, devicePoolTestUserAgent))
-	if rows[0].DeviceID != expected {
-		t.Fatalf("落库的设备标识不对：期望 %q，实际 %q", expected, rows[0].DeviceID)
-	}
-	if !rows[0].FirstSeenAt.Equal(rows[0].LastSeenAt) {
-		t.Fatalf("首次登记时 first_seen_at 必须等于 last_seen_at：first=%v last=%v",
-			rows[0].FirstSeenAt, rows[0].LastSeenAt)
-	}
+	// ⚠️ 2026-11-17 语义反转（用户定案）：Web UI 登录**不再**登记设备。
+	//
+	// 原用例断言「登录后设备表多一行，且 device_id == BuildDevicePoolDeviceID(
+	// client_kind, UA)」。那个行为已经被删除 —— 设备池只服务 chaoxing 调 API 的
+	// 设备，浏览器登录不该出现在「我的设备」里。
+	//
+	// 新判据用 waitForZeroDeviceRows 而不是 waitForDeviceRows(0)：
+	// 后者在 want==0 时会立即返回，无法区分「确实没写」与「异步写入还没发生」。
+	assertNoDeviceRows(t, db, user.ID, 0)
 }
 
 // ─────────────────────── 判据 ② ───────────────────────
 
-// 判据 ②：同设备二次登录 —— 行数不变、last_seen_at 前进、first_seen_at 不变。
+// 判据 ②：同设备二次登录 —— 仍然不产生任何设备行（幂等的最强形式）。
 //
-// ⚠️ 这是最容易做成假钉子的一条：只断「行数 == 1」会让「每次登录都新建一行、
-// 但被唯一索引挡掉」与「真的幂等」看起来一样。所以这里三个维度都断，
-// 并且 first_seen_at / last_seen_at 都要求**逐值**比较（不是「非零」）。
+// ⚠️ 这条用例原本验证「第二次登录保持单行且 last_seen_at 前进」，
+// 现在验证的是「两次登录都不写行」。判据从「行数恒为 1」变成「行数恒为 0」，
+// 强度没有降低：任何一次登录漏登记都会被它抓到。
 func TestDevicePoolSecondLoginKeepsSingleRowAndAdvancesLastSeen(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	user, password := seedDevicePoolHookUser(t, db, "devpool-second", 0)
@@ -290,35 +292,19 @@ func TestDevicePoolSecondLoginKeepsSingleRowAndAdvancesLastSeen(t *testing.T) {
 	if recorder := loginWithUserAgent(t, user.Username, password, devicePoolTestUserAgent); recorder.Code != http.StatusOK {
 		t.Fatalf("第一次登录失败：%d %s", recorder.Code, recorder.Body.String())
 	}
-	first := waitForDeviceRows(t, db, user.ID, 1)[0]
+	assertNoDeviceRows(t, db, user.ID, 0)
 
-	// 等待一个可观测的时间差，确保 last_seen_at 的「前进」有可测量的余地。
 	time.Sleep(20 * time.Millisecond)
 
 	if recorder := loginWithUserAgent(t, user.Username, password, devicePoolTestUserAgent); recorder.Code != http.StatusOK {
 		t.Fatalf("第二次登录失败：%d %s", recorder.Code, recorder.Body.String())
 	}
-	drainDeviceWrites(t, user.ID, first.DeviceID)
-
-	rows := waitForDeviceRows(t, db, user.ID, 1)
-	if len(rows) != 1 {
-		t.Fatalf("同一设备二次登录必须只有 1 行，实际 %d 行", len(rows))
-	}
-	second := rows[0]
-	if second.ID != first.ID {
-		t.Fatalf("二次登录不该换行（同一 (user_id, device_id) 是同一行）：%d -> %d", first.ID, second.ID)
-	}
-	if !second.FirstSeenAt.Equal(first.FirstSeenAt) {
-		t.Fatalf("first_seen_at 必须保持不变：%v -> %v", first.FirstSeenAt, second.FirstSeenAt)
-	}
-	if !second.LastSeenAt.After(first.LastSeenAt) {
-		t.Fatalf("last_seen_at 必须前进：%v -> %v", first.LastSeenAt, second.LastSeenAt)
-	}
+	assertNoDeviceRows(t, db, user.ID, 0)
 }
 
 // ─────────────────────── 判据 ③ ───────────────────────
 
-// 判据 ③：不同设备登录 —— 行数 +1。
+// 判据 ③：换设备 / 换 client_kind 登录 —— 仍然一行都不写。
 func TestDevicePoolDifferentDeviceAddsRow(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	user, password := seedDevicePoolHookUser(t, db, "devpool-third", 0)
@@ -327,29 +313,47 @@ func TestDevicePoolDifferentDeviceAddsRow(t *testing.T) {
 	if recorder := loginWithUserAgent(t, user.Username, password, devicePoolTestUserAgent); recorder.Code != http.StatusOK {
 		t.Fatalf("设备 A 登录失败：%d %s", recorder.Code, recorder.Body.String())
 	}
-	rows := waitForDeviceRows(t, db, user.ID, 1)
-	firstDevice := rows[0].DeviceID
+	assertNoDeviceRows(t, db, user.ID, 0)
 
-	// 换一个 UA = 换一台设备。
+	// 换一个 UA = 换一台设备，仍不该产生设备行。
 	if recorder := loginWithUserAgent(t, user.Username, password, devicePoolTestUserAgent+" Firefox/121"); recorder.Code != http.StatusOK {
 		t.Fatalf("设备 B 登录失败：%d %s", recorder.Code, recorder.Body.String())
 	}
-	rows = waitForDeviceRows(t, db, user.ID, 2)
-	if len(rows) != 2 {
-		t.Fatalf("两台设备必须 2 行，实际 %d 行", len(rows))
-	}
-	if rows[0].DeviceID == rows[1].DeviceID {
-		t.Fatalf("两台设备不该合并成同一行：%q", rows[0].DeviceID)
-	}
-	if rows[0].DeviceID != firstDevice {
-		t.Fatalf("第一行不该被改写：%q -> %q", firstDevice, rows[0].DeviceID)
-	}
-	// 另一维度：换 client_kind（同一 UA）也必须是新设备。
+	assertNoDeviceRows(t, db, user.ID, 0)
+
+	// 换 client_kind（同一 UA）同样不该产生设备行。
 	recorder := loginWithUserAgentWithKind(t, user.Username, password, devicePoolTestUserAgent, service.ClientKindExtension)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("扩展入口登录失败：%d %s", recorder.Code, recorder.Body.String())
 	}
-	waitForDeviceRows(t, db, user.ID, 3)
+	assertNoDeviceRows(t, db, user.ID, 0)
+}
+
+// assertNoDeviceRows 断言某个用户的设备行数**恰好等于 want**，且结论是「等过了」的。
+//
+// 为什么不能直接用 waitForDeviceRows(want=0)：那条 helper 在 want==0 时
+// 首次读表就返回，「异步写入还没发生」与「永远不写」在它眼里完全一样 ——
+// 这正是本项目反复踩过的假钉子形态（断言在变异下仍绿）。
+//
+// 这里反过来做：先等一个明确的窗口（登记 goroutine 是 FIFO 到同一个库上的，
+// 窗口内足以完成），再断言。窗口取 300ms：比 waitForDeviceRows 的 3s 短得多，
+// 但远大于本机实测的异步写入耗时（<10ms），不会拖慢整个包。
+//
+// want 一般传 0（登录不登记）。传非 0 用于「预置了 N 台且登录不该改动它」的场景 ——
+// 那种情况下要的是「行数没变」，而不是「一行都没有」。
+//
+// 返回值是断言通过时的实际行（按 id 升序），供调用方继续核对 ID 等细节。
+func assertNoDeviceRows(t *testing.T, db *gorm.DB, userID int32, want int) []entity.AccountDeviceBinding {
+	t.Helper()
+	time.Sleep(300 * time.Millisecond)
+	var rows []entity.AccountDeviceBinding
+	if err := db.Where("user_id = ?", userID).Order("id asc").Find(&rows).Error; err != nil {
+		t.Fatalf("统计设备行失败: %v", err)
+	}
+	if len(rows) != want {
+		t.Fatalf("设备行数应恒为 %d（登录路径不得改动设备表），实际 %d 行：%+v", want, len(rows), rows)
+	}
+	return rows
 }
 
 // loginWithUserAgentWithKind 与 loginWithUserAgent 同源，额外带上 X-Client-Kind。
@@ -377,17 +381,27 @@ func loginWithUserAgentWithKind(t *testing.T, username, password, userAgent, kin
 // 那是另一件事（也未必该成立）。
 //
 // 这条与既有设计一致（device_pool.go 判定本身 fail-open），不是额外加固。
+//
+// ⚠️ 2026-11-17 语义反转：登录路径已不写设备表，所以「注入 Create 失败」这个手法
+// 无从施加。用例改写成**更强的**形态：在 account_device_bindings 上挂一个
+// 「只要被 Create 就记数并报错」的回调，然后断言
+//
+//	① 登录仍然 200 + 返回 jwt（证明失败写入确实不影响登录）；
+//	② 回调**一次都没被调用**（证明登录路径根本没碰设备表 —— 这是新契约）；
+//	③ 操作日志仍落库（证明 ② 不是因为 DB 全坏或 handler 提前 return）。
+//
+// 比原来强在哪：原来只能证明「写了但失败不影响登录」，现在证明「压根不写」。
 func TestDevicePoolWriteFailureDoesNotBreakLogin(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	user, password := seedDevicePoolHookUser(t, db, "devpool-failopen", 0)
 	stubCtrlCaptcha(t, nil)
 
-	injected := atomic.Int64{}
+	touched := atomic.Int64{}
 	if err := db.Callback().Create().Before("gorm:create").Register("devpool-fail", func(tx *gorm.DB) {
 		if tx.Statement == nil || tx.Statement.Table != entity.TableNameAccountDeviceBinding {
 			return
 		}
-		injected.Add(1)
+		touched.Add(1)
 		_ = tx.AddError(fmt.Errorf("injected device write failure"))
 	}); err != nil {
 		t.Fatalf("register callback: %v", err)
@@ -403,29 +417,13 @@ func TestDevicePoolWriteFailureDoesNotBreakLogin(t *testing.T) {
 		t.Fatalf("设备写入失败时登录仍必须返回正常 token，实际 body=%s", recorder.Body.String())
 	}
 
-	// 证明注入真的生效了（否则这条用例是空转：登录成功可能只是因为压根没写）。
-	//
-	// ⚠️ 必须**等**：设备登记是异步 goroutine（判据⑤ 要求），handler 返回时
-	// 回调很可能还没被调用。直接检查会误判成「注入没生效」。
-	deadline := time.Now().Add(3 * time.Second)
-	for injected.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	// 给异步路径留时间：即使将来有人把登记改回异步，也逃不过这条断言。
+	assertNoDeviceRows(t, db, user.ID, 0)
+	if got := touched.Load(); got != 0 {
+		t.Fatalf("登录路径不得触碰设备表，实际触发 %d 次 Create", got)
 	}
-	if injected.Load() == 0 {
-		t.Fatal("注入的写入失败回调从未被调用 —— 说明设备登记根本没走到 Create，用例前置不成立")
-	}
-	deviceID := service.NormalizeDevicePoolDeviceID(
-		BuildDevicePoolDeviceID(service.ClientKindUnknown, devicePoolTestUserAgent))
-	drainDeviceWrites(t, user.ID, deviceID)
-	// 设备表应当为空（写入被拒），但用户/日志表仍有落库。
-	var count int64
-	if err := db.Model(&entity.AccountDeviceBinding{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
-		t.Fatalf("count bindings: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("注入失败时不该有设备行，实际 %d 行", count)
-	}
-	// 反向对照：登录产生的操作日志仍应落库（证明只是设备表写失败，不是 DB 全坏）。
+
+	// 反向对照：登录产生的操作日志仍应落库（证明前提②不是因为整条路径没跑）。
 	var logCount int64
 	if err := db.Model(&entity.Log{}).Where("user_id = ?", user.ID).Count(&logCount).Error; err != nil {
 		t.Fatalf("count logs: %v", err)
@@ -435,7 +433,10 @@ func TestDevicePoolWriteFailureDoesNotBreakLogin(t *testing.T) {
 	}
 }
 
-// 判据 ④ 的对照组：不注入时同一路径确实写成功（证明上一条不是「永远不写」）。
+// 判据 ④ 的对照组：不注入时登录仍不写设备行（证明上一条不是「因为注入了才不写」）。
+//
+// ⚠️ 这条是必须的对照组：没有它，上一条「设备表为空」也可能是注入把 Create 打挂
+// 导致的，而不是「登录本来就不写」。两者结论完全不同。
 func TestDevicePoolWriteSuccessControlGroup(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	user, password := seedDevicePoolHookUser(t, db, "devpool-control", 0)
@@ -443,62 +444,45 @@ func TestDevicePoolWriteSuccessControlGroup(t *testing.T) {
 	if recorder := loginWithUserAgent(t, user.Username, password, devicePoolTestUserAgent); recorder.Code != http.StatusOK {
 		t.Fatalf("登录失败：%d %s", recorder.Code, recorder.Body.String())
 	}
-	waitForDeviceRows(t, db, user.ID, 1)
+	assertNoDeviceRows(t, db, user.ID, 0)
 }
 
 // ─────────────────────── 判据 ⑤ ───────────────────────
 
-// 判据 ⑤：设备写入**不阻塞**主路径 —— 断言「登录响应先于设备行落库」。
+// 判据 ⑤：登录主路径**完全不经过**设备写入 —— 连回调都不会被触发。
 //
-// 时序证据由 gorm 回调采集：
-//   - respondedAt：UserLogin 返回（即响应已写出）之后立刻记的时刻；
-//   - writtenAt：后台 goroutine 真正执行 Insert 的时刻（回调里记）。
+// 原用例证明「异步：响应先于落库」。现在更强：登录根本不触发设备 Create，
+// 所以「阻塞主路径」这个问题在新设计下不存在。
 //
-// 异步（go func）时，回调只可能在 handler 返回之后触发 ⇒ respondedAt < writtenAt。
-// 同步（变异成 await）时，handler 必须等回调跑完才能返回 ⇒ 顺序必然反转。
-// 这与机器快慢无关：即使整台机器慢 10 倍，拓扑顺序不变。
+// 手法照旧用 gorm 回调采集「是否发生」，只是期望值从「发生了且顺序正确」
+// 变成「一次都没发生」。这样即使有人把登记改回同步写法，也会因为
+// touched>0 立刻变红 —— 保留了对旧缺陷的防护。
 func TestDevicePoolWriteDoesNotBlockLogin(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	user, password := seedDevicePoolHookUser(t, db, "devpool-nonblock", 0)
 	stubCtrlCaptcha(t, nil)
 
-	const injectedDelay = 200 * time.Millisecond
-	var writtenAt atomic.Int64 // UnixNano；0 = 还没发生
-	var delayApplied atomic.Bool
+	touched := atomic.Int64{}
 	if err := db.Callback().Create().Before("gorm:create").Register("devpool-delay", func(tx *gorm.DB) {
 		if tx.Statement == nil || tx.Statement.Table != entity.TableNameAccountDeviceBinding {
 			return
 		}
-		delayApplied.Store(true)
-		time.Sleep(injectedDelay)
-		writtenAt.Store(time.Now().UnixNano())
+		touched.Add(1)
 	}); err != nil {
 		t.Fatalf("register callback: %v", err)
 	}
 
+	started := time.Now()
 	recorder := loginWithUserAgent(t, user.Username, password, devicePoolTestUserAgent)
-	respondedAt := time.Now().UnixNano()
+	elapsed := time.Since(started)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("登录应成功，实际 %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// 等写入落地（最多 5s；注入的延迟只有 200ms，留足余量）。
-	deadline := time.Now().Add(5 * time.Second)
-	for writtenAt.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	assertNoDeviceRows(t, db, user.ID, 0)
+	if got := touched.Load(); got != 0 {
+		t.Fatalf("登录路径不得触发设备 Create，实际 %d 次（耗时 %v）", got, elapsed)
 	}
-	if writtenAt.Load() == 0 {
-		t.Fatal("设备写入从未发生（回调没被调用），判据⑤ 无法判定")
-	}
-	if !delayApplied.Load() {
-		t.Fatal("注入的 200ms 延迟没生效，用例前置不成立")
-	}
-	if respondedAt >= writtenAt.Load() {
-		t.Fatalf("登录响应必须先于设备行落库（写入不得阻塞主路径）："+
-			"respondedAt=%d writtenAt=%d（差 %dms，同步写入才会出现这个顺序）",
-			respondedAt, writtenAt.Load(), (writtenAt.Load()-respondedAt)/int64(time.Millisecond))
-	}
-	waitForDeviceRows(t, db, user.ID, 1)
 }
 
 // ─────────────────────── 判据 ⑥ ───────────────────────
@@ -582,23 +566,50 @@ func TestDevicePoolLimitEnforcedByLevel(t *testing.T) {
 //
 // 断言用「函数体里出现 recordAccountDeviceBinding 调用」而不是行号：
 // 行号会随任何无关改动漂移，而函数名是稳定的。
-func TestDevicePoolHookWiredAtAllSuccessPaths(t *testing.T) {
+//
+// ⚠️ 2026-11-17 语义反转（用户定案）：设备池只服务「chaoxing 调 API 的设备」，
+// Web UI 登录/换绑**不再**登记设备。所以这里的期望值从 1 改成 0 —— 断言的是
+// 「这些 handler 里一次都不许出现」，与原来正好相反。
+//
+// 为什么仍然要留这条用例：删掉它之后，「哪天有人把 recordAccountDeviceBinding
+// 加回登录路径」就再也没有任何用例会变红 —— 而那正是本轮要消灭的行为。
+func TestDevicePoolHookAbsentFromSessionHandlers(t *testing.T) {
 	cases := []struct {
 		name string
 		fn   string
-		want int
 	}{
-		{"密码登录 UserLogin", "func UserLogin(c *gin.Context) {", 1},
-		{"短信登录 UserSMSLogin", "func UserSMSLogin(c *gin.Context) {", 1},
-		{"换绑 BindCurrentUserWechat", "func BindCurrentUserWechat(c *gin.Context) {", 1},
-		{"换绑 BindCurrentUserWechatByCode", "func BindCurrentUserWechatByCode(c *gin.Context) {", 1},
+		{"密码登录 UserLogin", "func UserLogin(c *gin.Context) {"},
+		{"短信登录 UserSMSLogin", "func UserSMSLogin(c *gin.Context) {"},
+		{"换绑 BindCurrentUserWechat", "func BindCurrentUserWechat(c *gin.Context) {"},
+		{"换绑 BindCurrentUserWechatByCode", "func BindCurrentUserWechatByCode(c *gin.Context) {"},
 	}
 	source := readControllerSource(t, "user.go")
 	for _, tc := range cases {
 		body := functionBodyOf(t, source, tc.fn)
-		if got := strings.Count(body, "recordAccountDeviceBinding("); got != tc.want {
-			t.Fatalf("%s 里必须恰好调用 %d 次 recordAccountDeviceBinding，实际 %d 次",
-				tc.name, tc.want, got)
+		if got := strings.Count(body, "recordAccountDeviceBinding("); got != 0 {
+			t.Fatalf("%s 里不得调用 recordAccountDeviceBinding，实际 %d 次。"+
+				"设备池只登记 chaoxing 调 API 的设备（X-Device-Id），"+
+				"Web UI 登录/换绑不占设备名额，也不该出现在「我的设备」里",
+				tc.name, got)
+		}
+	}
+}
+
+// 设备登记的**唯一**入口是业务路由上的 DeviceLimit 中间件。
+//
+// 这条用例是上面那条的配套对照：只断言「登录不登记」还不够 ——
+// 万一登记入口被整体删掉，所有请求都变成「不登记但也不校验」，
+// 上面那条照样全绿，而「我的设备」会永远是空的。
+//
+// 判据：/api/search 与 /api/search/tasks 两条搜索路由都必须挂 DeviceLimit。
+func TestDevicePoolRegistrationEntryIsDeviceLimitMiddleware(t *testing.T) {
+	source := readRouterSource(t)
+	for _, needle := range []string{
+		`apiRouter.POST("/search", middleware.DeviceLimit(), controller.SearchWithIdempotency)`,
+		`apiRouter.POST("/search/tasks", controller.AuthAccessToken, middleware.DeviceLimit(), controller.CreateSearchTask)`,
+	} {
+		if !strings.Contains(source, needle) {
+			t.Fatalf("搜索路由必须挂 DeviceLimit 中间件（设备登记的唯一入口），未找到：%s", needle)
 		}
 	}
 }
@@ -609,6 +620,16 @@ func TestDevicePoolHookWiredAtAllSuccessPaths(t *testing.T) {
 // 且调用前最近的 `return` 之后不应再有别的 return 把调用包进失败分支。
 // 这里用可读性更好的等价判据：调用点之后到函数结束之间不得出现 `c.JSON(http.Status` 之外的
 // 失败写响应（成功路径的 c.JSON(StatusOK) 除外）。
+//
+// ⚠️ 2026-11-17 起这条用例的判据**反了过来**：会话类 handler 里已经没有登记调用，
+// 所以「调用之后不得走到失败响应」这个形状不再存在。保留的断言变成：
+// 这些函数体里**一次都不许出现** recordAccountDeviceBinding（在失败分支里出现更不行）。
+//
+// 与原 TestDevicePoolHookAbsentFromSessionHandlers 的分工：
+//   - 那条数「次数」，防止有人在成功路径加回来；
+//   - 这条查「位置」，防止有人把它塞进某个 `if err != nil` 分支里
+//     （那种写法次数也是 0 吗？不 —— 次数会是 1，被上一条挡住；
+//     但如果有人同时改坏上一条的期望值，这条仍能独立兜住）。
 func TestDevicePoolHookNotOnFailurePaths(t *testing.T) {
 	source := readControllerSource(t, "user.go")
 	for _, fn := range []string{
@@ -618,20 +639,9 @@ func TestDevicePoolHookNotOnFailurePaths(t *testing.T) {
 		"func BindCurrentUserWechatByCode(c *gin.Context) {",
 	} {
 		body := functionBodyOf(t, source, fn)
-		index := strings.Index(body, "recordAccountDeviceBinding(")
-		if index < 0 {
-			t.Fatalf("%s 缺少设备登记调用", fn)
-		}
-		tail := body[index:]
-		// 调用之后只允许出现成功响应，不允许再出现 4xx/5xx 写响应。
-		for _, failure := range []string{
-			"http.StatusBadRequest", "http.StatusUnauthorized",
-			"http.StatusForbidden", "http.StatusConflict",
-		} {
-			if strings.Contains(tail, failure) {
-				t.Fatalf("%s 的设备登记之后仍可能走到失败响应（%s）—— "+
-					"登记必须只在成功路径上，失败登录不该在设备表留痕", fn, failure)
-			}
+		if strings.Contains(body, "recordAccountDeviceBinding(") {
+			t.Fatalf("%s 出现了设备登记调用 —— 设备池只登记 chaoxing 调 API 的设备，"+
+				"Web UI 的登录/换绑（无论成功还是失败分支）都不该在设备表留痕", fn)
 		}
 	}
 }
@@ -642,6 +652,20 @@ func readControllerSource(t *testing.T, name string) string {
 	raw, err := os.ReadFile(name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(raw)
+}
+
+// readServiceSource 读 internal/service 包的源文件（跨包契约断言用）。
+//
+// 用于钉住「单设备登录由 login_session_id 保证」这件事发生在 service 层，
+// 而不是在 controller 或设备池里 —— 后两者都拿不到「本次会话」的语义。
+func readServiceSource(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join("..", "service", name)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
 }

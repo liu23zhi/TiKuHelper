@@ -67,7 +67,9 @@ def check_probe(raw, operation):
     elif operation.startswith('verify-'):
         assert value.get('quickCheck') == 'ok' and value.get('bcrypt') is True
         assert value.get('expectedPasswordMatches') is True
-        assert value.get('environmentPasswordMatches') is (operation != 'verify-legacy')
+        assert value.get('environmentPasswordMatches') is (operation not in ('verify-legacy', 'verify-local-setup'))
+        if operation == 'verify-local-setup':
+            assert value.get('factoryPasswordRejected') is True
         assert value.get('unrelatedFieldsPreserved') is True and value.get('rwProbe') == [0, 1, 0]
         assert value.get('userCount') == 1 and value.get('readonlyInspection') is True
     elif operation == 'fixture-owner':
@@ -176,7 +178,7 @@ def actual_exit(raw, state):
 def actual_gin_client_ips(raw, expected):
     # Parse only the service PID1's literal stdout. Probe JSON or an observer's
     # echoed header value is not a Gin access-log observation.
-    pattern = re.compile(r'^\[GIN\] [0-9]{4}/[0-9]{2}/[0-9]{2} - [0-9]{2}:[0-9]{2}:[0-9]{2} \|\s*([0-9]{3})\s*\|[^|]+\|\s*([^|\s]+)\s*\|\s*GET\s+"(/healthz|/readyz)"\s*$')
+    pattern = re.compile(r'^\[(?:GIN|HTTP)\] [0-9]{4}/[0-9]{2}/[0-9]{2} - [0-9]{2}:[0-9]{2}:[0-9]{2} \|\s*([0-9]{3})\s*\|[^|]+\|\s*([^|\s]+)\s*\|\s*GET\s+"(/healthz|/readyz)"\s*$')
     observed = []
     for line in raw.decode('utf-8').splitlines():
         match = pattern.fullmatch(line)
@@ -488,8 +490,8 @@ class MainFlow:
                 # config.Source == '' 时打印，文案含 TRUSTED_PROXIES，
                 # 因此下面的断言在新语义下依然成立（已用真实二进制实测）。
                 assert b'TRUSTED_PROXIES' in output
-            elif name == 'production_missing_initial_secret':
-                assert b'admin bootstrap password' in output
+            if expected_exit != 0:
+                assert b'bcrypt' in output and b'72' in output, 'expected the bcrypt byte-limit rejection'
             else:
                 assert 'Tiku 服务已停止'.encode() in output, 'actual graceful shutdown marker absent'
                 # ⚠️ 2026-11-10 语义变更（task_doc/67 §1.1 / §2）：
@@ -512,9 +514,15 @@ class MainFlow:
                 result['actualGinClientIP'] = actual_gin_client_ips(logs.stdout, expected_ip)
                 result['trustedAllSources'] = trusted_all
                 assert any(p.stat().st_size > 0 for p in (fixture / 'logs').glob('Tiku*.txt')), 'real log files were not written'
-                operation = 'verify-legacy' if legacy else 'verify-development' if mode == 'development' else 'verify-new'
+                local_setup = not legacy and mode == 'production' and secret in (None, '123456')
+                operation = ('verify-local-setup' if local_setup else 'verify-legacy' if legacy
+                             else 'verify-development' if mode == 'development' else 'verify-new')
                 verified = self.recorder.run(name + '-' + operation, [str(self.probe), operation, '--db', str(db)])
                 result['database'] = check_probe(verified.stdout, operation)
+                if local_setup:
+                    assert b'--init-admin-password' in output, 'operator must be able to find the local setup command'
+                    assert not list((fixture / 'data').glob('admin-bootstrap-*.password')), 'no random password file'
+                    result['localSetupOnlyWithoutPasswordFile'] = True
                 result['workerIsolation']['databaseAfterMain'] = check_ticket_fixture_isolation(db)
                 assert result['workerIsolation']['databaseAfterMain']['settingsTablePresent'], 'main must migrate notification settings before qualification'
                 result['databaseSHA256AfterMainAndRollbackProbe'] = sha(db)
@@ -616,7 +624,9 @@ def main(argv=None):
         flow.build()
         result['ownerPortabilityObservation'] = flow.owner_portability_observation()
         cases = [('default_production_missing_proxy', None, None, NEW_PASSWORD, 0, False),
-                 ('production_missing_initial_secret', 'production', 'none', None, 1, False),
+                 ('production_missing_initial_secret', 'production', 'none', None, 0, False),
+                 ('production_factory_placeholder', 'production', 'none', '123456', 0, False),
+                 ('production_unhashable_password', 'production', 'none', 'x' * 73, 1, False),
                  ('default_production_strong_new_database', None, 'none', NEW_PASSWORD, 0, False),
                  ('existing_legacy_admin_not_reset', 'production', 'none', NEW_PASSWORD, 0, True),
                  ('explicit_development_compatibility', 'development', None, NEW_PASSWORD, 0, False)]
@@ -633,7 +643,7 @@ def main(argv=None):
             assert observed['status'] == 'PASS' and observed['forcedKill'] is False
             flow.branches.append(observed)
             print(json.dumps({'branch': case[0], 'status': observed['status'], 'actualExit': observed['actualExit']}, ensure_ascii=False), flush=True)
-        assert len(flow.branches) == 5
+        assert len(flow.branches) == len(cases) == 7
         result['status'] = 'PASS'
         exit_code = 0
     except Exception as error:

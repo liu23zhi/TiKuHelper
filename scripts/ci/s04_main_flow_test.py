@@ -47,6 +47,15 @@ class S04MainFlowContracts(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(AssertionError):
                 flow.check_probe(json.dumps(bad), 'verify-legacy')
 
+    def test_local_setup_requires_matching_factory_credential_but_no_web_login(self):
+        good = {'ok': True, 'operation': 'verify-local-setup', 'quickCheck': 'ok', 'bcrypt': True,
+                'expectedPasswordMatches': True, 'environmentPasswordMatches': False, 'factoryPasswordRejected': True,
+                'unrelatedFieldsPreserved': True, 'rwProbe': [0, 1, 0], 'userCount': 1, 'readonlyInspection': True}
+        self.assertEqual(flow.check_probe(json.dumps(good), 'verify-local-setup'), good)
+        for key in ('expectedPasswordMatches', 'factoryPasswordRejected', 'environmentPasswordMatches'):
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                flow.check_probe(json.dumps(dict(good, **{key: not good[key]})), 'verify-local-setup')
+
     def test_owner_probe_requires_real_preflight_and_post_chown_verification(self):
         good = {'ok': True, 'operation': 'fixture-owner', 'uid': 1000, 'gid': 1000,
                 'allOwned': True, 'symlinksRejected': True, 'hardlinksRejected': True,
@@ -89,6 +98,13 @@ class S04MainFlowContracts(unittest.TestCase):
             self.assertEqual([row['clientIP'] for row in observed['observations']], [address, address])
             with self.assertRaises(AssertionError):
                 flow.actual_gin_client_ips(raw, '198.51.100.9')
+        # This branch's service access logger uses [HTTP]; an arbitrary logger,
+        # a non-200 result, a different verb or mismatched observed IP is not evidence.
+        http = (line.format(ip='127.0.0.1', path='/healthz') + line.format(ip='127.0.0.1', path='/readyz')).replace('[GIN]', '[HTTP]').encode()
+        self.assertTrue(flow.actual_gin_client_ips(http, '127.0.0.1')['bothEndpointsVerified'])
+        for bad in [http.replace(b'[HTTP]', b'[INFO]'), http.replace(b'200', b'404'), http.replace(b'GET', b'POST'), http.replace(b'127.0.0.1', b'192.0.2.1')]:
+            with self.assertRaises(AssertionError):
+                flow.actual_gin_client_ips(bad, '127.0.0.1')
         for raw in [b'{"clientIP":"203.0.113.7","status":200}\n',
                     b'PROBE healthz200 readyz200 ClientIP203.0.113.7\n',
                     line.format(ip='127.0.0.1', path='/healthz').encode()]:

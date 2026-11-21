@@ -38,6 +38,7 @@ const (
 	DeviceBindingRevokeReasonUserRemoved  = "user_removed"
 	DeviceBindingRevokeReasonAdminUnbound = "admin_unbound"
 	DeviceBindingRevokeReasonIdle10d      = "idle_10d"
+	DeviceBindingRevokeReasonIdleTimeout  = "idle_timeout"
 	DeviceBindingRevokeReasonDeviceBanned = "device_banned"
 )
 
@@ -107,6 +108,30 @@ type AccountDeviceBinding struct {
 	TokenID int32 `gorm:"column:token_id;type:int;not null;default:0" json:"tokenId"`
 	// DeviceLabel 是给人看的设备名（前端/扩展上报，可空）。
 	DeviceLabel string `gorm:"column:device_label;type:varchar(64);not null;default:''" json:"deviceLabel"`
+	// FirstIP is recorded only when this binding is created. Existing rows stay
+	// unknown after migration: their most recent IP cannot establish first use.
+	FirstIP string `gorm:"column:first_ip;type:varchar(45);not null;default:''" json:"firstIp"`
+	// LastIP 是这台设备**最近一次**被该账号使用时的来源 IP（归一化后的字面量）。
+	//
+	// ## 为什么是单列「最近一次」而不是历史
+	//
+	// 用户要看的是「这台设备现在从哪儿连进来的」——用于识别陌生设备、判断是不是
+	// 自己在别的机器上登录过。历史 IP 序列属于风控留痕（login_attempts /
+	// billing_records 已经在记），在设备行上再存一份会让本表从「绑定关系」
+	// 变成「行为日志」，而那张表的每一行都参与槽位计数（口径会被日志量污染）。
+	//
+	// ## 为什么是 varchar(45) 而不是 INET
+	//
+	// 45 = IPv6 文本最长长度（含 `::ffff:` 映射形式）。INET 只有 PostgreSQL 有，
+	// MySQL 用 VARBINARY(16)、SQLite 完全没有类型 —— 三方言统一成文本，
+	// 归一化交给 service.NormalizeDeviceClientIP（net.ParseIP 收敛），
+	// 与 blacklist / location 那两套 IP 体系的取舍一致。
+	//
+	// ## 为什么 default ''（空串）而不是 NULL
+	//
+	// 空串 = 「没采到/老行」，与 NULL 语义相同但少一层指针判定；且本列**不参与
+	// 任何判定**（只是展示），不需要区分「未知」与「空」。既有行补列后自然为 ''。
+	LastIP string `gorm:"column:last_ip;type:varchar(45);not null;default:''" json:"lastIp"`
 	// ClientInstance 是「这次运行」的实例标识（141 §3.1 / R3）。
 	//
 	// 语义**只在冲突检测语境里**成立：同 device_id + 不同 client_instance ⇒ 冲突（R2）。

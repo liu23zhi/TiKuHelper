@@ -1,32 +1,8 @@
-// AI 搜索配置页「UI 错位」的回归钉子。
-//
-// 用户报的现象：AI 搜索配置页布局错位（未给截图）。
-// 实测定性为四个独立问题，前三个是同一个根因链：
-//
-//  1) AIConnectionModelSection.vue / AIAdvancedSettingsSection.vue 的 <style scoped>
-//     只定义了 .hint，把 .console-form-grid / .full-width / .ai-section-heading /
-//     .unit-label / .switch-description 都指望父组件 index.vue 的 scoped 样式兜住。
-//     —— 这在 Vue SFC 里不可能生效：父 scoped 规则编译成 `.x[data-v-父]`，
-//     子组件模板元素带的是 data-v-子。于是
-//       · .console-form-grid 没有 display:grid → 两列布局塌成单列；
-//       · .full-width 没有 grid-column: 1/-1 → Prompt 文本域、模型列表、
-//         分隔线被挤进「一列」；.unit-label 没 margin-left → 「次」「元/次」贴住输入框。
-//     这就是用户看到的错位主因。
-//  2) index.vue 自身残留一整套同样名字的 scoped 规则，而它的模板一次都没用到
-//     （已用正则统计：console-form-grid=0、full-width=0、model-editor=0 …），
-//     属于拆分组件时的死代码，且会误导后人以为「父级已经管了」。
-//  3) AIPromptSettingsSection.vue 的 .console-form-grid 带了 padding: 24px，
-//     与外层 ConsolePanel__body 的 24px 叠加成 48px → 该卡片内容比相邻卡片
-//     多缩进一倍，形成横向错位。
-//  4) ≤768px 的断点必须把网格降为单列，且三处 section 都要有（原来只有
-//     AIPromptSettingsSection 有，另两个没有 → 窄屏右侧溢出）。
-//
-// 本测试的执行方式：**截取真实 .vue 源码里的 <style scoped> 区段原文**，
-// 用真实 CSS 解析（不用 includes 字符串匹配），从而：
-//   · 变异「删掉某条规则」→ 解析结果里该选择器消失 → 用例红；
-//   · 变异「把类名改错」→ 同样红；
-//   · 变异「把 padding 加回来」→ padding 断言红。
-// 只用 includes 的话，「选择器名出现在注释里」也会判绿 —— 那是假钉子。
+// AI 搜索配置的样式契约回归。解析各分区真实的 scoped CSS，避免注释
+// 中出现选择器名称就误判为存在规则。这里只验证样式契约，实际布局需浏览器验收。
+// 三个配置分区直接渲染 section，没有 ConsolePanel__body；它们应自行提供
+// 内容边距、可收缩的两列网格和窄屏单列。模型价格表使用 ConsolePanel，
+// 其内容边距由 ConsolePanel__body 提供，不在此叠加。
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -215,16 +191,20 @@ function sourceName(file) {
   return file
 }
 
-test('三个 section 的 .console-form-grid 不能带 padding（会与 ConsolePanel__body 的 24px 叠加）', () => {
+test('直接渲染的三个 section 自带内容边距，窄屏使用紧凑边距', () => {
   for (const file of Object.keys(SECTIONS)) {
-    const { body } = extractStyleScoped(readSource(file), file)
+    const source = readSource(file)
+    const { body } = extractStyleScoped(source, file)
     const rules = parseRules(body)
-    const padding = declarationOf(rules, '.console-form-grid', 'padding', null)
+    assert.match(source, /<section[^>]+class="console-panel ai-section"/)
+    assert.doesNotMatch(source, /<ConsolePanel\b|class="console-panel__body"/, 'direct sections have no inherited body inset')
     assert.equal(
-      padding, undefined,
-      `${file}: .console-form-grid 不得声明 padding。外层 ConsolePanel__body 已经给 24px，`
-      + '再叠一层会让本卡片比相邻卡片多缩进一倍 —— 这是横向错位的直接原因（原值 padding: 24px）。',
+      declarationOf(rules, '.console-form-grid', 'padding', null), '24px',
+      `${file}: 直接 section 没有 ConsolePanel__body，内容网格须自带 24px 边距，避免表单贴边。`,
     )
+    const mobileGrid = rules.find(rule => rule.media && /max-width:\s*768px/.test(rule.media)
+      && rule.selectors.includes('.console-form-grid'))
+    assert.equal(mobileGrid?.declarations.padding, '16px', `${file}: 窄屏内容边距应与标题一致。`)
   }
 })
 

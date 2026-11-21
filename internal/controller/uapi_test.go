@@ -447,6 +447,47 @@ func TestUAPIMyLocationsAllowsOnlyOwnedIPs(t *testing.T) {
 	}
 }
 
+func TestUAPIMyLocationsIncludesOwnDeviceIPsWithoutExternalConfiguration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUAPILocationTestDB(t)
+	if err := db.AutoMigrate(&entity.AccountDeviceBinding{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range []entity.AccountDeviceBinding{
+		{UserID: 1, DeviceID: "my-device", FirstIP: "172.18.0.1", LastIP: "192.168.2.3"},
+		{UserID: 2, DeviceID: "other-device", FirstIP: "10.0.0.2", LastIP: "10.0.0.3"},
+	} {
+		if err := db.Create(&binding).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := performUAPIRequest(t, "/api/uapi/my-locations?ips=172.18.0.1,192.168.2.3", "user", UAPIMyLocations)
+	var payload struct {
+		IP map[string]struct {
+			Address string `json:"address"`
+		} `json:"ip"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || payload.IP["172.18.0.1"].Address != "私有地址" || payload.IP["192.168.2.3"].Address != "私有地址" {
+		t.Fatalf("own first/recent device IPs should resolve locally without a provider key: %d %s", recorder.Code, recorder.Body.String())
+	}
+	for _, otherIP := range []string{"10.0.0.2", "10.0.0.3"} {
+		recorder = performUAPIRequest(t, "/api/uapi/my-locations?ip="+otherIP, "user", UAPIMyLocations)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("other users' device IP must stay forbidden: %d %s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if err := db.Exec("ALTER TABLE account_device_bindings DROP COLUMN first_ip").Error; err != nil {
+		t.Fatal(err)
+	}
+	recorder = performUAPIRequest(t, "/api/uapi/my-locations?ip=192.168.2.3", "user", UAPIMyLocations)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("recent IP lookup must tolerate pre-migration schemas: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestUAPIPhoneInfoWithoutAPIKeyCacheMissRequiresConfiguration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPILocationTestDB(t)

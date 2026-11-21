@@ -72,6 +72,11 @@ func seedRefundableOrder(t *testing.T, db *gorm.DB, id int32, ownerID int32, amo
 		Amount: amount, PaidAt: &paidAt,
 		RefundChannelFingerprint: strings.Repeat("a", 64),
 		RefundOriginalTradeNo:    "synthetic-verified-original-trade",
+		// 2026-11-19：退款资格新增「有支付方式 + 有第三方单号」两条硬条件
+		// （见 ticketRefundOrderMeetsBasicCriteria）。夹具补齐，否则用例会因为
+		// 「订单不具备退款资格」被拒 —— 那不是被测逻辑坏了。
+		ThirdPartyOrderNo:         "synthetic-third-party-trade",
+		PaymentMethodNameSnapshot: "支付宝",
 	}
 	if err := db.Create(&row).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
@@ -106,6 +111,20 @@ func createAndApprove(t *testing.T, db *gorm.DB, owner, admin entity.User, order
 // 必须在**同一个已创建的申请单**上改金额重试。
 func approveOnly(db *gorm.DB, admin entity.User, refundID int64, cents int64) (entity.TicketRefund, error) {
 	return ReviewTicketRefundWithDB(db, admin, refundID, true, cents, testVerifyTicketRefundChannel)
+}
+
+// createRefund 只创建申请单（不审批）。
+// tryCreateRefund 只建申请单并**返回错误**（不 t.Fatal）。
+//
+// 为什么需要它：2026-11-19 起本金闸门前移到申请时，
+// 「申请超额被拒」本身就是被测行为，而 createRefund 会
+// t.Fatalf 掉，无法表达。
+func tryCreateRefund(db *gorm.DB, owner entity.User, orderID int32, cents int64) (entity.TicketRefund, error) {
+	orderIDValue := orderID
+	return CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
+		Kind: entity.TicketRefundKindOriginal, OrderID: &orderIDValue, RequestedCents: cents,
+		Reason: "用户申请退款",
+	}, testVerifyTicketRefundChannel)
 }
 
 // createRefund 只创建申请单（不审批）。
@@ -154,13 +173,18 @@ func TestRefundablePrincipalGiftConsumptionReducesClaim(t *testing.T) {
 	order := seedRefundableOrder(t, db, 1, owner.ID, 100)
 	seedConsumption(t, db, owner.ID, "gift-only", 20, 20, 0)
 
-	// 这就是原漏洞：用户想退满 100。
-	created := createRefund(t, db, owner, order.ID, 10000)
-	if _, err := approveOnly(db, admin, created.ID, 10000); !errors.Is(err, ErrTicketRefundExceedsRefundablePrincipal) {
-		t.Fatalf("refunding the full paid amount after spending gift money must be refused, got %v", err)
+	// 2026-11-19 行为变更（用户要求：「用户申请退款的金额必须小于等于本金」）：
+	// 本金闸门从「审批冻结时」前移到「提交申请时」。申请 100 当场被拒，
+	// 而不是等管理员点通过才失败 —— 那时用户已经等了好几分钟。
+	//
+	// 审批期的闸门**保留**（余额可能在申请与审批之间被花掉），
+	// 它不再是这条路径上的第一道。
+	if _, err := tryCreateRefund(db, owner, order.ID, 10000); !errors.Is(err, ErrTicketRefundAmount) {
+		t.Fatalf("申请超过可退本金（100 − 20 赠金 = 80）必须当场被拒，got %v", err)
 	}
 
-	// 可退上限 = 100 − 20 = 80。同一个申请单改金额重试（订单已绑定，不能再建申请）。
+	// 可退上限 = 100 − 20 = 80。
+	created := createRefund(t, db, owner, order.ID, 8000)
 	refunded, err := approveOnly(db, admin, created.ID, 8000)
 	if err != nil {
 		t.Fatalf("refunding 80 (100 − 20 gift spent) must succeed: %v", err)
@@ -182,12 +206,12 @@ func TestRefundablePrincipalPrincipalConsumptionReducesClaim(t *testing.T) {
 	order := seedRefundableOrder(t, db, 1, owner.ID, 100)
 	seedConsumption(t, db, owner.ID, "principal-only", 30, 0, 30)
 
-	// 余额只剩 70，退 100 必须被拒（本笔实付上限也挡不住，因为钱包不够）。
-	created := createRefund(t, db, owner, order.ID, 10000)
-	if _, err := approveOnly(db, admin, created.ID, 10000); err == nil {
-		t.Fatal("refunding more than the remaining principal must be refused")
+	// 余额只剩 70，退 100 在**申请时**就必须被拒（本金闸门前移）。
+	if _, err := tryCreateRefund(db, owner, order.ID, 10000); !errors.Is(err, ErrTicketRefundAmount) {
+		t.Fatalf("申请超过剩余本金 70 必须当场被拒，got %v", err)
 	}
 	// 退 70 应当成功。
+	created := createRefund(t, db, owner, order.ID, 7000)
 	refunded, err := approveOnly(db, admin, created.ID, 7000)
 	if err != nil {
 		t.Fatalf("refunding the remaining principal (70) must succeed: %v", err)
@@ -204,11 +228,11 @@ func TestRefundablePrincipalMixedConsumptionOnlyGiftReducesClaim(t *testing.T) {
 	order := seedRefundableOrder(t, db, 1, owner.ID, 100)
 	seedConsumption(t, db, owner.ID, "mixed", 30, 20, 10)
 
-	// 可退 = 90 − 20（赠金消耗）= 70。
-	created := createRefund(t, db, owner, order.ID, 10000)
-	if _, err := approveOnly(db, admin, created.ID, 8000); !errors.Is(err, ErrTicketRefundExceedsRefundablePrincipal) {
-		t.Fatalf("80 exceeds the 70 refundable cap and must be refused, got %v", err)
+	// 可退 = 90 − 20（赠金消耗）= 70。申请 100 在提交时即被拒。
+	if _, err := tryCreateRefund(db, owner, order.ID, 10000); !errors.Is(err, ErrTicketRefundAmount) {
+		t.Fatalf("申请超过可退本金 70 必须当场被拒，got %v", err)
 	}
+	created := createRefund(t, db, owner, order.ID, 7000)
 	refunded, err := approveOnly(db, admin, created.ID, 7000)
 	if err != nil {
 		t.Fatalf("refunding 70 must succeed: %v", err)

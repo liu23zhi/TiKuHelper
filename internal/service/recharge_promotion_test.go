@@ -9,15 +9,21 @@ import (
 	"gorm.io/gorm"
 )
 
-// newRechargePromotionTestDB 在充值测试库的基础上补上赠送账本表。
+// newRechargePromotionTestDB 在充值测试库的基础上补上赠送账本与显式档位配置。
 //
 // 单独一个 helper 而不是改 newRechargeOrderTestDB：后者被既有用例当作
 // 「最小充值 schema」在用，加表会掩盖「表缺失时降级」这条路径。
 func newRechargePromotionTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := newRechargeOrderTestDB(t)
-	if err := db.AutoMigrate(&entity.RechargePromotionGrant{}); err != nil {
+	if err := db.AutoMigrate(&entity.RechargePromotionGrant{}, &entity.RechargePromotionTierRule{}); err != nil {
 		t.Fatalf("migrate recharge promotion grants: %v", err)
+	}
+	// 赠送发放测试显式配置档位；生产链路不再自动回退默认六档。
+	for _, tier := range DefaultRechargePromotionTiers {
+		if err := db.Create(&entity.RechargePromotionTierRule{Threshold: tier.Threshold, Rate: tier.Rate, Enabled: true}).Error; err != nil {
+			t.Fatalf("seed recharge promotion tier: %v", err)
+		}
 	}
 	return db
 }
@@ -25,7 +31,7 @@ func newRechargePromotionTestDB(t *testing.T) *gorm.DB {
 // setRechargePromotionEnabled 直接写开关值（nil / 非法值走另一个 helper）。
 func setRechargePromotionEnabled(t *testing.T, db *gorm.DB, value string) {
 	t.Helper()
-	if err := saveSystemSettingValue(db, RechargePromotionEnabledSettingKey, value, "启用充值阶梯赠送（默认关闭）"); err != nil {
+	if err := saveSystemSettingValue(db, RechargePromotionEnabledSettingKey, value, "充值赠送历史兼容字段"); err != nil {
 		t.Fatalf("set %s=%q: %v", RechargePromotionEnabledSettingKey, value, err)
 	}
 }
@@ -138,9 +144,9 @@ func TestSelectRechargePromotionTierUsesHighestThresholdNotAboveAmount(t *testin
 	}
 }
 
-// TestRechargePromotionDisabledCreditsPaidAmountOnly 覆盖必做测试 1：
-// 开关关闭时充值 → 无赠金、无赠送流水、balance 变化 == 实付。
-func TestRechargePromotionDisabledCreditsPaidAmountOnly(t *testing.T) {
+// TestRechargePromotionLegacyFalseCannotDisable 覆盖历史开关兼容性：
+// 旧客户端提交 false 时仍按档位发放赠金；是否发放由档位表决定。
+func TestRechargePromotionLegacyFalseCannotDisable(t *testing.T) {
 	db := newRechargePromotionTestDB(t)
 	user := seedRechargeOrderUser(t, db, 201, "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 3.5).Error; err != nil {
@@ -148,7 +154,7 @@ func TestRechargePromotionDisabledCreditsPaidAmountOnly(t *testing.T) {
 	}
 	setRechargePromotionEnabled(t, db, "false")
 
-	// 1688 是最诱人的一档（赠送 3376）。关闭时必须一分钱都不送。
+	// 1688 是最诱人的一档（赠送 3376）。旧 false 值不能关闭赠送。
 	order, values := seedRechargePromotionOrder(t, db, user.ID, "rcg_promo_off", 1688)
 	if acknowledged, err := HandleRechargePaymentNotifyWithDB(db, values); err != nil || !acknowledged {
 		t.Fatalf("notify: acknowledged=%v err=%v", acknowledged, err)
@@ -158,22 +164,20 @@ func TestRechargePromotionDisabledCreditsPaidAmountOnly(t *testing.T) {
 	if updated.Balance != 1691.5 {
 		t.Fatalf("balance = %v, want 3.5+1688 = 1691.5 (paid amount only)", updated.Balance)
 	}
-	if updated.GiftBalance != 0 {
-		t.Fatalf("gift_balance = %v, want 0 when switch is off", updated.GiftBalance)
+	if updated.GiftBalance != 3376 {
+		t.Fatalf("gift_balance = %v, want 3376 when legacy switch is false", updated.GiftBalance)
 	}
-	if len(grants) != 0 {
-		t.Fatalf("expected no promotion grant when switch is off, got %+v", grants)
+	if len(grants) != 1 {
+		t.Fatalf("expected one promotion grant when legacy switch is false, got %+v", grants)
 	}
-	if len(records) != 1 {
-		t.Fatalf("expected exactly 1 billing record (recharge), got %d: %+v", len(records), records)
+	if len(records) != 2 {
+		t.Fatalf("expected recharge plus promotion records, got %d: %+v", len(records), records)
 	}
 	if records[0].Type != rechargeBillingRecordType || records[0].Amount != order.Amount {
-		t.Fatalf("unexpected billing record: %+v", records[0])
+		t.Fatalf("unexpected recharge billing record: %+v", records[0])
 	}
-	for _, record := range records {
-		if record.Type == rechargePromotionBillingRecordType {
-			t.Fatalf("switch off must not write a promotion billing record: %+v", record)
-		}
+	if records[1].Type != rechargePromotionBillingRecordType || records[1].Amount != 3376 {
+		t.Fatalf("unexpected promotion billing record: %+v", records[1])
 	}
 }
 
@@ -294,44 +298,44 @@ func TestRechargePromotionRepeatCallbackGrantsOnce(t *testing.T) {
 	}
 }
 
-// TestRechargePromotionUnreadableSettingFallsBackToDisabled 覆盖必做测试 6：
-// 设置读不到（缺表 / 缺行 / 非法值）→ 按关闭处理，不 panic、不赠送。
-func TestRechargePromotionUnreadableSettingFallsBackToDisabled(t *testing.T) {
+// TestRechargePromotionLegacySettingNeverDisables 覆盖历史设置的兼容行为：
+// 缺表、缺行、非法值均不改变“功能启用”的运行时语义。
+func TestRechargePromotionLegacySettingNeverDisables(t *testing.T) {
 	t.Run("missing_row", func(t *testing.T) {
 		db := newRechargePromotionTestDB(t)
 		user := seedRechargeOrderUser(t, db, 204, "user")
 		// 不写任何 system_settings 行。
-		if GetRechargePromotionEnabledWithDB(db) {
-			t.Fatal("missing setting row must read as disabled")
+		if !GetRechargePromotionEnabledWithDB(db) {
+			t.Fatal("missing setting row must read as enabled")
 		}
 		_, values := seedRechargePromotionOrder(t, db, user.ID, "rcg_promo_norow", 288)
 		if acknowledged, err := HandleRechargePaymentNotifyWithDB(db, values); err != nil || !acknowledged {
 			t.Fatalf("notify: acknowledged=%v err=%v", acknowledged, err)
 		}
 		updated, records, grants := loadRechargePromotionWallet(t, db, user.ID)
-		if updated.Balance != 288 || updated.GiftBalance != 0 || len(grants) != 0 {
-			t.Fatalf("missing row must not grant: balance=%v gift=%v grants=%+v", updated.Balance, updated.GiftBalance, grants)
+		if updated.Balance != 288 || updated.GiftBalance != 288 || len(grants) != 1 {
+			t.Fatalf("missing row must use default tier: balance=%v gift=%v grants=%+v", updated.Balance, updated.GiftBalance, grants)
 		}
-		if len(records) != 1 {
-			t.Fatalf("expected only the recharge row, got %+v", records)
+		if len(records) != 2 {
+			t.Fatalf("expected recharge and promotion rows, got %+v", records)
 		}
 	})
 
 	t.Run("invalid_value", func(t *testing.T) {
 		db := newRechargePromotionTestDB(t)
 		user := seedRechargeOrderUser(t, db, 205, "user")
-		// strconv.ParseBool 不接受 "yes"/"1 "之外的写法；非法值一律按关闭。
+		// 非法历史值也不能关闭赠送。
 		setRechargePromotionEnabled(t, db, "yes")
-		if GetRechargePromotionEnabledWithDB(db) {
-			t.Fatal("invalid setting value must read as disabled")
+		if !GetRechargePromotionEnabledWithDB(db) {
+			t.Fatal("invalid setting value must read as enabled")
 		}
 		_, values := seedRechargePromotionOrder(t, db, user.ID, "rcg_promo_invalid", 888)
 		if acknowledged, err := HandleRechargePaymentNotifyWithDB(db, values); err != nil || !acknowledged {
 			t.Fatalf("notify: acknowledged=%v err=%v", acknowledged, err)
 		}
 		updated, _, grants := loadRechargePromotionWallet(t, db, user.ID)
-		if updated.Balance != 888 || updated.GiftBalance != 0 || len(grants) != 0 {
-			t.Fatalf("invalid value must not grant: balance=%v gift=%v grants=%+v", updated.Balance, updated.GiftBalance, grants)
+		if updated.Balance != 888 || updated.GiftBalance != 1332 || len(grants) != 1 {
+			t.Fatalf("invalid value must use default tier: balance=%v gift=%v grants=%+v", updated.Balance, updated.GiftBalance, grants)
 		}
 	})
 
@@ -342,11 +346,10 @@ func TestRechargePromotionUnreadableSettingFallsBackToDisabled(t *testing.T) {
 			t.Fatalf("drop system_settings: %v", err)
 		}
 		user := seedRechargeOrderUser(t, db, 206, "user")
-		if GetRechargePromotionEnabledWithDB(db) {
-			t.Fatal("missing system_settings table must read as disabled")
+		if !GetRechargePromotionEnabledWithDB(db) {
+			t.Fatal("missing system_settings table must read as enabled")
 		}
-		// 表缺失时结账仍要走完（赠送降级），但支付配置也读不到，因此这里只断言
-		// 「开关读不出来时降级为关闭、不 panic」，并且钱包不受影响。
+		// 表缺失时结账仍要走完，历史开关读不到也不改变默认档位行为。
 		order := entity.RechargeOrder{
 			UserID: user.ID, OrderNo: "rcg_promo_notable", PaymentProvider: DefaultPaymentProvider,
 			PaymentMethodNameSnapshot: "支付宝", Amount: 28, Status: rechargeOrderStatusPending,
@@ -358,17 +361,17 @@ func TestRechargePromotionUnreadableSettingFallsBackToDisabled(t *testing.T) {
 		if err != nil {
 			t.Fatalf("grant with missing settings must degrade, not error: %v", err)
 		}
-		if grant != nil {
-			t.Fatalf("missing settings must not grant, got %+v", grant)
+		if grant == nil || grant.GiftAmount != 7 {
+			t.Fatalf("missing settings must use default 28-yuan tier, got %+v", grant)
 		}
-		if updated, _, grants := loadRechargePromotionWallet(t, db, user.ID); updated.Balance != 0 || len(grants) != 0 {
-			t.Fatalf("missing settings must leave wallet untouched: balance=%v grants=%+v", updated.Balance, grants)
+		if updated, _, grants := loadRechargePromotionWallet(t, db, user.ID); updated.Balance != 0 || len(grants) != 1 {
+			t.Fatalf("missing settings must not alter principal wallet: balance=%v grants=%+v", updated.Balance, grants)
 		}
 	})
 
 	t.Run("nil_db", func(t *testing.T) {
-		if GetRechargePromotionEnabledWithDB(nil) {
-			t.Fatal("nil db must read as disabled")
+		if !GetRechargePromotionEnabledWithDB(nil) {
+			t.Fatal("nil db must read as enabled")
 		}
 		grant, err := GrantRechargePromotionInTx(nil, entity.RechargeOrder{ID: 1, UserID: 1, Amount: 88}, 0)
 		if err != nil || grant != nil {

@@ -50,7 +50,7 @@ window.HTMLAnchorElement.prototype.click = function () {
   downloads.push({ href: this.href, filename: this.download })
 }
 const pagePath = path.join(web, 'src/pages/TikuComponent/index.vue')
-const labels = ['导出选中', '批量编辑课程名', '批量删除']
+const labels = ['批量编辑课程名', '批量删除']
 async function settle() { await nextTick(); await flushPromises(); await new Promise(resolve => setTimeout(resolve, 5)); await nextTick() }
 function button(wrapper, label) {
   const found = wrapper.findAll('button').find(item => item.text().trim() === label)
@@ -87,7 +87,13 @@ async function fixture(run, options = {}) {
 
 test('zero selected rows: all three native bulk buttons are disabled and native clicks have no export, modal or delete side effects', async () => {
   await fixture(async wrapper => {
-    assert.equal(button(wrapper, '导出选中').disabled, true, 'ZERO_SELECTION_EXPORT_NATIVE_DISABLED')
+    const list = wrapper.get('.tiku-table-card').element
+    const transfers = wrapper.get('.question-transfer').element
+    assert.ok(list.compareDocumentPosition(transfers) & Node.DOCUMENT_POSITION_FOLLOWING, 'QUESTION_LIST_PRECEDES_FILE_TASKS')
+    assert.equal(wrapper.get('.filter-panel h2').text(), '筛选题目')
+    const bulk = wrapper.get('[aria-label="题目批量操作"]')
+    assert.ok(bulk.find('.selection-alert').exists(), 'selection context and bulk actions share one toolbar')
+    assert.equal((bulk.text().match(/已选择/g) || []).length, 1, 'selection count is shown once')
     assert.equal(button(wrapper, '批量删除').disabled, true, 'ZERO_SELECTION_DELETE_NATIVE_DISABLED')
     for (const label of labels) await click(button(wrapper, label))
     witness('zero-selection-native-clicks', wrapper)
@@ -95,7 +101,7 @@ test('zero selected rows: all three native bulk buttons are disabled and native 
     assert.deepEqual(blobs, [])
     assert.deepEqual(writes, [])
     assert.equal(document.querySelector('[role="dialog"]'), null)
-    assert.deepEqual(states(wrapper), [true, true, true])
+    assert.deepEqual(states(wrapper), [true, true])
   })
 })
 
@@ -103,16 +109,16 @@ test('real row checkbox enables every bulk button; cancel-all selection disables
   await fixture(async wrapper => {
     await click(rowCheckbox(wrapper))
     assert.equal(rowCheckbox(wrapper).checked, true)
-    assert.deepEqual(states(wrapper), [false, false, false])
+    assert.deepEqual(states(wrapper), [false, false])
     witness('row-selected', wrapper)
     await click(button(wrapper, '取消全部选择'))
     assert.equal(rowCheckbox(wrapper).checked, false)
     witness('selection-cleared', wrapper)
-    assert.deepEqual(states(wrapper), [true, true, true])
+    assert.deepEqual(states(wrapper), [true, true])
   })
 })
 
-test('real pagination preserves off-page selection and export payload; search filter reset disables bulk actions', async () => {
+test('real pagination preserves off-page selection for the async export dialog; search filter reset disables bulk actions', async () => {
   await fixture(async wrapper => {
     await click(rowCheckbox(wrapper))
     const second = wrapper.find('.ant-pagination-item-2')
@@ -120,28 +126,19 @@ test('real pagination preserves off-page selection and export payload; search fi
     await click(second.element)
     assert.equal(queries.at(-1).pageNo, 1)
     assert.equal(rowCheckbox(wrapper).checked, false)
-    assert.deepEqual(states(wrapper), [false, false, false], 'off-page choice stays actionable')
+    assert.deepEqual(states(wrapper), [false, false], 'off-page choice stays actionable')
     await click(rowCheckbox(wrapper))
-    await click(button(wrapper, '导出选中'))
-    assert.equal(downloads.length, 1)
-    assert.equal(blobs.length, 1)
-    assert.match(downloads[0].filename, /\.json$/)
-    assert.equal(blobs[0].type, 'application/json;charset=utf-8')
-    const content = JSON.parse(await blobs[0].text())
-    assert.equal(content.length, 2)
-    assert.deepEqual(content.map(item => item.question), rows.map(item => item.question))
-    assert.equal(content[1].answer, rows[1].answer, 'existing export JSON-string format and repeated answers retained')
-    assert.deepEqual(revoked, ['blob:synthetic-question-export'])
+    assert.equal(wrapper.get('.question-transfer').text().includes('已选 2 道题'), true, 'selected rows are available to the async export dialog')
     await click(button(wrapper, '取消本页选择'))
-    assert.deepEqual(states(wrapper), [false, false, false], 'off-page choice survives clearing this page')
+    assert.deepEqual(states(wrapper), [false, false], 'off-page choice survives clearing this page')
     const input = wrapper.find('input[placeholder="搜索问题"]')
     await input.setValue('合成筛选')
     await click(button(wrapper, '搜索'))
     assert.equal(queries.at(-1).question, '合成筛选')
     assert.equal(queries.at(-1).pageNo, 0)
     assert.equal(rowCheckbox(wrapper).checked, false)
-    witness('cross-page-export-filter-reset', wrapper, { exportQuestions: content.map(item => item.question), lastQuery: queries.at(-1) })
-    assert.deepEqual(states(wrapper), [true, true, true])
+    witness('cross-page-transfer-filter-reset', wrapper, { selectedIds: [...wrapper.vm.selectedRowKeys], lastQuery: queries.at(-1) })
+    assert.deepEqual(states(wrapper), [true, true])
   })
 })
 

@@ -46,19 +46,19 @@ const (
 //
 // # 这是全批唯一会改变所有现存客户端行为的改动
 //
-// 开启（system_settings.device_limit_enabled = true）之后：
+// 当前始终启用，按账号的有效设备上限判定：
 //
 //	限设备账号 + 不带 X-Device-Id → 403（老客户端必须升级）
-//	不限量账号（limit=0）        → 一律放行，行为与现在完全一致
-//	考试脚本（script_session）   → 一律放行
+//	不限量账号（limit=0）        → 不受数量约束，显式拉黑仍拒绝
+//	考试脚本（script_session）   → 不受数量约束，显式拉黑仍拒绝
 //
 // 所以上线前必须确认「第 0 步的 limit==0 豁免」是有效的：4 个种子等级的
 // device_limit 默认全是 0，写错顺序 = 上线瞬间全站 403（141 §9.2）。
 //
 // # 判定顺序（141 §9.1，**顺序本身就是需求**）
 //
-//	前  置：总开关（默认关闭）→ 关闭时零查询直接放行
-//	前置二：辨识账号（拿不到账号就没有可判定对象，交给后续 handler 鉴权）
+//	前  置：辨识账号（拿不到账号就没有可判定对象，交给后续 handler 鉴权）
+//	前置二：带设备头时校验显式拉黑，不受不限量豁免影响
 //	第 0 步：EffectiveDeviceLimit ⇒ limit == 0（不限）→ 【直接放行】不判不发 403
 //	第 1 步：脚本请求（script_session）→ 放行
 //	第 2 步：没有 X-Device-Id → 403「请升级客户端以支持设备识别」
@@ -76,16 +76,15 @@ const (
 //
 // # 「前置」两项为什么不算破坏上面的顺序
 //
-// 总开关与账号辨识都不产生 403，它们只决定「这次请求要不要进入判定」。
+// 账号辨识决定「这次请求有没有可判定对象」。
+// 显式拉黑先行，避免「不限量」意外恢复被拉黑设备的使用权。
 // 账号辨识必须先于第 0 步，因为 EffectiveDeviceLimit 需要 userID；
 // 它读取的 script_session 标记在第 1 步才被使用 —— 判定顺序与信息获取顺序
 // 是两件事，混为一谈会让「顺序防线」（S13d）退化成一个摆设。
 //
 // # 成本
 //
-// 开关读一次 system_settings（点查，无缓存）。挂在 /api/search 上意味着
-// 每次搜题多一次点查；这是刻意不做缓存的取舍：缓存会让「管理员打开开关」
-// 延迟生效，而这类 bug 的表现是「配置改了但行为没变」，排查成本远高于一次点查。
+// 不再读取历史设备池总开关；设备上限直接按当前等级与用户设置判定。
 func DeviceLimit() gin.HandlerFunc {
 	return deviceLimitHandler(nil)
 }
@@ -127,17 +126,7 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// ── 前置一：总开关（默认关闭）──
-		//
-		// 关闭时**零查询、零拒绝**，全站行为与引入本中间件之前完全一致
-		// （与黑名单 total switch 同一条纪律）。这条也是「代码先上、开关后开」的
-		// 部署前提，141 §11 把本步列为最后上线的那一步。
-		if !service.GetDeviceLimitEnabledWithDB(db) {
-			c.Next()
-			return
-		}
-
-		// ── 前置二：辨识账号 ──
+		// ── 前置：辨识账号，显式设备拉黑不受容量豁免影响 ──
 		userID, scriptSession, tokenID, ok := deviceLimitIdentity(c, db)
 		if !ok {
 			// 辨识不到（匿名请求 / 凭据无效）：设备池按**账号**计，没有账号就没有
@@ -146,7 +135,10 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-
+		if blocked := service.CheckDeviceBlockWithDB(db, userID, c.GetHeader(DeviceIDHeader)); !blocked.Allowed {
+			deviceLimitReject(c, blocked)
+			return
+		}
 		// ══════════ 第 0 步：limit == 0（不限）→ 直接放行 ══════════
 		//
 		// 必须在「无头检查」之前（141 §9.2）：4 个种子等级的 device_limit 默认全为 0，
@@ -166,7 +158,7 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			//
 			// 141 §9.4：豁免 ≠ 不登记。带 device 头时异步登记一次（fail-open），
 			// 让管理员在「设备管理」页仍能看到这些账号的设备；不带头的请求无从登记。
-			deviceLimitRegisterUnlimited(db, userID, c.GetHeader(DeviceIDHeader), tokenID)
+			deviceLimitRegisterUnlimited(db, userID, c.GetHeader(DeviceIDHeader), tokenID, c.ClientIP())
 			c.Next()
 			return
 		}
@@ -197,14 +189,14 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 		}
 
 		// ══════════ 第 3 步：设备池判定（service 层唯一实现，不在这里重写） ══════════
-		decision := service.CanUseDevice(db, userID, deviceID)
+		decision := service.CanUseDeviceWithClientIP(db, userID, deviceID, c.ClientIP())
 		if !decision.Allowed {
 			deviceLimitReject(c, decision)
 			return
 		}
 		// 新设备且有空槽：必须落一条绑定行，否则「已用台数」永远是 0，
 		// 上限形同虚设（每一次请求都会被判成「新设备且未满」）。
-		// 已绑定（already-registered）时 CanUseDevice 内部已刷新 last_seen_at，
+		// 已绑定时 CanUseDeviceWithClientIP 内部已刷新最近使用时间与合法来源 IP，
 		// 不再重复写 —— 热路径上少一次 UPDATE。
 		if decision.Reason == service.DevicePoolReasonWithinLimit {
 			// ⚠️ 这里**不能**用 `_` 丢弃返回的 decision（2026-11-15 修，C2 接线缺口）。
@@ -222,6 +214,9 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 					OwnerKind:      entity.DeviceBindingOwnerKindToken,
 					TokenID:        tokenID,
 					ClientInstance: c.GetHeader(DeviceInstanceHeader),
+					// 来源 IP：与 controller.recordAccountDeviceBinding 同源（c.ClientIP
+					// 已按可信代理名单解析），让「我的设备」页能显示设备从哪儿连进来。
+					ClientIP: service.NormalizeDeviceClientIP(c.ClientIP()),
 				})
 			if err != nil {
 				// 判定已放行、只是这一笔没写进去：fail-open（同 RegisterDevice 的契约）。
@@ -329,17 +324,21 @@ func deviceLimitTokenID(c *gin.Context) int32 {
 // controller.recordAccountDeviceBinding 同一纪律）。goroutine 里必须重新取
 // 一个干净句柄（Session{NewDB:true}），否则跨 model 复用会
 // `panic: reflect: Field index out of range`（本仓实测踩过）。
-func deviceLimitRegisterUnlimited(db *gorm.DB, userID int32, rawDeviceID string, tokenID int32) {
+func deviceLimitRegisterUnlimited(db *gorm.DB, userID int32, rawDeviceID string, tokenID int32, clientIP string) {
 	deviceID := service.NormalizeDevicePoolDeviceID(rawDeviceID)
 	if db == nil || userID <= 0 || deviceID == "" {
 		return
 	}
+	// 归一化在 goroutine 之前做（纯字符串运算，不需要请求上下文）；
+	// 绝不能把 c 带进 goroutine —— 响应写完后 gin.Context 不可再读。
+	normalizedIP := service.NormalizeDeviceClientIP(clientIP)
 	go func() {
 		fresh := db.Session(&gorm.Session{NewDB: true})
 		if _, err := service.RegisterDeviceWithOptions(fresh, userID, deviceID,
 			service.DeviceBindingRegisterOptions{
 				OwnerKind: entity.DeviceBindingOwnerKindToken,
 				TokenID:   tokenID,
+				ClientIP:  normalizedIP,
 			}); err != nil {
 			logger.SysLog("不限量账号设备登记失败（fail-open，不影响本次请求）：userID=" +
 				formatDeviceLimitUserID(userID) + " err=" + logger.RedactSecrets(err.Error()))

@@ -54,25 +54,28 @@ export default {
 </script>
 
 <style scoped>
-/* 布局类必须自带定义（父组件 scoped 规则对子组件不生效，见
- * AIAdvancedSettingsSection.vue 的说明）。 */
+/* 直接 section 自带标题与内容间距，不依赖父组件的 scoped 样式。 */
 .ai-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 16px 24px; border-bottom: 1px solid var(--console-border); }
+.ai-section-heading > * { min-width: 0; max-width: 100%; }
 .ai-section-heading h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--console-text); }
-.section-description { margin: 4px 0 0; color: var(--console-muted); font-size: 13px; }
-/* ⚠️ 这里**不能有 padding**：外层 ConsolePanel__body 已经给 24px，
- * 叠加后本卡片内容比相邻卡片多缩进一倍（用户报的横向错位之一）。
- * 之前写的是 `gap: 8px 32px; padding: 24px`，padding 已删。 */
-.console-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; min-width: 0; }
+.section-description { margin: 4px 0 0; color: var(--console-muted); font-size: 13px; overflow-wrap: anywhere; }
+.console-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; min-width: 0; padding: 24px; }
+.execution-grid > *,
+.execution-grid :deep(.ant-form-item-control),
+.execution-grid :deep(.ant-form-item-control-input),
+.execution-grid :deep(.ant-form-item-control-input-content) { min-width: 0; max-width: 100%; }
+.execution-grid :deep(.ant-form-item-label > label) { height: auto; white-space: normal; }
 .full-width { grid-column: 1 / -1; }
 @media (max-width: 768px) {
   .ai-section-heading { padding: 16px; }
-  .console-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .console-form-grid { grid-template-columns: minmax(0, 1fr); padding: 16px; }
 }
 .hint {
   margin-top: 6px;
   color: var(--console-muted);
   font-size: 12px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .hint-block {

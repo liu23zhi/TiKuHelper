@@ -77,3 +77,17 @@ export function refreshIPSegment(id) {
     method: 'post',
   })
 }
+// syncIPSegmentsFromCache 立即把「IP 归属地缓存」里还没沉淀的段写进段表。
+//
+// 语义与自动沉淀**完全一致**（后端复用同一个 service.PersistMissingIPSegmentsFromCacheRows），
+// 只是把时机交给管理员：自动通路要等重启或等某个 IP 恰好被查一次，
+// 刚上线段表时可能就是「页面空着、不知道要等多久」。
+//
+// 它不是「导入」：不读外部文件、不新增数据来源，只把缓存里已有的行补写成段。
+export function syncIPSegmentsFromCache() {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/admin/ip-segments/sync-from-cache',
+    method: 'post',
+  })
+}

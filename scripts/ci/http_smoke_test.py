@@ -14,10 +14,10 @@ class SmokeContract(unittest.TestCase):
   self.responses={
    '/healthz':(200,'application/json',b'{"status":"ok"}'),
    '/readyz':(200,'application/json',b'{"status":"ready"}'),
-   '/adapter-service/__ci_unknown__':(404,'application/json',b'{"code":"NOT_FOUND"}'),
-   '/adapter-service/user/info':(401,'application/json',b'{"message":"not authorized"}'),
-   '/adapter-service/system-settings':(401,'application/json',b'{"message":"not authorized"}'),
-   '/adapter-service/access-tokens':(401,'application/json',b'{"message":"not authorized"}'),
+   '/api/__ci_unknown__':(404,'application/json',b'{"code":"NOT_FOUND"}'),'/adapter-service/__ci_unknown__':(404,'application/json',b'{"code":"NOT_FOUND"}'),
+   '/api/user/info':(401,'application/json',b'{"message":"not authorized"}'),
+   '/api/system-settings':(401,'application/json',b'{"message":"not authorized"}'),
+   '/api/access-tokens':(401,'application/json',b'{"message":"not authorized"}'),
   }
   owner=self
   class Handler(BaseHTTPRequestHandler):
@@ -44,11 +44,11 @@ class SmokeContract(unittest.TestCase):
   p=self.run_gate();self.assertEqual(p.returncode,0,p.stderr+p.stdout)
   self.assertTrue(json.loads(p.stdout)['passed'])
  def test_api_spa_fallback_is_rejected(self):
-  self.responses['/adapter-service/__ci_unknown__']=(200,'text/html',self.html)
+  self.responses['/api/__ci_unknown__']=(200,'text/html',self.html)
   p=self.run_gate();self.assertEqual(p.returncode,1,p.stderr+p.stdout)
   self.assertIn('api-404',p.stdout)
  def test_missing_authentication_is_rejected(self):
-  self.responses['/adapter-service/user/info']=(200,'application/json',b'{}')
+  self.responses['/api/user/info']=(200,'application/json',b'{}')
   p=self.run_gate();self.assertEqual(p.returncode,1,p.stderr+p.stdout)
   self.assertIn('auth-user-info',p.stdout)
  def test_stale_embedded_asset_is_rejected(self):

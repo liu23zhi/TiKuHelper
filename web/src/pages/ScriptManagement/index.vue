@@ -5,12 +5,10 @@
     <!-- 标题按角色切换：普通用户菜单里这个入口叫「我的脚本」（123 号侧边栏分区），
          页面却写「脚本管理」会让用户以为进错了地方。与 Tickets（工单管理/工单反馈）、
          BillingRecordList（账单明细/我的账单）保持同一口径。 -->
-    <ConsolePageHeading :title="isAdmin ? '脚本管理' : '我的脚本'" description="为账号生成短指令；管理员负责上传 EXE，用户可维护自己的脚本参数。">
+    <ConsolePageHeading :title="isAdmin ? '脚本管理' : '我的脚本'" description="默认生成完整授权指令，可按需启用短命令；管理员负责上传 EXE，用户可维护自己的脚本参数。">
       <template #actions>
         <a-space wrap class="section-actions">
-          <a-button v-if="isAdmin" :type="showAll ? 'primary' : 'default'" :onClick="pageEntry.bind(toggleScope)">
-            {{ showAll ? '只看我的脚本' : '显示全部脚本' }}
-          </a-button>
+          <a-button data-script-activation-purchases :onClick="pageEntry.bind(openPurchases)">购买激活码 / 购买记录</a-button>
           <a-button :loading="loading" :onClick="pageEntry.bind(refreshScripts)">刷新</a-button>
           <a-button type="primary" :onClick="pageEntry.bind(openCreate)">新建脚本指令</a-button>
         </a-space>
@@ -53,17 +51,30 @@
     <!-- 诉求 ④：域名语法重写为 `*.a.com`（泛域名）/ `a.com/*`（路径通配），旧格式全部舍弃。
          `AllowWildcard` 开关被删除：泛域名是否可用由「列表里有没有 *.a.com」直接表达，
          两个开关表达同一件事必然出现互相矛盾的状态。 -->
-    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="用户只能从这里的格式中选择并填写占位内容。每行一条，只支持两种写法：*.a.com（泛域名，匹配任意子域）或 a.com/*（路径通配，匹配任意非空路径）。留空表示不限制域名。">
+    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="每行一条。长命令地址由服务端按配置生成。留空时使用当前站点。">
       <a-textarea :id="fieldId('domains')" :value="domainText" :onUpdate:value="pageEntry.bind(setDomainText)" aria-label="脚本允许域名格式" :rows="4" placeholder="每行一条，例如：&#10;*.a.com&#10;a.com/*" :disabled="domainSaving || !domainReady" />
       <p class="hint">
-        <strong>*.a.com</strong> 匹配 a.com 的任意子域（x.a.com、x.y.a.com），<strong>不含 a.com 本身</strong>；
-        <strong>a.com/*</strong> 匹配 a.com 下的任意非空路径（a.com/p、a.com/p/q），<strong>不含根路径</strong>。
-        旧写法（裸域名 a.com、a.com/a/*、a.com/**）已不再支持，保存时会直接报错。
+        <strong>*.a.com</strong> 生成 <code>UUID.a.com</code>，<code>*a.com</code> 保存为 <code>*.a.com</code>。
+        <strong>a.com/*</strong> 生成 <code>a.com/UUID</code>。
       </p>
       <a-alert v-if="domainError" type="error" show-icon :message="domainError" class="page-alert" role="alert" />
       <a-space wrap class="domain-settings-actions">
         <a-button type="primary" :loading="domainSaving" :disabled="!domainReady || !domainDirty" :onClick="pageEntry.bind(saveDomainSettings)">保存域名设置</a-button>
       </a-space>
+    </ConsolePanel>
+
+    <ConsolePanel v-if="isAdmin" title="命令有效期设置" description="分别控制长、短命令是否允许永不过期。修改后限制新建或更新授权，已有授权保留原有效期。">
+      <a-form layout="vertical">
+        <div class="form-grid">
+          <a-form-item label="允许长命令永不过期" :html-for="fieldId('fullForever')">
+            <a-switch :id="fieldId('fullForever')" :checked="allowFullNeverExpire" :disabled="!domainReady || domainSaving" :onUpdate:checked="pageEntry.bind(setExpiryPolicy, 'full')" />
+          </a-form-item>
+          <a-form-item label="允许短命令永不过期" :html-for="fieldId('shortForever')">
+            <a-switch :id="fieldId('shortForever')" :checked="allowShortNeverExpire" :disabled="!domainReady || domainSaving" :onUpdate:checked="pageEntry.bind(setExpiryPolicy, 'short')" />
+          </a-form-item>
+        </div>
+        <a-button type="primary" :loading="domainSaving" :disabled="!domainReady || !domainDirty" :onClick="pageEntry.bind(saveDomainSettings)">保存授权期限设置</a-button>
+      </a-form>
     </ConsolePanel>
 
     <ConsolePanel v-if="isAdmin" title="脚本计费政策" description="冻结金目标、重启最低额和倍率由管理员统一设置。">
@@ -97,6 +108,19 @@
 
     <ConsolePanel title="脚本指令" :description="scopeDescription">
       <a-alert v-if="readError" type="error" show-icon :message="readError" class="page-alert" />
+      <!-- 通知区（2026-11-17 用户需求）。
+           「显示因为没有心跳被撤销令牌等信息」——只展示需要用户知道的撤销，
+           正常到寿与用户自己关闭都不出现（那时候说什么都是噪音）。
+           排序由 collectScriptRevokeNotices 保证：warning 永远在最前。 -->
+      <a-alert
+        v-for="notice in revokeNotices"
+        :key="'revoke-' + notice.scriptId + '-' + notice.reason"
+        :type="scriptNoticeAlertType(notice.level)"
+        show-icon
+        class="page-alert"
+        :message="'脚本「' + notice.scriptName + '」：' + notice.message"
+        :description="notice.hint"
+      />
       <ConsoleTableShell label="脚本指令列表">
         <a-table bordered table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: tableScrollX }">
           <template #bodyCell="{ column, record }">
@@ -106,9 +130,20 @@
             </template>
             <span v-else-if="column.key === 'owner'">{{ record.ownerName || '-' }}</span>
             <div v-else-if="column.key === 'command'" class="command-cell">
-              <code>{{ buildScriptDownloadURL(record) || '尚未配置短地址' }}</code>
+              <span class="table-hint">长命令</span>
+              <code>{{ mayCopyCommand(record) ? buildScriptCommand(record) : buildScriptDownloadURL(record) || '暂无地址' }}</code>
               <span v-if="record.scheme === 'http'" class="table-hint">授权指令仅支持 HTTPS</span>
-              <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制授权指令</a-button>
+              <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制长命令</a-button>
+              <a-button v-if="mayCopyCommand(record) && buildScriptCommand({ command: record.compatibilityCommand })" size="small" :onClick="pageEntry.bind(copyText, buildScriptCommand({ command: record.compatibilityCommand }))">复制兼容指令</a-button>
+              <template v-if="isOwnScript(record) && buildScriptShortCommand(record)">
+                <span class="table-hint">短命令</span>
+                <code>{{ buildScriptShortCommand(record) }}</code>
+                <a-button size="small" :onClick="pageEntry.bind(copyText, buildScriptShortCommand(record))">复制短命令</a-button>
+              </template>
+              <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'full')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">长命令授权设置</a-button>
+              <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'short')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">{{ record.shortAuthorization ? '短命令授权设置' : '生成短命令' }}</a-button>
+              <span v-if="record.launcherAuthorization" class="table-hint">长命令{{ shortAuthorizationStatus(record.launcherAuthorization.status) }} · {{ authorizationUsesText(record.launcherAuthorization) }}<template v-if="record.launcherAuthorization.expiresAt"> · 有效至 {{ formatDateTime(record.launcherAuthorization.expiresAt) }}</template></span>
+              <span v-if="record.shortAuthorization" class="table-hint">短命令{{ shortAuthorizationStatus(record.shortAuthorization.status) }} · {{ authorizationUsesText(record.shortAuthorization) }}<template v-if="record.shortAuthorization.expiresAt"> · 有效至 {{ formatDateTime(record.shortAuthorization.expiresAt) }}</template></span>
             </div>
             <div v-else-if="column.key === 'billing'">
               <span>{{ scriptBillingText(record) }}</span>
@@ -136,37 +171,10 @@
           <a-form-item label="脚本名称" :html-for="fieldId('name')" required>
             <a-input :id="fieldId('name')" :value="form.name" :onUpdate:value="editorEntry.bind(setFormField, 'name')" :maxlength="80" placeholder="例如：超星答题助手" />
           </a-form-item>
-          <!-- 诉求 ⑤：删除了「泛域名模式 / 优先使用尽可能短的 a.example.com」开关。
-               域名格式由管理员在「脚本可用域名」里配置，用户只能选择并在占位框里填写。
-               一个脚本可以有多个域名格式 ⇒ 这里是一组可增删的行。 -->
-          <a-form-item label="脚本域名" required>
-            <div v-if="!domainFormatOptions.length" class="hint">
-              管理员尚未配置任何域名格式，暂时无法创建脚本。请联系管理员在「脚本可用域名」中设置。
-            </div>
-            <div v-else class="domain-rows">
-              <div v-for="(row, index) in form.domainRows" :key="index" class="domain-row">
-                <a-select :value="row.format" :onUpdate:value="editorEntry.bind(setDomainRowFormat, index)" :disabled="saving" style="width: 200px" :aria-label="`第 ${index + 1} 个域名格式`">
-                  <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
-                </a-select>
-                <!-- 占位输入框的位置由格式决定：*.a.com → [输入框].a.com；a.com/* → a.com/[输入框]。
-                     两侧的字面量都直接渲染出来，用户看到的就是最终域名形状。 -->
-                <template v-if="domainRowMeta(row).slot === 'prefix'">
-                  <a-input :value="row.slot" :onUpdate:value="editorEntry.bind(setDomainRowSlot, index)" :disabled="saving" :maxlength="63" placeholder="子域" :aria-label="`第 ${index + 1} 个子域`" style="width: 160px" />
-                  <code class="domain-suffix">.{{ domainRowMeta(row).host }}</code>
-                </template>
-                <template v-else>
-                  <code class="domain-suffix">{{ domainRowMeta(row).host }}/</code>
-                  <a-input :value="row.slot" :onUpdate:value="editorEntry.bind(setDomainRowSlot, index)" :disabled="saving" :maxlength="200" placeholder="路径，例如 p/q" :aria-label="`第 ${index + 1} 个路径`" style="width: 220px" />
-                </template>
-                <a-button type="link" danger :disabled="saving || form.domainRows.length <= 1" :onClick="editorEntry.bind(removeDomainRow, index)">删除</a-button>
-              </div>
-              <a-button type="dashed" :disabled="saving || form.domainRows.length >= domainFormatOptions.length" :onClick="editorEntry.bind(addDomainRow)">添加域名</a-button>
-            </div>
-            <p v-if="domainRowError" class="hint domain-error" role="alert">{{ domainRowError }}</p>
-            <div class="hint">域名格式由管理员统一配置，你只能选择并填写占位内容。生成的域名：<code>{{ previewDomainText || '尚未填写' }}</code></div>
-          </a-form-item>
-          <a-form-item label="协议" :html-for="fieldId('scheme')">
-            <a-select :id="fieldId('scheme')" :value="form.scheme" :disabled="form.billingMode !== 'legacy'" :onUpdate:value="editorEntry.bind(setFormField, 'scheme')"><a-select-option value="https">HTTPS</a-select-option><a-select-option v-if="form.billingMode === 'legacy'" value="http">HTTP（仅兼容旧环境）</a-select-option></a-select>
+          <a-form-item v-if="!editing && domainFormatOptions.length > 1" label="长命令地址格式" :html-for="fieldId('domainFormat')">
+            <a-select :id="fieldId('domainFormat')" :value="form.domainFormat || domainFormatOptions[0].raw" :onUpdate:value="editorEntry.bind(setFormField, 'domainFormat')">
+              <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
+            </a-select>
           </a-form-item>
         </div>
         <a-form-item label="EXE 版本" :html-for="fieldId('versionId')" required>
@@ -177,7 +185,6 @@
           </a-select>
           <div class="hint">此版本由服务端维护。新建脚本使用当前发布版本，管理员上传新 EXE 后会自动切换所有未删除脚本。</div>
         </a-form-item>
-        <a-form-item label="说明" :html-for="fieldId('description')"><a-textarea :id="fieldId('description')" :value="form.description" :onUpdate:value="editorEntry.bind(setFormField, 'description')" :rows="2" placeholder="可选，说明用途或适用客户端" /></a-form-item>
         <a-form-item label="预置参数" :html-for="fieldId('presetText')">
           <a-textarea :id="fieldId('presetText')" :value="form.presetText" :onUpdate:value="editorEntry.bind(setFormField, 'presetText')" :rows="4" placeholder="每行一个 KEY=VALUE，例如\nkey=your-api-key\ncourseId=123" />
           <div class="hint">参数由服务端在脚本执行入口注入；此处只保存键和值，不会写进 PowerShell 命令文本。</div>
@@ -201,15 +208,16 @@
           <template v-if="form.billingMode === 'activation_code'">
             <p class="hint">一条脚本只允许成功运行一次，答题倍率为 0；不冻结钱包余额。</p>
             <template v-if="!editing">
-              <p v-if="form.entitlementId" role="status">已兑换一次创建资格。</p>
+              <p v-if="form.entitlementId" role="status">已兑换，待创建。<template v-if="activationFrozenUntil">请在 {{ formatDateTime(activationFrozenUntil) }} 前创建；超时后激活码恢复未使用。</template><template v-else>未创建的资格将在兑换 30 分钟后释放。</template></p>
               <template v-else>
                 <a-space wrap class="domain-settings-actions">
-                  <a-popconfirm :title="purchaseUncertain ? '确认重试同一次购买？' : '确认从钱包购买一次性激活码？'" :description="purchaseUncertain ? '沿用同一个购买标识，不发起新购买。' : '将按显示价格扣除钱包余额。'" ok-text="确认" cancel-text="取消" :onConfirm="editorEntry.bind(buyActivationCode)">
-                    <a-button :loading="purchasingCode" :disabled="!canBuyActivationCode">{{ purchaseUncertain ? '重试同一次购买' : activationPrice?.enabled ? '钱包购买 ¥' + activationPrice.price : '购买暂未开放' }}</a-button>
+                  <a-popconfirm title="确认从钱包购买一次性激活码？" description="按显示价格扣除钱包余额，购买后可在购买记录找回或分享给他人。" ok-text="确认" cancel-text="取消" :onConfirm="editorEntry.bind(buyActivationCode)">
+                    <a-button :loading="purchasingCode" :disabled="!canBuyActivationCode">{{ activationPrice?.enabled ? '钱包购买 ¥' + activationPrice.price : '购买暂未开放' }}</a-button>
                   </a-popconfirm>
+                  <a-button :onClick="editorEntry.bind(openPurchases)">从购买记录选择</a-button>
                 </a-space>
                 <a-form-item label="激活码" :html-for="fieldId('activationCode')" class="billing-panel">
-                  <a-input-password :id="fieldId('activationCode')" :value="activationCode" :visibility-toggle="false" autocomplete="off" :maxlength="68" :disabled="activationBusy || Boolean(purchasedCode)" :onUpdate:value="editorEntry.bind(setActivationCode)" placeholder="输入激活码" />
+                  <a-input :id="fieldId('activationCode')" :value="activationCode" autocomplete="off" :maxlength="68" :disabled="activationBusy || Boolean(purchasedCode)" :onUpdate:value="editorEntry.bind(setActivationCode)" placeholder="输入激活码" />
                   <p v-if="purchasedCode" class="hint">本次购买的激活码已填入，可直接兑换；不会写入脚本参数。</p>
                 </a-form-item>
                 <a-button :loading="redeemingCode" :disabled="activationBusy || !activationCode" :onClick="editorEntry.bind(redeemActivationCode)">兑换创建资格</a-button>
@@ -225,13 +233,76 @@
             </a-form-item>
           </template>
         </ConsolePanel>
-        <ConsolePanel title="指令预览" description="PowerShell + .NET WebClient 可覆盖 Windows 7 至 Windows 11。" class="preview-panel">
-          <div class="command-preview"><code>{{ buildScriptDownloadURL(previewRecord) || '设置合法域名后生成' }}</code></div>
-          <p class="hint">此处仅预览地址，不分配短标识。保存后可从列表复制实际授权指令；请勿分享指令。</p>
+        <!-- 跳过手机号/微信绑定校验（2026-11-17 用户需求）。
+             「仅管理员可见」：showSkipBindingButton 按**角色**判断（不是视图模式）。
+             只在新建时出现 —— 编辑已有脚本不涉及绑定门槛。
+
+             为什么用 switch + popconfirm 而不是一个普通按钮：
+             绕过的是合规门槛，必须让用户看到后果说明再确认；
+             用 checkbox 语义（当前状态可见）比一次性按钮更不容易误触。 -->
+        <ConsolePanel v-if="showSkipBindingButton && !editing" title="管理员选项" description="仅管理员可见。用于在创建脚本时跳过手机号/微信绑定校验。">
+          <a-form-item label="跳过绑定校验" :html-for="fieldId('skipBinding')">
+            <a-popconfirm
+              :title="buildSkipBindingConfirmText({ isAdmin: true }).title"
+              :description="buildSkipBindingConfirmText({ isAdmin: true }).content"
+              :ok-text="buildSkipBindingConfirmText({ isAdmin: true }).okText"
+              :cancel-text="buildSkipBindingConfirmText({ isAdmin: true }).cancelText"
+              :onConfirm="editorEntry.bind(confirmSkipBinding)"
+            >
+              <a-switch
+                :id="fieldId('skipBinding')"
+                :checked="skipBindingCheck"
+                :disabled="saving"
+                checked-children="已跳过"
+                un-checked-children="校验中"
+              />
+            </a-popconfirm>
+            <p class="hint">开启后本次创建不校验该账号是否绑定手机号和微信。普通用户看不到此开关，服务端也会按角色拒绝非管理员传入的跳过请求。</p>
+          </a-form-item>
+        </ConsolePanel>
+        <ConsolePanel title="长命令地址" description="默认提供紧凑指令；PowerShell 2 等旧环境可在列表复制兼容指令。" class="preview-panel">
+          <div class="command-preview"><code>{{ editingAddress || '保存后自动生成 HTTPS 地址' }}</code></div>
         </ConsolePanel>
       </a-form>
       </div>
     </a-modal>
+    <a-modal v-if="shortAuthorizationRecord" :open="true" :title="shortAuthorizationMode === 'full' ? '长命令授权设置' : '短命令授权设置'" width="660px" :footer="null" :closable="!shortAuthorizationBusy" :mask-closable="!shortAuthorizationBusy" :keyboard="!shortAuthorizationBusy" :onCancel="pageEntry.bind(closeShortAuthorization)" :wrap-props="{ 'aria-modal': true }">
+      <div ref="shortAuthorizationSurface" :onInputCapture="pageEntry.guardNative" :onChangeCapture="pageEntry.guardNative" :onClickCapture="pageEntry.guardNative" :onKeydownCapture="pageEntry.guardNative">
+        <a-alert :type="shortAuthorizationMode === 'short' ? 'warning' : 'info'" show-icon :message="shortAuthorizationMode === 'short' ? '短命令按时间与次数授权' : '长命令保留完整凭据鉴权'" :description="shortAuthorizationMode === 'short' ? '知道入口地址的人可消耗授权次数，请妥善保管。到期、次数用完或主动撤销后失效；长命令独立生效。' : '更新设置会生成新的授权凭据，旧长命令立即失效。默认不限制时间和次数；可按需要收紧。'" />
+        <a-form layout="vertical" class="short-authorization-form" :disabled="shortAuthorizationBusy">
+          <a-form-item v-if="shortAuthorizationMode === 'short' && domainFormatOptions.length" label="入口格式" :html-for="fieldId('shortFormat')">
+            <a-select :id="fieldId('shortFormat')" :value="shortAuthorizationForm.format" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'format')" placeholder="选择管理员允许的格式">
+              <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
+            </a-select>
+          </a-form-item>
+          <p v-if="shortAuthorizationMode === 'short'" class="hint">入口由服务器随机生成，每次更新会更换地址，旧地址不会分配给其他脚本。</p>
+          <a-form-item label="生效时间" :html-for="fieldId('authorizationStartsAt')">
+            <a-input :id="fieldId('authorizationStartsAt')" type="datetime-local" :value="shortAuthorizationForm.startsAt" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'startsAt')" />
+            <p class="hint">留空立即生效，使用本机时区。</p>
+          </a-form-item>
+          <a-form-item label="有效期（分钟）" :html-for="fieldId('shortDuration')">
+            <a-input-number :id="fieldId('shortDuration')" :value="shortAuthorizationForm.durationMinutes" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'durationMinutes')" :min="authorizationAllowsForever ? 0 : 1" :max="shortAuthorizationMode === 'short' ? 1440 : 525600" :precision="0" />
+            <p class="hint">从生效时开始计时。{{ authorizationAllowsForever ? '0 表示永不过期。' : '管理员要求设置有效期。' }}{{ shortAuthorizationMode === 'short' ? '有限期最长 24 小时。' : '有限期最长 365 天。' }}</p>
+          </a-form-item>
+          <a-form-item label="可使用次数" :html-for="fieldId('authorizationMaxUses')">
+            <a-input-number :id="fieldId('authorizationMaxUses')" :value="shortAuthorizationForm.maxUses" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'maxUses')" :min="0" :max="1000000" :precision="0" />
+            <p class="hint">0 表示不限次数。每次成功下发启动兑换票计为 1 次，后续兑换、下载与运行不再扣次数。</p>
+          </a-form-item>
+        </a-form>
+        <div v-if="selectedAuthorization" class="short-authorization-result">
+          <a-tag :color="selectedAuthorization.status === 'active' ? 'green' : 'default'">{{ shortAuthorizationStatus(selectedAuthorization.status) }}</a-tag>
+          <p class="hint">{{ authorizationUsesText(selectedAuthorization) }}<template v-if="selectedAuthorization.startsAt"> · 生效于 {{ formatDateTime(selectedAuthorization.startsAt) }}</template><template v-if="selectedAuthorization.expiresAt"> · 有效至 {{ formatDateTime(selectedAuthorization.expiresAt) }}</template></p>
+          <code v-if="shortAuthorizationMode === 'short' && buildScriptShortCommand(shortAuthorizationRecord)" class="short-command">{{ buildScriptShortCommand(shortAuthorizationRecord) }}</code>
+          <a-button v-if="selectedAuthorization.command" :onClick="pageEntry.bind(copyShortCommand)">{{ shortAuthorizationMode === 'short' ? '复制短命令' : '复制长命令' }}</a-button>
+        </div>
+        <a-space wrap class="short-authorization-actions">
+          <a-button :disabled="shortAuthorizationBusy" :onClick="pageEntry.bind(closeShortAuthorization)">关闭</a-button>
+          <a-button v-if="['active', 'scheduled'].includes(selectedAuthorization?.status)" danger :loading="shortAuthorizationBusy" :onClick="pageEntry.bind(saveShortAuthorization, false)">撤销授权</a-button>
+          <a-button type="primary" :loading="shortAuthorizationBusy" :onClick="pageEntry.bind(saveShortAuthorization, true)">{{ ['active', 'scheduled'].includes(selectedAuthorization?.status) ? '更新授权' : shortAuthorizationMode === 'short' ? '生成短命令' : '启用授权' }}</a-button>
+        </a-space>
+      </div>
+    </a-modal>
+    <ScriptActivationPurchases v-if="purchasesOpen" :key="principal()" :can-use="canAct" @close="purchasesOpen = false" @use="usePurchasedCode" />
     <a-modal v-if="activeCloseConfirmation" :open="true" title="客户端正在运行，仍要关闭脚本？" ok-text="确认关闭" cancel-text="取消" :ok-button-props="{ danger: true }" :mask-closable="false" :onOk="pageEntry.bind(confirmActiveScriptClose)" :onCancel="pageEntry.bind(cancelActiveScriptClose)" :wrap-props="{ 'aria-modal': true }">
       <p>立即吊销令牌并通知客户端退出，等已受理请求结清后返还余额。</p>
     </a-modal>
@@ -246,11 +317,15 @@ import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { getCurrentUserLogoutEpoch, getStoredCurrentUser, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
-import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode } from '@/api/TikuComponentApi'
-import { buildScriptBillingText, buildScriptCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
-import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
+import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode, configureScriptShortAuthorization, configureScriptLauncherAuthorization } from '@/api/TikuComponentApi'
+import { isRedeemableScriptCode, buildScriptBillingText, buildScriptCommand, buildScriptShortCommand, buildScriptDownloadURL, buildScriptListParams, parsePresetParams, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
+import { collectScriptRevokeNotices, scriptNoticeAlertType } from '@/utils/scriptRevokeNotice.mjs'
+import { shouldShowSkipBindingButton, buildCreateScriptPayload, isBindingsRequiredError, buildSkipBindingConfirmText } from '@/utils/scriptSkipBinding.mjs'
+import { parseScriptDomainFormat } from '@/utils/scriptDomainFormats.mjs'
 import { describeScriptAdminAction, describeScriptUploadGate } from '@/utils/scriptUploadGate.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
+import ScriptActivationPurchases from './ScriptActivationPurchases.vue'
+import { scriptPurchaseIntent, clearScriptPurchaseIntent } from '@/utils/scriptPurchaseIntent.mjs'
 
 defineOptions({ name: 'ScriptManagement' })
 
@@ -290,6 +365,13 @@ const fieldPrefix = 'script-' + useId(), fieldId = field => fieldPrefix + '-' + 
 const pageSurface = ref(null), modalSurface = ref(null), frameKey = ref(0), editorKey = ref(0), draining = ref(false)
 const deleting = ref(false), listReady = ref(false), readError = ref('')
 const activeCloseConfirmation = shallowRef(null)
+const shortAuthorizationRecord = ref(null), shortAuthorizationBusy = ref(false), shortAuthorizationSurface = ref(null)
+const shortAuthorizationMode = ref('short')
+const selectedAuthorization = computed(() => shortAuthorizationRecord.value?.[shortAuthorizationMode.value === 'full' ? 'launcherAuthorization' : 'shortAuthorization'])
+const shortAuthorizationForm = reactive({ format: '', slot: '', durationMinutes: 5, startsAt: '', maxUses: 1 })
+const allowFullNeverExpire = ref(true), allowShortNeverExpire = ref(false)
+const savedExpiryPolicy = ref('true:false')
+const authorizationAllowsForever = computed(() => shortAuthorizationMode.value === 'full' ? allowFullNeverExpire.value : allowShortNeverExpire.value)
 let alive = true, mounted = false, epoch = 0, readTicket = 0, domainRevision = 0, retry = null
 const principal = () => {
   const user = currentUser.value, id = Number(user?.id)
@@ -343,8 +425,12 @@ const isAdmin = computed(() => {
   if (routeViewMode.value === 'admin') return true
   return isAdminUser(currentUser.value)
 })
-const showAll = ref(false)
 const rows = ref([])
+// 通知区数据（2026-11-17）。从 rows 派生而不是独立请求：
+//   1. 撤销状态本来就随列表一起返回（后端 revokeNotice 字段），再查一次会不一致；
+//   2. rows 刷新时通知自动跟着更新，不需要额外维护失效逻辑。
+// warning 排在 info 前的排序由 collectScriptRevokeNotices 负责（见其单测）。
+const revokeNotices = computed(() => collectScriptRevokeNotices(rows.value))
 const loading = ref(false)
 const uploading = ref(false)
 const uploadVersion = ref('')
@@ -352,6 +438,19 @@ const versions = ref([])
 const saving = ref(false)
 const modalOpen = ref(false)
 const editing = ref(false)
+// 「跳过手机号/微信绑定校验」按钮的勾选状态（2026-11-17 用户需求）。
+//
+// 只影响**新建**：编辑已有脚本不涉及绑定门槛，所以按钮也只在新建时显示。
+// 默认 false —— 忘记初始化时必须保持门槛生效，不能因为「没读到」而放行。
+const skipBindingCheck = ref(false)
+// 按钮可见性：仅管理员。
+//
+// ⚠️ 这里必须用 `isAdminUser(currentUser.value)`（角色），**不能**用上面的
+// `isAdmin` computed —— 后者按**视图模式**判断：管理员切到「我的脚本」
+// （routeViewMode==='self'）时它返回 false，而那个场景恰恰是本按钮要服务的
+// （用户在「我的脚本」里创建自己的脚本时被绑定门槛拦住）。
+// 用错会表现为「按钮在别的视图里有、在自己要用的视图里消失」。
+const showSkipBindingButton = computed(() => shouldShowSkipBindingButton({ isAdmin: isAdminUser(currentUser.value) }))
 const lastUploadKey = ref('')
 const summary = reactive({ total: 0, enabled: 0, reserved: 0 })
 const domainText = ref('')
@@ -361,16 +460,16 @@ const domainSaving = ref(false)
 const domainError = ref('')
 // 保存按钮的 dirty 判据：只有内容真的变了才允许保存，避免「点了一下但什么都没改」的无效往返。
 const domainSavedText = ref('')
-const domainDirty = computed(() => domainText.value.trim() !== domainSavedText.value.trim())
+const domainDirty = computed(() => domainText.value.trim() !== domainSavedText.value.trim() || savedExpiryPolicy.value !== `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`)
 // 诉求 ⑤：用户可选的域名格式模板（管理员配置），以及编辑中的域名行。
 const domainFormats = ref([])
-const domainRowError = ref('')
 const scriptAdminAction = describeScriptAdminAction()
 const escrowPolicy = ref(null), activationPrice = ref(null), policyError = ref('')
 const policyForm = reactive({ target: '', minimum: '', multiplier: '' }), priceForm = ref('')
 const savingPolicy = ref(false), savingPrice = ref(false)
 let billingReadTicket = 0, policyRevision = 0, priceRevision = 0
 const activationCode = ref(''), purchasedCode = ref(false), purchaseUncertain = ref(false)
+const activationFrozenUntil = ref(null), purchasesOpen = ref(false)
 const purchasingCode = ref(false), redeemingCode = ref(false)
 const activationBusy = computed(() => purchasingCode.value || redeemingCode.value)
 // 诉求 ①：`nativeLeaseConfirmed` 已删除 —— 那个确认框是「上传按钮无效」的根因之一
@@ -379,42 +478,20 @@ const uploadGate = computed(() => describeScriptUploadGate({ uploading: uploadin
 const currentNativeVersion = computed(() => versions.value.find((item) => item.nativeLeaseProtocol === true && item.isCurrent === true))
 // 诉求 ⑤：用户可选的格式来自管理员配置，且只保留能解析的新语法条目。
 const domainFormatOptions = computed(() => domainFormats.value.filter(Boolean))
-function domainRowMeta(row) {
-  return parseScriptDomainFormat(row?.format) || { slot: '', host: '' }
-}
-// 表单里的域名行 → 最终域名列表（多格式并存，诉求 ⑤ 最后一句）。
-// ⚠️ 这两个 computed 只依赖 form，但 form 在下面才声明；它们本身是惰性的（不被求值就不读 form），
-// 所以可以放在前面。真正**不能**放在前面的是下面那个 immediate watch —— 它会在 setup 期间
-// 立即求值 domainFormsResult，从而在 form 初始化前访问它（TDZ：Cannot access 'form' before initialization）。
-const domainFormsResult = computed(() => buildScriptDomainForms(form.domainRows))
-const previewDomainText = computed(() => domainFormsResult.value.domains.join('  '))
-// 「域名格式」现在是脚本的**唯一**域名来源：baseDomain 由第一行生成，
-// 供既有的下载 URL 拼装继续工作（它仍按 <shortCode>.<baseDomain> 生成）。
 let purchaseIntentKey = '', purchaseIntentQuote = ''
 const canBuyActivationCode = computed(() => modalOpen.value && !editing.value && form.billingMode === 'activation_code'
   && !saving.value && !activationBusy.value && !purchasedCode.value && !form.entitlementId
   && (purchaseUncertain.value || activationPrice.value?.enabled === true))
 
-const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false, domainRows: [{ format: '', slot: '' }] })
+const emptyForm = () => ({ id: undefined, name: '', versionId: undefined, enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false, domainFormat: '' })
 const form = reactive(emptyForm())
-// 域名行 → baseDomain 的同步。必须放在 `form` 声明**之后**：
-// 配了 immediate:true 的 watch 会在 setup 期间立即求值 domainFormsResult，
-// 进而读取 form.domainRows；放在 form 之前会抛 TDZ
-// （Cannot access 'form' before initialization，实测于本轮）。
-watch(domainFormsResult, (result) => {
-  domainRowError.value = result.errors.length ? result.errors[0].message : ''
-  const first = result.domains[0] || ''
-  // 只取主机部分：`x.a.com` → `a.com`，`a.com/p` → `a.com`。
-  const host = first.includes('/') ? first.slice(0, first.indexOf('/')) : first
-  if (host) form.baseDomain = host
-}, { immediate: true })
 const draft = useUnsavedDraft(form, { focusTriggerAfterClose: false })
-const previewRecord = computed(() => normalizeScriptRecord({ ...form, presetParams: form.presetText }))
-const scopeDescription = computed(() => isAdmin.value && showAll.value ? '当前显示全部用户的脚本；删除和编辑仍由服务端校验权限。' : '当前只显示自己的脚本。')
+const editingAddress = ref('')
+const scopeDescription = computed(() => isAdmin.value ? '当前显示全部用户的脚本；删除和编辑仍由服务端校验权限。' : '当前只显示自己的脚本。')
 const columns = computed(() => [
   { title: '脚本', key: 'name', dataIndex: 'name', width: 220 },
-  ...(isAdmin.value && showAll.value ? [{ title: '用户', key: 'owner', dataIndex: 'ownerName', width: 150 }] : []),
-  { title: '短指令', key: 'command', dataIndex: 'command', width: 430 },
+  ...(isAdmin.value ? [{ title: '用户', key: 'owner', dataIndex: 'ownerName', width: 150 }] : []),
+  { title: '命令与授权', key: 'command', dataIndex: 'command', width: 430 },
   { title: '预置参数', key: 'preset', dataIndex: 'preset', width: 100 },
   { title: '答题计费', key: 'billing', dataIndex: 'billing', width: 180 },
   { title: '更新时间', key: 'updatedAt', dataIndex: 'updatedAt', width: 150 },
@@ -424,77 +501,32 @@ const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
 
 function resetForm(record) {
   const fields = emptyForm()
+  editingAddress.value = record ? buildScriptDownloadURL(record) : ''
   if (record) {
     const normalized = normalizeScriptRecord(record)
     for (const name of Object.keys(fields)) if (Object.hasOwn(normalized, name)) fields[name] = normalized[name]
     fields.presetText = formatPresetParams(normalized.presetParams)
     fields.billingMode = ['escrow', 'activation_code'].includes(normalized.billingMode) ? normalized.billingMode : 'legacy'
     if (!fields.runDurationMinutes) fields.runDurationMinutes = 150
-    // 编辑态回填：把库里的具体域名反解成「格式 + 占位内容」（诉求 ⑤ 的逆运算）。
-    fields.domainRows = restoreDomainRows(normalized.baseDomain)
-  } else {
-    fields.domainRows = defaultDomainRows()
   }
   Object.assign(form, fields)
   draft.savedConfigSnapshot.value = draft.currentConfigSnapshot.value
-}
-
-// 新建时的默认行：取第一个可用格式（管理员一般先配 `*.a.com`）。
-function defaultDomainRows() {
-  const first = domainFormatOptions.value[0]
-  return [{ format: first?.raw || '', slot: '' }]
-}
-
-// 把一条具体域名反解成能匹配的「格式 + 槽位」。多条格式时优先取能解析的。
-function restoreDomainRows(domain) {
-  const value = String(domain ?? '').trim()
-  if (!value) return defaultDomainRows()
-  for (const option of domainFormatOptions.value) {
-    const slot = splitScriptDomainForFormat(option, value)
-    if (slot) return [{ format: option.raw, slot }]
-  }
-  // 反解不出来（存量域名不符合当前格式）时退回默认行，让用户重新选择 ——
-  // 不能把不匹配的值硬塞进某个槽位，那会生成一个没人预期的域名。
-  return defaultDomainRows()
 }
 
 function setFormField(name, value) {
   if (!editorEntry.value.isCurrent() || saving.value || !Object.hasOwn(form, name) || name === 'entitlementId') return
   if (name === 'billingMode') {
     if (editing.value || activationBusy.value || !['escrow', 'activation_code'].includes(value)) return
-    form.scheme = 'https'
   }
-  if (name === 'scheme' && form.billingMode !== 'legacy') return
   form[name] = value
 }
 function setUploadVersion(value) { if (isAdmin.value && !uploading.value) uploadVersion.value = value }
 function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainText.value = value } }
-// 诉求 ⑤：域名行的增删改。一个脚本可以有多个域名格式，所以这里是列表操作。
-function setDomainRowFormat(index, format) {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  const row = form.domainRows[index]
-  if (!row) return
-  row.format = format
-  // 换格式后旧槽位可能不再合法（子域 vs 路径），清空让用户重填，
-  // 而不是把 `p/q` 留在子域槽里再默默生成非法域名。
-  row.slot = ''
-}
-function setDomainRowSlot(index, value) {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  const row = form.domainRows[index]
-  if (row) row.slot = value
-}
-function addDomainRow() {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  if (form.domainRows.length >= domainFormatOptions.value.length) return
-  const used = new Set(form.domainRows.map((row) => row.format))
-  const next = domainFormatOptions.value.find((option) => !used.has(option.raw))
-  form.domainRows.push({ format: next?.raw || '', slot: '' })
-}
-function removeDomainRow(index) {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  if (form.domainRows.length <= 1) return
-  form.domainRows.splice(index, 1)
+function setExpiryPolicy(kind, value) {
+  if (!canAct() || !isAdmin.value || domainSaving.value) return
+  domainRevision++
+  if (kind === 'full') allowFullNeverExpire.value = Boolean(value)
+  else allowShortNeverExpire.value = Boolean(value)
 }
 
 function startEditor(record) {
@@ -508,11 +540,25 @@ function startEditor(record) {
   modalOpen.value = true
 }
 function openCreate() { startEditor() }
+function openPurchases() { if (canAct()) purchasesOpen.value = true }
+function usePurchasedCode(code) {
+  if (!canAct() || !isRedeemableScriptCode(code) || saving.value || activationBusy.value) return
+  purchasesOpen.value = false
+  if (!modalOpen.value) startEditor()
+  if (editing.value) return
+  form.billingMode = 'activation_code'; form.entitlementId = undefined
+  activationCode.value = code; purchasedCode.value = true; activationFrozenUntil.value = null
+}
 function openEdit(record) { if (rows.value.includes(record)) startEditor(record) }
 function retireEditor() {
   hidePrivate(modalSurface.value)
   activationCode.value = ''; purchasedCode.value = false; purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
+  activationFrozenUntil.value = null
   purchasingCode.value = false; redeemingCode.value = false
+  // 清掉「跳过绑定校验」状态。放在这里而不是只放 openCreate：
+  // retireEditor 是所有关闭路径的共同出口（保存成功、取消、路由离开），
+  // 只在 openCreate 清会漏掉「保存失败后关弹窗再开」这类路径。
+  resetSkipBinding()
   editorKey.value += 1; editorEntry.value = makeEntry(() => false); modalOpen.value = false; saving.value = false; editing.value = false
   draft.cancelPendingLeave(); resetForm()
 }
@@ -534,7 +580,7 @@ function extractSummary(response, dataRows) {
 async function loadScripts() {
   if (!canAct()) return
   const owns = captureOwner(), ticket = ++readTicket
-  const scope = buildScriptListParams(isAdmin.value, showAll.value)
+  const scope = buildScriptListParams(isAdmin.value)
   const current = () => owns() && ticket === readTicket
   loading.value = true; readError.value = ''
   try {
@@ -550,14 +596,6 @@ async function loadScripts() {
   } finally {
     if (current()) loading.value = false
   }
-}
-
-function toggleScope() {
-  if (!canAct() || !isAdmin.value || modalOpen.value || deleting.value || activeCloseConfirmation.value) return
-  showAll.value = !showAll.value
-  rows.value = []; listReady.value = false
-  Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
-  return loadScripts()
 }
 
 async function handleUpload({ file, onSuccess, onError }) {
@@ -622,6 +660,7 @@ function setActivationCode(value) {
 function showActivationPurchaseFailure(error) {
   const reason = scriptErrorCode(error)
   if (reason === 'SCRIPT_ACTIVATION_PRICE_CHANGED') {
+    clearScriptPurchaseIntent(currentUser.value?.id)
     purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
     activationPrice.value = null
     message.warning('激活码售价已变化，请确认最新售价后再购买。')
@@ -629,7 +668,7 @@ function showActivationPurchaseFailure(error) {
     return
   }
   purchaseUncertain.value = true
-  message.error(reason === 'SCRIPT_ACTIVATION_BALANCE_INSUFFICIENT' ? '钱包余额不足。补足后可重试同一次购买。' : '购买结果未确认，请在此重试同一次购买。')
+  message.error(reason === 'SCRIPT_ACTIVATION_BALANCE_INSUFFICIENT' ? '钱包余额不足，请补足后再购买。' : '购买结果未确认，请先在购买记录核对。再次点击购买会核对原交易，避免重复扣款。')
 }
 async function buyActivationCode() {
   const owns = editorEntry.value.isCurrent
@@ -639,7 +678,8 @@ async function buyActivationCode() {
     if (!purchaseIntentKey) {
       purchaseIntentQuote = activationPrice.value?.price || ''
       if (!purchaseIntentQuote) return
-      purchaseIntentKey = secureIntentKey('script-activation-purchase-')
+      const intent = scriptPurchaseIntent(currentUser.value?.id, purchaseIntentQuote)
+      purchaseIntentKey = intent.key; purchaseIntentQuote = intent.quote
     }
     const response = await purchaseScriptActivationCode(purchaseIntentKey, purchaseIntentQuote)
     if (!owns()) return
@@ -649,6 +689,7 @@ async function buyActivationCode() {
       showActivationPurchaseFailure(response)
       return
     }
+    clearScriptPurchaseIntent(currentUser.value?.id)
     activationCode.value = code; purchasedCode.value = true; purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
     message.success('购买成功，请兑换创建资格。')
   } catch (error) {
@@ -660,7 +701,7 @@ async function buyActivationCode() {
 async function redeemActivationCode() {
   const owns = editorEntry.value.isCurrent, code = activationCode.value.trim()
   if (!owns() || editing.value || form.billingMode !== 'activation_code' || saving.value || activationBusy.value || form.entitlementId) return
-  if (!/^sac_[a-f0-9]{64}$/.test(code)) return message.warning('请输入有效激活码。')
+  if (!isRedeemableScriptCode(code)) return message.warning('请输入有效激活码。')
   redeemingCode.value = true
   try {
     const response = await redeemScriptActivationCode({ code })
@@ -670,6 +711,7 @@ async function redeemActivationCode() {
       message.error('未取得可用的创建资格，请确认激活码状态。'); return
     }
     form.entitlementId = id; activationCode.value = ''; purchasedCode.value = false
+    activationFrozenUntil.value = response.data.frozenUntil || null
     message.success('已兑换一次脚本创建资格。')
   } catch {
     if (owns()) message.error('兑换未完成，请核对激活码或重试。')
@@ -683,32 +725,43 @@ function scriptBillingText(record) {
   return buildScriptBillingText(record)
 }
 
-async function handleSubmit() {
-  const owns = editorEntry.value.isCurrent
+// 用户点 a-popconfirm 的「仍然跳过」后才真正打开开关（2026-11-17）。
+//
+// 为什么不在 switch 上直接双向绑定：a-switch 的 onUpdate:checked 会在用户
+// 点击瞬间就翻转，确认弹窗还没出现状态就已经变了。放在 popconfirm 的
+// onConfirm 里，语义是「确认后才生效」，与用户的心理模型一致。
+function confirmSkipBinding() {
+  if (!editorEntry.value.isCurrent()) return
+  skipBindingCheck.value = true
+}
+
+// 关闭并重置编辑器时清掉跳过状态（2026-11-17）。
+//
+// ⚠️ 必须清：否则「上一个脚本勾了跳过，关掉弹窗后新建另一个」会带着
+// 上次的 true 静默绕过门槛。纯函数 buildCreateScriptPayload 只能清 payload，
+// 清不掉组件状态。
+function resetSkipBinding() {
+  skipBindingCheck.value = false
+}
+
+async function handleSubmit() {  const owns = editorEntry.value.isCurrent
   if (!owns() || saving.value || deleting.value || activationBusy.value) return
-  const payload = buildScriptSavePayload({ ...form, presetParams: form.presetText })
-  // Managed pricing is server-owned. Do not send legacy multiplier defaults
-  // (also preserves historical pricing on edits to existing legacy scripts).
-  for (const field of ['billingEnabled', 'billingUseTikuPrice', 'useTikuPrice', 'priceMultiplier', 'answerPriceMultiplier']) delete payload[field]
+  // 跳过绑定校验（2026-11-17）：只在新建时生效。
+  //
+  // 二次确认由模板里的 a-popconfirm 承担（与页面其它危险操作同一交互范式），
+  // 用户点「仍然跳过」后才会把 skipBindingCheck 置真再来调用本函数。
+  // 这里不再弹窗 —— 嵌套 confirm 会让「取消」出现在两个层级，用户分不清。
+  const requestSkipBinding = !editing.value && skipBindingCheck.value && showSkipBindingButton.value
+  // buildCreateScriptPayload 负责「只有显式 true 才写字段」，
+  // 并清掉可能残留的脏值（上一次勾过、这次取消）。
+  const payload = buildCreateScriptPayload({
+    name: form.name.trim(),
+    enabled: form.enabled,
+    parameters: parsePresetParams(form.presetText),
+  }, requestSkipBinding)
   if (!payload.name) return message.warning('请输入脚本名称')
-  // 诉求 ⑤：域名只能由「管理员格式 + 用户占位内容」生成。
-  // 逐行校验，错误要指出**是哪一行缺什么**，不能只说「请输入有效域名」。
-  const domainForms = buildScriptDomainForms(form.domainRows)
-  if (domainForms.errors.length) {
-    const first = domainForms.errors[0]
-    return message.warning(`第 ${first.index + 1} 个域名：${first.message}`)
-  }
-  if (!domainForms.domains.length) return message.warning('请至少填写一个脚本域名')
-  // baseDomain 仍按「主机」提交（后端按主机校验管理员格式），
-  // 完整域名列表另存为 domains 供展示与后续扩展。
-  const primaryHost = domainForms.domains[0].includes('/')
-    ? domainForms.domains[0].slice(0, domainForms.domains[0].indexOf('/'))
-    : domainForms.domains[0]
-  payload.baseDomain = primaryHost
-  payload.domains = domainForms.domains
-  if (!payload.baseDomain || !buildScriptDownloadURL(payload)) return message.warning('请填写有效的脚本域名')
-  if (!payload.versionId) return message.warning('请选择 EXE 版本')
   const isEditing = editing.value, sentSnapshot = draft.currentConfigSnapshot.value
+  if (isEditing) payload.id = form.id
   if (form.billingMode !== 'legacy') {
     const minutes = Number(form.runDurationMinutes)
     if (form.runDurationMinutes === null || !Number.isSafeInteger(minutes) || minutes < 1 || minutes > 150) return message.warning('令牌有效期须为 1 至 150 分钟的整数')
@@ -720,6 +773,9 @@ async function handleSubmit() {
     }
   }
   if (!isEditing) {
+    if (!form.versionId) return message.warning('请选择 EXE 版本')
+    payload.versionId = form.versionId
+    if (form.domainFormat) payload.domainFormat = form.domainFormat
     payload.billingMode = form.billingMode
     if (form.billingMode === 'activation_code') {
       if (!form.entitlementId) return message.warning('请先兑换一次性脚本创建资格。')
@@ -731,8 +787,16 @@ async function handleSubmit() {
     const response = isEditing ? await updateScript(payload) : await createScript(payload, createRetryKey(payload))
     if (!owns()) return
     if (response?.status !== 200) {
-      message.error(scriptErrorCode(response) === 'SCRIPT_BINDINGS_REQUIRED'
-        ? '创建脚本前请绑定手机号和微信。' : '保存脚本未完成，请刷新列表核对后重试。')
+      // 缺绑定的提示分流（2026-11-17）：管理员已经能看到「跳过绑定校验」开关，
+      // 所以对他要提示「可以先勾跳过」，对普通用户只说去绑定 ——
+      // 否则管理员会以为功能坏了。
+      message.error(isBindingsRequiredError(response)
+        ? (showSkipBindingButton.value
+          ? '创建脚本前请绑定手机号和微信（管理员可在弹窗内「管理员选项」中跳过本次校验）。'
+          : '创建脚本前请绑定手机号和微信。')
+        : response?.data?.code === 'SCRIPT_LAUNCHER_HTTPS_REQUIRED'
+          ? response.data.message
+          : '保存脚本未完成，请刷新列表核对后重试。')
       return
     }
     if (!isEditing) retry = null
@@ -742,8 +806,11 @@ async function handleSubmit() {
     message.success(isEditing ? '脚本已更新' : '脚本已创建')
     await loadScripts()
   } catch (error) {
-    if (owns()) message.error(scriptErrorCode(error) === 'SCRIPT_BINDINGS_REQUIRED'
-      ? '创建脚本前请绑定手机号和微信。' : '保存结果未确认，请刷新核对；如重试，请保留原表单。')
+    if (owns()) message.error(isBindingsRequiredError(error)
+      ? '创建脚本前请绑定手机号和微信。'
+      : error?.response?.data?.code === 'SCRIPT_LAUNCHER_HTTPS_REQUIRED'
+        ? error.response.data.message
+        : '保存结果未确认，请刷新核对；如重试，请保留原表单。')
   } finally { if (owns()) saving.value = false }
 }
 
@@ -835,11 +902,67 @@ async function copyText(value) {
 }
 
 function mayCopyCommand(record) {
-  return String(record.ownerId ?? '') === String(currentUser.value?.id ?? '')
-    && Boolean(currentUser.value?.id) && !isEscrowClosing(record) && record.scheme === 'https' && Boolean(buildScriptCommand(record))
+  return isOwnScript(record) && !isEscrowClosing(record) && record.scheme === 'https' && Boolean(buildScriptCommand(record))
+    && (!record.launcherAuthorization || ['active', 'scheduled'].includes(record.launcherAuthorization.status))
 }
+function isOwnScript(record) { return Boolean(currentUser.value?.id) && String(record?.ownerId ?? '') === String(currentUser.value.id) }
 function copyCommand(record) {
   if (rows.value.includes(record) && mayCopyCommand(record)) return copyText(buildScriptCommand(record))
+}
+function shortAuthorizationStatus(status) { return ({ active: '已启用', scheduled: '待生效', used: '已使用', exhausted: '次数已用完', expired: '已过期', disabled: '已撤销' })[status] || '未启用' }
+function authorizationUsesText(grant) { return Number(grant?.maxUses) > 0 ? `已使用 ${Number(grant.usedCount) || 0} / ${grant.maxUses} 次` : `已使用 ${Number(grant?.usedCount) || 0} 次 · 不限次数` }
+function localDateTimeInput(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+function openShortAuthorization(record, mode = 'short') {
+  if (!canAct() || shortAuthorizationBusy.value || !rows.value.includes(record) || !isOwnScript(record) || isEscrowClosing(record) || record.scheme !== 'https') return
+  shortAuthorizationMode.value = mode === 'full' ? 'full' : 'short'
+  const grant = record[shortAuthorizationMode.value === 'full' ? 'launcherAuthorization' : 'shortAuthorization']
+  const durationMinutes = grant?.expiresAt ? Math.max(1, Math.ceil((Date.parse(grant.expiresAt) - Math.max(Date.now(), Date.parse(grant.startsAt) || 0)) / 60000)) : (authorizationAllowsForever.value ? 0 : 5)
+  Object.assign(shortAuthorizationForm, { format: domainFormatOptions.value[0]?.raw || '', slot: '', durationMinutes, startsAt: localDateTimeInput(grant?.startsAt), maxUses: grant?.maxUses ?? (shortAuthorizationMode.value === 'full' ? 0 : 1) })
+  shortAuthorizationRecord.value = record
+}
+function closeShortAuthorization(force = false) {
+  if (shortAuthorizationBusy.value && force !== true) return
+  hidePrivate(shortAuthorizationSurface.value)
+  shortAuthorizationRecord.value = null; shortAuthorizationBusy.value = false
+  Object.assign(shortAuthorizationForm, { format: '', slot: '', durationMinutes: 5, startsAt: '', maxUses: 1 })
+}
+function setShortAuthorizationField(field, value) {
+  if (!canAct() || !shortAuthorizationRecord.value || shortAuthorizationBusy.value || !Object.hasOwn(shortAuthorizationForm, field)) return
+  shortAuthorizationForm[field] = value
+  if (field === 'format') shortAuthorizationForm.slot = ''
+}
+async function saveShortAuthorization(enabled) {
+  const record = shortAuthorizationRecord.value
+  if (!canAct() || shortAuthorizationBusy.value || !rows.value.includes(record) || !isOwnScript(record)) return
+  const durationMinutes = Number(shortAuthorizationForm.durationMinutes)
+  const maxUses = Number(shortAuthorizationForm.maxUses), full = shortAuthorizationMode.value === 'full'
+  const startsAt = shortAuthorizationForm.startsAt ? new Date(shortAuthorizationForm.startsAt) : null
+  if (enabled && (!Number.isSafeInteger(durationMinutes) || durationMinutes < (authorizationAllowsForever.value ? 0 : 1) || durationMinutes > (full ? 525600 : 1440) || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > 1000000 || (startsAt && Number.isNaN(startsAt.getTime())))) return message.warning('请填写有效的授权时间与使用次数。')
+  const payload = enabled ? { enabled: true, ...(!full ? { domainFormat: shortAuthorizationForm.format } : {}), durationMinutes, maxUses, startsAt: startsAt?.toISOString() || null } : { enabled: false }
+  const owns = captureOwner(), current = () => owns() && shortAuthorizationRecord.value === record
+  shortAuthorizationBusy.value = true
+  try {
+    const response = await (full ? configureScriptLauncherAuthorization : configureScriptShortAuthorization)(record.id, payload)
+    if (!current()) return
+    if (response?.status !== 200 || !response.data?.status) { message.error(response?.data?.message || '命令授权结果未确认，请刷新核对。'); return }
+    record[full ? 'launcherAuthorization' : 'shortAuthorization'] = response.data
+    if (full) { record.command = response.data.command || ''; record.instruction = record.command }
+    message.success(enabled ? '命令授权已更新，请使用新的指令。' : '命令授权已撤销')
+  } catch (error) {
+    if (current()) message.error(error?.response?.data?.message || '命令授权结果未确认，请刷新核对。')
+  } finally { if (current()) shortAuthorizationBusy.value = false }
+}
+function copyShortCommand() {
+  const record = shortAuthorizationRecord.value
+  if (!canAct() || !isOwnScript(record)) return
+  const command = shortAuthorizationMode.value === 'full' ? buildScriptCommand(record) : buildScriptShortCommand(record)
+  if (!command) return message.warning('短命令已失效，请刷新或重新授权。')
+  return copyText(command)
 }
 function formatDateTime(value) {
   if (!value) return '-'
@@ -874,6 +997,9 @@ async function loadDomainSettings() {
     if (response?.status !== 200) { message.warning('域名设置未读取成功，请刷新页面。'); return }
     domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : ''
     domainSavedText.value = domainText.value
+    allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
+    allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true
+    savedExpiryPolicy.value = `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`
     domainReady.value = true
   } catch {
     if (owns() && ticket === domainRevision) message.warning('域名设置未读取成功，请刷新页面。')
@@ -889,6 +1015,8 @@ async function loadDomainFormats() {
     const response = await getScriptDomainFormats()
     if (!owns()) return
     if (response?.status !== 200) { domainFormats.value = []; return }
+    allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
+    allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true
     const list = Array.isArray(response.data?.formats) ? response.data.formats : []
     // 只保留能解析的新语法条目：服务端已过滤，这里再挡一次是为了让
     // 「界面给了一个填不出域名的选项」这种不可用状态不可能出现。
@@ -907,7 +1035,7 @@ async function saveDomainSettings() {
   domainError.value = ''
   try {
     const domains = domainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-    const response = await updateScriptDomainSettings({ domains })
+    const response = await updateScriptDomainSettings({ domains, allowFullNeverExpire: allowFullNeverExpire.value, allowShortNeverExpire: allowShortNeverExpire.value })
     if (!owns() || ticket !== domainRevision) return
     if (response?.status !== 200) {
       // 诉求 ④：旧格式必须**明确报错**，让管理员知道要改成新写法，
@@ -919,6 +1047,9 @@ async function saveDomainSettings() {
     }
     domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : domainText.value
     domainSavedText.value = domainText.value
+    allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
+    allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true
+    savedExpiryPolicy.value = `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`
     // 保存后立刻刷新用户侧可选项，避免管理员改完而用户仍看到旧列表。
     void loadDomainFormats()
     message.success('脚本域名设置已保存')
@@ -1024,12 +1155,12 @@ function startReads() {
 function retireScope() {
   const ticket = ++epoch
   readTicket += 1; domainRevision += 1; billingReadTicket += 1; policyRevision += 1; priceRevision += 1; retry = null; draining.value = true
-  hidePrivate(pageSurface.value); retireEditor(); cancelActiveScriptClose()
-  showAll.value = false; rows.value = []; versions.value = []
+  hidePrivate(pageSurface.value); retireEditor(); cancelActiveScriptClose(); purchasesOpen.value = false
+  closeShortAuthorization(true); rows.value = []; versions.value = []
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
   domainText.value = ''; domainReady.value = false; domainSaving.value = false; domainError.value = ''
-  domainFormats.value = []; domainRowError.value = ''
+  domainFormats.value = []
   lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
   escrowPolicy.value = null; activationPrice.value = null; policyError.value = ''; priceForm.value = ''
   Object.assign(policyForm, { target: '', minimum: '', multiplier: '' }); savingPolicy.value = false; savingPrice.value = false
@@ -1057,6 +1188,9 @@ onBeforeUnmount(() => { alive = false; mounted = false; retireScope() })
 .hint, .table-hint { margin: 8px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .upload-result { max-width: 100%; overflow-wrap: anywhere; }
 .domain-settings-actions { margin-top: 12px; }
+.short-authorization-form, .short-authorization-actions { margin-top: 20px; }
+.short-authorization-result { padding: 16px; border: 1px solid var(--console-border); border-radius: 12px; }
+.short-command { display: block; margin: 12px 0; overflow-wrap: anywhere; white-space: normal; }
 .script-name-cell, .command-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .script-name-cell { flex-wrap: wrap; }
 .command-cell { align-items: flex-start; flex-direction: column; }

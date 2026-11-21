@@ -1,12 +1,36 @@
 export const LOG_MODULE_OPTIONS = [
+  // ⚠️ 顺序有意义：logTableLayout.test.mjs 断言「最后 3 项必须是 短信/充值/访问令牌」，
+  // 因为 module 列宽是按 label 长度算的。新映射一律插在 access_token 之前，
+  // 不要往数组尾部追加 —— 那会让列宽断言红，且红的理由与「映射错了」很难区分。
   { label: '认证', value: 'auth' },
   { label: '题目', value: 'question' },
   { label: '搜题', value: 'search' },
   { label: 'AI 兜底', value: 'ai_fallback' },
+  { label: '导入', value: 'import' },
+  { label: '导出', value: 'export' },
   { label: '系统', value: 'system' },
   { label: '验证码', value: 'captcha' },
   { label: '用户管理', value: 'user' },
   { label: '账单管理', value: 'billing' },
+  // ── 以下 7 个是补的：后端一直在写这些值，前端从来没有映射 ──
+  // 缺映射时 buildLogModuleLabel 会 `|| value` 回落，用户在操作日志页看到英文原文。
+  { label: '账号', value: 'account' },        // account_log.go:39 + username_release.go:81
+  { label: '绑定', value: 'binding' },        // user_bindings.go:38
+  { label: 'AI', value: 'ai' },
+  { label: '评价返现', value: 'review_rebate' },
+  { label: '题库', value: 'tiku' },
+  { label: '考试工具', value: 'userexam_tool' },
+  { label: '反馈工单', value: 'ticket' },
+  { label: '邀请返佣', value: 'referral' },
+  { label: '公告', value: 'announcement' },
+  { label: '黑名单', value: 'blacklist' },
+  { label: '白名单', value: 'whitelist' },
+  { label: '设备', value: 'device' },
+  { label: '脚本激活码', value: 'script_activation_code' },
+  { label: '账号封禁', value: 'user_ban' },
+  { label: '封禁导入', value: 'user_ban_import' },
+  // 兜底值：后端写 unknown_module 时说明它自己也没认出模块。
+  { label: '未知模块', value: 'unknown_module' },
   { label: '短信', value: 'sms' },
   { label: '充值', value: 'recharge' },
   { label: '访问令牌', value: 'access_token' },
@@ -185,6 +209,9 @@ export function buildLogModuleLabel(value) {
 export function buildLogActionLabel(value, module) {
   const normalized = Number(value);
   const normalizedModule = String(module || '').trim().toLowerCase();
+  if ((normalizedModule === 'export' || normalizedModule === 'import') && normalized === 1) return '提交任务';
+  if (normalizedModule === 'referral' && normalized === 1) return '邀请配置修改';
+  if (normalizedModule === 'ticket' && normalized === 20) return '工单账号处理';
   if (normalized === 0) return '新增';
   if (normalized === 1) return '更新';
   if (normalized === 2) return '删除';

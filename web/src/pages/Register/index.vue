@@ -57,6 +57,9 @@
               </template>
             </a-input>
           </a-form-item>
+          <a-form-item name="inviteCode" label="邀请码（可选）">
+            <a-input v-bind="fieldAttrs('inviteCode')" :value="registerForm.inviteCode" @update:value="renderHandlers.setInviteCode" placeholder="填写邀请人的邀请码" :maxlength="16" size="large" />
+          </a-form-item>
           <h3 class="form-section-heading phone-section-heading">手机号验证</h3>
           <a-form-item name="phone" :help="fieldHelp('phone')" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
             <MainlandPhoneInput
@@ -237,7 +240,7 @@ export default defineComponent({
       wechatDefaultLoginMode: 'scan', wechatCodeStaticQrcodeUrl: '', alternativeLoginEnabled: false,
       captchaProvider: 'remote', captchaApiBaseUrl: 'https://captcha.api.zelly.cn', captchaType: 'RANDOM',
     })
-    const registerForm = reactive({ username: '', password: '', nickname: '', phone: '', smsCode: '', captchaToken: '' })
+    const registerForm = reactive({ username: '', password: '', nickname: '', phone: '', smsCode: '', captchaToken: '', inviteCode: String(route.query?.inviteCode || '').slice(0,16) })
     const wechatBindingActive = ref(false)
     const wechatRegisterStaged = ref(false)
     const wechatRegisterMode = ref('scan')
@@ -796,12 +799,13 @@ export default defineComponent({
         submitWechatRegisterCode: run(submitWechatRegisterCode), cancelWechatBinding: run(cancelWechatBinding), goToLogin: run(goToLogin),
         setUsername: run(value => { registerForm.username = limitUsernameInput(value) }),
         setPassword: run(value => { registerForm.password = value }), setNickname: run(value => { registerForm.nickname = value }),
+        setInviteCode: run(value => { registerForm.inviteCode = String(value || '').toUpperCase() }),
         setPhone: run(value => { registerForm.phone = value }), setSMSCode: run(value => { registerForm.smsCode = normalizeSMSCodeInput(value) }),
         setWechatCode: run(value => { wechatRegisterCode.value = String(value || '').slice(0, 12) }),
         setWechatMode: run(value => { wechatRegisterMode.value = value }),
       }
     })
-    watch(() => [registerForm.username, registerForm.password, registerForm.nickname, registerForm.phone, registerForm.smsCode], () => {
+    watch(() => [registerForm.username, registerForm.password, registerForm.nickname, registerForm.phone, registerForm.smsCode, registerForm.inviteCode], () => {
       if (internalInputChange) return
       inputEpoch += 1
       for (const owner of [...attempts.values()]) if (owner.inputBound === true) retireDraftAttempt(owner)

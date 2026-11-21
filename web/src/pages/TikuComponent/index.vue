@@ -2,36 +2,45 @@
   <div class="console-page tiku-page" :onInputCapture="questionEntry.guardNative"
        :onChangeCapture="questionEntry.guardNative" :onClickCapture="questionEntry.guardNative">
     <ConsolePageHeading title="题库管理" description="管理本地题目、答案和导入记录。">
-      <template #actions>
-      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(fetchData)" :loading="tabLoading">刷新</a-button>
-      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(triggerJsonImport)">JSON 导入</a-button>
-      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(navigateToImport)"><DownloadOutlined />智能导入</a-button>
-      <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleExportSelected)">导出选中</a-button>
-      <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(openBulkCourseModal)">批量编辑课程名</a-button>
-      <a-button danger :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleDeleteSelected)">批量删除</a-button>
+      <template #actions><a-space wrap class="section-actions tiku-page-actions">
       <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(showModal, { type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(navigateToImport)"><DownloadOutlined />智能导入</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(fetchData)" :loading="tabLoading">刷新</a-button>
+      <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
+        :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
+        v-on="{ 'update:modelValue': questionEntry.bind(setSelectedColumnKeys), reset: questionEntry.bind(resetColumns) }" />
+      </a-space>
       </template>
     </ConsolePageHeading>
+    <ConsoleSummaryGrid>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="筛选结果题数" :value="page.total || 0" /></a-card>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="当前页答案覆盖率" :value="answerCoverage" suffix="%" /></a-card>
+    </ConsoleSummaryGrid>
     <a-alert v-if="!canUseQuestions()" type="warning" show-icon
              message="当前身份无题库管理权限，请使用管理员账号登录。" />
 
-    <section class="console-panel filter-panel">
+    <section class="console-panel filter-panel" :aria-labelledby="fieldId('filter-title')">
+      <div class="section-heading filter-heading"><h2 :id="fieldId('filter-title')">筛选题目</h2></div>
       <a-form layout="inline" class="filter-form" :onFinish="questionEntry.bind(onSearch)">
-        <a-form-item label="类型" :html-for="fieldId('filter-type')">
+        <a-form-item label="题型" :html-for="fieldId('filter-type')">
           <a-select :id="fieldId('filter-type')" :disabled="!canUseQuestions()" :value="typeValue" v-on="{ 'update:value': questionEntry.bind(value => typeValue = value) }" show-search allow-clear placeholder="请选择" :options="typeList"
                     :onChange="questionEntry.bind(onFilterChange)" />
         </a-form-item>
-        <a-form-item label="问题" :html-for="fieldId('filter-question')">
+        <a-form-item label="题干" :html-for="fieldId('filter-question')">
           <a-input :id="fieldId('filter-question')" :disabled="!canUseQuestions()" :value="searchValue.question" v-on="{ 'update:value': questionEntry.bind(value => searchValue.question = value) }" placeholder="搜索问题" :onPressEnter="questionEntry.bind(onSearch)" />
         </a-form-item>
-        <a-form-item label="无答案" :html-for="fieldId('filter-empty-answer')">
+        <a-form-item label="课程" :html-for="fieldId('filter-course')">
+          <a-select :id="fieldId('filter-course')" :disabled="!canUseQuestions()" :value="searchValue.courseName" v-on="{ 'update:value': questionEntry.bind(value => searchValue.courseName = value) }" show-search allow-clear placeholder="全部课程" :options="courses" :onChange="questionEntry.bind(onFilterChange)" />
+        </a-form-item>
+        <a-form-item label="来源" :html-for="fieldId('filter-source')">
+          <a-select :id="fieldId('filter-source')" :disabled="!canUseQuestions()" :value="searchValue.source" v-on="{ 'update:value': questionEntry.bind(value => searchValue.source = value) }" allow-clear placeholder="全部来源" :options="sourceOptions" :onChange="questionEntry.bind(onFilterChange)" />
+        </a-form-item>
+        <a-form-item label="答案状态：仅看无答案" :html-for="fieldId('filter-empty-answer')">
           <a-checkbox :id="fieldId('filter-empty-answer')" :disabled="!canUseQuestions()" :checked="searchValue.onlyShowEmptyAnswer" v-on="{ 'update:checked': questionEntry.bind(value => searchValue.onlyShowEmptyAnswer = value) }" />
         </a-form-item>
         <a-form-item>
-          <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(onSearch)" :onKeyup="questionEntry.bind(event => event.key === 'Enter' && onSearch())">
-            <SearchOutlined />
-            搜索
-          </a-button>
+          <a-space><a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(onSearch)" :onKeyup="questionEntry.bind(event => event.key === 'Enter' && onSearch())"><SearchOutlined />搜索</a-button>
+            <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(resetFilters)">重置筛选</a-button></a-space>
         </a-form-item>
       </a-form>
     </section>
@@ -49,6 +58,7 @@
           </template>
           <RequestFailureAlert v-if="listFailure" :failure="listFailure" message="获取题目列表失败"
             :retryable="true" :busy="tabLoading" :context-key="listFailureContext" :is-current="isCurrentListFailure" :onRetry="questionEntry.bind(guardedRetryListFailure)" />
+          <div class="question-bulk-actions" aria-label="题目批量操作">
           <a-alert
             v-if="page.total"
             type="info"
@@ -94,9 +104,11 @@
               </div>
             </template>
           </a-alert>
-          <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
-            :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
-            v-on="{ 'update:modelValue': questionEntry.bind(setSelectedColumnKeys), reset: questionEntry.bind(resetColumns) }" />
+          <div class="bulk-action-buttons">
+            <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(openBulkCourseModal)">批量编辑课程名</a-button>
+            <a-button danger :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleDeleteSelected)">批量删除</a-button>
+          </div>
+          </div>
           <ConsoleTableShell label="题库管理">
           <a-table :columns="visibleColumns" :data-source="data" :pagination="false" :row-key="record => record.id" table-layout="fixed"
                    :loading="tabLoading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
@@ -181,13 +193,6 @@
           </a-form-item>
         </a-form>
       </a-modal>
-      <input
-        :key="'json-input-' + questionEntry.epoch" ref="jsonImportInput"
-        type="file"
-        accept="application/json,.json"
-        style="display: none"
-        :onChange="questionEntry.bind(handleJsonImportChange)"
-      />
       <a-modal :key="questionDialogKey" :open="visible" title="详情内容" :wrap-props="{ 'aria-modal': true }" :onOk="questionDialogOwner && questionDialogOwner.bind(confirm, questionDialogOwner)"
                :onCancel="questionDialogOwner && questionDialogOwner.bind(closeQuestionModal, questionDialogOwner)" v-if="questionDialogMounted"
                :confirmLoading="questionSubmitLoading" :ok-button-props="{ disabled: questionWriteUnconfirmed }"
@@ -251,6 +256,7 @@
       </a-modal>
     </a-layout-content>
     </a-layout>
+    <QuestionTransferPanel v-if="canUseQuestions()" :key="principalKey" :selected-question-ids="selectedRowKeys" @imported="onTransferImportCompleted" />
   </div>
 </template>
 
@@ -261,7 +267,6 @@ import Swal from 'sweetalert2'
 import {
   updateQuestions,
   delQuestions,
-  importQuestions,
 } from '@/api/TikuComponentApi'
 import {
   FormOutlined,
@@ -276,6 +281,7 @@ import {useQuestionSelection} from './useQuestionSelection.mjs'
 import {useQuestionReads} from './useQuestionReads.mjs'
 import {useQuestionEditor, questionEditorMethods} from './useQuestionEditor.mjs'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import QuestionTransferPanel from './QuestionTransferPanel.vue'
 import TableColumnSettings from '@/components/TableColumnSettings.vue'
 import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs'
 import OverflowTableText from '@/components/OverflowTableText.vue'
@@ -291,12 +297,7 @@ import {
   buildQuestionBulkActionIds,
   buildQuestionBulkCourseUpdatePayload,
   buildQuestionCourseNameCandidates,
-  buildQuestionExportPayload,
-  buildQuestionImportDryRunPayload,
-  buildQuestionImportExecutePayload,
-  buildQuestionImportSummary,
   buildQuestionSourceLabel,
-  parseQuestionImportText,
 } from '@/utils/topicOverviewHelpers.mjs';
 
 const style = {
@@ -323,13 +324,22 @@ export default defineComponent({
     const bulkCourseName = ref('')
     const searchValue = ref({})
     const quesType = ref(questionType)
-    const jsonImportInput = ref(null)
+    const sourceOptions = [
+      { value: 1, label: '人工导入' },
+      { value: 2, label: '采集来源' },
+    ]
 
     const router = useRouter();
     const { currentUser } = useCurrentUserDisplay()
     const principal = () => currentUserIdentity(currentUser.value)
+    const principalKey = computed(() => principal())
     const role = () => String(currentUser.value?.role || '').trim().toLowerCase()
     const canUseQuestions = () => Boolean(principal()) && isAdminUser(currentUser.value)
+    const answerCoverage = computed(() => {
+      if (!data.value.length) return 0
+      const answered = data.value.filter(row => parseQuestionAnswerValues(row?.answer).length > 0).length
+      return Math.round(answered * 100 / data.value.length)
+    })
     const questionRequestOwner = { active: true, epoch: 0, listVersion: 0, courseVersion: 0, selectionVersion: 0, reload: null }
     const captureQuestionOwner = () => {
       const epoch = questionRequestOwner.epoch
@@ -362,7 +372,6 @@ export default defineComponent({
       captureQuestionOwner, questionRequestOwner,
     })
     const bulkCourseOwner = shallowRef(null)
-    const jsonImportOwner = shallowRef(null)
     const questionPrompts = new Set()
     const {
       getCourses, fetchData, listFailure, listFailureContext,
@@ -431,7 +440,6 @@ export default defineComponent({
       listFailureContext.value += 1
       retireQuestionEditorDialog()
       bulkCourseOwner.value = null
-      jsonImportOwner.value = null
       questionDialogAfterClose.value = null
       visible.value = false
       bulkCourseVisible.value = false
@@ -442,7 +450,6 @@ export default defineComponent({
       answer.value = []
       fileList.value = []
       questionUploads.clear()
-      if (jsonImportInput.value) jsonImportInput.value.value = ''
       data.value = []
       courses.value = []
       page.value.pageNo = 1
@@ -485,9 +492,12 @@ export default defineComponent({
       questionDetailOpen, questionDetailOwner, questionDetailBody, questionDetailKey,
       questionDetailFields, formatQuestionDetailValue,
       questionRequestOwner, questionEntry, captureQuestionOwner, canUseQuestions, guardQuestionEvent,
-      questionDialogOwner, questionSubmitLoading, bulkCourseOwner, jsonImportOwner, questionUploads,
+      principalKey,
+      questionDialogOwner, questionSubmitLoading, bulkCourseOwner, questionUploads,
       showQuestionPrompt, resetSelectionState, rememberQuestionRows,
       getCourses, fetchData,
+      answerCoverage,
+      sourceOptions,
       listFailure, listFailureContext, isCurrentListFailure,
       questionWriteFailure, questionWriteFailureContext, questionWriteFailureMessage,
       questionWriteCheck, questionWriteUnconfirmed, isCurrentQuestionWriteFailure,
@@ -533,7 +543,6 @@ export default defineComponent({
       handleClearCurrentPage,
       handleSelectAll,
       handleClearSelection,
-      jsonImportInput,
       labelCol: {span: 8},
       wrapperCol: {span: 14},
       navigateToImport,
@@ -548,7 +557,7 @@ export default defineComponent({
     FormOutlined,
     SearchOutlined,
     DownloadOutlined,
-    RequestFailureAlert, TableColumnSettings, OverflowTableText
+    RequestFailureAlert, TableColumnSettings, OverflowTableText, QuestionTransferPanel
   },
   mounted() {
     this.questionRequestOwner.reload = () => {
@@ -577,6 +586,14 @@ export default defineComponent({
     },
     onSearch() {
       if (!this.questionEntry.isCurrent()) return
+      this.page.pageNo = 1
+      this.resetSelectionState()
+      this.fetchData()
+    },
+    resetFilters() {
+      if (!this.questionEntry.isCurrent()) return
+      this.searchValue = {}
+      this.typeValue = null
       this.page.pageNo = 1
       this.resetSelectionState()
       this.fetchData()
@@ -642,78 +659,11 @@ export default defineComponent({
     getSourceNameText(sourceName) {
       return buildQuestionSourceLabel(sourceName)
     },
-    triggerJsonImport() {
-      const ownsPrincipal = this.captureQuestionOwner()
-      if (!ownsPrincipal()) return
-      const input = this.$refs.jsonImportInput
-      if (!input) return
-      const owner = { input, isCurrent: () => ownsPrincipal() && this.jsonImportOwner === owner }
-      this.jsonImportOwner = owner
-      input.value = ''
-      input.click()
-    },
-    async handleJsonImportChange(event) {
-      const input = event?.target
-      const file = input?.files?.[0]
-      const ownsPrincipal = this.captureQuestionOwner()
-      if (!ownsPrincipal() || !file) return
-      // Native changes arrive through the captured render entry. The input owner
-      // additionally covers a late file picker and each subsequent async stage.
-      let owner = this.jsonImportOwner
-      if (!owner) {
-        owner = { input, isCurrent: () => ownsPrincipal() && this.jsonImportOwner === owner }
-        this.jsonImportOwner = owner
-      }
-      if (owner.input !== input || !owner.isCurrent()) return
-      const isCurrent = owner.isCurrent
-      try {
-        const content = await file.text()
-        if (!isCurrent()) return
-        const items = parseQuestionImportText(content)
-        if (!items.length) {
-          message.warning('JSON 文件中没有可导入的题目')
-          return
-        }
-        const dryRunResponse = await importQuestions(buildQuestionImportDryRunPayload(items))
-        if (!isCurrent()) return
-        if (dryRunResponse?.status !== 200) {
-          message.error(dryRunResponse?.message || '导入预检失败')
-          return
-        }
-        const dryRunResult = dryRunResponse?.data || {}
-        let overwrite = false
-        if (Array.isArray(dryRunResult.existingIds) && dryRunResult.existingIds.length) {
-          const confirmResult = await this.showQuestionPrompt({
-            icon: 'warning', title: '检测到重复题目', text: buildQuestionImportSummary(dryRunResult),
-            showDenyButton: true, showCancelButton: true, confirmButtonText: '是，直接覆盖',
-            denyButtonText: '否，只导入不存在的数据', cancelButtonText: '取消',
-            heightAuto: false, scrollbarPadding: false,
-          }, isCurrent)
-          if (!isCurrent() || !confirmResult || confirmResult.isDismissed) return
-          overwrite = Boolean(confirmResult.isConfirmed)
-        }
-        if (!isCurrent()) return
-        const executeResponse = await importQuestions(buildQuestionImportExecutePayload(items, overwrite))
-        if (!isCurrent()) return
-        if (executeResponse?.status !== 200) {
-          message.error(executeResponse?.message || '导入失败')
-          return
-        }
-        const executeResult = executeResponse?.data || {}
-        const summary = `导入完成：新增 ${Number(executeResult.created || 0)} 条，覆盖 ${Number(executeResult.updated || 0)} 条，跳过 ${Number(executeResult.skipped || 0)} 条。`
-        await this.showQuestionPrompt({
-          icon: 'success', title: 'JSON 导入成功', text: summary, confirmButtonText: '我知道了',
-          heightAuto: false, scrollbarPadding: false,
-        }, isCurrent)
-        if (isCurrent()) await this.fetchData()
-      } catch (error) {
-        if (isCurrent()) message.error(error?.message || 'JSON 导入失败')
-      } finally {
-        if (isCurrent()) {
-          if (input) input.value = ''
-          this.jsonImportOwner = null
-        }
-      }
+    async onTransferImportCompleted() {
+      const isCurrent = this.captureQuestionOwner()
+      if (!isCurrent()) return
+      this.resetSelectionState()
+      await Promise.all([this.fetchData(), this.getCourses()])
     },
     openBulkCourseModal(event) {
       const ownsPrincipal = this.captureQuestionOwner()
@@ -817,31 +767,6 @@ export default defineComponent({
         if (isCurrent()) message.error('批量更新课程名称失败')
       }
     },
-    handleExportSelected() {
-      const isCurrent = this.captureQuestionOwner()
-      if (!isCurrent()) return
-      const rows = this.selectedQuestions
-      if (!rows.length) {
-        message.warning('请先选择需要导出的题目')
-        return
-      }
-      const payload = buildQuestionExportPayload(rows)
-      const blob = new Blob([payload.content], { type: 'application/json;charset=utf-8' })
-      if (!isCurrent()) return
-      const objectUrl = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      try {
-        link.href = objectUrl
-        link.download = payload.filename
-        document.body.appendChild(link)
-        if (!isCurrent()) return
-        link.click()
-        if (isCurrent()) message.success(`已导出 ${rows.length} 条题目`)
-      } finally {
-        link.remove()
-        window.URL.revokeObjectURL(objectUrl)
-      }
-    },
     async handleDeleteSelected() {
       const isCurrent = this.captureQuestionOwner()
       if (!isCurrent()) return
@@ -882,15 +807,15 @@ export default defineComponent({
   padding: 16px;
 }
 
-.filter-form :deep(.ant-input),
-.filter-form :deep(.ant-select) {
-  width: 220px;
-  max-width: 100%;
-}
+.tiku-page-actions { justify-content: flex-end; }
+.filter-heading { margin-bottom: 16px; }
+.filter-heading h2 { margin: 0; font-size: 16px; color: var(--console-text); }
 
-.filter-form :deep(.ant-select:first-child) {
-  width: 180px;
-}
+.filter-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.filter-form :deep(.ant-form-item) { min-width: 0; margin: 0; }
+.filter-form :deep(.ant-form-item-control) { min-width: 0; }
+.filter-form :deep(.ant-input),
+.filter-form :deep(.ant-select) { width: 100%; max-width: 100%; }
 
 .tiku-layout,
 .tiku-layout :deep(.ant-layout-content) {
@@ -899,9 +824,9 @@ export default defineComponent({
   background: transparent;
 }
 
-.selection-alert {
-  margin: 0 0 16px;
-}
+.question-bulk-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding: 12px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-surface-secondary, var(--console-surface)); }
+.selection-alert { flex: 1 1 440px; margin: 0; padding: 0; border: 0; background: transparent; }
+.bulk-action-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
 .selection-alert-content {
   display: flex;
@@ -940,6 +865,10 @@ export default defineComponent({
 .question-detail-raw pre { margin-top: 8px; }
 
 @media (max-width: 640px) {
+  .filter-form { grid-template-columns: minmax(0, 1fr); }
+  .selection-alert { flex-basis: 100%; }
+  .selection-alert-content { gap: 4px; }
+  .bulk-action-buttons { width: 100%; }
   .filter-form,
   .filter-form :deep(.ant-form-item),
   .filter-form :deep(.ant-input),

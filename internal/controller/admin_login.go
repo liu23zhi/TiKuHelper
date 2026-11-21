@@ -112,7 +112,7 @@ func AdminLogin(c *gin.Context) {
 		gate.failIPOnly("用户名或密码错误")
 		return
 	}
-	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, payload.Password)
+	passwordMatches, needsUpgrade := util.VerifyAccountLoginPassword(user.ID, user.Role, user.Password, payload.Password)
 	if !passwordMatches {
 		gate.failIPOnly("用户名或密码错误")
 		return

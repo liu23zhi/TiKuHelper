@@ -23,6 +23,8 @@ const apiPath = resolve(testDir, '../api/ServiceStatusApi.js')
 const routerSource = readFileSync(routerPath, 'utf8')
 const menuSource = readFileSync(menuPath, 'utf8')
 const pageSource = readFileSync(pagePath, 'utf8')
+const historyPath = resolve(testDir, '../components/SearchStatusHistory.vue')
+const historySource = readFileSync(historyPath, 'utf8')
 const apiSource = readFileSync(apiPath, 'utf8')
 
 /** 统计出现次数（不用 split，避免把串吃掉）。 */
@@ -142,29 +144,16 @@ test('页面不请求管理员端点（普通用户会 403）', () => {
   assert.match(apiSource, /url: '\/api\/service-status\/series'/)
 })
 
-test('页面空数据分支按 dataState 判定，不用 successRate 数值反推', () => {
-  // ★ 这条是防「全失败被显示成无数据」的结构防线：
-  // 模板里出现 successRate === 0 / !successRate 之类数值判定即视为回归。
-  assert.match(pageCode, /v-if="view\.dataState === 'empty'"/, '空数据提示必须由 dataState==="empty" 驱动')
-
-  // 禁止用 successRate 数值直接判空/判全失败（注释里作为反例提到是允许的，已剥）。
-  assert.doesNotMatch(pageCode, /successRate\s*===\s*0/, '不得用 successRate===0 判空数据（全失败也是 0）')
-  assert.doesNotMatch(pageCode, /successRate\s*!==\s*0/, '不得用 successRate!==0 反推可用性')
-  assert.doesNotMatch(pageCode, /!successRate\b/, '不得用 !successRate 判空数据')
-})
-
-test('页面渲染必备信息：状态、成功率、延迟、总数、失败数、数据起点、采样点/容量、窗口口径', () => {
-  for (const metric of ['success-rate', 'avg-latency', 'total-requests', 'failed-requests']) {
+test('普通页面只展示搜题接口分桶，不渲染全站指标或管理员统计', () => {
+  for (const metric of ['search-success-rate', 'search-avg-latency', 'search-total-requests']) {
     assert.ok(pageSource.includes(`data-metric="${metric}"`), `页面缺少 ${metric} 展示`)
   }
-  assert.ok(pageSource.includes('data-status-label'), '页面缺少状态点文案')
-  // 数据起点 / 采样点 / 容量 / 窗口口径。
-  assert.match(pageSource, /已采样点数/)
-  assert.match(pageSource, /数据起点/)
-  assert.match(pageSource, /统计窗口/)
-  assert.match(pageSource, /windowText/)
-  assert.match(pageSource, /retainedText/)
-  assert.match(pageSource, /capacityText/)
+  assert.ok(pageSource.includes('data-status-label'), '页面缺少搜题状态文案')
+  assert.match(pageCode, /const endpointView = computed\(\(\) => view\.value\.endpoints\.search\)/)
+  assert.doesNotMatch(pageCode, /data-metric="(?:success-rate|avg-latency|total-requests|failed-requests)"/)
+  assert.doesNotMatch(pageCode, /最近每分钟趋势|接口分桶|失败请求/)
+  assert.match(pageCode, /getServiceStatusSeries/)
+  assert.match(historySource, /data-search-history-band/)
 })
 
 test('页面处理 401/403 分流（走 describeServiceStatusFailure，不在页面里硬编码）', () => {
@@ -180,32 +169,14 @@ test('页面在挂载时自动读一次，并有手动刷新按钮', () => {
   assert.match(pageSource, /data-action="refresh-service-status"/)
 })
 
-test('页面渲染逐分钟曲线，且曲线来自 series 端点而非 admin 端点', () => {
-  // 曲线区块必须真的挂在模板里（色带 + 分钟明细表）。
-  assert.ok(pageSource.includes('data-series-strip'), '页面缺少色带元素')
-  assert.ok(pageSource.includes('data-series-table'), '页面缺少分钟明细表')
-  assert.ok(pageSource.includes('data-series-empty'), '页面缺少「刚重启、还没采样」空态')
-
-  // 曲线数据只能来自 loadServiceStatusSeries（series 端点）。
-  assert.match(pageSource, /loadServiceStatusSeries/)
-  assert.match(pageSource, /getServiceStatusSeries/)
-  // 仍然不得出现 admin 端点（曲线不能用 admin 那条换）。
-  assert.ok(!pageCode.includes('admin'), '页面代码不得包含 admin 字样（会诱导后来者接 admin 端点）')
-  // 不得把 points 直接当 summary 的字段用（summary 端点不返回 points）。
-  assert.doesNotMatch(pageCode, /view\.points/, 'summary 视图没有 points —— 曲线必须走 seriesView')
-})
-
-test('曲线是增强区块：series 失败时整块不渲染，摘要照常显示（不整页崩）', () => {
-  // 曲线面板必须受 seriesView 守卫 —— seriesView 为 null（端点失败）时不渲染。
-  assert.match(pageCode, /v-if="seriesView"/, '曲线面板必须由 seriesView 守卫，否则端点失败会渲染半截')
-  // series 失败只允许影响 seriesView，不得把 errorMessage 也置上（那会让整页变成错误态）。
+test('页面读取 summary 与搜题专用序列，不请求管理员逐分钟数据', () => {
   const loadRegion = pageCode.slice(pageCode.indexOf('const load = async'), pageCode.indexOf('const retire'))
-  assert.ok(loadRegion.includes('loadServiceStatusSeries'), 'load 里必须请求 series')
-  assert.match(loadRegion, /series\.ok/, 'series 失败必须被判定，不能假定总是成功')
-  // 失败分支只写 seriesView（或什么都不写），不得写 errorMessage。
-  assert.doesNotMatch(loadRegion, /series[\s\S]{0,120}errorMessage\.value\s*=/, 'series 失败不得污染整页错误态')
+  assert.ok(loadRegion.includes('loadServiceStatusSummary'), '页面必须读取公开 summary')
+  assert.ok(loadRegion.includes('getServiceStatusSeries'), '页面必须读取搜题专用序列')
+  assert.ok(loadRegion.includes('loadSearchStatusHistory'), '序列请求必须走独立容错入口')
+  assert.doesNotMatch(loadRegion, /admin\/service-status/, '普通页面不得请求管理员序列')
+  assert.ok(!pageCode.includes('admin'), '页面不得引用管理员端点')
 })
-
 test('路由只新增了 service-status 那一条，未重排既有路由', () => {
   // 结构防线：service-status 必须在 ticket-admin 之后（追加，不是插到中间）。
   const ticketAdminAt = routerSource.indexOf("name: 'ticket-admin'")
@@ -225,16 +196,15 @@ test('路由只新增了 service-status 那一条，未重排既有路由', () =
  * 结构」——例如置灰必须由 endpointView.greyed 驱动，而不是页面自己算。
  */
 
-test('页面渲染接口分桶区块，且置灰由 endpointView.greyed 驱动', () => {
-  // 区块与卡片必须在模板里（缺一个就等于功能没接上）。
-  assert.ok(pageSource.includes('data-endpoint-kind'), '页面缺少分桶卡片（data-endpoint-kind）')
+test('页面渲染搜题状态，且无采样状态由 endpointView.greyed 驱动', () => {
+  assert.ok(pageSource.includes('title="搜题接口"'), '状态卡片必须明确标注搜题接口')
+  assert.ok(pageSource.includes('data-endpoint-kind'), '页面缺少搜题接口标记')
   assert.ok(pageSource.includes('data-endpoint-rate'), '页面缺少分桶成功率元素')
   assert.ok(pageSource.includes('data-endpoint-hint'), '页面缺少分桶文案元素')
   assert.ok(pageSource.includes('data-endpoint-greyed'), '页面缺少置灰标记（测试要靠它断言）')
 
-  // ★ 核心：置灰必须绑 endpointView.greyed。
-  assert.match(pageCode, /:class="\{ 'endpoint-card--greyed': endpointView\.greyed \}"/,
-    '置灰必须由 endpointView.greyed 驱动')
+  assert.match(pageCode, /'search-status--muted': endpointView\.greyed/,
+    '无采样样式必须由 endpointView.greyed 驱动')
   assert.match(pageCode, /endpointView\.greyed \? 'true' : 'false'/,
     'data-endpoint-greyed 必须反映真实置灰状态')
 })
@@ -262,7 +232,7 @@ test('分桶视图来自 buildServiceStatusView（唯一判定点），页面不
   assert.match(pageCode, /const endpointView = computed\(\(\) => view\.value\.endpoints\.search\)/,
     'endpointView 必须由 view.endpoints.search 派生')
   // endpointView 必须暴露给模板（否则模板里读不到，渲染成空）。
-  assert.match(pageCode, /[ ]{2,}endpointView,/, 'setup() 的返回值里必须有 endpointView')
+  assert.match(pageCode, /return \{[^}]*endpointView[^}]*\}/, 'setup() 的返回值里必须有 endpointView')
 })
 
 test('置灰文案是「暂无搜题接口采样数据（服务重启后从零开始）」', () => {

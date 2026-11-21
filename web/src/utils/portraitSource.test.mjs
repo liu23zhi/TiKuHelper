@@ -20,8 +20,10 @@ import {
   PORTRAIT_EMPTY_HINT,
   PORTRAIT_SCOPE_USER,
   buildPortraitCharts,
-  buildPortraitSeries,
+  buildOverallPortraitTiles,
   buildPortraitTiles,
+  buildPortraitBreakdownTables,
+  buildPortraitSeries,
   buildPortraitUserOption,
   isPortraitValueMissing,
   normalizePortraitUserId,
@@ -103,6 +105,48 @@ test('画像指标卡：0 值不被当成缺失', () => {
     assert.equal(byKey[key].missing, false, `${key}=0 必须渲染成 0，不是「暂无数据」`);
     assert.equal(byKey[key].value, 0);
   }
+});
+
+test('画像图表和明细都按已知注册来源转换中文，保留后端提供的新来源名称', () => {
+  const portrait = { registerSources: [
+    { source: 'system', label: 'system', count: 1 },
+    { source: 'wechat', count: 2 },
+    { source: 'new_provider', label: '新增渠道', count: 3 },
+    { source: 'unmapped', count: 4 },
+  ] }
+  const expected = ['系统初始化创建', '微信注册', '新增渠道', 'unmapped']
+  assert.deepEqual(buildPortraitCharts(portrait).registerSources.labels, expected)
+  assert.deepEqual(buildPortraitBreakdownTables(portrait).find(table => table.key === 'registerSources').rows.map(row => row.label), expected)
+});
+
+test('全站画像：指标文案必须与 overview 的账单聚合口径一致', () => {
+  const tiles = buildOverallPortraitTiles({
+    totals: { userCount: 12, recordCount: 8, amount: 24.5, consumptionCount: 6, ticketCount: 2, activeUserCount: 4 },
+  });
+  const byKey = Object.fromEntries(tiles.map(tile => [tile.key, tile]));
+  assert.equal(byKey.recordCount.title, '账单记录数');
+  assert.equal(byKey.amount.title, '账单金额合计（全部类型）');
+  assert.equal(byKey.userCount.value, 12);
+  assert.equal(byKey.activeUserCount.value, 4);
+});
+
+test('全站画像分布表：从 overview 的真实数组字段生成，不丢失金额与注册维度', () => {
+  const tables = buildPortraitBreakdownTables({
+    regions: [{ label: '中国 北京', count: 7, amount: 12.5, ipCount: 2 }],
+    billingTypes: [{ label: '题目消费', direction: 'expense', count: 6, amount: 10 }],
+    tickets: [{ label: '待处理', count: 2 }],
+    registerSources: [{ label: '公开注册', count: 9 }],
+    registerRegions: [{ label: '中国 上海', count: 3, ipCount: 1 }],
+  });
+  const byKey = Object.fromEntries(tables.map(table => [table.key, table]));
+  assert.deepEqual(Object.keys(byKey), ['billingTypes', 'regions', 'tickets', 'registerSources', 'registerRegions']);
+  assert.deepEqual(byKey.regions.rows[0], { label: '中国 北京', count: 7, amount: 12.5, ipCount: 2 });
+  assert.deepEqual(byKey.billingTypes.rows[0], { label: '题目消费', direction: '支出', count: 6, amount: 10 });
+  assert.deepEqual(byKey.tickets.rows[0], { label: '待处理', count: 2 });
+  assert.deepEqual(byKey.registerSources.rows[0], { label: '公开注册', count: 9 });
+  assert.deepEqual(byKey.registerRegions.rows[0], { label: '中国 上海', count: 3, ipCount: 1 });
+  assert.equal(byKey.regions.empty, false);
+  assert.equal(buildPortraitBreakdownTables({})[0].empty, true);
 });
 
 test('画像序列：只有一条 0 值数据时仍要画图（total=0 不等于 empty）', () => {
@@ -256,24 +300,26 @@ test('画像视角文案：单用户视角要能看出是谁', () => {
 // 组 4：结构要求 —— 两个入口，一个页面
 // ---------------------------------------------------------------------------
 
-test('画像页必须同时支持两个入口（默认整体画像 + 可切单用户）', async () => {
+test('全站页无用户选择，嵌入式视图以显式目标复用同一份画像', async () => {
   const source = await readFile(pageSourcePath, 'utf8');
-
-  // ① 默认视角必须是整体画像（用户决策：「主要」是整体的）。
-  assert.match(source, /PORTRAIT_SCOPE_OVERALL/);
   assert.match(source, /getPortraitOverview/);
-  // ② 用户搜索框存在，选中后切到该用户。
-  assert.match(source, /getUserPortrait/);
-  assert.match(source, /a-select|a-auto-complete/);
-  // ③ 一个页面两种视角：不得出现第二个页面组件。
+  assert.doesNotMatch(source, /a-select|a-auto-complete|useRoute|useRouter/);
+  assert.match(source, /props:[\s\S]*userId/);
+  assert.match(source, /target > 0 \? await getUserPortrait\(target\) : await getPortraitOverview\(\)/);
+  assert.doesNotMatch(source, /查看单个用户画像|输入用户名\s*\/\s*昵称\s*\/\s*ID 搜索|清空选择即回到全站整体画像/);
+  assert.match(source, /整体用户画像（全站）/);
+  assert.match(source, /buildOverallPortraitTiles/);
+  assert.match(source, /buildPortraitBreakdownTables/);
+  assert.match(source, /response\.data\.scope === \(target > 0 \? 'user' : 'overall'\)/);
   assert.doesNotMatch(source, /UserPortraitDetail/);
 });
 
-test('画像页承载单用户视角时接受路由参数但默认整体', async () => {
+test('全站画像异步阶段与成功的空数据分开呈现', async () => {
   const source = await readFile(pageSourcePath, 'utf8');
-  // 单用户画像从用户管理弹窗跳过来时带 userId 查询参数；缺省即整体。
-  assert.match(source, /normalizePortraitUserId/);
-  assert.match(source, /\$route|useRoute/);
+  assert.match(source, /loading && !portrait/);
+  assert.match(source, /v-else-if="canViewPortrait && !portrait && !failure"/);
+  assert.match(source, /获取整体用户画像失败/);
+  assert.match(source, /生成时间/);
 });
 
 test('画像接口客户端只封装两条只读 GET，全部 errorFeedback: local', async () => {
@@ -302,7 +348,7 @@ test('画像接口客户端只封装两条只读 GET，全部 errorFeedback: loc
 
 const userListPath = path.join(testDir, '..', 'pages', 'UserList', 'index.vue');
 
-test('用户管理：「查看」按钮仍是绑定历史弹窗，画像按钮是并列新增', async () => {
+test('用户管理：「查看」按钮是绑定历史，画像按钮打开独立画像弹窗', async () => {
   const source = await readFile(userListPath, 'utf8');
 
   // ① 既有的「查看」按钮必须仍然调 openBindingsModal —— 那是绑定历史
@@ -329,18 +375,16 @@ test('用户管理：「查看」按钮仍是绑定历史弹窗，画像按钮�
   assert.match(operationBlock[0], /deleteConfirmation\(record\.id\)/, '删除按钮不得被移除');
 });
 
-test('用户管理：画像入口跳转到同一页面并带 userId（不另开弹窗）', async () => {
+test('用户管理：画像入口直接打开用户画像弹窗，不再导航到全站画像页', async () => {
   const source = await readFile(userListPath, 'utf8');
 
   const method = source.match(/openPortrait\(record\)\s*\{([\s\S]*?)\n {4}\},/);
   assert.notEqual(method, null, 'openPortrait 方法必须存在');
-  // 必须跳转到 user-portrait 路由并带 userId 查询参数（一个页面的两种视角）。
-  assert.match(method[1], /name:\s*'user-portrait'/, '必须跳到 user-portrait 路由');
-  assert.match(method[1], /userId:\s*String\(id\)/, '必须带 userId 查询参数以切到该用户视角');
-  // 不得在这里另开弹窗（否则同一份画像会渲染两份）。
-  assert.doesNotMatch(method[1], /Visible\.value\s*=\s*true/, '画像不得在本页另开弹窗');
-  // 非法 id 要先拦住，不要跳到 /NaN。
+  assert.match(method[1], /userPortraitVisible\.value\s*=\s*true/);
+  assert.match(source, /<UserPortrait[^>]*:user-id="Number\(userPortraitTarget\.id\)"[^>]*embedded/);
+  assert.doesNotMatch(method[1], /\$router|useRouter|userId\s*:/);
   assert.match(method[1], /Number\.isSafeInteger\(id\)/, '必须校验 id');
+  assert.match(source, /getUserPortrait/);
 });
 
 test('用户管理：绑定历史弹窗的加载与关闭逻辑未被触碰', async () => {

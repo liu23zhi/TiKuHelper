@@ -106,6 +106,8 @@ type loggerState struct {
 	// 总量上限保证磁盘不被撑爆，年龄上限保证「三个月前的日志不再占位」。
 	// 两者都必须扫同样两份白名单（见 pruneLogFilesByAge）。
 	maxLogAgeDays int
+	// lastPruneAt 是上一次真正执行 pruneLogFiles 的时刻（节流用，见 pruneThrottled）。
+	lastPruneAt time.Time
 }
 
 type outputWriter struct {
@@ -328,12 +330,57 @@ func (w *outputWriter) Write(p []byte) (int, error) {
 				_, _ = fmt.Fprintf(os.Stderr, "write %s log: %v\n", file.name, err)
 			}
 		}
-		if err := pruneLogFiles(s.logDir, s.maxTotalBytes); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", s.logDir, err)
-		}
+		s.pruneThrottled()
 	}
 	// Logging must not turn a successfully handled request into a business failure.
 	return len(p), nil
+}
+
+// pruneLogFilesThrottle 是两条清理策略的**最小执行间隔**。
+//
+// # 为什么必须节流（2026-11-17 实测的真实故障）
+//
+// 原实现是「每写一条日志就调一次 pruneLogFiles」。而 pruneLogFiles 的代价是
+// **os.ReadDir 两次**（logs/ 与 logs/archive/）+ 一次全量 sort + 逐项 Stat，
+// 与日志目录里归档文件的数量成正比。
+//
+// 实测：本机 logs/archive/ 有 351 个文件（31 MB）。此时单次 pruneLogFiles
+// 在 Windows 上约 200ms —— 于是**每一条日志都额外付出 200ms**。
+// 启动阶段串行迁移会打约 700 条日志，总代价 150 秒以上：
+//
+//	09:19:48 启动 → 09:22:20 结束 = 151.6 秒
+//	666 条日志，相邻行间隔中位数 214ms
+//	而日志里每条 SQL 自身的 duration 都在 20–900 微秒之间
+//
+// 也就是说「启动迁移很慢」的真相不是迁移慢，是**日志写入被日志清理拖慢**。
+// SQL 的 duration= 字段反而是干净的对照：它证明查询本身没退化。
+//
+// # 为什么是 5 秒
+//
+// 清理的目的只是「别让磁盘被撑爆」，它不是精确的容量控制：
+//   - 5 秒内的日志增量对 256 MB 量级的 maxTotalBytes 完全可以忽略；
+//   - 而 5 秒已足够把「一次请求打几十条日志」压缩成一次扫描。
+//
+// 取 1 秒会更频繁（收益有限），取 30 秒会让单次超限后多写几十 MB 才收敛。
+const pruneLogFilesThrottle = 5 * time.Second
+
+// pruneThrottled 按 pruneLogFilesThrottle 节流地执行总量清理。
+//
+// 调用方必须已持有 s.mu（与写入序列化，见 outputWriter.Write）。
+// 时间戳在**加锁区内**读写，因此不需要额外的原子操作。
+//
+// ⚠️ 刻意**不**把 lastPruneAt 提前到调用前再判定：如果 pruneLogFiles 返回错误，
+// 下次仍要等到下一个窗口才重试 —— 但那种情况下磁盘也不会在 5 秒内爆掉，
+// 而每写一条日志都重试同一个失败的目录扫描会把故障放大成雪崩。
+func (s *loggerState) pruneThrottled() {
+	now := time.Now()
+	if !s.lastPruneAt.IsZero() && now.Sub(s.lastPruneAt) < pruneLogFilesThrottle {
+		return
+	}
+	s.lastPruneAt = now
+	if err := pruneLogFiles(s.logDir, s.maxTotalBytes); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", s.logDir, err)
+	}
 }
 
 func classifyLevel(text string, fallback Level) Level {

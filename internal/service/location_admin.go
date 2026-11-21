@@ -538,7 +538,7 @@ func ManualLookupLocationCacheWithDB(db *gorm.DB, kind string, key string, optio
 	return RefreshLocationCacheWithDB(db, kind, key, options)
 }
 
-// ResolveOwnLocationIPsWithDB 只接受当前账号字段、账单或审计中真实关联的 IP。
+// ResolveOwnLocationIPsWithDB 只接受当前账号字段、账单、审计或设备中真实关联的 IP。
 // 即使操作者是管理员，个人接口也不放宽成任意付费批量查询。
 func ResolveOwnLocationIPsWithDB(db *gorm.DB, operator entity.User, requested []string) ([]string, error) {
 	if operator.ID <= 0 {
@@ -574,6 +574,24 @@ func ResolveOwnLocationIPsWithDB(db *gorm.DB, operator entity.User, requested []
 		}
 		for _, ip := range stored {
 			owned[locationCacheLookupKey(ip)] = true
+		}
+	}
+	// 设备页展示首次与最近来源，两列都必须属于当前账号。兼容尚未补齐
+	// first_ip/last_ip 的旧库，不能因归属地查询让整张设备列表失效。
+	if db.Migrator().HasTable(&entity.AccountDeviceBinding{}) {
+		for _, column := range []string{"first_ip", "last_ip"} {
+			if !db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, column) {
+				continue
+			}
+			var stored []string
+			if err := db.Model(&entity.AccountDeviceBinding{}).
+				Where("user_id = ? AND LOWER(TRIM("+column+")) IN ?", operator.ID, keys).
+				Distinct().Pluck(column, &stored).Error; err != nil {
+				return nil, err
+			}
+			for _, ip := range stored {
+				owned[locationCacheLookupKey(ip)] = true
+			}
 		}
 	}
 	for _, key := range keys {

@@ -725,7 +725,7 @@ func TestAISearchConfigPersistsWebReadBudgetAndPrice(t *testing.T) {
 	}
 }
 
-func TestAISearchConfigPersistsTikuSearchPrice(t *testing.T) {
+func TestAISearchConfigReadsUnifiedLocalTikuSearchPrice(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
@@ -735,6 +735,9 @@ func TestAISearchConfigPersistsTikuSearchPrice(t *testing.T) {
 		t.Fatalf("default config=%+v err=%v", initial, err)
 	}
 	price := 0.125
+	if _, err := UpdateSearchAccountConfigWithDB(db, "local", UpdateSearchAccountConfigInput{FlatPrice: price}); err != nil {
+		t.Fatal(err)
+	}
 	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{TikuSearchPricePerCall: &price})
 	if err != nil || updated.TikuSearchPricePerCall != 0.125 {
 		t.Fatalf("updated config=%+v err=%v", updated, err)

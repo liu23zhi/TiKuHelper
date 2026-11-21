@@ -8,6 +8,7 @@ export function limitUsernameInput(value) {
 }
 
 export function resolveAdapterHomePath(user) {
+  if (String(user?.status || '').trim().toLowerCase() === 'banned') return '/tickets'
   return String(user?.role || '').trim().toLowerCase() === 'admin'
     ? '/component'
     : '/user-usage'
@@ -58,21 +59,18 @@ export function buildPortalMenuKeys(user) {
       ]
 }
 
-export function buildRegisterSourceLabel(value) {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'public') {
-    return '公开注册'
-  }
-  if (normalized === 'admin') {
-    return '后台创建'
-  }
-  if (normalized === 'system') {
-    return '系统初始化创建'
-  }
-  if (normalized === 'legacy') {
-    return '历史数据'
-  }
-  return String(value || '-').trim() || '-'
+const registerSourceLabels = new Map([
+  ['public', '公开注册'],
+  ['admin', '后台创建'],
+  ['system', '系统初始化创建'],
+  ['legacy', '历史数据'],
+  ['import', '导入创建'],
+  ['wechat', '微信注册'],
+])
+
+export function buildRegisterSourceLabel(value, fallback) {
+  const source = String(value ?? '').trim()
+  return registerSourceLabels.get(source.toLowerCase()) || String(fallback ?? source).trim() || '-'
 }
 
 export const ADMIN_MANAGED_PASSWORD_MAX_BYTES = 72
@@ -238,6 +236,9 @@ export function buildBillingRecordTypeText(record) {
   }
   if (type === 'review_rebate') {
     return '评价返现'
+  }
+  if (type === 'review_rebate_clawback') {
+    return '评价返现追缴'
   }
   if (type === 'registration_bonus_clawback') {
     return '新用户赠送追缴'

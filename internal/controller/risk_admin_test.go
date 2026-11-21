@@ -39,6 +39,7 @@ func newRiskControllerTestDB(t *testing.T) *gorm.DB {
 		&entity.SystemSetting{},
 		&entity.TicketNotification{},
 		&entity.RiskRule{},
+		&entity.RiskRuleAudit{},
 		&entity.RiskWarning{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {

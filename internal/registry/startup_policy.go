@@ -11,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -29,7 +30,7 @@ func ResolveApplicationMode(configured string) (string, error) {
 }
 
 type adminBootstrapPlan struct {
-	exists             bool
+	exists, initial    bool
 	original, password string
 	// defaultCredential 表示「库里仍是已知默认密码 123456」。
 	//
@@ -101,12 +102,18 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 		return plan, nil
 	}
 	password := strings.TrimSpace(environment)
-	if mode == "production" {
+
+	plan.initial = true
+	if password == "" {
+		password = util.FactoryAdminPassword
+	}
+	if util.IsPublicAdminSetupPassword(password) {
+		logger.SysLog("内置管理员仍使用本地初始化凭据；请在部署主机运行 tiku-adapter --init-admin-password，再通过网页登录。")
+	} else if mode == "production" {
 		if err := validateBootstrapPassword(password); err != nil {
-			return plan, err
+			logger.SysLog("[WARN] 初始管理员密码强度不足（" + err.Error() +
+				"），已照常启动；请登录后立即在「个人资料」里修改密码。")
 		}
-	} else if password == "" {
-		password = "123456"
 	}
 	hashed, err := util.HashPassword(password)
 	if err != nil {
@@ -117,10 +124,23 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 }
 
 func applyAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
-	if plan.exists {
-		if plan.password == "" {
-			return nil
+	if database.DryRun {
+		return nil
+	}
+	if plan.initial {
+		return applyInitialAdminCredential(database, plan)
+	}
+	if plan.exists && plan.password == "" {
+		if plan.defaultCredential {
+			logger.SysLog("内置管理员尚待本地设置；请运行 tiku-adapter --init-admin-password。")
 		}
+		return nil
+	}
+	return writeAdminBootstrap(database, plan)
+}
+
+func writeAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
+	if plan.exists {
 		// Credential versions are byte identities, not text values under the
 		// database's potentially case-insensitive collation.
 		var predicate string
@@ -143,7 +163,11 @@ func applyAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
 		}
 		return nil
 	}
-	return database.Create(&entity.User{ID: 1, Username: "admin", Password: plan.password, Nickname: "管理员", Role: "admin", Status: "enabled", Balance: 0, RegisterSource: "system"}).Error
+	return database.Create(initialAdministrator(plan.password)).Error
+}
+
+func initialAdministrator(password string) *entity.User {
+	return &entity.User{ID: 1, Username: "admin", Password: password, Nickname: "管理员", Role: "admin", Status: "enabled", Balance: 0, RegisterSource: "system"}
 }
 
 // SQLite file URI paths are decoded exactly once. url.Parse already decodes
@@ -182,10 +206,7 @@ func preflightAdminBootstrap(config configs.Config, mode, environment string) (a
 	if db != nil {
 		return resolveAdminBootstrap(db, mode, environment)
 	}
-	dsn := config.Mysql
-	if dsn == "" {
-		dsn = os.Getenv("SQL_DSN")
-	}
+	dsn, _ := resolveDatabaseDSN(config.Mysql, os.Getenv("SQL_DSN"))
 	var conn gorm.Dialector
 	if dsn != "" {
 		conn = mysql.Open(dsn)

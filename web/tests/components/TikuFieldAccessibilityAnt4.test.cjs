@@ -8,6 +8,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), path = re
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter); Module._initPaths()
 require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/question-transfer-read.cjs')(web)
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 for (const key of ['DOMParser', 'HTMLInputElement', 'HTMLButtonElement', 'HTMLDivElement', 'HTMLTextAreaElement', 'CustomEvent']) globalThis[key] = window[key]
@@ -40,9 +41,9 @@ globalThis.WebSocket = window.WebSocket = class { constructor() { trap('WEBSOCKE
 for (const name of ['node:http', 'node:https']) { const transport = require(name); transport.request = () => trap(name); transport.get = () => trap(name) }
 window.addEventListener('error', event => errors.push(String(event.error?.stack || event.message))); window.addEventListener('unhandledrejection', event => errors.push(String(event.reason?.stack || event.reason)))
 const candidates = [
-  { key: 'filter-type', label: '类型', scope: 'filter', role: 'combobox' },
-  { key: 'filter-question', label: '问题', scope: 'filter' },
-  { key: 'filter-empty', label: '无答案', scope: 'filter', checkbox: true },
+  { key: 'filter-type', label: '题型', scope: 'filter', role: 'combobox' },
+  { key: 'filter-question', label: '题干', scope: 'filter' },
+  { key: 'filter-empty', label: '答案状态：仅看无答案', scope: 'filter', checkbox: true },
   { key: 'bulk-course', label: '课程名称', scope: 'bulk', role: 'combobox' },
   { key: 'editor-type', label: '类型', scope: 'editor', role: 'combobox' },
   { key: 'editor-question', label: '问题', scope: 'editor', textarea: true },
@@ -103,7 +104,7 @@ afterEach(async () => {
 test('measure all six direct candidates without equating missing id or placeholder fallback with empty native name', async () => {
   const [page] = await open(), found = []
   for (const candidate of candidates) found.push(sourceObservation(candidate, await field(page, candidate)))
-  assert.equal(found.length, 6); const checkbox = found.find(x => x.key === 'filter-empty'); assert.ok(checkbox.nativeLabels.every(n => n.text === '' || n.text === '无答案')); assert.equal(page.vm.formData.type, 4); assert.deepEqual([...page.vm.selectedRowKeys], [101]); assert.equal(writes.length, 0)
+  assert.equal(found.length, 6); const checkbox = found.find(x => x.key === 'filter-empty'); assert.ok(checkbox.nativeLabels.every(n => n.text === '' || n.text === '答案状态：仅看无答案')); assert.equal(page.vm.formData.type, 4); assert.deepEqual([...page.vm.selectedRowKeys], [101]); assert.equal(writes.length, 0)
 })
 for (const candidate of candidates) test('visible Tiku ' + candidate.key + ' label associates with the exact actual Antd native control', async () => { const [page] = await open(); await associated(page, candidate) })
 for (const candidate of candidates) test('actual Antd Tiku ' + candidate.key + ' label activation focuses owned control without writes or unintended reads', async () => {

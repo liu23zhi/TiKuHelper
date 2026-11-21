@@ -144,7 +144,10 @@ func devicePoolDeviceIDOf(c *gin.Context) string {
 // registerAccountDeviceBindingNow 同步执行一次登记（goroutine 与测试共用）。
 //
 // 返回 error 只是为了能记日志/让测试观察；**业务调用方一律忽略**（见 recordAccountDeviceBinding）。
-func registerAccountDeviceBindingNow(userID int32, deviceID string) error {
+//
+// clientIP 是本次请求的来源 IP；空串表示没采到，此时 service 层**不覆盖**库里
+// 已有的 last_ip（见 DeviceBindingRegisterOptions.ClientIP 的说明）。
+func registerAccountDeviceBindingNow(userID int32, deviceID string, clientIP string) error {
 	if userID <= 0 || strings.TrimSpace(deviceID) == "" {
 		return nil
 	}
@@ -153,7 +156,8 @@ func registerAccountDeviceBindingNow(userID int32, deviceID string) error {
 		logger.SysLog(fmt.Sprintf("设备池登记跳过（fail-open）：userID=%d 取不到数据库句柄", userID))
 		return nil
 	}
-	if _, err := service.RegisterDevice(db, userID, deviceID); err != nil {
+	if _, err := service.RegisterDeviceWithOptions(db, userID, deviceID,
+		service.DeviceBindingRegisterOptions{ClientIP: clientIP}); err != nil {
 		logger.SysLog(fmt.Sprintf("设备池登记失败（fail-open，不影响登录/换绑）：userID=%d err=%v", userID, err))
 		return err
 	}
@@ -175,10 +179,29 @@ func recordAccountDeviceBinding(c *gin.Context, userID int32) error {
 	if userID <= 0 || deviceID == "" {
 		return nil
 	}
+	// ⚠️ IP 必须在**进入 goroutine 之前**取。
+	//
+	// gin.Context 在响应写完后就不可再读（c.Request 可能已被回收/复用），
+	// 在 goroutine 里调 c.ClientIP() 是数据竞争 —— 竞态检测器会报，且
+	// 真实运行中偶尔拿到空串或上一个请求的值。这里先取值，goroutine 只捕获字符串。
+	clientIP := devicePoolClientIP(c)
 	go func() {
-		_ = registerAccountDeviceBindingNow(userID, deviceID)
+		_ = registerAccountDeviceBindingNow(userID, deviceID, clientIP)
 	}()
 	return nil
+}
+
+// devicePoolClientIP 取本次请求的来源 IP（归一化后；采不到返回空串）。
+//
+// 用 gin 的 c.ClientIP() 而不是自己解析 X-Forwarded-For / X-Real-IP：
+// 它已经处理了「哪些代理可信」（见 cmd/adapter-service/trusted_proxies.go 的
+// SetTrustedProxies 与 TRUSTED_PROXIES 配置）。自己解析等于绕过可信代理名单，
+// 客户端随便塞一个 X-Forwarded-For 就能伪造 IP。
+func devicePoolClientIP(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return service.NormalizeDeviceClientIP(c.ClientIP())
 }
 
 // enforceAccountDeviceLimit 是设备池的**准入判定**（T-25 判定侧）。
@@ -191,8 +214,7 @@ func recordAccountDeviceBinding(c *gin.Context, userID int32) error {
 // 为什么准入必须同步：异步判定的结论写不进已经发出的响应，用户已经拿到 cookie 了，
 // 再判「该拒绝」就只能靠前端补救 —— 那不是准入，是事后通知。
 //
-// 返回 true = 放行。以下三种情况一律放行（**fail-open**，与 device_pool.go:107 同一条纪律）：
-//   - 开关 `device_limit_enabled` 关闭（默认关，见 CanUseDeviceWithSwitch）
+// 返回 true = 放行。以下情况一律放行（**fail-open**，与 device_pool.go:107 同一条纪律）：
 //   - 设备标识拿不到（没有指纹就没法判「是不是新设备」）
 //   - 判定过程出错（表不存在 / 查询失败）
 //

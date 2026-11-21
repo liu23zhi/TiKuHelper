@@ -32,9 +32,10 @@ def verify(base,dist):
   except Exception as error:checks.append({'name':name,'path':path,'passed':False,'error_type':type(error).__name__})
  expect('liveness','/healthz',200,'application/json',lambda b:json.loads(b)=={'status':'ok'},True)
  expect('readiness','/readyz',200,'application/json',lambda b:json.loads(b)=={'status':'ready'},True)
- expect('api-404','/adapter-service/__ci_unknown__',404,'application/json',lambda b:json.loads(b).get('code')=='NOT_FOUND')
+ expect('legacy-api-404','/adapter-service/__ci_unknown__',404,'application/json',lambda b:json.loads(b).get('code')=='NOT_FOUND')
+ expect('api-404','/api/__ci_unknown__',404,'application/json',lambda b:json.loads(b).get('code')=='NOT_FOUND')
  for path in ['user/info','system-settings','access-tokens']:
-  expect('auth-'+path.replace('/','-'),'/adapter-service/'+path,401,'application/json')
+  expect('auth-'+path.replace('/','-'),'/api/'+path,401,'application/json')
  index=(dist/'index.html').read_bytes()
  entries=EntryReferences();entries.feed(index.decode('utf8'))
  checks.append({'name':'entry-script','passed':entries.script_count>0})

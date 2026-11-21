@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -32,15 +33,17 @@ type SearchAccountConfigView struct {
 	TokenKey      string  `json:"tokenKey"`
 	TokenValue    string  `json:"tokenValue"`
 	Enabled       bool    `json:"enabled"`
+	CallEnabled   bool    `json:"callEnabled"`
 	Remark        string  `json:"remark"`
 	FlatPrice     float64 `json:"flatPrice"`
 }
 
 type UpdateSearchAccountConfigInput struct {
-	TokenValue string  `json:"tokenValue"`
-	Enabled    bool    `json:"enabled"`
-	Remark     string  `json:"remark"`
-	FlatPrice  float64 `json:"flatPrice"`
+	TokenValue  string  `json:"tokenValue"`
+	Enabled     bool    `json:"enabled"`
+	CallEnabled *bool   `json:"callEnabled,omitempty"`
+	Remark      string  `json:"remark"`
+	FlatPrice   float64 `json:"flatPrice"`
 }
 
 type ResolvedSearchTokens struct {
@@ -48,6 +51,7 @@ type ResolvedSearchTokens struct {
 	UsedDefaultAccount   bool              `json:"usedDefaultAccount"`
 	UsedDefaultProviders []string          `json:"usedDefaultProviders"`
 	EnabledProviders     []string          `json:"enabledProviders"`
+	DisabledProviders    []string          `json:"disabledProviders"`
 }
 
 type AccessTokenAuthContext struct {
@@ -64,6 +68,33 @@ var supportedSearchAccountProviders = []SearchAccountProviderMeta{
 	{Provider: "lemon", ProviderLabel: "柠檬题库", TokenKey: "lemonToken"},
 	{Provider: "local", ProviderLabel: "本地题库", TokenKey: ""},
 	{Provider: aiSearchAccountProvider, ProviderLabel: "AI 搜索", TokenKey: ""},
+	{Provider: "buguake", ProviderLabel: "不挂科题库", TokenKey: ""},
+}
+
+// Channel permission is independent of default credentials. Existing clients
+// may bring their own credentials, but cannot bypass an explicit channel ban.
+func IsSearchProviderCallEnabledWithDB(db *gorm.DB, provider string) bool {
+	if db == nil {
+		return true
+	}
+	var setting entity.SystemSetting
+	if err := db.Where("`key` = ?", "search_provider_call_enabled_"+strings.TrimSpace(provider)).Limit(1).Find(&setting).Error; err != nil {
+		return false
+	}
+	if setting.Key == "" && provider == "local" {
+		var config entity.SearchAccountConfig
+		if err := db.Where("provider = ?", provider).Limit(1).Find(&config).Error; err != nil {
+			return false
+		}
+		if config.Provider != "" {
+			return config.Enabled
+		}
+	}
+	return !strings.EqualFold(strings.TrimSpace(setting.Value), "false")
+}
+
+func setSearchProviderCallEnabledWithDB(db *gorm.DB, provider string, enabled bool) error {
+	return saveSystemSettingValue(db, "search_provider_call_enabled_"+provider, strconv.FormatBool(enabled), "题库渠道是否允许调用")
 }
 
 func ListSearchAccountConfigsWithDB(db *gorm.DB) ([]SearchAccountConfigView, error) {
@@ -88,6 +119,7 @@ func ListSearchAccountConfigsWithDB(db *gorm.DB) ([]SearchAccountConfigView, err
 			Provider:      meta.Provider,
 			ProviderLabel: meta.ProviderLabel,
 			TokenKey:      meta.TokenKey,
+			CallEnabled:   IsSearchProviderCallEnabledWithDB(db, meta.Provider),
 		}
 
 		if meta.Provider == aiSearchAccountProvider {
@@ -122,8 +154,24 @@ func UpdateSearchAccountConfigWithDB(db *gorm.DB, provider string, input UpdateS
 			return SearchAccountConfigView{}, err
 		}
 	}
+	if input.CallEnabled != nil {
+		if err := setSearchProviderCallEnabledWithDB(db, provider, *input.CallEnabled); err != nil {
+			return SearchAccountConfigView{}, err
+		}
+	}
 
 	if provider == aiSearchAccountProvider {
+		if input.CallEnabled != nil {
+			rows, err := ListSearchAccountConfigsWithDB(db)
+			if err != nil {
+				return SearchAccountConfigView{}, err
+			}
+			for _, row := range rows {
+				if row.Provider == provider {
+					return row, nil
+				}
+			}
+		}
 		config, err := upsertAISearchAccountConfig(db, input)
 		if err != nil {
 			return SearchAccountConfigView{}, err
@@ -134,6 +182,7 @@ func UpdateSearchAccountConfigWithDB(db *gorm.DB, provider string, input UpdateS
 			ProviderLabel: meta.ProviderLabel,
 			TokenKey:      meta.TokenKey,
 			Enabled:       config.Enabled,
+			CallEnabled:   IsSearchProviderCallEnabledWithDB(db, provider),
 			Remark:        config.Remark,
 		}, nil
 	}
@@ -165,6 +214,7 @@ func UpdateSearchAccountConfigWithDB(db *gorm.DB, provider string, input UpdateS
 		TokenKey:      meta.TokenKey,
 		TokenValue:    config.TokenValue,
 		Enabled:       config.Enabled,
+		CallEnabled:   IsSearchProviderCallEnabledWithDB(db, provider),
 		Remark:        config.Remark,
 		FlatPrice:     config.FlatPrice,
 	}, nil
@@ -210,8 +260,13 @@ func BuildSearchTokensWithDB(db *gorm.DB, query url.Values, allowDefaultAccount 
 	}
 
 	for _, meta := range supportedSearchAccountProviders {
+		if !IsSearchProviderCallEnabledWithDB(db, meta.Provider) {
+			resolved.DisabledProviders = append(resolved.DisabledProviders, meta.Provider)
+			delete(resolved.Tokens, meta.Provider)
+			continue
+		}
 		config, ok := configMap[meta.Provider]
-		if ok && config.Enabled {
+		if (ok && config.Enabled) || meta.Provider == "local" {
 			resolved.EnabledProviders = append(resolved.EnabledProviders, meta.Provider)
 		}
 		if !allowDefaultAccount {
@@ -281,6 +336,9 @@ func ResolveAccessTokenFromBasicAuth(db *gorm.DB, authorization string) (AccessT
 	}
 	if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌所属用户已禁用", ErrInvalidAccessTokenAuthorization)
+	}
+	if banned, err := IsBanned(freshDB, user.ID); err != nil || banned {
+		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌所属账号已封禁或状态无法确认", ErrInvalidAccessTokenAuthorization)
 	}
 
 	return AccessTokenAuthContext{

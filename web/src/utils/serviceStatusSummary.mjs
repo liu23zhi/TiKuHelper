@@ -132,11 +132,18 @@ export function buildEndpointView(kind, bucket) {
   else if (sampled) state = 'idle'
 
   const rate = measured ? success / total : null
+  const status = rate === null
+    ? 'unknown'
+    : (rate >= 0.95 ? 'healthy' : (rate >= 0.7 ? 'degraded' : 'down'))
+  const statusPresentation = STATUS_PRESENTATION[status] || UNKNOWN_PRESENTATION
 
   return {
     key: presentation.key,
     label: presentation.label,
     state,
+    status,
+    statusLabel: !sampled ? '暂无采样数据' : (!measured ? '暂无请求' : statusPresentation.label),
+    tone: measured ? statusPresentation.tone : 'muted',
     greyed: !sampled,
     samples: samples === null ? 0 : samples,
     totalRequests: total === null ? 0 : total,
@@ -194,8 +201,22 @@ export function isSupportedServiceStatusSummary(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   if (readFiniteNumber(value.schemaVersion) !== 1) return false
   if (typeof value.successRateAvailable !== 'boolean') return false
-  for (const field of ['totalRequests', 'successRequests', 'failedRequests', 'avgLatencyMs']) {
+  // ⚠️ failedRequests 不在必填列表里（2026-11-15 后端已移除该字段）。
+  //
+  // 后端 controller/service_status.go 明确删掉了它，理由写在源码里：
+  // summary 与 series 都是 AuthOrAccessToken（普通用户 + adapter key），
+  // 暴露失败数等于让普通用户看到「搜题桶失败 N 次」，与 series 端点口径冲突。
+  // TestPublicEndpointsHideFailedRequests 反向断言 JSON 里**不得出现**该字段。
+  //
+  // 但这里仍把它列为必需 -> HTTP 200 却校验失败 -> 页面显示
+  // 「服务状态数据格式暂不受支持，请稍后重试」。这是前后端契约漂移，不是数据坏了。
+  //
+  // 所以改成「可选」：后端若给了（老版本/内部端点）照常接受，没给也不影响校验。
+  for (const field of ['totalRequests', 'successRequests', 'avgLatencyMs']) {
     if (readNonNegativeInteger(value[field]) === null) return false
+  }
+  if (value.failedRequests !== undefined && value.failedRequests !== null) {
+    if (readNonNegativeInteger(value.failedRequests) === null) return false
   }
   if (readNonNegativeInteger(value.windowMinutes) === null) return false
   return true
@@ -303,6 +324,12 @@ export function buildServiceStatusView(payload) {
     successRateText: measured ? formatSuccessRate(successRate) : '--',
     latencyText: formatLatency(payload.avgLatencyMs),
     totalText: formatCount(total),
+    // hasFailedMetric 决定页面是否渲染「失败请求」卡片。
+    //
+    // 后端公开端点**不给** failedRequests（理由见 isSupportedServiceStatusSummary 上方），
+    // 此时 formatCount(null) 会返回 '--'，页面上就出现一张「失败请求 —」的残缺卡片。
+    // 与其显示 '--'，不如整张卡片不渲染 —— 用户看不到不存在的指标，比看到占位符更清楚。
+    hasFailedMetric: failed !== null,
     failedText: formatCount(failed),
     successText: formatCount(success),
     windowText: windowMinutes === null ? '--' : `最近 ${windowMinutes} 分钟`,

@@ -136,7 +136,6 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     maxAISearches: positiveCount(formState?.maxAISearches, 3, '最大搜索次数'),
     maxAISearchRetries: positiveCount(formState?.maxAISearchRetries, 3, '每轮重试次数'),
     searchPricePerCall: Number(formState?.searchPricePerCall || 0),
-    tiku_search_price_per_call: Number(formState?.tikuSearchPricePerCall || 0),
     maxAIWebReads: positiveCount(formState?.maxAIWebReads, 5, '网页读取次数'),
     webReadPricePerCall: Number(formState?.webReadPricePerCall || 0),
     ...(Object.prototype.hasOwnProperty.call(formState || {}, 'imageOCRPricePerCall')

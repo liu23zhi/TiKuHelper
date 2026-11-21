@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	// riskRulesSchemaReadyKey 标记「risk_rules 表与种子已就绪」。
-	riskRulesSchemaReadyKey = "risk_rules_schema_v1"
+	// v2 adds editable detector metadata and immutable audit history.
+	riskRulesSchemaReadyKey = "risk_rules_schema_v2"
 	// riskWarningsSchemaReadyKey 标记「risk_warnings 表与索引已就绪」。
 	riskWarningsSchemaReadyKey = "risk_warnings_schema_v1"
 )
@@ -133,6 +133,12 @@ func applyRiskRulesSchema(db *gorm.DB) (bool, error) {
 	if err := db.AutoMigrate(&entity.RiskRule{}); err != nil {
 		return false, fmt.Errorf("create risk_rules fail: %w", err)
 	}
+	if err := db.AutoMigrate(&entity.RiskRuleAudit{}); err != nil {
+		return false, fmt.Errorf("create risk_rule_audits fail: %w", err)
+	}
+	if err := backfillRiskRuleMetadata(db); err != nil {
+		return false, fmt.Errorf("backfill risk rule metadata fail: %w", err)
+	}
 	if err := ensureRiskRuleIndexes(db); err != nil {
 		return false, err
 	}
@@ -192,7 +198,7 @@ func applyRiskWarningsSchema(db *gorm.DB) (bool, error) {
 func seedDefaultRiskRules(db *gorm.DB) {
 	existing := make(map[string]struct{}, 32)
 	var ruleIDs []string
-	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).Unscoped().
 		Pluck("rule_id", &ruleIDs).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("读取风控规则 rule_id 失败（跳过种子数据）：%v", err))
 		return
@@ -215,6 +221,9 @@ func seedDefaultRiskRules(db *gorm.DB) {
 			Threshold:       item.Threshold,
 			ThrottleSeconds: item.ThrottleSeconds,
 			Description:     item.Description,
+			Type:            item.RuleID,
+			ConfigJSON:      `{}`,
+			Source:          "builtin",
 		})
 	}
 	if len(rows) == 0 {
@@ -226,6 +235,18 @@ func seedDefaultRiskRules(db *gorm.DB) {
 	}
 	logger.SysLog(fmt.Sprintf("已补齐 %d 条缺失的风控规则种子（共 %d 条代码默认规则）",
 		len(rows), len(entity.DefaultRiskRules())))
+}
+
+// backfillRiskRuleMetadata labels legacy built-in rows without touching operator-edited fields.
+func backfillRiskRuleMetadata(db *gorm.DB) error {
+	for _, item := range entity.DefaultRiskRules() {
+		if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).
+			Where("rule_id = ? AND (rule_type = '' OR rule_type IS NULL)", item.RuleID).
+			Updates(map[string]any{"rule_type": item.RuleID, "source": "builtin", "config_json": `{}`}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ensureRiskRuleIndexes 保证 risk_rules 的 rule_id 唯一索引存在。

@@ -74,6 +74,52 @@ func portraitSeedUser(t *testing.T, db *gorm.DB, id int32, username string) enti
 	return user
 }
 
+func TestPortraitRegistrationSourceLabels(t *testing.T) {
+	db := newPortraitTestDB(t)
+	sources := []struct{ code, label string }{
+		{"public", "公开注册"},
+		{"admin", "后台创建"},
+		{"system", "系统初始化创建"},
+		{"legacy", "历史数据"},
+		{"import", "导入创建"},
+		{"wechat", "微信注册"},
+		{"future-provider", "future-provider"},
+	}
+	for index, source := range sources {
+		user := portraitSeedUser(t, db, int32(index+1), source.code)
+		if err := db.Model(&user).Update("register_source", source.code).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	archived := portraitSeedUser(t, db, 99, "archived-system")
+	if err := db.Model(&archived).Update("register_source", "system").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&archived).Error; err != nil {
+		t.Fatal(err)
+	}
+	var overall UserPortrait
+	if err := fillPortraitRegisterSources(db, PortraitScope{}, &overall); err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]PortraitSourceSlice{}
+	for _, row := range overall.RegisterSources {
+		labels[row.Source] = row
+	}
+	for _, source := range sources {
+		if row := labels[source.code]; row.Label != source.label || row.Count != 1 {
+			t.Errorf("source %q: got %+v, want %q and count 1", source.code, row, source.label)
+		}
+	}
+	var single UserPortrait
+	if err := fillPortraitRegisterSources(db, PortraitScope{UserID: archived.ID}, &single); err != nil {
+		t.Fatal(err)
+	}
+	if len(single.RegisterSources) != 1 || single.RegisterSources[0].Label != "系统初始化创建" {
+		t.Fatalf("archived account registration source missing: %+v", single.RegisterSources)
+	}
+}
+
 // portraitSeedBilling 直接落一条账单行。
 //
 // 不调真实业务函数：那需要满足登录/额度/价格的完整前置条件，会让「聚合算得对不对」

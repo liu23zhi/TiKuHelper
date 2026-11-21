@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,14 +24,46 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
-//go:embed dist
+//go:generate pwsh -NoProfile -File ../../scripts/prepare-web-dist.ps1
+
+// 上一行是本地便捷入口：`go generate ./cmd/adapter-service` 会构建前端并把产物
+// 同步进 dist/。CI 与 Docker 各自有自己的接线（见 .github/workflows/ci.yml 与
+// Dockerfile），但都调用同一个脚本，避免三套复制逻辑漂移。
+//
+// //go:embed all:dist 而不是 //go:embed dist：
+//
+// `dist/` 是**构建产物目录**，已从 git 删除（2026-11-19），仓库里只留一个
+// `dist/.gitkeep` 占位。`//go:embed dist` 会跳过以 . 开头的文件，于是在全新
+// clone（只有 .gitkeep）上会报 "pattern dist: no matching files found" ——
+// 编译直接失败。`all:` 前缀让点文件也被计入，目录因此非空，编译可通过。
+//
+//go:embed all:dist
 var buildFS embed.FS
 
-//go:embed dist/index.html
-var indexPage []byte
+// indexPage 是 SPA 的兜底页面（NoRoute 时返回，见 SetWebRouter）。
+//
+// 这里**不再用 //go:embed dist/index.html**：那是一条硬依赖 —— 该文件不存在
+// 就编译失败，而它本来就只是产物。改成运行时从 buildFS 读，缺失时返回 nil，
+// 由 SetWebRouter 决定降级行为（404 而不是崩溃）。
+func loadIndexPage(fs embed.FS) []byte {
+	page, err := fs.ReadFile("dist/index.html")
+	if err != nil {
+		return nil
+	}
+	return page
+}
+
+var initAdminPassword = flag.Bool("init-admin-password", false, "complete local administrator setup, reading passwords from stdin; no server is started")
 
 func main() {
 	flag.Parse()
+	if *initAdminPassword {
+		if err := runLocalAdminSetup(os.Stdin, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// 时间一律固定上海（见 timezone.go）。
 	useShanghaiTime()
 	// Initialize once after timezone setup, before manager/server goroutines.
@@ -58,18 +91,20 @@ func main() {
 		}
 	}(mg)
 
-	server := gin.Default()
+	server := gin.New()
+	server.Use(logger.AccessLogger(), logger.HTTPRecovery())
 	if err := server.SetTrustedProxies(trustedProxies.List); err != nil {
 		logger.FatalLog(err)
 	}
 	logTrustedProxies(trustedProxies)
+	server.Use(controller.ScriptProxyHTTPS(trustedProxies.List[:trustedProxies.ConfiguredCount]))
 	api.SetAPIRouter(server)
 	healthDB, err := mg.GetDB().DB()
 	if err != nil {
 		logger.FatalLog(err)
 	}
 	api.SetHealthRouter(server, healthDB.PingContext)
-	api.SetWebRouter(buildFS, indexPage, server)
+	api.SetWebRouter(buildFS, loadIndexPage(buildFS), server)
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	extensionStore, err := service.DefaultExtensionStoreWithDB(mg.GetDB())

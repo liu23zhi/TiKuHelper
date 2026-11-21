@@ -160,7 +160,12 @@ func TestReviewRebateMyClaimsDTOHidesRationaleForAdmin(t *testing.T) {
 		t.Fatalf("响应体泄露了判断理由原文: %s", recorder.Body.String())
 	}
 	// ③ 反向对照：该有的业务字段仍在（否则「什么都不下发」也能让上面全绿）。
-	for _, key := range []string{"id", "programId", "userId", "status", "agentStars", "agentContentScore", "agentConfidence", "awardAmount"} {
+	for _, key := range []string{"agentStars", "agentContentScore", "agentConfidence", "agentScorer", "matchedRuleId", "awardAmount", "reviewNote", "reviewedByUserId"} {
+		if _, leaked := row[key]; leaked {
+			t.Fatalf("user claim leaked internal field %q: %v", key, row)
+		}
+	}
+	for _, key := range []string{"id", "programId", "source", "userId", "status", "createdAt"} {
 		if _, ok := row[key]; !ok {
 			t.Fatalf("「我的提交」缺少应有字段 %q，实际: %v", key, row)
 		}

@@ -193,7 +193,11 @@ func TestS03ProductionRouteAuth(t *testing.T) {
 	cases := []struct {
 		name, header, cookie string
 		want                 int
-	}{{"anonymous", "", "", 401}, {"invalid-header", "S03_INVALID_SYNTHETIC", "", 401}, {"user-raw-header", user, "", 403}, {"user-cookie", "", user, 403}, {"admin-raw-header", admin, "", 200}, {"admin-cookie", "", admin, 200}, {"bearer-prefix-not-current-contract", "Bearer " + admin, "", 401}, {"invalid-header-beats-valid-cookie", "S03_INVALID_SYNTHETIC", admin, 401}, {"disabled-admin", disabled, "", 401}, {"credential-version-revoked", revoked, "", 401}}
+	}{{"anonymous", "", "", 401}, {"invalid-header", "S03_INVALID_SYNTHETIC", "", 401}, {"user-raw-header", user, "", 403}, {"user-cookie", "", user, 403}, {"admin-raw-header", admin, "", 200}, {"admin-cookie", "", admin, 200},
+		// 2026-11-18 口径翻转：原为 {"bearer-prefix-not-current-contract", "Bearer " + admin, "", 401}。
+		// 用户要求做兼容后 Auth 会剥离 Bearer 前缀 → 与裸 JWT 等价。
+		// Basic 反例用于钉住「只放宽 scheme 白名单，不是任何前缀都认」。
+		{"bearer-prefix-now-supported", "Bearer " + admin, "", 200}, {"basic-prefix-still-rejected", "Basic " + admin, "", 401}, {"invalid-header-beats-valid-cookie", "S03_INVALID_SYNTHETIC", admin, 401}, {"disabled-admin", disabled, "", 401}, {"credential-version-revoked", revoked, "", 401}}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/sqp/api/parse?file=protected-synthetic", nil)

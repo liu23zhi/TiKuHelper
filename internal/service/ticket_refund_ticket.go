@@ -67,8 +67,7 @@ func truncateRunes(value string, max int) string {
 
 // ticketRefundShellBody 是壳工单的首条消息正文。
 //
-// 刻意写清「这里不是操作入口」：壳工单存在的意义是让退款出现在列表里，
-// 真正的审核/打款/对账必须在退款详情做（金额与钱包 hold 都在那边）。
+// 详情内复用退款审核、打款与对账组件，资金操作仍走原退款接口。
 func ticketRefundShellBody(refund entity.TicketRefund) string {
 	var lines []string
 	lines = append(lines, "本工单由退款申请自动创建，用于在工单列表中展示退款进度。")
@@ -79,7 +78,7 @@ func ticketRefundShellBody(refund entity.TicketRefund) string {
 	if reason := strings.TrimSpace(refund.Reason); reason != "" {
 		lines = append(lines, "申请理由："+reason)
 	}
-	lines = append(lines, "审核、打款与对账请在「退款」详情中操作，不要在本工单里回复金额。")
+	lines = append(lines, "管理员可在本工单详情的退款信息中审核、办理退款与核对结果。")
 	return strings.Join(lines, "\n")
 }
 
@@ -99,7 +98,7 @@ func ticketRefundShellStatus(refundStatus string) string {
 	case entity.TicketRefundStatusProcessing, entity.TicketRefundStatusUnknown:
 		return entity.TicketStatusPending
 	case entity.TicketRefundStatusRejected, entity.TicketRefundStatusSucceeded,
-		entity.TicketRefundStatusFailed:
+		entity.TicketRefundStatusFailed, entity.TicketRefundStatusPartial:
 		return entity.TicketStatusClosed
 	default:
 		// 未知状态按「还需管理员看一眼」处理，不要静默归档。
@@ -185,6 +184,32 @@ func CreateTicketRefundShellInTx(tx *gorm.DB, refund entity.TicketRefund, now ti
 	}
 	if err := tx.Session(&gorm.Session{NewDB: true}).Create(&message).Error; err != nil {
 		return err
+	}
+
+	// 收款码与签名图绑定（2026-11-19）：把用户上传的草稿附件认领到这张壳工单的
+	// 消息上，这样管理员在工单详情里能直接看到收款码与签署记录，不必再去退款
+	// 详情单独拉一次。
+	//
+	// 两个附件**一次**绑定：BindDraftTicketAttachmentsInTx 是「全成或全不成」，
+	// 分两次调会在第二个失败时留下「有码无签名」的半截状态 —— 而签名是责任凭证，
+	// 半截状态比完全没有更难解释。
+	//
+	// 附件是人工退款的必要凭证，绑定失败必须使整个申请事务回滚。
+	attachmentIDs := make([]int64, 0, 2)
+	if refund.PayoutQrAttachmentID != nil && *refund.PayoutQrAttachmentID > 0 {
+		attachmentIDs = append(attachmentIDs, *refund.PayoutQrAttachmentID)
+	}
+	if refund.SignatureAttachmentID != nil && *refund.SignatureAttachmentID > 0 {
+		attachmentIDs = append(attachmentIDs, *refund.SignatureAttachmentID)
+	}
+	if len(attachmentIDs) > 0 {
+		var owner entity.User
+		if err := tx.Session(&gorm.Session{NewDB: true}).Where("id = ?", refund.UserID).Take(&owner).Error; err != nil {
+			return err
+		}
+		if err := BindDraftTicketAttachmentsInTx(tx, &owner, shell.ID, message.ID, attachmentIDs); err != nil {
+			return err
+		}
 	}
 
 	// 把新工单 ID 写回退款行。条件里带上 `ticket_id IS NULL`：
@@ -339,13 +364,24 @@ func CreateTicketForUserWithDB(db *gorm.DB, user *entity.User, input CreateTicke
 		return TicketDetail{}, err
 	}
 	if ticketType == TicketTypeRefund {
+		if strings.TrimSpace(input.AccountIssue) != "" || strings.TrimSpace(input.AppealProof) != "" {
+			return TicketDetail{}, ErrTicketInvalidCategory
+		}
 		return createRefundTicketWithVerifier(db, user, input, verify)
 	}
 	// 非退款类型却带了退款字段：参数矛盾，明确报错（见 CreateTicketWithDB 的同类判断）。
-	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" {
+	if hasTicketRefundFields(input) {
 		return TicketDetail{}, ErrTicketInvalidCategory
 	}
 	return CreateTicketWithDB(db, user, input)
+}
+
+func hasTicketRefundFields(input CreateTicketInput) bool {
+	return input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" ||
+		strings.TrimSpace(input.RefundMethod) != "" ||
+		input.RefundPayoutQrAttachmentID != nil || input.RefundSignatureAttachmentID != nil ||
+		len(input.RefundOrderIDs) > 0 || len(input.RefundOrderAllocations) > 0 ||
+		strings.TrimSpace(input.RefundAgreementText) != "" || strings.TrimSpace(input.RefundPhoneSMSCode) != ""
 }
 
 // createRefundTicketWithVerifier 是带渠道校验器的实现（controller 传真实 verifier）。
@@ -355,7 +391,11 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 	}
 	// 退款申请必须有金额与理由：普通工单的 subject/body 在退款流程里由
 	// 壳工单自动生成（订单号 + 退款单号），所以这里校验的是退款字段本身。
-	if input.RefundRequestedCents <= 0 {
+	// 分摊模式下逐笔金额在 Allocations 里给，但 RefundRequestedCents 仍是申请总额，
+	// 必须存在并与分摊合计相等。否则客户端可能只选了一笔不足额的订单，
+	// 或漏传总额后让服务端把部分金额当作完整申请。
+	multiOrder := len(input.RefundOrderAllocations) > 0 || len(input.RefundOrderIDs) > 0
+	if !multiOrder && input.RefundRequestedCents <= 0 {
 		return TicketDetail{}, ErrTicketRefundAmount
 	}
 	reason := strings.TrimSpace(input.RefundReason)
@@ -366,16 +406,87 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 	if utf8.RuneCountInString(reason) > 500 || len(reason) > 2000 {
 		return TicketDetail{}, ErrTicketRefundInvalid
 	}
+	refundMethod := strings.ToLower(strings.TrimSpace(input.RefundMethod))
+	if refundMethod != "" && refundMethod != "original" && refundMethod != "manual" {
+		return TicketDetail{}, ErrTicketRefundInvalid
+	}
 	kind := entity.TicketRefundKindOriginal
-	if input.RefundOrderID == nil {
+	hasOrder := input.RefundOrderID != nil || multiOrder
+	if refundMethod == "original" && !hasOrder {
+		return TicketDetail{}, ErrTicketRefundOrderUnavailable
+	}
+	if refundMethod == "manual" && hasOrder {
+		return TicketDetail{}, ErrTicketRefundInvalid
+	}
+	if len(input.RefundOrderAllocations) > 0 && input.RefundRequestedCents <= 0 {
+		return TicketDetail{}, ErrTicketRefundAmount
+	}
+	if refundMethod == "manual" || (refundMethod == "" && input.RefundOrderID == nil && !multiOrder) {
 		// 没有指定订单 = 无单人工退款，必须走 manual（原路退回找不到订单）。
 		kind = entity.TicketRefundKindManual
+	}
+
+	if multiOrder {
+		if refundMethod == "original" && len(input.RefundOrderAllocations) > 1 {
+			refund, err := createGroupedOriginalTicketRefundWithDB(db, *user, CreateTicketRefundInput{
+				Kind: kind, Allocations: input.RefundOrderAllocations, RequestedCents: input.RefundRequestedCents, Reason: reason,
+				PayoutQrAttachmentID: input.RefundPayoutQrAttachmentID, SignatureAttachmentID: input.RefundSignatureAttachmentID,
+			})
+			if err != nil {
+				return TicketDetail{}, err
+			}
+			return GetTicketWithDB(db, user, *refund.TicketID)
+		}
+		// 多笔：每笔一张退款单（order_id 有唯一索引），
+		// 整批一个事务，任一笔失败全部回滚。
+		targets := input.RefundOrderAllocations
+		if refundMethod == "original" && len(input.RefundOrderIDs) > 1 && len(input.RefundOrderAllocations) == 0 {
+			return TicketDetail{}, ErrTicketRefundInvalid
+		}
+		requestedTotal := input.RefundRequestedCents
+		orderIDs := input.RefundOrderIDs
+		if len(targets) == 0 && refundMethod == "original" {
+			// 新版显式原路退款走严格合计校验。单订单没有分摊歧义，
+			// 可从申请金额生成唯一分摊；多订单必须由调用方提供 allocations。
+			if len(orderIDs) != 1 {
+				return TicketDetail{}, ErrTicketRefundOrderUnavailable
+			}
+			targets = []TicketRefundOrderAllocation{{OrderID: orderIDs[0], Cents: input.RefundRequestedCents}}
+			orderIDs = nil
+		} else if len(targets) > 0 {
+			orderIDs = nil
+		}
+		rows, err := CreateTicketRefundsForOrdersWithDB(db, *user, CreateTicketRefundInput{
+			Kind:                  kind,
+			OrderIDs:              orderIDs,
+			Allocations:           targets,
+			RequestedCents:        requestedTotal,
+			Reason:                reason,
+			PayoutQrAttachmentID:  input.RefundPayoutQrAttachmentID,
+			SignatureAttachmentID: input.RefundSignatureAttachmentID,
+			AgreementText:         input.RefundAgreementText,
+			PhoneSMSCode:          input.RefundPhoneSMSCode,
+		}, verify)
+		if err != nil {
+			return TicketDetail{}, err
+		}
+		if len(rows) == 0 || rows[0].TicketID == nil || *rows[0].TicketID <= 0 {
+			return TicketDetail{}, ErrTicketRefundTicketLink
+		}
+		// 返回第一张壳工单的详情。多笔共用一个请求，
+		// 但用户在工单列表里会看到 N 张 —— 这是查询口径，不是数据错。
+		return GetTicketWithDB(db, user, *rows[0].TicketID)
 	}
 	refund, err := CreateTicketRefundWithDB(db, *user, CreateTicketRefundInput{
 		Kind:           kind,
 		OrderID:        input.RefundOrderID,
 		RequestedCents: input.RefundRequestedCents,
 		Reason:         reason,
+		// 收款码随申请一起落库（可选）：人工打款时管理员据此扫码转账。
+		PayoutQrAttachmentID:  input.RefundPayoutQrAttachmentID,
+		SignatureAttachmentID: input.RefundSignatureAttachmentID,
+		AgreementText:         input.RefundAgreementText,
+		PhoneSMSCode:          input.RefundPhoneSMSCode,
 	}, verify)
 	if err != nil {
 		return TicketDetail{}, err

@@ -37,10 +37,12 @@ var ErrRechargePaymentConfigIncomplete = errors.New("支付配置不完整")
 var ErrRechargePaymentMethodNotFound = errors.New("支付方式不存在")
 var ErrRechargePaymentMethodDisabled = errors.New("支付方式未启用")
 var ErrRechargeNotifyInvalidSignature = errors.New("充值回调签名校验失败")
+var ErrRechargeNotifyMerchantMismatch = errors.New("充值回调商户不匹配")
 var ErrRechargeNotifyAmountMismatch = errors.New("充值回调金额不匹配")
 var ErrRechargePaymentCreateFailed = errors.New("支付下单失败")
 
 const rechargeOrderStatusPending = "pending"
+const rechargeOrderStatusAwaitingCallback = "awaiting_callback"
 const rechargeOrderStatusPaid = "paid"
 
 // rechargeOrderStatusRefunded 是订单被运营改成「已退款」后的状态。
@@ -123,6 +125,10 @@ type RechargeOrderListItem struct {
 	PaymentMethodNameSnapshot string     `json:"paymentMethodNameSnapshot"`
 	Amount                    float64    `json:"amount"`
 	Status                    string     `json:"status"`
+	RefundMarked              bool       `json:"refundMarked"`
+	RefundOrderCapCents       int64      `gorm:"-" json:"refundOrderCapCents"`
+	RefundReserved            bool       `json:"refundReserved"`
+	SettlementNeedsReview     bool       `json:"settlementNeedsReview,omitempty"`
 	ThirdPartyOrderNo         string     `json:"thirdPartyOrderNo"`
 	PaidAt                    *time.Time `json:"paidAt"`
 	CreatedAt                 time.Time  `json:"createdAt"`
@@ -285,7 +291,8 @@ type RechargeOrderListQuery struct {
 }
 
 func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeOrderListQuery, page int, pageSize int) (RechargeOrderListResult, error) {
-	baseQuery := applyRechargeOrderFilters(buildRechargeOrderListQuery(db, operator), query)
+	effectiveStatus, columns := rechargeOrderReadProjection(db)
+	baseQuery := applyRechargeOrderFilters(buildRechargeOrderListQuery(db, operator), query, effectiveStatus)
 
 	var total int64
 	if err := baseQuery.Count(&total).Error; err != nil {
@@ -303,7 +310,7 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	var records []RechargeOrderListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, recharge_orders.status, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at").
+		Select(columns).
 		Order("recharge_orders.id desc").
 		Limit(pageSize).
 		Offset(offset).
@@ -312,8 +319,11 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	}
 
 	currentPageAmount := 0.0
-	for _, record := range records {
+	now := time.Now()
+	for i := range records {
+		record := &records[i]
 		currentPageAmount += record.Amount
+		record.setRefundOrderCap(now)
 	}
 
 	return RechargeOrderListResult{
@@ -328,21 +338,64 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 	}, nil
 }
 
+// Both the admin export and the UI use this projection. Missing historical
+// evidence tables cannot certify a settlement or an available refund cap.
+func rechargeOrderReadProjection(db *gorm.DB) (status, columns string) {
+	marked, reserved := rechargeOrderRefundExists(db, true), rechargeOrderRefundExists(db, false)
+	status = "CASE WHEN (" + marked + ") THEN 'refunded' ELSE recharge_orders.status END"
+	event, bill := "1=0", "(1=0)"
+	if db.Migrator().HasTable(&entity.PaymentEvent{}) {
+		event = "EXISTS (SELECT 1 FROM payment_events pe WHERE pe.order_no = recharge_orders.order_no)"
+	}
+	if db.Migrator().HasTable(&entity.BillingRecord{}) {
+		bill = entity.RechargeCreditEvidenceSQL
+	}
+	columns = "recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, " +
+		status + " AS status, (" + marked + ") AS refund_marked, (" + reserved + ") AS refund_reserved, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at, " +
+		"CASE WHEN (recharge_orders.status = 'paid' OR recharge_orders.paid_at IS NOT NULL OR " + event + ") AND NOT " + bill + " THEN 1 ELSE 0 END AS settlement_needs_review"
+	return status, columns
+}
+
+func (record *RechargeOrderListItem) setRefundOrderCap(now time.Time) {
+	if !record.SettlementNeedsReview && record.Status == rechargeOrderStatusPaid && !record.RefundReserved && record.PaidAt != nil && !record.PaidAt.After(now) {
+		record.RefundOrderCapCents, _ = ticketRefundOrderAmountCents(record.Amount)
+	}
+}
+
+func rechargeOrderRefundExists(db *gorm.DB, succeeded bool) string {
+	predicates := []string{"1 = 0"}
+	for _, table := range []string{(&entity.TicketRefund{}).TableName(), (&entity.TicketRefundOrderLine{}).TableName()} {
+		if !db.Migrator().HasTable(table) {
+			continue
+		}
+		where := "refund.order_id = recharge_orders.id"
+		if succeeded {
+			where += " AND refund.status = 'succeeded'"
+		}
+		predicates = append(predicates, "EXISTS (SELECT 1 FROM "+table+" refund WHERE "+where+")")
+	}
+	return strings.Join(predicates, " OR ")
+}
+
 // buildRechargeOrderListQuery 构造充值记录的基础查询。
 //
 // JOIN 必须在这里完成：关键词筛选会用到 users.username，
 // 若只在取数据时才 JOIN，Count 会因为缺列而报错（或算出与数据不一致的 total）。
 func buildRechargeOrderListQuery(db *gorm.DB, operator entity.User) *gorm.DB {
-	baseQuery := db.Table(entity.TableNameRechargeOrder + " AS recharge_orders").
-		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id")
+	baseQuery := rechargeOrderRows(db)
 	if !isAdminUser(operator) {
 		baseQuery = baseQuery.Where("recharge_orders.user_id = ?", operator.ID)
 	}
 	return baseQuery
 }
 
+func rechargeOrderRows(db *gorm.DB) *gorm.DB {
+	return db.Table(entity.TableNameRechargeOrder + " AS recharge_orders").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id")
+}
+
 // applyRechargeOrderFilters 把关键词、状态与支付渠道筛选应用到充值记录查询上。
-func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *gorm.DB {
+func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery, effectiveStatus string) *gorm.DB {
 	if filter.UserID > 0 {
 		query = query.Where("recharge_orders.user_id = ?", filter.UserID)
 	}
@@ -365,7 +418,7 @@ func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *g
 		query = query.Where("recharge_orders.amount <= ?", *filter.AmountMax)
 	}
 	if status := strings.TrimSpace(filter.Status); status != "" {
-		query = query.Where("recharge_orders.status = ?", status)
+		query = query.Where("("+effectiveStatus+") = ?", status)
 	}
 	if provider := strings.TrimSpace(filter.PaymentProvider); provider != "" {
 		query = query.Where("recharge_orders.payment_provider = ?", provider)
@@ -594,6 +647,10 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		return false, gorm.ErrRecordNotFound
 	}
 
+	if values.Get("pid") != config.PartnerID {
+		return false, ErrRechargeNotifyMerchantMismatch
+	}
+
 	callbackPayload := values.Encode()
 	acknowledged := true
 	tradeStatus := strings.TrimSpace(values.Get("trade_status"))
@@ -606,56 +663,47 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_no = ?", orderNo).First(&order).Error; err != nil {
 			return err
 		}
-		// Paid is immutable. In particular a replay cannot replace the trade
-		// reference later used to prove the original refund channel.
-		//
-		// 这只是「已结算」的快速通道，**不是**加款幂等的唯一判据：status 会被运营
-		// 改成 refunded，此时同一条回调会绕过这个判断。真正的锚点是下面的
-		// payment_events 唯一事件（见该处的注释）。
-		if order.Status == rechargeOrderStatusPaid {
-			// 顺带补记事件：覆盖「历史回填尚未成功 / 回填后被漏掉」的订单。
-			// 已 paid 说明钱已经到账，这里只补锚点、绝不加款；补记失败也只记日志，
-			// 不能因为事件表缺失就把一个正确的「已结算」回调判成失败。
-			if tradeStatus == rechargeOrderTradeStatusSuccess {
-				if _, claimErr := claimRechargePaymentEventInTx(tx, order, tradeNo, tradeStatus); claimErr != nil {
-					logger.SysWarn(fmt.Sprintf("已结算充值订单补记支付事件失败（不影响本次 ACK）orderNo=%s: %v",
-						order.OrderNo, claimErr))
-				}
-			}
-			return nil
-		}
-
-		updates := map[string]any{
-			"callback_payload": callbackPayload,
-		}
-		if tradeNo != "" {
-			updates["third_party_order_no"] = tradeNo
-		}
 		if tradeStatus != rechargeOrderTradeStatusSuccess {
-			// 非成功状态只留痕，不入账、也不占事件（同一订单后面还可能来成功回调）。
-			if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(updates).Error; err != nil {
-				return err
+			// Do not replace settled metadata or consume the key for a later success.
+			if order.Status == rechargeOrderStatusPaid || order.PaidAt != nil {
+				return nil
 			}
-			return nil
+			updates := map[string]any{"callback_payload": callbackPayload}
+			if tradeNo != "" {
+				updates["third_party_order_no"] = tradeNo
+			}
+			return tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(updates).Error
 		}
 		if paidAmount <= 0 || normalizeRechargeAmount(order.Amount) != paidAmount {
 			return ErrRechargeNotifyAmountMismatch
 		}
+		// A matched wallet bill remains proof even after the order label changes.
+		// Heal the anchor only, using the original reference rather than a replay's.
+		credited, err := hasRechargeCreditBill(tx, order.ID)
+		if err != nil {
+			return err
+		}
+		if credited {
+			if _, err := claimRechargePaymentEventInTx(tx, order, order.ThirdPartyOrderNo, "", entity.PaymentEventSourceBackfill); err != nil {
+				logger.SysWarn(fmt.Sprintf("已入账订单补记事件失败 orderNo=%s: %v", order.OrderNo, err))
+			}
+			return nil
+		}
+		reconcile := func() error {
+			logger.SysWarn(fmt.Sprintf("充值订单需对账 orderId=%d orderNo=%s: %v", order.ID, order.OrderNo, ErrRechargeSettlementReviewRequired))
+			return ErrRechargeSettlementReviewRequired
+		}
+		if order.Status == rechargeOrderStatusPaid || order.PaidAt != nil {
+			// Older operator corrections used to write both fields without a wallet credit.
+			return reconcile()
+		}
 
-		// 加款幂等的**唯一分岔判据**：先尝试记入「支付已入账」唯一事件。
-		//
-		// 插入成功（firstCredit=true）= 这笔网关订单的首次入账，继续加款；
-		// 插入被 OnConflict{DoNothing} 忽略 = 早已入过账，本次是重复回调，
-		// 直接 ACK 且**一行都不改、一分钱都不加**。
-		//
-		// 这一段必须挡在钱包/账单之前：上面的 `status == paid` 只是快速通道，
-		// 管理员把订单改成 refunded 后它就不再成立，届时只有这里能拦住重复加款。
-		firstCredit, err := claimRechargePaymentEventInTx(tx, order, tradeNo, tradeStatus)
+		firstCredit, err := claimRechargePaymentEventInTx(tx, order, tradeNo, tradeStatus, paymentEventSourceNotify)
 		if err != nil {
 			return err
 		}
 		if !firstCredit {
-			return nil
+			return reconcile() // Old callback/backfill may itself have inserted an unearned event.
 		}
 
 		var user entity.User
@@ -1050,4 +1098,133 @@ func wrapRechargePaymentCreateError(message string) error {
 		normalized = ErrRechargePaymentCreateFailed.Error()
 	}
 	return rechargePaymentCreateError{message: normalized}
+}
+
+// ─── 运营改状态（2026-11-19）────────────────────────────────────────────
+
+// ErrRechargeOrderStatusInvalid 表示请求的状态值不在白名单内。
+var ErrRechargeOrderStatusInvalid = errors.New("充值订单状态无效")
+
+// ErrRechargeOrderStatusUnchanged 表示目标状态与当前状态相同（幂等，不算错误地拒绝）。
+var ErrRechargeOrderStatusUnchanged = errors.New("充值订单状态未变化")
+
+// ErrRechargeOrderStatusForbidden 表示操作者不是管理员。
+//
+// 单独一个哨兵而不是复用 ErrRechargeOrderStatusInvalid：前者是 403、后者是 400，
+// 混用会让「普通用户点了一下」显示成「状态值无效」，排查时误导方向。
+var ErrRechargeOrderStatusForbidden = errors.New("无权修改充值订单状态")
+
+// RechargeOrderStatuses contains the operator inputs. "paid" is retained as a
+// legacy request alias for a review, never an instruction to settle a pending order.
+func RechargeOrderStatuses() []string {
+	return []string{rechargeOrderStatusPending, rechargeOrderStatusAwaitingCallback, rechargeOrderStatusPaid, rechargeOrderStatusRefunded}
+}
+
+// ValidateRechargeOrderStatus 校验目标状态是否在白名单内。
+func ValidateRechargeOrderStatus(status string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	for _, allowed := range RechargeOrderStatuses() {
+		if normalized == allowed {
+			return normalized, nil
+		}
+	}
+	return "", ErrRechargeOrderStatusInvalid
+}
+
+// UpdateRechargeOrderStatusWithDB only changes an operator-visible status.
+// The verified callback owns paid, paid_at, the wallet and both financial ledgers.
+func UpdateRechargeOrderStatusWithDB(db *gorm.DB, actor entity.User, orderID int32, targetStatus string) (entity.RechargeOrder, error) {
+	if db == nil || orderID <= 0 {
+		return entity.RechargeOrder{}, ErrRechargeOrderStatusInvalid
+	}
+	fresh, err := rechargeOrderActor(db, actor.ID, true)
+	if err != nil {
+		return entity.RechargeOrder{}, err
+	}
+	target, err := ValidateRechargeOrderStatus(targetStatus)
+	if err != nil {
+		return entity.RechargeOrder{}, err
+	}
+
+	var updated entity.RechargeOrder
+	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var order entity.RechargeOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", orderID).Take(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRechargeOrderStatusInvalid
+			}
+			return err
+		}
+		if target == rechargeOrderStatusPaid && (order.Status == rechargeOrderStatusPending || order.Status == rechargeOrderStatusAwaitingCallback) {
+			target = rechargeOrderStatusAwaitingCallback
+		}
+		if order.Status == target {
+			return ErrRechargeOrderStatusUnchanged
+		}
+		if tx.Migrator().HasTable(&entity.TicketRefund{}) {
+			if err := ensureTicketRefundOrderUnused(tx, order.ID); err != nil {
+				if errors.Is(err, ErrTicketRefundOrderUnavailable) {
+					return ErrRechargeOrderStatusInvalid
+				}
+				return err
+			}
+		}
+		if !allowedRechargeStatusTransition(order.Status, target) {
+			return ErrRechargeOrderStatusInvalid
+		}
+
+		if order.Status == rechargeOrderStatusPaid || order.PaidAt != nil {
+			credited, err := hasRechargeCreditBill(tx, order.ID)
+			if err != nil {
+				return err
+			}
+			if !credited {
+				return ErrRechargeSettlementReviewRequired
+			}
+		}
+		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", orderID).Update("status", target).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", orderID).Take(&updated).Error
+	})
+	if err != nil {
+		return entity.RechargeOrder{}, err
+	}
+
+	// 变更审计：只记 id/前后状态与操作者，不含任何支付凭据。
+	logger.SysLog("[audit] 充值订单状态变更 order=" + updated.OrderNo +
+		" -> " + target + " by=" + fresh.Username)
+	return updated, nil
+}
+
+// allowedRechargeStatusTransition 定义合法的状态迁移。
+//
+// 刻意**不允许** refunded → paid：那等于把一笔已退款的订单重新标记成已支付，
+// 而钱已经退出去了 —— 允许它会让「退款后旧回调重复加款」这类事故有第二次入口。
+// 真要重新入账必须走真实支付回调，由 payment_events 的幂等键裁决。
+func allowedRechargeStatusTransition(from, to string) bool {
+	switch from {
+	case rechargeOrderStatusPending:
+		return to == rechargeOrderStatusAwaitingCallback || to == rechargeOrderStatusRefunded
+	case rechargeOrderStatusAwaitingCallback:
+		return to == rechargeOrderStatusPending || to == rechargeOrderStatusRefunded
+	case rechargeOrderStatusPaid:
+		return to == rechargeOrderStatusRefunded
+	default:
+		return false
+	}
+}
+
+// rechargeOrderActor 取操作者并校验权限。adminOnly=true 时要求管理员。
+//
+// 与 ticketRefundActor 同类：先读库拿最新状态，避免用 JWT 里的过期快照判权限。
+func rechargeOrderActor(db *gorm.DB, actorID int32, adminOnly bool) (entity.User, error) {
+	var fresh entity.User
+	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ?", actorID).Take(&fresh).Error; err != nil {
+		return entity.User{}, err
+	}
+	if adminOnly && !isAdminUser(fresh) {
+		return entity.User{}, ErrRechargeOrderStatusForbidden
+	}
+	return fresh, nil
 }

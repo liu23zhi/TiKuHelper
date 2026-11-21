@@ -102,8 +102,8 @@ func seedReferralPaidOrder(t *testing.T, db *gorm.DB, orderNo string, userID int
 	return order
 }
 
-// Test 1a：总开关关闭时注册不生成邀请码。
-func TestReferralRegisterSkipsInviteWhenDisabled(t *testing.T) {
+// 注册始终生成邀请码；关闭返佣不能移除账户的分享标识。
+func TestReferralRegisterCreatesInviteEvenWhenRebatesDisabled(t *testing.T) {
 	db := newReferralTestDB(t)
 	setReferralSettings(t, db, false, 0.1)
 
@@ -112,16 +112,16 @@ func TestReferralRegisterSkipsInviteWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disabled path must not error: %v", err)
 	}
-	if invite.ID != 0 || invite.Code != "" {
-		t.Fatalf("disabled switch must not create an invite code: %+v", invite)
+	if invite.ID <= 0 || invite.Code == "" {
+		t.Fatalf("registration must always create an invite code: %+v", invite)
 	}
 
 	var count int64
 	if err := db.Model(&entity.ReferralInvite{}).Count(&count).Error; err != nil {
 		t.Fatalf("count invites: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("disabled switch must not persist any invite row, got %d", count)
+	if count != 1 {
+		t.Fatalf("registration must persist one invite row, got %d", count)
 	}
 	if got := GetReferralRebateEnabledWithDB(db); got {
 		t.Fatalf("switch should read false, got %t", got)

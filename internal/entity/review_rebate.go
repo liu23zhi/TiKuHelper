@@ -3,10 +3,15 @@ package entity
 import "time"
 
 const (
-	TableNameReviewRebateProgram = "review_rebate_programs"
-	TableNameReviewRebateRule    = "review_rebate_rules"
-	TableNameReviewRebateClaim   = "review_rebate_claims"
-	TableNameReviewRebateAward   = "review_rebate_awards"
+	TableNameReviewRebateProgram      = "review_rebate_programs"
+	TableNameReviewRebateRule         = "review_rebate_rules"
+	TableNameReviewRebateClaim        = "review_rebate_claims"
+	TableNameReviewRebateAward        = "review_rebate_awards"
+	TableNameReviewRebateVerification = "review_rebate_verifications"
+	TableNameReviewRebateClawback     = "review_rebate_clawbacks"
+
+	ReviewRebateSourceEdge   = "edge"
+	ReviewRebateSourceChrome = "chrome"
 
 	// 提交单状态。语义见 task_doc/16-评价返现与邀请返现-设计定稿.md §1.6。
 	//
@@ -21,6 +26,7 @@ const (
 	ReviewRebateStatusDuplicate      = "duplicate"       // 同一账号同一评价重复提交（不落新行，见服务层注释）
 	ReviewRebateStatusLimitReached   = "limit_reached"   // 次数或金额上限（不落新行，见服务层注释）
 	ReviewRebateStatusBelowThreshold = "below_threshold" // 规则表未命中，金额为 0
+	ReviewRebateStatusClawedBack     = "clawed_back"     // 已追缴，领取资格仍已使用
 
 	// ReviewRebateGiftSource 是赠金流水里的来源标记。
 	//
@@ -33,8 +39,9 @@ const (
 // 换成新版活动时**不要删旧行**：claims/awards 通过 program_id 引用它，
 // 删掉会让历史提交失去配置上下文（换版不重置已领次数的前提就是活动行稳定）。
 type ReviewRebateProgram struct {
-	ID   int32  `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name string `gorm:"column:name;type:varchar(128);not null;default:''" json:"name"`
+	ID     int32  `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name   string `gorm:"column:name;type:varchar(128);not null;default:''" json:"name"`
+	Source string `gorm:"column:source;type:varchar(8);not null;default:edge" json:"source"`
 	// StoreURL 是商店条目地址，展示给用户「去哪儿评价」。
 	StoreURL string `gorm:"column:store_url;type:varchar(512);not null;default:''" json:"storeUrl"`
 	// ExtensionID 限定抓取范围：只读这个扩展条目的公开评价。
@@ -100,9 +107,12 @@ func (*ReviewRebateRule) TableName() string { return TableNameReviewRebateRule }
 // 关于归属：本表**不**断言「这条评价就是这个人写的」。Agent 输出只表示
 // 「公开评价里存在一条与截图高度一致的记录」的置信度，低置信度强制人工复核。
 type ReviewRebateClaim struct {
-	ID        int32 `gorm:"primaryKey;autoIncrement" json:"id"`
-	ProgramID int32 `gorm:"column:program_id;type:int(11);not null;index;uniqueIndex:uk_review_rebate_claim_canonical,priority:1" json:"programId"`
-	UserID    int32 `gorm:"column:user_id;type:int(11);not null;index;uniqueIndex:uk_review_rebate_claim_canonical,priority:2" json:"userId"`
+	ID                  int32  `gorm:"primaryKey;autoIncrement" json:"id"`
+	ProgramID           int32  `gorm:"column:program_id;type:int(11);not null;index;uniqueIndex:uk_review_rebate_claim_canonical,priority:1" json:"programId"`
+	UserID              int32  `gorm:"column:user_id;type:int(11);not null;index;uniqueIndex:uk_review_rebate_claim_canonical,priority:2" json:"userId"`
+	Source              string `gorm:"column:source;type:varchar(8);not null;default:edge" json:"source"`
+	StoreURLSnapshot    string `gorm:"column:store_url_snapshot;type:varchar(512);not null;default:''" json:"-"`
+	ExtensionIDSnapshot string `gorm:"column:extension_id_snapshot;type:varchar(128);not null;default:''" json:"-"`
 	// ScreenshotPath 是相对 data/review-rebate 的私有路径，**不是公开 URL**。
 	ScreenshotPath string `gorm:"column:screenshot_path;type:varchar(255);not null;default:''" json:"-"`
 	// ScreenshotSHA256 是截图内容摘要。只作线索，**不能当唯一键**：
@@ -146,9 +156,12 @@ func (*ReviewRebateClaim) TableName() string { return TableNameReviewRebateClaim
 // ClaimID 唯一是**账务去重的最后一道闸**：重复批准、并发批准、回调重放
 // 都只可能留下一条 award，钱包不会二次累加。
 type ReviewRebateAward struct {
-	ID      int32 `gorm:"primaryKey;autoIncrement" json:"id"`
-	ClaimID int32 `gorm:"column:claim_id;type:int(11);not null;uniqueIndex" json:"claimId"`
-	UserID  int32 `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
+	ID      int32  `gorm:"primaryKey;autoIncrement" json:"id"`
+	ClaimID int32  `gorm:"column:claim_id;type:int(11);not null;uniqueIndex" json:"claimId"`
+	UserID  int32  `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
+	Source  string `gorm:"column:source;type:varchar(8);not null;default:edge" json:"source"`
+	// Historical awards keep a NULL key. New awards reserve an immutable user/store pair.
+	EligibilityKey *string `gorm:"column:eligibility_key;type:varchar(32);uniqueIndex:uk_review_rebate_award_eligibility" json:"-"`
 	// Amount 是实际入账金额（6 位小数），等于批准时的 claim.award_amount。
 	Amount float64 `gorm:"column:amount;type:decimal(18,6);not null;default:0" json:"amount"`
 	// GiftSource 固定 "review_rebate"，与其它赠金来源区分。
@@ -159,3 +172,31 @@ type ReviewRebateAward struct {
 }
 
 func (*ReviewRebateAward) TableName() string { return TableNameReviewRebateAward }
+
+type ReviewRebateVerification struct {
+	ID        int32     `gorm:"primaryKey;autoIncrement" json:"id"`
+	ClaimID   int32     `gorm:"not null;index" json:"claimId"`
+	AwardID   int32     `gorm:"not null" json:"awardId"`
+	AdminID   int32     `gorm:"not null" json:"adminId"`
+	Result    string    `gorm:"type:varchar(24);not null" json:"result"`
+	Reason    string    `gorm:"type:varchar(255);not null" json:"reason"`
+	Evidence  string    `gorm:"type:text;not null" json:"evidence"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+func (*ReviewRebateVerification) TableName() string { return TableNameReviewRebateVerification }
+
+type ReviewRebateClawback struct {
+	ID              int32     `gorm:"primaryKey;autoIncrement" json:"id"`
+	ClaimID         int32     `gorm:"not null;uniqueIndex" json:"claimId"`
+	AwardID         int32     `gorm:"not null;uniqueIndex" json:"awardId"`
+	VerificationID  int32     `gorm:"not null" json:"verificationId"`
+	UserID          int32     `gorm:"not null" json:"userId"`
+	AdminID         int32     `gorm:"not null" json:"adminId"`
+	RequestedAmount float64   `gorm:"type:decimal(18,6);not null" json:"requestedAmount"`
+	DeductedAmount  float64   `gorm:"type:decimal(18,6);not null" json:"deductedAmount"`
+	ShortfallAmount float64   `gorm:"type:decimal(18,6);not null" json:"shortfallAmount"`
+	CreatedAt       time.Time `json:"createdAt"`
+}
+
+func (*ReviewRebateClawback) TableName() string { return TableNameReviewRebateClawback }

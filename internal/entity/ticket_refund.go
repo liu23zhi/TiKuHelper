@@ -12,6 +12,7 @@ const (
 	TicketRefundStatusProcessing    = "processing"
 	TicketRefundStatusUnknown       = "unknown"
 	TicketRefundStatusSucceeded     = "succeeded"
+	TicketRefundStatusPartial       = "partially_succeeded"
 	TicketRefundStatusFailed        = "failed"
 )
 
@@ -39,30 +40,69 @@ type TicketRefund struct {
 	ID int64 `gorm:"primaryKey;autoIncrement" json:"id"`
 	// TicketID 指向 ticket_refunds 对应的壳工单（tickets.id）。
 	// json 里下发，前端据此从工单列表跳到退款详情。
-	TicketID         *int64     `gorm:"column:ticket_id;uniqueIndex" json:"ticketId,omitempty"`
-	UserID           int32      `gorm:"column:user_id;not null;index" json:"userId"`
-	OrderID          *int32     `gorm:"column:order_id;uniqueIndex" json:"orderId,omitempty"`
-	Kind             string     `gorm:"column:kind;type:varchar(16);not null" json:"kind"`
-	Status           string     `gorm:"column:status;type:varchar(24);not null;index" json:"status"`
-	RequestedCents   int64      `gorm:"column:requested_cents;not null" json:"requestedCents"`
-	ApprovedCents    int64      `gorm:"column:approved_cents;not null;default:0" json:"approvedCents"`
-	OrderPaidCents   int64      `gorm:"column:order_paid_cents;not null;default:0" json:"orderPaidCents,omitempty"`
-	OrderNo          string     `gorm:"column:order_no;type:varchar(64)" json:"orderNo,omitempty"`
-	OriginalTradeNo  string     `gorm:"column:original_trade_no;type:varchar(128)" json:"-"`
-	ChannelRef       string     `gorm:"column:channel_ref;type:varchar(255)" json:"-"`
-	RefundNo         string     `gorm:"column:refund_no;type:varchar(64);not null;uniqueIndex" json:"-"`
-	Reason           string     `gorm:"column:reason;type:text" json:"reason,omitempty"`
-	ReviewedBy       int32      `gorm:"column:reviewed_by;not null;default:0" json:"-"`
-	ReviewedAt       *time.Time `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
-	StartedAt        *time.Time `gorm:"column:started_at" json:"startedAt,omitempty"`
-	ResolvedBy       int32      `gorm:"column:resolved_by;not null;default:0" json:"-"`
-	ResolvedAt       *time.Time `gorm:"column:resolved_at" json:"resolvedAt,omitempty"`
-	OutcomeReference string     `gorm:"column:outcome_reference;type:varchar(128)" json:"-"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	TicketID        *int64 `gorm:"column:ticket_id;uniqueIndex" json:"ticketId,omitempty"`
+	UserID          int32  `gorm:"column:user_id;not null;index" json:"userId"`
+	OrderID         *int32 `gorm:"column:order_id;uniqueIndex" json:"orderId,omitempty"`
+	Kind            string `gorm:"column:kind;type:varchar(16);not null" json:"kind"`
+	Status          string `gorm:"column:status;type:varchar(24);not null;index" json:"status"`
+	RequestedCents  int64  `gorm:"column:requested_cents;not null" json:"requestedCents"`
+	ApprovedCents   int64  `gorm:"column:approved_cents;not null;default:0" json:"approvedCents"`
+	OrderPaidCents  int64  `gorm:"column:order_paid_cents;not null;default:0" json:"orderPaidCents,omitempty"`
+	OrderNo         string `gorm:"column:order_no;type:varchar(64)" json:"orderNo,omitempty"`
+	OriginalTradeNo string `gorm:"column:original_trade_no;type:varchar(128)" json:"-"`
+	ChannelRef      string `gorm:"column:channel_ref;type:varchar(255)" json:"-"`
+	RefundNo        string `gorm:"column:refund_no;type:varchar(64);not null;uniqueIndex" json:"-"`
+	Reason          string `gorm:"column:reason;type:text" json:"reason,omitempty"`
+	// PayoutQrAttachmentID 指向用户上传的收款码图片（ticket_attachments.id）。
+	//
+	// 2026-11-19 用户要求：即便能原路退回，也允许用户提供退款账号（收款码），
+	// 以便走人工打款时管理员能直接扫码转账。
+	//
+	// 为什么存附件 ID 而不是图片字节：加密落库、大小上限、压缩炸弹防护、
+	// 去重与保留期清理都已经在 ticket_attachments 那条管线上做好了，
+	// 在这里重存一份等于把那些约束全部绕开。
+	// 权限提示：草稿附件（ticket_id=0）只能由上传者认领，认领完成后
+	// 管理员通过 /api/ticket-attachments/:id/admin 读取。
+	PayoutQrAttachmentID *int64 `gorm:"column:payout_qr_attachment_id" json:"payoutQrAttachmentId,omitempty"`
+	// SignatureAttachmentID 是用户签署承诺书的手写签名图片。
+	//
+	// 2026-11-19 用户要求：每次申请都要重新签署，不带记忆。
+	// 「不带记忆」就落在这里 —— 它是每张退款单各自的字段，
+	// 而不是用户级的「上次签名」（后者会让用户以为上次签过就算数）。
+	SignatureAttachmentID *int64     `gorm:"column:signature_attachment_id" json:"signatureAttachmentId,omitempty"`
+	AgreementText         string     `gorm:"column:agreement_text;type:text" json:"agreementText,omitempty"`
+	AgreementSignedAt     *time.Time `gorm:"column:agreement_signed_at" json:"agreementSignedAt,omitempty"`
+	ReviewedBy            int32      `gorm:"column:reviewed_by;not null;default:0" json:"-"`
+	ReviewedAt            *time.Time `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
+	StartedAt             *time.Time `gorm:"column:started_at" json:"startedAt,omitempty"`
+	ResolvedBy            int32      `gorm:"column:resolved_by;not null;default:0" json:"-"`
+	ResolvedAt            *time.Time `gorm:"column:resolved_at" json:"resolvedAt,omitempty"`
+	OutcomeReference      string     `gorm:"column:outcome_reference;type:varchar(128)" json:"-"`
+	CreatedAt             time.Time  `json:"createdAt"`
+	UpdatedAt             time.Time  `json:"updatedAt"`
 }
 
 func (*TicketRefund) TableName() string { return "ticket_refunds" }
+
+// TicketRefundOrderLine reserves a recharge order and records its payout result.
+// Legacy single-order refunds reserve their order through TicketRefund.OrderID.
+type TicketRefundOrderLine struct {
+	ID               int64      `gorm:"primaryKey;autoIncrement" json:"-"`
+	RefundID         int64      `gorm:"not null;index" json:"-"`
+	OrderID          int32      `gorm:"not null;uniqueIndex" json:"orderId"`
+	OrderNo          string     `gorm:"type:varchar(64);not null" json:"orderNo"`
+	PaidCents        int64      `gorm:"not null" json:"paidCents"`
+	Cents            int64      `gorm:"not null" json:"cents"`
+	Status           string     `gorm:"type:varchar(24);not null" json:"status"`
+	OriginalTradeNo  string     `gorm:"type:varchar(128)" json:"-"`
+	ChannelRef       string     `gorm:"type:varchar(255)" json:"-"`
+	RefundNo         string     `gorm:"type:varchar(64);not null;uniqueIndex" json:"-"`
+	OutcomeReference string     `gorm:"type:varchar(128)" json:"-"`
+	StartedAt        *time.Time `json:"startedAt,omitempty"`
+	CreatedAt        time.Time  `json:"-"`
+}
+
+func (*TicketRefundOrderLine) TableName() string { return "ticket_refund_order_lines" }
 
 // TicketRefundLedger is an append-only wallet hold journal. A confirmed
 // refund consumes the prior hold without a second wallet debit.

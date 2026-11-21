@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
@@ -174,6 +175,65 @@ func IPSegmentRefresh(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": updated, "configured": apiKey != ""})
+}
+
+// IPSegmentSyncFromCache 立即把「IP 归属地缓存」里还没沉淀的段写进段表。
+//
+// ⚠️ 这不是「手动导入入口」，而是**立即执行一次自动沉淀**（用户 2026-11-15 明确方案 B）。
+//
+// 背景：2026-11-13 的决定是「IP 段归属从手动批量导入改成自动导入」，并且有一条
+// 反向断言「不存在任何手动导入端点」（见 internal/api/ip_segment_router_test.go）。
+// 自动通路有两条：查询成功时实时沉淀、启动时回填。
+//
+// 但这两条都**不由用户控制时机**：刚上线段表时要等重启，或等某个 IP 恰好被查一次。
+// 这个端点补的正是「我现在就想让它同步」这个缺口，语义与自动沉淀**完全一致**
+// （复用 service.PersistMissingIPSegmentsFromCacheRows），不新增任何导入规则。
+//
+// 因此反向断言的措辞要相应调整：从「不得存在手动导入端点」改成
+// 「不得存在绕过自动沉淀的独立导入逻辑」—— 这个端点必须调用同一个函数。
+func IPSegmentSyncFromCache(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	db := ipSegmentDB(c)
+	if db == nil {
+		writeIPSegmentFailure(c, service.ErrIPSegmentSchemaUnavailable, "IP 段数据库不可用")
+		return
+	}
+	// 段表还没迁移时如实告知，而不是返回「同步成功 0 条」——
+	// 后者会让管理员以为跑过了、只是没数据。
+	if !db.Migrator().HasTable(entity.TableNameIPSegment) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"message": "IP 段表尚未就绪，请稍后重试",
+		})
+		return
+	}
+
+	// 一次最多取这么多行缓存参与沉淀。与启动回填同一口径：
+	// 缓存表可能很大，全量扫描会让一次点击变成秒级阻塞。
+	const syncLimit = 5000
+	if !db.Migrator().HasTable(entity.TableNameLocationCache) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "IP 归属地缓存表尚未就绪，请稍后重试"})
+		return
+	}
+	rows := make([]entity.LocationCache, 0, syncLimit)
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Model(&entity.LocationCache{}).
+		Where("kind = ?", entity.LocationKindIP).
+		Order("fetched_at DESC, lookup_key ASC, source ASC").Limit(syncLimit).Find(&rows).Error; err != nil {
+		writeIPSegmentFailure(c, err, "读取 IP 归属地缓存失败")
+		return
+	}
+
+	// 复用自动沉淀的同一函数：唯一键口径、幂等判断、失败降级全在这里，
+	// 这个 handler 不允许自己写一遍 SQL。
+	inserted := service.PersistMissingIPSegmentsFromCacheRows(db, rows)
+	c.JSON(http.StatusOK, gin.H{
+		"scanned":  len(rows),
+		"inserted": inserted,
+		// skipped 让「点了没反应」可解释：没有新段不是失败。
+		"skipped": len(rows) - inserted,
+	})
 }
 
 // parseIPSegmentID 解析路径参数 :id。非法时直接写 400 并返回 false。

@@ -29,11 +29,18 @@ func TestS04ProductionAdminPlan(t *testing.T) {
 		name, stored, env, mode string
 		bad, unchanged          bool
 	}{
-		{"new_empty", "", "", "production", true, false}, {"new_weak", "", "weak", "production", true, false},
-		{"new_default", "", "123456", "production", true, false}, {"new_strong", "", "FixtureAdmin123!", "production", false, false},
-		{"new_short", "", "Aa1!abc", "production", true, false}, {"no_upper", "", "abcdefgh1!", "production", true, false},
-		{"no_lower", "", "ABCDEFGH1!", "production", true, false}, {"no_digit", "", "Abcdefghi!", "production", true, false},
-		{"no_special", "", "Abcdefghi1", "production", true, false},
+		// 2026-11-19 用户拍板：**永久删除**「初始密码强度不足就拒绝启动」。
+		//
+		// 下面这批用例的 bad 从 true 改 false —— 强度不足现在只告警、照常启动。
+		// 但**保留 bad: true 的三条**（bytes73 / unicode_over72 / existing_plain_long）：
+		// 它们触发的不是策略闸门，而是 bcrypt 的 72 字节硬限制（util.HashPassword
+		// 内部 ValidateBcryptPasswordBytes 直接返回错误）。那是技术约束，
+		// 删掉它会变成「密码截断后哈希」，属于真实的安全缺陷，必须继续挡。
+		{"new_empty", "", "", "production", false, false}, {"new_weak", "", "weak", "production", false, false},
+		{"new_default", "", "123456", "production", false, false}, {"new_strong", "", "FixtureAdmin123!", "production", false, false},
+		{"new_short", "", "Aa1!abc", "production", false, false}, {"no_upper", "", "abcdefgh1!", "production", false, false},
+		{"no_lower", "", "ABCDEFGH1!", "production", false, false}, {"no_digit", "", "Abcdefghi!", "production", false, false},
+		{"no_special", "", "Abcdefghi1", "production", false, false},
 		{"bytes72", "", "Aa1!" + strings.Repeat("x", 68), "production", false, false},
 		{"bytes73", "", "Aa1!" + strings.Repeat("x", 69), "production", true, false},
 		{"unicode_under72", "", "Aa1!" + strings.Repeat("题", 22), "production", false, false},
@@ -52,6 +59,7 @@ func TestS04ProductionAdminPlan(t *testing.T) {
 		{"dev_existing_default", "123456", "FixtureAdmin123!", "development", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
 			wantDefaultCredential := tc.stored == "123456" || tc.stored == "HASH_DEFAULT"
 			d, err := gorm.Open(sqlite.Open("file:"+tc.name+"?mode=memory&cache=shared"), &gorm.Config{})
 			if err != nil {
@@ -118,7 +126,7 @@ func TestS04ProductionAdminPlan(t *testing.T) {
 			if tc.stored == "" {
 				want = strings.TrimSpace(tc.env)
 				if want == "" {
-					want = "123456"
+					want = util.FactoryAdminPassword
 				}
 			}
 			matched, upgrade := util.VerifyPassword(got.Password, want)
@@ -156,7 +164,10 @@ func boolCount(b bool) int64 {
 func TestS04BootstrapFailureHasNoWrites(t *testing.T) {
 	t.Setenv("SQL_DSN", "")
 	t.Setenv("TIKU_APP_MODE", "production")
-	t.Setenv("TIKU_ADMIN_PASSWORD", "weak")
+	// 2026-11-19：弱密码不再拒绝启动，改用 73 字节密码 —— 它触发的是 bcrypt
+	// 的 72 字节硬限制（util.HashPassword 直接报错），这条失败路径仍然存在，
+	// 而「启动失败时一个字节都不写」这个语义必须继续有测试覆盖。
+	t.Setenv("TIKU_ADMIN_PASSWORD", strings.Repeat("x", 73))
 	for _, existing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "new", true: "existing"}[existing], func(t *testing.T) {
 			resetRegistryDBState(t)
@@ -261,13 +272,33 @@ func TestS04ExistingEmptyAdminUsesStrongBootstrapOnly(t *testing.T) {
 	if err = d.Create(&entity.User{ID: 1, Username: "fixture", Password: "", Role: "admin", Status: "enabled"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveAdminBootstrap(d, "production", "weak"); err == nil {
-		t.Fatal("weak empty-admin bootstrap accepted")
+	// 2026-11-19：弱密码不再拒绝启动（用户拍板永久删除该闸门），只告警。
+	// 所以这里改为断言「它能成功产出 plan 且会把空凭据填上」——
+	// 要点是**空密码账号必须被填充**，否则库里留下一个无法登录的 admin 行。
+	weakPlan, err := resolveAdminBootstrap(d, "production", "weak")
+	if err != nil {
+		t.Fatalf("弱密码不应再阻断启动（只告警）：%v", err)
+	}
+	if weakPlan.password == "" {
+		t.Fatal("空凭据账号必须被填充密码，否则库里会留下无法登录的 admin 行")
+	}
+	// 真正确认「没被拒绝」的方式：把它落库并验证能验通。
+	if err := applyAdminBootstrap(d, weakPlan); err != nil {
+		t.Fatal(err)
+	}
+	var afterWeak entity.User
+	d.First(&afterWeak, 1)
+	if ok, upgrade := util.VerifyPassword(afterWeak.Password, "weak"); !ok || upgrade {
+		t.Fatal("弱密码应被接受并哈希落库")
+	}
+	// 复位成空，继续验证强密码路径。
+	if err := d.Model(&entity.User{}).Where("id = ?", 1).Update("password", "").Error; err != nil {
+		t.Fatal(err)
 	}
 	var before entity.User
 	d.First(&before, 1)
 	if before.Password != "" {
-		t.Fatal("rejection changed empty credential")
+		t.Fatal("fixture 复位失败：密码应为空")
 	}
 	plan, err := resolveAdminBootstrap(d, "production", "FixtureAdmin123!")
 	if err != nil {

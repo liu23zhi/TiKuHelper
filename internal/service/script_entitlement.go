@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -21,6 +22,8 @@ const (
 	ScriptActivationPurchaseBillingType = "script_activation_purchase"
 	scriptActivationCodePrefix          = "sac_"
 	scriptActivationMicrosPerYuan       = 1_000_000
+	ScriptActivationCodeFreezeDuration  = 30 * time.Minute
+	ScriptActivationCodeStatusFrozen    = "frozen"
 	// Keep decimal fractions distinguishable at the binary64 boundary used
 	// by the existing wallet model. All calculation is in integer micros.
 	scriptActivationMoneyMax = 1_000_000_000
@@ -30,7 +33,8 @@ var (
 	ErrScriptActivationSalesDisabled          = errors.New("激活码购买未开放")
 	ErrScriptActivationPriceInvalid           = errors.New("激活码价格无效，请填写非负金额（最多六位小数）")
 	ErrScriptActivationPriceChanged           = errors.New("激活码售价已变化，请刷新后确认新售价")
-	ErrScriptActivationCodeInvalid            = errors.New("激活码无效或不属于当前账号")
+	ErrScriptActivationCodeInvalid            = errors.New("激活码无效")
+	ErrScriptActivationCodeFrozen             = errors.New("激活码已被领取，请等待冻结结束后再试")
 	ErrScriptActivationEntitlementUnavailable = errors.New("脚本激活资格不可用或已使用")
 	ErrScriptActivationRunConsumed            = errors.New("此脚本的一次运行资格已使用")
 	ErrScriptActivationReceiptUnavailable     = errors.New("激活码购买凭据暂不可恢复，请勿重复购买")
@@ -176,9 +180,9 @@ func purchaseScriptActivationCodeWithDB(db *gorm.DB, userID int32, idempotencyKe
 			if quotedMicros != nil && row.PurchasePrice != float64(*quotedMicros)/scriptActivationMicrosPerYuan {
 				return ErrScriptActivationPriceChanged
 			}
-			code := deriveScriptActivationCode(signingKey, user.ID, row.PurchaseNonce)
-			if !hmac.Equal([]byte(hashScriptSecret(code)), []byte(row.CodeHash)) {
-				return ErrScriptActivationReceiptUnavailable
+			code, err := recoverScriptActivationCode(row, signingKey)
+			if err != nil {
+				return err
 			}
 			result = ScriptActivationCodePurchase{EntitlementID: row.ID, Code: code, Price: row.PurchasePrice}
 			return nil
@@ -243,6 +247,9 @@ func purchaseScriptActivationCodeWithDB(db *gorm.DB, userID int32, idempotencyKe
 	if err != nil {
 		return ScriptActivationCodePurchase{}, err
 	}
+	if _, levelErr := ReconcileUserLevelWithDB(db, userID, entity.UserLevelTriggerConsumption); levelErr != nil {
+		logger.SysWarn(fmt.Sprintf("购买激活码后等级重评失败（不影响购买）userId=%d: %v", userID, levelErr))
+	}
 	return result, nil
 }
 
@@ -257,41 +264,29 @@ func validScriptActivationCode(code string) bool {
 	return len(code) == len(scriptActivationCodePrefix)+64 && len(digest) == 64 && strings.Trim(digest, "0123456789abcdef") == ""
 }
 
-// RedeemScriptActivationCodeWithDB grants an account exactly one entitlement.
-// No wallet/phone/WeChat test is applied here. Replaying redemption as the
-// purchasing owner returns the same row and cannot produce a second grant.
+// RedeemScriptActivationCodeWithDB reserves a code for the authenticated user.
+// An exact retry during the reservation returns the original deadline.
 func RedeemScriptActivationCodeWithDB(db *gorm.DB, userID int32, code string) (entity.ScriptActivationEntitlement, error) {
 	code = strings.TrimSpace(code)
+	if strings.HasPrefix(code, AdminScriptActivationCodePrefix) {
+		return redeemGeneratedAdminScriptCode(db, userID, code)
+	}
 	if db == nil || userID <= 0 || !validScriptActivationCode(code) {
 		return entity.ScriptActivationEntitlement{}, ErrScriptActivationCodeInvalid
 	}
 	var row entity.ScriptActivationEntitlement
 	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
-		var user entity.User
-		err := tx.Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND status = ?", userID, "enabled").First(&user).Error
+		if err := checkScriptActivationRedeemer(tx, userID); err != nil {
+			return err
+		}
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("code_hash = ?", hashScriptSecret(code)).First(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrScriptActivationCodeInvalid
 		}
 		if err != nil {
 			return err
 		}
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ? AND code_hash = ?", user.ID, hashScriptSecret(code)).First(&row).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrScriptActivationCodeInvalid
-		}
-		if err != nil || row.RedeemedAt != nil {
-			return err
-		}
-		now := time.Now().UTC().Truncate(time.Second)
-		updated := tx.Model(&entity.ScriptActivationEntitlement{}).Where("id = ? AND user_id = ? AND redeemed_at IS NULL", row.ID, userID).Update("redeemed_at", now)
-		if updated.Error != nil {
-			return updated.Error
-		}
-		if updated.RowsAffected != 1 {
-			return ErrIdempotencyPending
-		}
-		row.RedeemedAt = &now
-		return nil
+		return reserveScriptActivationEntitlementInTx(tx, &row, userID, tx.NowFunc().UTC().Truncate(time.Millisecond))
 	})
 	if err != nil {
 		return entity.ScriptActivationEntitlement{}, err
@@ -304,7 +299,7 @@ func GetScriptActivationEntitlementByScriptWithDB(db *gorm.DB, userID, scriptID 
 		return entity.ScriptActivationEntitlement{}, false, ErrScriptActivationEntitlementUnavailable
 	}
 	var row entity.ScriptActivationEntitlement
-	err := db.Session(&gorm.Session{NewDB: true}).Where("user_id = ? AND script_id = ? AND redeemed_at IS NOT NULL", userID, scriptID).First(&row).Error
+	err := db.Session(&gorm.Session{NewDB: true}).Scopes(scriptActivationRedeemedBy(userID)).Where("script_id = ? AND redeemed_at IS NOT NULL", scriptID).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return entity.ScriptActivationEntitlement{}, false, nil
 	}
@@ -327,8 +322,29 @@ func BindScriptActivationEntitlementInTx(tx *gorm.DB, userID int32, entitlementI
 	if err != nil {
 		return err
 	}
+	var source entity.ScriptActivationEntitlement
+	err = tx.Select("id", "purchase_price").Scopes(scriptActivationRedeemedBy(userID)).
+		Where("id = ? AND redeemed_at IS NOT NULL", entitlementID).First(&source).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrScriptActivationEntitlementUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	var adminCode entity.AdminScriptActivationCode
+	if source.PurchasePrice == 0 {
+		// Admin redemption and binding both lock the code before the grant.
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("used_entitlement_id = ? AND used_by = ? AND status = ?",
+			entitlementID, userID, entity.ScriptActivationCodeStatusUsed).First(&adminCode).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrScriptActivationEntitlementUnavailable
+		}
+		if err != nil {
+			return err
+		}
+	}
 	var row entity.ScriptActivationEntitlement
-	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ? AND redeemed_at IS NOT NULL", entitlementID, userID).First(&row).Error
+	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Scopes(scriptActivationRedeemedBy(userID)).Where("id = ? AND redeemed_at IS NOT NULL", entitlementID).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrScriptActivationEntitlementUnavailable
 	}
@@ -341,16 +357,96 @@ func BindScriptActivationEntitlementInTx(tx *gorm.DB, userID int32, entitlementI
 		}
 		return ErrScriptActivationEntitlementUnavailable
 	}
+	now := tx.NowFunc().UTC()
+	if activeScriptActivationFreeze(row, now) == nil {
+		return ErrScriptActivationEntitlementUnavailable
+	}
 	updated := tx.Model(&entity.ScriptActivationEntitlement{}).
-		Where("id = ? AND user_id = ? AND script_id IS NULL AND redeemed_at IS NOT NULL", entitlementID, userID).
-		Updates(map[string]any{"script_id": scriptID, "script_bound_at": time.Now()})
+		Scopes(scriptActivationRedeemedBy(userID)).
+		Where("id = ? AND script_id IS NULL AND redeemed_at = ?", entitlementID, row.RedeemedAt).
+		Updates(map[string]any{"script_id": scriptID, "script_bound_at": now})
 	if updated.Error != nil {
 		return updated.Error
 	}
 	if updated.RowsAffected != 1 {
 		return ErrScriptActivationEntitlementUnavailable
 	}
+	if adminCode.ID != 0 {
+		bound := tx.Model(&adminCode).Where("used_script_id IS NULL").Update("used_script_id", scriptID)
+		if bound.Error != nil {
+			return bound.Error
+		}
+		if bound.RowsAffected != 1 {
+			return ErrScriptActivationEntitlementUnavailable
+		}
+	}
 	return nil
+}
+
+func redeemGeneratedAdminScriptCode(db *gorm.DB, userID int32, code string) (entity.ScriptActivationEntitlement, error) {
+	if db == nil || userID <= 0 || len(code) != 36 || strings.Trim(strings.TrimPrefix(code, AdminScriptActivationCodePrefix), "0123456789abcdef") != "" {
+		return entity.ScriptActivationEntitlement{}, ErrScriptActivationCodeInvalid
+	}
+	var grant entity.ScriptActivationEntitlement
+	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		if err := checkScriptActivationRedeemer(tx, userID); err != nil {
+			return err
+		}
+		var adminCode entity.AdminScriptActivationCode
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("code = ?", code).First(&adminCode).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrScriptActivationCodeInvalid
+		}
+		if err != nil {
+			return err
+		}
+		now := tx.NowFunc().UTC().Truncate(time.Millisecond)
+		status := ProjectAdminScriptActivationCodeStatus(adminCode, now)
+		switch status {
+		case entity.ScriptActivationCodeStatusDisabled:
+			return ErrAdminScriptActivationCodeDisabled
+		case entity.ScriptActivationCodeStatusExpired:
+			return ErrAdminScriptActivationCodeExpired
+		case entity.ScriptActivationCodeStatusUsed, ScriptActivationCodeStatusFrozen:
+			if adminCode.UsedBy == nil || *adminCode.UsedBy != userID || adminCode.UsedEntitlementID == nil {
+				if status == ScriptActivationCodeStatusFrozen {
+					return ErrScriptActivationCodeFrozen
+				}
+				return ErrAdminScriptActivationCodeUsed
+			}
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&grant, *adminCode.UsedEntitlementID).Error; err != nil {
+				return err
+			}
+			grant.FrozenUntil = activeScriptActivationFreeze(grant, now)
+			return nil
+		}
+		codeHash := hashScriptSecret(code)
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("code_hash = ?", codeHash).First(&grant).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			nonce, err := randomScriptSecret(32)
+			if err != nil {
+				return err
+			}
+			grant = entity.ScriptActivationEntitlement{
+				UserID: userID, PurchaseKeyHash: hashScriptSecret("admin-issued:" + code), PurchaseNonce: nonce, CodeHash: codeHash,
+			}
+			if err := tx.Create(&grant).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		if err := reserveScriptActivationEntitlementInTx(tx, &grant, userID, now); err != nil {
+			return err
+		}
+		return tx.Model(&adminCode).Updates(map[string]any{
+			"used_at": now, "used_by": userID, "used_entitlement_id": grant.ID, "status": entity.ScriptActivationCodeStatusUsed,
+		}).Error
+	})
+	if err != nil {
+		return entity.ScriptActivationEntitlement{}, err
+	}
+	return grant, nil
 }
 
 // ResolveScriptActivationEntitlementRunInTx locks the bound entitlement so
@@ -363,7 +459,7 @@ func ResolveScriptActivationEntitlementRunInTx(tx *gorm.DB, userID, scriptID int
 	}
 	var row entity.ScriptActivationEntitlement
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("user_id = ? AND script_id = ? AND redeemed_at IS NOT NULL", userID, scriptID).First(&row).Error
+		Scopes(scriptActivationRedeemedBy(userID)).Where("script_id = ? AND redeemed_at IS NOT NULL", scriptID).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, ErrScriptActivationEntitlementUnavailable
 	}
@@ -409,7 +505,7 @@ func ConsumeScriptActivationEntitlementRunInTx(tx *gorm.DB, userID, scriptID int
 		return 0, err
 	}
 	updated := tx.Model(&entity.ScriptActivationEntitlement{}).
-		Where("user_id = ? AND script_id = ? AND activation_ticket_id IS NULL AND run_session_id IS NULL AND run_consumed_at IS NULL", userID, scriptID).
+		Scopes(scriptActivationRedeemedBy(userID)).Where("script_id = ? AND activation_ticket_id IS NULL AND run_session_id IS NULL AND run_consumed_at IS NULL", scriptID).
 		Updates(map[string]any{"activation_ticket_id": activationTicketID, "run_session_id": runSessionID, "run_consumed_at": time.Now()})
 	if updated.Error != nil {
 		return 0, updated.Error

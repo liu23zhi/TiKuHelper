@@ -30,7 +30,17 @@ function deferred(payload) {
   calls.push(call); return promise
 }
 function mock(filename, exports) { const m = new Module(filename); m.loaded = true; m.exports = exports; require.cache[filename] = m }
-mock(path.join(web, 'src/api/TikuComponentApi.js'), { getRechargeOrders: deferred })
+const statusWrites = []
+mock(path.join(web, 'src/api/TikuComponentApi.js'), { getRechargeOrders: deferred, updateRechargeOrderStatus: async (id, status) => {
+  statusWrites.push({ id, status }); return { status: 200, data: {} }
+} })
+// The administrator's export panel loads its own job list when this page mounts.
+// Keep the production panel and the no-network sentinel; fake only that read.
+const transferPath = path.join(web, 'src/pages/IntelligentImport/asyncTaskApi.mjs')
+mock(transferPath, { ...require(transferPath), listAsyncTasks: async ({ resource }) => {
+  assert.equal(resource, 'recharge_orders')
+  return { status: 200, data: { data: [], total: 0 } }
+} })
 mock(require.resolve('vue-router'), {
   useRoute: () => activeRoute,
   useRouter: () => ({ currentRoute: { get value() { return activeRoute } }, push() { throw new Error('UNEXPECTED_RECHARGE_NAVIGATION') } }),
@@ -83,7 +93,7 @@ function view(w) { return { rows: clone(w.vm.dataSource), summary: clone(w.vm.su
 function emptyState(w) { assert.equal(w.vm.dataSource.length, 0); assert.equal(w.vm.pagination.total, 0) }
 afterEach(async () => {
   for (const w of wrappers) if (w.exists()) w.unmount()
-  wrappers.length = 0; Antd.Modal.destroyAll(); Antd.message.destroy()
+  wrappers.length = statusWrites.length = 0; Antd.Modal.destroyAll(); Antd.message.destroy()
   for (const call of calls) if (!call.completed) call.resolve({ status: 503, message: PRIVATE })
   await settle(); Antd.Modal.destroyAll(); Antd.message.destroy(); await settle()
   user.clearStoredCurrentUser(); document.body.replaceChildren(); calls.length = notices.length = leaves.length = 0; activeRoute = undefined
@@ -272,4 +282,30 @@ test('RECHARGE explicit logout with denied cache removal cannot reissue a GET fr
   } finally {
     Object.defineProperty(storagePrototype, 'removeItem', original)
   }
+})
+
+test('RECHARGE admin can mark awaiting callback from a real row without claiming settlement', async () => {
+  const w = await open(ADMIN)
+  await finish(calls[0], reply('MANUAL_REVIEW', ADMIN, { data: [order('MANUAL_REVIEW', ADMIN, { status: 'pending', paidAt: null })] }))
+  await button(w, '核对状态').trigger('click')
+  const modal = w.findComponent(Antd.Modal)
+  assert.equal(modal.props('open'), true)
+  assert.match(document.body.textContent, /不会入账/)
+  const select = modal.findComponent(Antd.Select)
+  assert.ok(select.props('options').some(o => o.value === 'awaiting_callback'))
+  assert.ok(!select.props('options').some(o => o.value === 'paid'), 'manual dialog must not offer settlement')
+  select.vm.$emit('update:value', 'awaiting_callback'); await settle()
+  const save = [...document.querySelectorAll('.ant-modal-footer button')].find(b => b.textContent.replace(/\s/g, '') === '保存')
+  assert.ok(save); save.click(); await settle()
+  assert.deepEqual(statusWrites, [{ id: 101, status: 'awaiting_callback' }])
+  await finish(calls.at(-1), reply('MANUAL_REVIEW', ADMIN, { data: [order('MANUAL_REVIEW', ADMIN, { status: 'awaiting_callback', paidAt: null })] }))
+  assert.match(w.text(), /已核对，待回调/)
+})
+
+test('RECHARGE historical missing ledger is marked for reconciliation instead of a settled label', async () => {
+  const w = await open(ADMIN)
+  await finish(calls[0], reply('LEGACY', ADMIN, {data:[order('LEGACY', ADMIN, {settlementNeedsReview:true})]}))
+  const row = w.get('.ant-table-tbody tr.ant-table-row')
+  assert.match(row.text(), /历史入账待核对/)
+  assert.doesNotMatch(row.text(), /已支付/)
 })

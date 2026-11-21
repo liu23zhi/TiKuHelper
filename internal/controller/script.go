@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -25,6 +28,37 @@ var scriptDB = func() *gorm.DB {
 		return nil
 	}
 	return currentManager.GetDB()
+}
+
+const scriptProxyHTTPSKey = "script_proxy_https"
+
+// ScriptProxyHTTPS recognizes the scheme only from explicitly trusted peers.
+func ScriptProxyHTTPS(proxies []string) gin.HandlerFunc {
+	var trusted []netip.Prefix
+	for _, proxy := range proxies {
+		if ip, err := netip.ParseAddr(proxy); err == nil {
+			ip = ip.Unmap()
+			trusted = append(trusted, netip.PrefixFrom(ip, ip.BitLen()))
+		} else if network, err := netip.ParsePrefix(proxy); err == nil && network.Bits() > 0 {
+			trusted = append(trusted, network)
+		}
+	}
+	return func(c *gin.Context) {
+		if strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https") {
+			host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+			if err == nil {
+				if peer, err := netip.ParseAddr(host); err == nil {
+					for _, network := range trusted {
+						if network.Contains(peer.Unmap()) {
+							c.Set(scriptProxyHTTPSKey, true)
+							break
+						}
+					}
+				}
+			}
+		}
+		c.Next()
+	}
 }
 
 func ScriptVersionList(c *gin.Context) {
@@ -65,6 +99,10 @@ func UpdateScriptDomainSettings(c *gin.Context) {
 	}
 	settings, err := service.UpdateScriptDomainSettingsWithDB(scriptDB(), input)
 	if err != nil {
+		if errors.Is(err, service.ErrScriptDomainSettingsConflict) {
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
@@ -87,11 +125,12 @@ func ScriptDomainFormats(c *gin.Context) {
 	if _, ok := currentOperator(c); !ok {
 		return
 	}
-	formats, err := service.ScriptDomainFormatsWithDB(scriptDB())
+	settings, err := service.GetScriptDomainSettingsWithDB(scriptDB())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取脚本域名格式失败"})
 		return
 	}
+	formats := settings.Formats()
 	type formatView struct {
 		Raw  string `json:"raw"`
 		Host string `json:"host"`
@@ -109,7 +148,11 @@ func ScriptDomainFormats(c *gin.Context) {
 		}
 		views = append(views, formatView{Raw: format.Raw, Host: format.Host, Kind: format.Kind, Slot: slot, Pattern: format.Raw})
 	}
-	c.JSON(http.StatusOK, gin.H{"formats": views})
+	c.JSON(http.StatusOK, gin.H{
+		"formats":               views,
+		"allowFullNeverExpire":  settings.AllowFullNeverExpire,
+		"allowShortNeverExpire": settings.AllowShortNeverExpire,
+	})
 }
 
 func UploadScriptVersion(c *gin.Context) {
@@ -182,6 +225,7 @@ func CreateScript(c *gin.Context) {
 		return
 	}
 	input.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	input.LauncherOrigin = &service.ScriptLauncherOrigin{Host: c.Request.Host, HTTPS: c.Request.TLS != nil || c.GetBool(scriptProxyHTTPSKey)}
 	if input.BillingMode == "" {
 		input.BillingMode = entity.ScriptBillingModeEscrow
 	}
@@ -191,6 +235,21 @@ func CreateScript(c *gin.Context) {
 	// SkipOwnerBindingCheck 带 json:"-" 所以客户端塞不进来，这里只按服务端
 	// 已认证的身份置真。走「我的脚本」（scope=self 或非管理员）时保持原门槛。
 	if isAdminUser(&operator) && strings.EqualFold(strings.TrimSpace(c.Query("scope")), "all") {
+		input.SkipOwnerBindingCheck = true
+	}
+	// 管理员手动跳过绑定门槛（2026-11-17 用户需求）。
+	//
+	// 用户原话：「请添加一个按钮，在我的脚本里面，该按钮为仅管理员可见，
+	// 用于跳过这一限制」。上面那条 scope=all 只覆盖「管理别人脚本」的场景，
+	// 管理员在「我的脚本」里建自己的脚本仍会被拦 —— 这条补上手动开关。
+	//
+	// ⚠️ 两条硬约束，缺一条就是安全缺陷：
+	//  1. **必须再过一次 isAdminUser**。请求体字段是客户端可控的，
+	//     不校验角色等于「任何人都能传 true 自己解禁」。
+	//  2. **只在上面那条未置真时才需要**，写成独立 if 更清晰：
+	//     即便 scope=all 分支将来被改动，这里仍然按角色把关。
+	// 前端把按钮渲染成「仅管理员可见」只是可用性；真正拦人的是这里。
+	if !input.SkipOwnerBindingCheck && isAdminUser(&operator) && input.RequestSkipBindingCheck {
 		input.SkipOwnerBindingCheck = true
 	}
 	item, err := service.CreateUserScriptWithDB(scriptDB(), operator, input)
@@ -289,6 +348,45 @@ func IssueScriptExchangeToken(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, grant)
+}
+
+func ConfigureScriptShortAuthorization(c *gin.Context) {
+	configureScriptAuthorization(c, false)
+}
+
+func ConfigureScriptLauncherAuthorization(c *gin.Context) {
+	configureScriptAuthorization(c, true)
+}
+
+func configureScriptAuthorization(c *gin.Context, full bool) {
+	c.Header("Cache-Control", "no-store")
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 32)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "脚本参数错误"})
+		return
+	}
+	var input service.ConfigureScriptShortAuthorizationInput
+	if c.ShouldBindJSON(&input) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	var result service.ScriptShortAuthorizationView
+	if full {
+		result, err = service.ConfigureScriptLauncherAuthorizationWithDB(scriptDB(), operator, int32(id), input)
+	} else {
+		input.RequestHost = c.Request.Host
+		input.RequestHTTPS = c.Request.TLS != nil || c.GetBool(scriptProxyHTTPSKey)
+		result, err = service.ConfigureScriptShortAuthorizationWithDB(scriptDB(), operator, int32(id), input)
+	}
+	if err != nil {
+		writeScriptError(c, err, "命令授权未完成")
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func ExchangeScriptToken(c *gin.Context) {
@@ -503,6 +601,24 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 	if db == nil {
 		return false
 	}
+	// Header-bearing full launchers always retain their original authorization
+	// path. A header-free request may consume only a separately enabled, exact
+	// host/path short authorization, never a guessed legacy locator.
+	capability := strings.TrimSpace(c.GetHeader(service.ScriptLauncherHeader))
+	if capability == "" {
+		script, grant, err := service.ConsumeScriptShortAuthorizationWithDB(db, c.Request.Host, c.Request.URL.Path)
+		if err == nil {
+			c.Set(logger.ScriptEntryLogKey, true)
+			c.Header("Cache-Control", "no-store")
+			c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(grant.LaunchOrigin, script.ShortCode, grant.Token, script.BillingMode != "")))
+			return true
+		}
+		if errors.Is(err, service.ErrScriptShortAuthorizationInactive) || !errors.Is(err, service.ErrScriptNotFound) {
+			c.Header("Cache-Control", "no-store")
+			writeScriptError(c, err, "短命令暂不可用")
+			return true
+		}
+	}
 	script, err := service.ResolvePublicScriptWithDB(db, c.Request.Host, c.Request.URL.Path)
 	if err != nil {
 		if errors.Is(err, service.ErrScriptNotFound) {
@@ -511,8 +627,10 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "脚本入口暂不可用"})
 		return true
 	}
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, c.GetHeader(service.ScriptLauncherHeader), service.ScriptExchangeTokenTTL)
+	c.Set(logger.ScriptEntryLogKey, true)
+	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, capability, service.ScriptExchangeTokenTTL)
 	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	if err != nil {
 		writeScriptError(c, err, "生成脚本兑换令牌失败")
 		return true
@@ -604,6 +722,10 @@ func DownloadScriptVersion(c *gin.Context) {
 func writeScriptError(c *gin.Context, err error, fallback string) {
 	status, message := http.StatusInternalServerError, fallback
 	switch {
+	case errors.Is(err, service.ErrScriptShortAddressInUse):
+		status, message = http.StatusConflict, err.Error()
+	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
+		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyPending):
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrIdempotencyKeyInvalid):
@@ -628,6 +750,9 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		return
 	case errors.Is(err, service.ErrScriptForbidden):
 		status, message = http.StatusForbidden, err.Error()
+	case errors.Is(err, service.ErrScriptLauncherHTTPSRequired):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "SCRIPT_LAUNCHER_HTTPS_REQUIRED", "message": err.Error()})
+		return
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):
 		status, message = http.StatusNotFound, err.Error()
 	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable), errors.Is(err, service.ErrScriptDomainFormatLegacy), errors.Is(err, service.ErrScriptDomainFormatInvalid), errors.Is(err, service.ErrScriptDomainSlotInvalid):

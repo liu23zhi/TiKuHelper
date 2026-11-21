@@ -1,28 +1,11 @@
 <template>
-  <div class="ticket-attachment" :class="{ 'is-hidden': !visible, 'is-loading': busy }">
-    <!-- 敏感 / 未检测 / 检测失败：只渲染占位块，不发起任何图片请求。 -->
-    <div v-if="!visible" class="ticket-attachment-placeholder" role="img" :aria-label="placeholderText">
-      <svg class="ticket-attachment-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-        <!-- 等价语义：一张带折角的图片边框 + 山峦轮廓 + 右侧禁止标记。 -->
-        <path
-          d="M10 12h32l12 12v28a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V16a4 4 0 0 1 4-4Z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="3"
-          stroke-linejoin="round"
-        />
-        <path d="M42 12v12h12" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" />
-        <path
-          d="M12 46l12-14 9 11 6-7 7 10"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="3"
-          stroke-linejoin="round"
-        />
-        <circle cx="46" cy="42" r="13" fill="none" stroke="currentColor" stroke-width="3" />
-        <path d="M37 51 55 33" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+  <div class="ticket-attachment" :class="{ 'is-hidden': !showImage, 'is-loading': busy }" :aria-busy="busy">
+    <!-- 不可见及读取失败统一显示原因；没有可用 URL 时不渲染 img。 -->
+    <div v-if="!showImage" class="ticket-attachment-placeholder" role="img" :aria-label="placeholderText">
+      <svg class="ticket-attachment-icon" viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
+        <path d="M402.57 905.35H176.1c-61.9-0.27-111.97-50.46-112.1-112.36V231.23c0-61.91 49.98-112.2 111.88-112.58H409.1l34.46 56.41H169.33c-29.14 1.89-51.25 27.03-49.39 56.18v499.93l190.52-230.48c13.82-18.55 40.07-22.38 58.62-8.56 3.25 2.42 6.14 5.31 8.56 8.56l133.62 172.03 27.17 34.87-0.08 0.1 21.6 42.97-157.38 154.69z m445.55 0H544.47L654.99 702.4l-51.58-57.98 92.57-92.99a44.234 44.234 0 0 1 34.86-16.85c1.17 0 2.3 0 3.38 0.13a44.414 44.414 0 0 1 35.25 22.34l134.59 172.03V231.23c-2.13-30.01-25.94-53.92-55.94-56.18h-333.5l-14.59-56.41h348.08c61.91 0.4 111.89 50.69 111.89 112.59v561.75c-0.13 61.82-50.07 111.97-111.88 112.37zM651.72 456.3c-46.67-0.03-84.48-37.88-84.45-84.54 0.03-46.67 37.88-84.48 84.54-84.45 46.67 0.03 84.48 37.88 84.45 84.54a84.509 84.509 0 0 1-24.83 59.79 83.99 83.99 0 0 1-59.69 24.65l-0.02 0.01z" fill="currentColor" />
       </svg>
-      <p class="ticket-attachment-hint">{{ placeholderText }}</p>
+      <p class="ticket-attachment-hint" :class="{ 'ticket-attachment-error': errorText }" :role="errorText ? 'alert' : undefined">{{ placeholderText }}</p>
       <!-- 用户端没有任何查看入口；管理端才出现按钮。 -->
       <a-button
         v-if="canReveal"
@@ -41,12 +24,12 @@
         referrerpolicy="no-referrer"
         loading="lazy"
         class="ticket-attachment-image"
+        @error="onImageError"
       />
       <figcaption v-if="wasRevealed" class="ticket-attachment-caption">
         该图片被判定为敏感内容，仅供管理员核查
       </figcaption>
     </figure>
-    <p v-if="errorText" class="ticket-attachment-error" role="alert">{{ errorText }}</p>
   </div>
 </template>
 
@@ -79,10 +62,15 @@ let loadVersion = 0;
 let active = true;
 
 const visible = computed(() => isTicketAttachmentVisible(props.attachment));
-const placeholderText = computed(() => ticketAttachmentPlaceholder(props.attachment));
+const placeholderText = computed(() => {
+  if (errorText.value) return errorText.value;
+  if (!visible.value) return ticketAttachmentPlaceholder(props.attachment) || "图片暂不可用";
+  return busy.value ? "图片正在加载，请稍候" : "图片暂未加载";
+});
 // 敏感图只有管理员能点「显示图片」按钮；用户端**没有**任何按钮。
 const canReveal = computed(() => props.admin && !visible.value);
 const wasRevealed = computed(() => revealed.value && visible.value === false);
+const showImage = computed(() => Boolean(objectUrl.value && !errorText.value && (visible.value || (props.admin && revealed.value))));
 const altText = computed(() => {
   const id = props.attachment?.id;
   return id ? `工单图片 #${id}` : "工单图片";
@@ -93,6 +81,12 @@ function revoke() {
     URL.revokeObjectURL(objectUrl.value);
     objectUrl.value = "";
   }
+}
+
+function onImageError() {
+  revoke();
+  revealed.value = false;
+  errorText.value = "图片加载失败，请稍后重试";
 }
 
 // fetchAttachment 只有两条入口：
@@ -117,6 +111,7 @@ async function fetchAttachment(useAdminEndpoint) {
     }
     revoke();
     objectUrl.value = URL.createObjectURL(blob);
+    revealed.value = useAdminEndpoint;
   } catch (error) {
     if (!active || version !== loadVersion) return;
     // 403（敏感被拦下）也是正常路径：后端可能刚好把状态更新为 sensitive。
@@ -130,13 +125,14 @@ async function fetchAttachment(useAdminEndpoint) {
 
 function reveal() {
   if (!canReveal.value || busy.value) return;
-  revealed.value = true;
   fetchAttachment(true);
 }
 
 watch(
-  () => [props.attachment?.id, visible.value],
+  () => [props.attachment?.id, visible.value, props.admin, props.autoLoad],
   () => {
+    loadVersion += 1;
+    busy.value = false;
     revoke();
     errorText.value = "";
     revealed.value = false;

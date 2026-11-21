@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 「我的设备」六条用户端路由的注册断言（137-设备体系设计 §8.1 / 批次 A2）。
+// 「我的设备」七条用户端路由的注册断言（137-设备体系设计 §8.1 / 批次 A2）。
 //
 // 单独成文件而不是追加进 router_test.go：A3 批次（管理员端设备路由）也会改
 // 同一批事实，两个成员同时编辑同一个测试文件必然冲突。本文件只覆盖 A2 的六条。
@@ -35,14 +35,18 @@ func TestSetAPIRouterRegistersUserDeviceRoutes(t *testing.T) {
 	want := []string{
 		"GET /api/user/devices",
 		"POST /api/user/devices/:id/remove",
+		"DELETE /api/user/devices/:id",
+		"PUT /api/user/devices/:id/label",
 		"POST /api/user/devices/:id/block",
 		"DELETE /api/user/devices/blocks/:id",
 		"GET /api/user/device-limit",
 		"PUT /api/user/device-limit",
+		"GET /api/user/device-expiry",
+		"PUT /api/user/device-expiry",
 	}
 	for _, route := range want {
 		if !registered[route] {
-			t.Errorf("缺少路由 %s（137 §8.1 的六条用户端接口）", route)
+			t.Errorf("缺少路由 %s（137 §8.1 的用户端接口 + 重命名）", route)
 		}
 	}
 
@@ -55,7 +59,6 @@ func TestSetAPIRouterRegistersUserDeviceRoutes(t *testing.T) {
 	// ⇒ 管理员端路由的存在性交给 A3 的用例守；本用例只守「用户端不得越界」。
 	// 真正的越权判据在 A3 那条：四条管理员路由必须同时挂 Auth + RequireAdmin。
 	forbidden := []string{
-		"DELETE /api/user/devices/:id",  // 移除是软撤销，不存在物理删除入口（红线 2）
 		"PUT /api/user/devices/:id",     // 同上：设备行不可编辑
 		"POST /api/user/device-limit",   // 只允许 PUT（读改写同一入口，避免两个写口径）
 		"DELETE /api/user/device-limit", // 恢复默认走 PUT + 等级值，不设删除入口

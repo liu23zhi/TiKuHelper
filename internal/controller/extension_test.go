@@ -56,7 +56,10 @@ func TestExtensionConfigurationRequiresAdminAndPersistsLiveSettings(t *testing.T
 		for _, test := range []struct {
 			token  string
 			status int
-		}{{"", 401}, {user, 403}, {"Bearer " + admin, 401}} {
+			// 2026-11-18 口径翻转：原先 `{"Bearer " + admin, 401}` 断言 Bearer 形式
+			// 不被接受。Auth 现在会剥离 Bearer 前缀，故该形态等同裸 JWT → 放行。
+			// 同时保留 Basic 反例，钉住「只放宽 scheme 白名单」这条边界。
+		}{{"", 401}, {user, 403}, {"Bearer " + admin, 200}, {"Basic " + admin, 401}} {
 			if got := request(method, test.token, body); got.Code != test.status {
 				t.Fatalf("%s unauthorized code=%d body=%s", method, got.Code, got.Body.String())
 			}
@@ -181,10 +184,23 @@ func TestExtensionRefreshRequiresRealAdministratorJWT(t *testing.T) {
 	}
 	admin := util.GenerateJwtForUser(users[0].ID, users[0].Password)
 	user := util.GenerateJwtForUser(users[1].ID, users[1].Password)
+	// 2026-11-18 口径翻转：原先这条是
+	//   {"bearer is not account JWT", "Bearer " + admin, 401}
+	// 断言「Bearer 形式的账号 JWT 不被接受」。用户要求做兼容后，
+	// Auth 会剥离 Bearer 前缀，该形态与裸 JWT 等价 → 管理员通过。
+	//
+	// 这里补充必须保留的边界：**非法 scheme 仍然拒绝**。
+	// 放宽的是 scheme 白名单（只认 Bearer），不是「任何带前缀的都认」。
 	for _, test := range []struct {
 		name, authorization string
 		status              int
-	}{{"anonymous", "", 401}, {"ordinary user", user, 403}, {"bearer is not account JWT", "Bearer " + admin, 401}, {"administrator", admin, 200}} {
+	}{
+		{"anonymous", "", 401},
+		{"ordinary user", user, 403},
+		{"bearer administrator now supported", "Bearer " + admin, 200},
+		{"basic administrator still rejected", "Basic " + admin, 401},
+		{"administrator", admin, 200},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/extensions/edge/refresh", nil)
@@ -195,7 +211,18 @@ func TestExtensionRefreshRequiresRealAdministratorJWT(t *testing.T) {
 			}
 		})
 	}
-	if fixture.refreshCalls != 1 {
-		t.Fatalf("unauthorized upstream refreshes: %d", fixture.refreshCalls)
+	// 上游刷新次数必须恰好等于「被放行的管理员请求数」。
+	//
+	// 2026-11-18 前是 1（只有裸 JWT 那条放行）；Bearer 形式翻转后
+	// 「bearer administrator now supported」也会真正走到 handler → 2。
+	//
+	// 这条断言的真实价值是钉住「未授权请求绝不触发上游刷新」：
+	// anonymous / ordinary user / basic 三条都必须换来 0 次刷新。
+	// 只改数字会让它变成「跟随放行条数变化」的弱断言，所以下面用
+	// 期望值 = 放行条数的方式表达意图，而不是硬编码 2。
+	const wantRefreshes = 2 // bearer administrator + administrator
+	if fixture.refreshCalls != wantRefreshes {
+		t.Fatalf("upstream refreshes = %d, want %d（只有被放行的管理员请求才允许触发上游刷新）",
+			fixture.refreshCalls, wantRefreshes)
 	}
 }

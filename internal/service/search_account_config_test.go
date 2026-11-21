@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -38,8 +39,8 @@ func TestListSearchAccountConfigsWithDBReturnsSupportedProviders(t *testing.T) {
 		t.Fatalf("list configs: %v", err)
 	}
 
-	if len(configs) != 8 {
-		t.Fatalf("expected 8 providers, got %d", len(configs))
+	if len(configs) != 9 {
+		t.Fatalf("expected 9 providers, got %d", len(configs))
 	}
 
 	if configs[0].Provider != "icodef" {
@@ -402,6 +403,20 @@ func TestResolveAccessTokenFromBasicAuthRequiresValidToken(t *testing.T) {
 	}
 	if _, err := ResolveAccessTokenFromBasicAuth(db, "Basic invalid-token"); err == nil {
 		t.Fatal("expected invalid basic token to fail")
+	}
+}
+
+func TestResolveAccessTokenRejectsActiveBanEvenWhenUserStatusEnabled(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.UserBan{}); err != nil {
+		t.Fatal(err)
+	}
+	key := seedAccessToken(t, db, "ban-only-row-token", "enabled", "enabled")
+	if err := db.Create(&entity.UserBan{UserID: key.UserID, Reason: "active ban", BannedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveAccessTokenFromBasicAuth(db, "Basic ban-only-row-token"); err == nil {
+		t.Fatal("active user_bans row must reject normal API token")
 	}
 }
 

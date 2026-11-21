@@ -21,7 +21,7 @@ func newSystemSettingTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.SystemSetting{}, &entity.SearchAccountConfig{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -94,6 +94,30 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	}
 	if detail.MinRechargeAmount != DefaultMinRechargeAmount {
 		t.Fatalf("expected default minimum recharge amount %.2f, got %.2f", DefaultMinRechargeAmount, detail.MinRechargeAmount)
+	}
+}
+
+func TestDeviceIdleSettingsRejectInvalidBeforeWritingAndPreserveOmittedValues(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	invalid := -1
+	if _, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{SiteName: "不得写入", DeviceIdleRevokeAfterDays: &invalid}); !errors.Is(err, ErrInvalidDeviceIdleRevokeDays) {
+		t.Fatalf("negative days should reject: %v", err)
+	}
+	var count int64
+	if err := db.Model(&entity.SystemSetting{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("无效闲置配置不得先写入其它设置，实际 %d 行", count)
+	}
+	days, allow := 7, true
+	got, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{DeviceIdleRevokeAfterDays: &days, DeviceIdleRevokeAllowUserDisable: &allow})
+	if err != nil || got.DeviceIdleRevokeAfterDays != 7 || !got.DeviceIdleRevokeAllowUserDisable {
+		t.Fatalf("settings not persisted: %+v %v", got, err)
+	}
+	got, err = UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{SiteName: "保留闲置配置"})
+	if err != nil || got.DeviceIdleRevokeAfterDays != 7 || !got.DeviceIdleRevokeAllowUserDisable {
+		t.Fatalf("omitted settings not preserved: %+v %v", got, err)
 	}
 }
 
@@ -688,22 +712,23 @@ func TestGetPublicAuthSettingsWithDBIncludesAlternativeLoginAndCaptcha(t *testin
 	}
 }
 
-// 两个商业化开关的默认值必须是 false：缺表、缺记录、值非法都算关闭。
-func TestCommercialSwitchesDefaultToDisabled(t *testing.T) {
+// 两个历史商业化开关不再由配置控制，始终按启用处理。
+// 充值是否赠送由档位表决定；设备等级的 device_limit=0 表示不限设备。
+func TestCommercialSwitchesDefaultToEnabled(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 
 	detail, err := GetSystemSettingDetailWithDB(db)
 	if err != nil {
 		t.Fatalf("get detail: %v", err)
 	}
-	if detail.RechargePromotionEnabled {
-		t.Fatal("充值阶梯赠送必须默认关闭")
+	if !detail.RechargePromotionEnabled {
+		t.Fatal("充值阶梯赠送兼容字段必须默认开启")
 	}
-	if detail.DeviceLimitEnabled {
-		t.Fatal("账户设备池上限必须默认关闭")
+	if !detail.DeviceLimitEnabled {
+		t.Fatal("账户设备池上限兼容字段必须默认开启")
 	}
-	if GetRechargePromotionEnabledWithDB(db) || GetDeviceLimitEnabledWithDB(db) {
-		t.Fatal("缺记录时两个开关都必须是关闭")
+	if !GetRechargePromotionEnabledWithDB(db) || !GetDeviceLimitEnabledWithDB(db) {
+		t.Fatal("缺记录时两个历史开关也必须按开启处理")
 	}
 
 	for _, invalid := range []string{"", "yes", "1", "TRUE ", "enabled"} {
@@ -713,20 +738,18 @@ func TestCommercialSwitchesDefaultToDisabled(t *testing.T) {
 		if err := db.Create(&entity.SystemSetting{Key: RechargePromotionEnabledSettingKey, Value: invalid}).Error; err != nil {
 			t.Fatalf("seed promotion switch %q: %v", invalid, err)
 		}
-		// strconv.ParseBool 接受 "1"/"TRUE"（大小写不敏感），"yes"/"enabled" 会被拒。
-		want := invalid == "1" || invalid == "TRUE "
-		if got := GetRechargePromotionEnabledWithDB(db); got != want {
-			t.Fatalf("value %q: got %t want %t", invalid, got, want)
+		if got := GetRechargePromotionEnabledWithDB(db); !got {
+			t.Fatalf("legacy value %q must not disable promotion", invalid)
 		}
 	}
 
-	// 表不存在时不能 panic，也要按关闭处理。
+	// 表不存在时不能 panic，也要按开启处理。
 	empty := newSystemSettingTestDB(t)
 	if err := empty.Migrator().DropTable(&entity.SystemSetting{}); err != nil {
 		t.Fatalf("drop settings table: %v", err)
 	}
-	if GetRechargePromotionEnabledWithDB(empty) || GetDeviceLimitEnabledWithDB(empty) {
-		t.Fatal("缺表时两个开关都必须是关闭")
+	if !GetRechargePromotionEnabledWithDB(empty) || !GetDeviceLimitEnabledWithDB(empty) {
+		t.Fatal("缺表时两个历史开关也必须按开启处理")
 	}
 }
 
@@ -761,16 +784,16 @@ func TestUpdateSystemSettingDetailWithDBPersistsCommercialSwitches(t *testing.T)
 		t.Fatalf("省略字段不得改动开关: %+v", kept)
 	}
 
-	// 显式 false 才关闭。
+	// 显式 false 也不能关闭，旧客户端提交该字段必须被忽略。
 	off := false
 	closed, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{RechargePromotionEnabled: &off})
 	if err != nil {
-		t.Fatalf("disable promotion: %v", err)
+		t.Fatalf("legacy disable payload: %v", err)
 	}
-	if closed.RechargePromotionEnabled {
-		t.Fatal("显式 false 必须关闭充值赠送")
+	if !closed.RechargePromotionEnabled {
+		t.Fatal("显式 false 不得关闭充值赠送")
 	}
 	if !closed.DeviceLimitEnabled {
-		t.Fatal("只提交一个开关时另一个必须保持开启")
+		t.Fatal("只提交一个历史字段时另一个也必须保持开启")
 	}
 }

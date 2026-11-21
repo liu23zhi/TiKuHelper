@@ -7,13 +7,6 @@
     <ConsolePageHeading :title="pageTitle" :description="pageDescription">
       <template #actions>
       <a-space wrap class="section-actions">
-        <a-button
-          v-if="isAdmin"
-          :type="showAllTokens ? 'primary' : 'default'"
-          @click="toggleAllTokens"
-        >
-          {{ showAllTokens ? '只看我的令牌' : '显示全部令牌' }}
-        </a-button>
         <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
         <a-button type="primary" @click="openCreateModal">新增令牌</a-button>
       </a-space>
@@ -299,6 +292,16 @@ const visible = ref(false)
 const submitLoading = ref(false)
 const isEditing = ref(false)
 const visibleTokenIds = ref([])
+// showAllTokens 的初始值在下面由 watch(routeViewMode, ..., {immediate:true}) 设定 ——
+// 这里只能给一个中性初值，不能给 false：
+//
+// 用户诉求「令牌管理是管理员页面，需要显示所有用户的数据」的**真实根因就是这一行**。
+// 原来写 ref(false)，而全文件唯一置 true 的地方是用户手动点「显示全部令牌」按钮，
+// 所以管理员进「令牌管理」看到的是自己那一条，必须再点一次才看全站。
+// 后端一直是对的（controller/access_token.go:62 硬与 scope=='all' && isAdminUser）。
+//
+// 用 watch 而不是直接写 ref(routeViewMode.value === 'admin')：
+// routeViewMode 在下方才定义，直接引用会踩 TDZ。
 const showAllTokens = ref(false)
 const formState = ref({
   id: undefined,
@@ -387,7 +390,8 @@ const formState = ref({
         clearListFailure()
         clearDeleteFailure()
         dataSource.value = []; tableLoading.value = false; visibleTokenIds.value = []
-        visible.value = false; showAllTokens.value = false; viewLease = {}; retireEditor(); retireCreatedTokenDialog()
+        visible.value = false; viewLease = {}; retireEditor(); retireCreatedTokenDialog()
+        showAllTokens.value = route?.meta?.viewMode === 'admin' && isAdminUser(currentUser.value)
         // 设备上限是账号私有数据，账号上下文变化必须清空回「—」。
         userLevelSummary.value = null
         formState.value = { id: undefined, name: '', originalName: '', status: 'enabled', totalQuotaLimit: 0, remark: '' }; isEditing.value = false
@@ -421,7 +425,7 @@ const formState = ref({
     // 两句话都必须点明数据范围，否则用户无法从文案判断自己看到的是全部还是自己的。
     const pageTitle = computed(() => (isAdmin.value ? '令牌管理' : '我的令牌'))
     const pageDescription = computed(() => (isAdmin.value
-      ? '管理全站访问令牌：可切换查看全部用户或只看自己，并按令牌维度维护状态、备注与累计额度上限。'
+      ? '管理全部用户的访问令牌，并按令牌维度维护状态、备注与累计额度上限。'
       : '为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。此处只显示你自己的令牌。'))
     const routeViewMode = computed(() => {
       const mode = route?.meta?.viewMode
@@ -429,19 +433,17 @@ const formState = ref({
     })
     const isAdmin = computed(() => {
       if (routeViewMode.value === 'self') return false
-      if (routeViewMode.value === 'admin') return true
       return isAdminUser(currentUser.value)
     })
-    // 入口切换（my-tokens ↔ token-admin）必须把「显示全部」复位。
-    //
-    // 两条路由共用同一组件实例，Vue 在切换时**不会重跑 setup**（与
-    // scripts/script-admin 同一坑），所以 showAllTokens 会跨入口残留：
-    // 管理员在「令牌管理」勾了「显示全部令牌」再点「我的令牌」，若不复位就会
-    // 带着 scope='all' 去请求 ⇒「我的令牌」显示全站数据，正好违反本次诉求
-    // （「我的令牌只显示当前账号的令牌」）。
-    //
-    // isAdmin 由 viewMode 派生，所以 isAdmin 变 false 就是"切到用户入口"的信号。
-    // 只在变成非管理员视图时强制复位；管理员之间切换不受影响。
+    // Changing entry on a reused page must both retire the previous read and
+    // issue a new one. Route metadata chooses a view, not the actor's privileges.
+    watch(routeViewMode, (mode, previous) => {
+      if (mode !== 'self' && mode !== 'admin') return
+      showAllTokens.value = mode === 'admin' && isAdminUser(currentUser.value)
+      if (previous !== undefined && instance.isMounted && canLoadForCurrentUser()) {
+        instance.proxy.handleLoad()
+      }
+    }, { immediate: true, flush: 'sync' })
     watch(isAdmin, adminNow => {
       if (!adminNow && showAllTokens.value) showAllTokens.value = false
     }, { flush: 'sync' })
@@ -531,7 +533,7 @@ const formState = ref({
       },
     ]
     const allColumns = computed(() => {
-      if (!isAdmin.value || !showAllTokens.value) {
+      if (!isAdmin.value) {
         return baseColumns.map(column => column.key === 'remark' ? { ...column, width: remarkExpansion.columnWidth('remark') } : column)
       }
       return [
@@ -547,7 +549,7 @@ const formState = ref({
 
     const columnScope = computed(() => {
       const identity = currentUser.value?.id ? 'id:' + currentUser.value.id : ''
-      return identity ? `${identity}:${isAdmin.value ? 'admin' : 'user'}:${isAdmin.value && showAllTokens.value ? 'all' : 'mine'}` : ''
+      return identity ? `${identity}:${isAdmin.value ? 'admin:all' : 'user:mine'}` : ''
     })
     const priorityColumnKeys = ['username', 'name', 'status', 'totalQuotaLimit', 'totalAmountUsed', 'operation']
     const { visibleColumns: columns, selectedKeys, columnOptions, scopeKey: columnContextKey, setSelectedKeys, resetColumns } = useTableColumnPreferences({
@@ -839,7 +841,7 @@ const formState = ref({
       const owns = () => ownsView() && (typeof isReconciliationCurrent !== 'function' || (ownsRead() && isReconciliationCurrent()))
       this.clearListFailure()
       this.tableLoading = true
-      return getAccessTokens(buildAccessTokenListParams(this.showAllTokens)).then(res => {
+      return getAccessTokens(buildAccessTokenListParams(this.isAdmin)).then(res => {
         if (!owns()) return
         if (res?.status === 200) {
           this.clearListFailure()
@@ -873,13 +875,6 @@ const formState = ref({
         if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return
         this.userLevelSummary = summary
       }).catch(() => { /* 设备上限读不到就显示「—」，不影响令牌管理其它功能。 */ })
-    },
-    toggleAllTokens() {
-      if (!this.isAdmin) {
-        return
-      }
-      this.showAllTokens = !this.showAllTokens
-      this.handleLoad()
     },
     openCreateModal() {
       if (!this.canLoadForCurrentUser()) return

@@ -83,10 +83,10 @@ export function buildSearchAccountConfigSummary(record = {}) {
 
 export function buildSearchAccountConfigSavePayloads(rows = []) {
   return (rows || [])
-    .filter((item) => String(item?.provider || '').trim().toLowerCase() !== 'ai')
     .map((item) => ({
       provider: String(item?.provider || '').trim(),
-      payload: {
+      payload: String(item?.provider || '').trim().toLowerCase() === 'ai' ? { callEnabled: item?.callEnabled !== false } : {
+        callEnabled: item?.callEnabled !== false,
         tokenValue: String(item?.tokenValue || '').trim(),
         enabled: !!item?.enabled,
         remark: String(item?.remark || '').trim(),

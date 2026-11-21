@@ -56,7 +56,7 @@ func TestScriptBootstrapUsesConfiguredHTTPSOriginAndHeaderCapability(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, ok := strings.CutPrefix(item.Command, "powershell -EncodedCommand ")
+	encoded, ok := strings.CutPrefix(item.CompatibilityCommand, "powershell -EncodedCommand ")
 	if !ok {
 		t.Fatal("owner launcher must be PowerShell encoded")
 	}

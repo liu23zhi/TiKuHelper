@@ -83,6 +83,9 @@ func newDeviceUserTestDB(t *testing.T, withA1Columns bool) *gorm.DB {
 			"device_label VARCHAR(64) NOT NULL DEFAULT ''",
 			"revoked_at DATETIME NULL",
 			"revoked_reason VARCHAR(32) NOT NULL DEFAULT ''",
+			// last_ip 是第三批新增列（「我的设备」显示来源 IP）。
+			// 与前三列一起补，因为「A1 列就绪」在生产上意味着「迁移全跑完了」。
+			"last_ip VARCHAR(45) NOT NULL DEFAULT ''",
 		} {
 			column := strings.Fields(ddl)[0]
 			if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, column) {
@@ -173,11 +176,106 @@ func deviceUserRouter(operator *entity.User) *gin.Engine {
 	group := router.Group("/api")
 	group.GET("/user/devices", UserDevices)
 	group.POST("/user/devices/:id/remove", UserDeviceRemove)
+	group.DELETE("/user/devices/:id", UserDeviceDelete)
+	group.PUT("/user/devices/:id/label", UserDeviceRename)
 	group.POST("/user/devices/:id/block", UserDeviceBlock)
 	group.DELETE("/user/devices/blocks/:id", UserDeviceUnblock)
 	group.GET("/user/device-limit", UserDeviceLimitGet)
 	group.PUT("/user/device-limit", UserDeviceLimitPut)
+	group.GET("/user/device-expiry", UserDeviceExpiryGet)
+	group.PUT("/user/device-expiry", UserDeviceExpiryPut)
 	return router
+}
+
+func TestUserDeviceDeleteOnlyRemovesOwnRevokedBinding(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-delete-owner", 0, -1)
+	other := seedDeviceUserUser(t, db, "devuser-delete-other", 0, -1)
+	now := time.Now()
+	revokedID := seedDeviceUserBinding(t, db, owner.ID, "extension:delete-revoked", "旧设备", now, "user_removed", &now)
+	activeID := seedDeviceUserBinding(t, db, owner.ID, "extension:delete-active", "在用设备", now, "", nil)
+	otherID := seedDeviceUserBinding(t, db, other.ID, "extension:delete-other", "别人的设备", now, "user_removed", &now)
+
+	router := deviceUserRouter(owner)
+	res, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", revokedID), nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("已移除设备应允许删除，实际 %d：%s", res.Code, res.Body.String())
+	}
+	var count int64
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", revokedID).Count(&count).Error; err != nil {
+		t.Fatalf("count deleted binding: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("已移除设备删除后不应保留绑定行")
+	}
+
+	active, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", activeID), nil)
+	if active.Code != http.StatusConflict {
+		t.Fatalf("在用设备删除应返回 409，实际 %d：%s", active.Code, active.Body.String())
+	}
+	otherRes, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", otherID), nil)
+	if otherRes.Code != http.StatusNotFound {
+		t.Fatalf("删除他人设备应返回 404，实际 %d：%s", otherRes.Code, otherRes.Body.String())
+	}
+}
+
+func TestUserDeviceExpiryRejectsAboveAdminAndZeroWithoutPermission(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.SystemSetting{Key: service.DeviceIdleRevokeAfterDaysSettingKey, Value: "3"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := seedDeviceUserUser(t, db, "devuser-expiry-owner", 0, -1)
+	router := deviceUserRouter(owner)
+	for _, days := range []int{-1, 0, 4} {
+		res, _ := doDeviceUser(t, router, http.MethodPut, "/api/user/device-expiry", map[string]any{"days": days})
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("days=%d 应被拒绝，实际 %d %s", days, res.Code, res.Body.String())
+		}
+	}
+	res, envelope := doDeviceUser(t, router, http.MethodPut, "/api/user/device-expiry", map[string]any{"days": 2})
+	if res.Code != http.StatusOK || envelope.Data["days"] != float64(2) || envelope.Data["maxDays"] != float64(3) {
+		t.Fatalf("允许的个人时长应保存并回填：%d %s", res.Code, res.Body.String())
+	}
+	if err := db.Create(&entity.SystemSetting{Key: service.DeviceIdleRevokeAllowUserDisableSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	res, envelope = doDeviceUser(t, router, http.MethodPut, "/api/user/device-expiry", map[string]any{"days": 0})
+	if res.Code != http.StatusOK || envelope.Data["days"] != float64(0) {
+		t.Fatalf("管理员允许后用户应能设 0：%d %s", res.Code, res.Body.String())
+	}
+}
+
+func TestUserDeviceDeletePreservesBindingBlockedBeforeDeleteStatement(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-delete-race", 0, -1)
+	now := time.Now()
+	id := seedDeviceUserBinding(t, db, owner.ID, "race-block", "旧设备", now, "user_removed", &now)
+	called := false
+	if err := db.Callback().Delete().Before("gorm:delete").Register("test:block-before-delete", func(tx *gorm.DB) {
+		if called {
+			return
+		}
+		called = true
+		if err := tx.Exec("INSERT INTO user_device_blocks (user_id, device_id, reason, created_at) VALUES (?, ?, ?, ?)", owner.ID, "race-block", "race", now).Error; err != nil {
+			t.Errorf("insert concurrent block: %v", err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := doDeviceUser(t, deviceUserRouter(owner), http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", id), nil)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("删除前被拉黑必须返回 409：%d %s", res.Code, res.Body.String())
+	}
+	var count int64
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", id).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("并发拉黑的设备历史不得被删除")
+	}
 }
 
 type deviceUserEnvelope struct {
@@ -894,3 +992,364 @@ func TestDeviceUserLimitTableColumnsMissing(t *testing.T) {
 // 这里刻意只做编译期占位：`_ = service.EffectiveDeviceLimit` 让「删掉桩文件后
 // 本文件仍能编译」这件事成立（因为它引用的是函数名而不是桩常量的值）。
 var _ = service.EffectiveDeviceLimit
+
+// ─────────────────── 来源 IP（last_ip）与重命名 ───────────────────
+
+// 列表必须回传 last_ip，且缺列时降级成空串而不是报错。
+//
+// 变异方向「把 last_ip 从 SELECT 里删掉」→ 第一条断言必红（lastIp 恒空）。
+// 变异方向「缺列时不返回空串而是 500」→ 第二条断言必红。
+func TestDeviceUserListReturnsLastIP(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-lastip", 0, -1)
+	id := seedDeviceUserBinding(t, db, owner.ID, "ip-device", "", time.Now(), "", nil)
+	if err := db.Table(entity.TableNameAccountDeviceBinding).
+		Where("id = ?", id).Update("last_ip", "203.0.113.7").Error; err != nil {
+		t.Fatalf("set last_ip: %v", err)
+	}
+
+	router := deviceUserRouter(owner)
+	recorder, envelope := doDeviceUser(t, router, http.MethodGet, "/api/user/devices", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("列表应 200，实际 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	devices, _ := envelope.Data["devices"].([]any)
+	if len(devices) != 1 {
+		t.Fatalf("期望 1 台设备，实际 %d：%s", len(devices), recorder.Body.String())
+	}
+	item, _ := devices[0].(map[string]any)
+	if got, _ := item["lastIp"].(string); got != "203.0.113.7" {
+		t.Fatalf("列表必须回传 lastIp，实际 %q（完整响应 %s）", got, recorder.Body.String())
+	}
+}
+
+func TestDeviceUserListReturnsFirstAndLastUsage(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "device-usage", 0, -1)
+	first := time.Date(2026, 11, 1, 1, 2, 3, 0, time.UTC)
+	last := first.Add(24 * time.Hour)
+	id := seedDeviceUserBinding(t, db, owner.ID, "usage-device", "", last, "", nil)
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", id).Updates(map[string]any{
+		"first_ip": "172.18.0.1", "last_ip": "203.0.113.7", "first_seen_at": first,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	w, body := doDeviceUser(t, deviceUserRouter(owner), http.MethodGet, "/api/user/devices", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	item := body.Data["devices"].([]any)[0].(map[string]any)
+	if item["firstIp"] != "172.18.0.1" || item["lastIp"] != "203.0.113.7" {
+		t.Fatalf("usage IPs: %#v", item)
+	}
+	for key, expected := range map[string]time.Time{"firstSeenAt": first, "lastSeenAt": last} {
+		got, err := time.Parse(time.RFC3339Nano, item[key].(string))
+		if err != nil || !got.Equal(expected) {
+			t.Fatalf("%s=%v", key, item[key])
+		}
+	}
+}
+
+func TestRegisterDeviceFirstIPNeverChangesOrInventsHistory(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "device-first-ip", 0, -1)
+	for _, ip := range []string{"::ffff:172.18.0.1", "198.51.100.4", ""} {
+		if _, err := service.RegisterDeviceWithOptions(db, owner.ID, "new-device", service.DeviceBindingRegisterOptions{ClientIP: ip}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got entity.AccountDeviceBinding
+	if err := db.Where("user_id = ? AND device_id = ?", owner.ID, "new-device").First(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.FirstIP != "172.18.0.1" || got.LastIP != "198.51.100.4" {
+		t.Fatalf("first/last IP changed incorrectly: %#v", got)
+	}
+	seedDeviceUserBinding(t, db, owner.ID, "old-device", "", time.Now().Add(-24*time.Hour), "", nil)
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, "old-device", service.DeviceBindingRegisterOptions{ClientIP: "198.51.100.4"}); err != nil {
+		t.Fatal(err)
+	}
+	var legacy entity.AccountDeviceBinding
+	if err := db.Where("user_id = ? AND device_id = ?", owner.ID, "old-device").First(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy.FirstIP != "" || legacy.LastIP != "198.51.100.4" {
+		t.Fatalf("legacy history was invented: %#v", legacy)
+	}
+}
+
+func TestDeviceUserListToleratesMissingFirstIPColumn(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "device-old-schema", 0, -1)
+	seedDeviceUserBinding(t, db, owner.ID, "legacy-device", "", time.Now(), "", nil)
+	if err := db.Exec("ALTER TABLE " + entity.TableNameAccountDeviceBinding + " DROP COLUMN first_ip").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, "legacy-device", service.DeviceBindingRegisterOptions{ClientIP: "172.18.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	w, body := doDeviceUser(t, deviceUserRouter(owner), http.MethodGet, "/api/user/devices", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	item := body.Data["devices"].([]any)[0].(map[string]any)
+	if item["firstIp"] != "" || item["lastIp"] != "172.18.0.1" {
+		t.Fatalf("old schema: %#v", item)
+	}
+}
+
+// 缺 last_ip 列（迁移未跑）时：列表照常 200，lastIp 退化为空串。
+//
+// 为什么要单独一条：加了 HasColumn 判断却没有这条用例，就没人能证明
+// 「老库不会因为少一列而整页 500」。
+func TestDeviceUserListToleratesMissingLastIPColumn(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-lastip-nocol", 0, -1)
+	seedDeviceUserBinding(t, db, owner.ID, "no-ip-device", "", time.Now(), "", nil)
+	if err := db.Exec("ALTER TABLE " + entity.TableNameAccountDeviceBinding +
+		" DROP COLUMN last_ip").Error; err != nil {
+		t.Fatalf("drop last_ip: %v", err)
+	}
+
+	router := deviceUserRouter(owner)
+	recorder, envelope := doDeviceUser(t, router, http.MethodGet, "/api/user/devices", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("缺 last_ip 列时列表仍须 200，实际 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	devices, _ := envelope.Data["devices"].([]any)
+	if len(devices) != 1 {
+		t.Fatalf("期望 1 台设备，实际 %d", len(devices))
+	}
+	item, _ := devices[0].(map[string]any)
+	if got, ok := item["lastIp"].(string); !ok || got != "" {
+		t.Fatalf("缺列时 lastIp 必须是空串（而不是缺失字段或伪造值），实际 %#v", item["lastIp"])
+	}
+}
+
+// 重命名：写 device_label，且**只**写这一列（不碰 last_seen_at）。
+//
+// 为什么必须断言 last_seen_at 不变：用 Updates 而不是 UpdateColumn 会顺带
+// 刷新 updated_at（不是 last_seen_at），但如果有人把它改成
+// `Updates(map{label, last_seen_at})`，用户的「10 天闲置解绑」就被改名的动作
+// 意外续命了 —— 界面上看不出来，只有数据能证明。
+func TestDeviceUserRenameWritesLabelOnly(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-rename", 0, -1)
+	// 用一个明显早于「现在」的时间，任何意外刷新都会让它变大。
+	oldSeen := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+	id := seedDeviceUserBinding(t, db, owner.ID, "rename-device", "", oldSeen, "", nil)
+
+	router := deviceUserRouter(owner)
+	recorder, envelope := doDeviceUser(t, router, http.MethodPut,
+		fmt.Sprintf("/api/user/devices/%d/label", id), map[string]any{"label": "  家里的笔记本  "})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("重命名应 200，实际 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	if got, _ := envelope.Data["deviceLabel"].(string); got != "家里的笔记本" {
+		t.Fatalf("响应里的 deviceLabel 必须是去空白后的值，实际 %q", got)
+	}
+
+	var stored struct {
+		Label  string    `gorm:"column:device_label"`
+		Seen   time.Time `gorm:"column:last_seen_at"`
+		Detail time.Time `gorm:"column:updated_at"`
+	}
+	if err := db.Table(entity.TableNameAccountDeviceBinding).
+		Select("device_label AS device_label, last_seen_at AS last_seen_at, updated_at AS updated_at").
+		Where("id = ?", id).Take(&stored).Error; err != nil {
+		t.Fatalf("read binding: %v", err)
+	}
+	if stored.Label != "家里的笔记本" {
+		t.Fatalf("device_label 必须落库为「家里的笔记本」，实际 %q", stored.Label)
+	}
+	if delta := stored.Seen.Sub(oldSeen); delta > time.Minute || delta < -time.Minute {
+		t.Fatalf("重命名**不得**改动 last_seen_at（它是 10 天闲置解绑的唯一数据源），"+
+			"期望仍为 %v，实际 %v", oldSeen, stored.Seen)
+	}
+}
+
+// 重命名必须校验归属：别人的设备一律 404（红线 1，与 remove/block 同口径）。
+func TestDeviceUserRenameRequiresOwnership(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-rename-owner", 0, -1)
+	intruder := seedDeviceUserUser(t, db, "devuser-rename-intruder", 0, -1)
+	id := seedDeviceUserBinding(t, db, owner.ID, "owned-device", "原名", time.Now(), "", nil)
+
+	router := deviceUserRouter(intruder)
+	recorder, _ := doDeviceUser(t, router, http.MethodPut,
+		fmt.Sprintf("/api/user/devices/%d/label", id), map[string]any{"label": "被别人改的"})
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("改别人的设备必须 404（不能是 403，否则泄露存在性），实际 %d：%s",
+			recorder.Code, recorder.Body.String())
+	}
+	var label string
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Select("device_label").
+		Where("id = ?", id).Scan(&label).Error; err != nil {
+		t.Fatalf("read label: %v", err)
+	}
+	if label != "原名" {
+		t.Fatalf("越权请求不得改动设备名，实际 %q", label)
+	}
+}
+
+// 重命名输入校验：控制字符/超长/空串。
+//
+// 空串是**合法**的（恢复「未命名的设备」显示），必须 200 且落库为空串 ——
+// 这条与下面两个拒绝用例放在一起，防止有人把「拒绝一切非法输入」写成「拒绝空串」。
+func TestDeviceUserRenameLabelValidation(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantCode  int
+		wantLabel string
+	}{
+		{"空串恢复默认显示", "", http.StatusOK, ""},
+		{"纯空白等价于空串", "   ", http.StatusOK, ""},
+		{"含换行被拒", "第一行\n第二行", http.StatusBadRequest, ""},
+		{"含制表符被拒", "名字\t带制表符", http.StatusBadRequest, ""},
+		{"含 NUL 被拒", "名字\x00", http.StatusBadRequest, ""},
+		{"恰 64 字符允许", strings.Repeat("名", 64), http.StatusOK, strings.Repeat("名", 64)},
+		{"65 字符被拒", strings.Repeat("名", 65), http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newDeviceUserTestDB(t, true)
+			owner := seedDeviceUserUser(t, db, "devuser-rename-"+tc.name, 0, -1)
+			id := seedDeviceUserBinding(t, db, owner.ID, "validate-device", "旧名字", time.Now(), "", nil)
+
+			router := deviceUserRouter(owner)
+			recorder, _ := doDeviceUser(t, router, http.MethodPut,
+				fmt.Sprintf("/api/user/devices/%d/label", id), map[string]any{"label": tc.input})
+			if recorder.Code != tc.wantCode {
+				t.Fatalf("期望 %d，实际 %d：%s", tc.wantCode, recorder.Code, recorder.Body.String())
+			}
+			var label string
+			if err := db.Table(entity.TableNameAccountDeviceBinding).Select("device_label").
+				Where("id = ?", id).Scan(&label).Error; err != nil {
+				t.Fatalf("read label: %v", err)
+			}
+			if tc.wantCode == http.StatusOK {
+				if label != tc.wantLabel {
+					t.Fatalf("落库值应为 %q，实际 %q", tc.wantLabel, label)
+				}
+				return
+			}
+			// 被拒时**原值不得被改动**（不能先写后校验）。
+			if label != "旧名字" {
+				t.Fatalf("被拒的请求不得改动设备名，实际 %q", label)
+			}
+		})
+	}
+}
+
+// 缺 device_label 列（迁移未跑）时重命名返回 503，而不是静默成功。
+//
+// 静默成功会让用户以为改了名，刷新后又变回「未命名的设备」—— 那是更难查的
+// 缺陷形态（无报错、只有目视可见）。
+func TestDeviceUserRenameRequiresLabelColumn(t *testing.T) {
+	db := newDeviceUserTestDB(t, false) // withA1Columns=false
+	owner := seedDeviceUserUser(t, db, "devuser-rename-nocol", 0, -1)
+	row := entity.AccountDeviceBinding{
+		UserID: owner.ID, DeviceID: "nocol-device",
+		FirstSeenAt: time.Now(), LastSeenAt: time.Now(),
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+	// withA1Columns=false 只是「不额外补」，而 AutoMigrate(&entity.AccountDeviceBinding{})
+	// 会按实体 tag 把 device_label 建出来。要精确复现「迁移未跑」的库，必须显式删列。
+	if err := db.Exec("ALTER TABLE " + entity.TableNameAccountDeviceBinding +
+		" DROP COLUMN device_label").Error; err != nil {
+		t.Fatalf("drop device_label: %v", err)
+	}
+	if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label") {
+		t.Fatal("前置不成立：device_label 应当已被删掉")
+	}
+
+	router := deviceUserRouter(owner)
+	recorder, _ := doDeviceUser(t, router, http.MethodPut,
+		fmt.Sprintf("/api/user/devices/%d/label", row.ID), map[string]any{"label": "新名字"})
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("缺 device_label 列时必须 503，实际 %d：%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// NormalizeDeviceClientIP：IPv4-mapped IPv6 收敛、非法值返回空串、内网地址保留。
+//
+// 变异方向「非法值原样返回」→ 第 2 组必红；「过滤内网」→ 第 3 组必红。
+func TestNormalizeDeviceClientIP(t *testing.T) {
+	cases := []struct{ name, input, want string }{
+		{"普通 IPv4", "203.0.113.7", "203.0.113.7"},
+		{"首尾空白", "  203.0.113.7  ", "203.0.113.7"},
+		{"IPv4-mapped IPv6 收敛为 IPv4", "::ffff:203.0.113.7", "203.0.113.7"},
+		{"IPv6 原样", "2001:db8::1", "2001:db8::1"},
+		// 内网与回环必须**保留**：这是给设备主人自己看的页面。
+		{"私网保留", "192.168.1.7", "192.168.1.7"},
+		{"回环保留", "127.0.0.1", "127.0.0.1"},
+		{"空串", "", ""},
+		{"纯空白", "   ", ""},
+		{"非法文本", "unknown", ""},
+		{"带端口的组合", "203.0.113.7:8080", ""},
+		{"空尖括号", "<nil>", ""},
+	}
+	for _, tc := range cases {
+		if got := service.NormalizeDeviceClientIP(tc.input); got != tc.want {
+			t.Errorf("%s：NormalizeDeviceClientIP(%q) = %q，期望 %q", tc.name, tc.input, got, tc.want)
+		}
+	}
+}
+
+// 登记只在**采到合法 IP** 时写 last_ip，采不到时不得把已知地址抹成空。
+//
+// 变异方向「无条件写 updates["last_ip"]」→ 第二条断言必红。
+// 它对应的真实故障：daemon 重启/请求来自 unix socket 时 c.ClientIP() 拿不到值，
+// 用户会看到自己设备的 IP 忽然变成「未记录」。
+func TestRegisterDeviceKeepsLastIPWhenClientIPMissing(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-register-ip", 0, -1)
+	deviceID := "register-ip-device"
+
+	// 第一次：带合法 IP → 落库。
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, deviceID,
+		service.DeviceBindingRegisterOptions{ClientIP: "203.0.113.9"}); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	readIP := func() string {
+		var got string
+		if err := db.Table(entity.TableNameAccountDeviceBinding).Select("last_ip").
+			Where("user_id = ? AND device_id = ?", owner.ID, deviceID).Scan(&got).Error; err != nil {
+			t.Fatalf("read last_ip: %v", err)
+		}
+		return got
+	}
+	if got := readIP(); got != "203.0.113.9" {
+		t.Fatalf("首次登记必须写入 last_ip，实际 %q", got)
+	}
+
+	// 第二次：空 IP（模拟采不到）→ 必须保留原值。
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, deviceID,
+		service.DeviceBindingRegisterOptions{ClientIP: ""}); err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	if got := readIP(); got != "203.0.113.9" {
+		t.Fatalf("采不到 IP 时不得抹掉已知地址，期望仍是 203.0.113.9，实际 %q", got)
+	}
+
+	// 第三次：非法 IP（代理塞进来的乱码）→ 同样不得覆盖。
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, deviceID,
+		service.DeviceBindingRegisterOptions{ClientIP: "not-an-ip"}); err != nil {
+		t.Fatalf("third register: %v", err)
+	}
+	if got := readIP(); got != "203.0.113.9" {
+		t.Fatalf("非法 IP 不得覆盖已知地址，期望仍是 203.0.113.9，实际 %q", got)
+	}
+
+	// 第四次：换一个合法 IP → 必须更新（设备确实换网络了）。
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, deviceID,
+		service.DeviceBindingRegisterOptions{ClientIP: "198.51.100.4"}); err != nil {
+		t.Fatalf("fourth register: %v", err)
+	}
+	if got := readIP(); got != "198.51.100.4" {
+		t.Fatalf("换网络后必须更新 last_ip，期望 198.51.100.4，实际 %q", got)
+	}
+}

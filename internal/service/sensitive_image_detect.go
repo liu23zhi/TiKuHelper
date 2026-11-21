@@ -667,6 +667,11 @@ func LoadSensitiveImageBytesWithDB(db *gorm.DB, imageSHA256 string) ([]byte, str
 	if imageSHA256 == "" {
 		return nil, "", ErrSensitiveImageBytesUnavailable
 	}
+	if ticketAttachmentBlobReady(db) {
+		if mimeType, plain, err := ReadTicketAttachmentBlobWithDB(db, imageSHA256); err == nil {
+			return plain, mimeType, nil
+		}
+	}
 	var row entity.TicketAttachment
 	err := db.Where(map[string]any{"sha256": imageSHA256}).Order("id ASC").First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -718,6 +723,12 @@ func SyncSensitiveImageScanStateWithDB(db *gorm.DB, imageSHA256, state string) (
 	if update.Error != nil {
 		return 0, update.Error
 	}
+	if ticketAttachmentBlobReady(db) {
+		if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{}).
+			Where("sha256 = ?", imageSHA256).Updates(map[string]any{"scan_state": scanState, "updated_at": now}).Error; err != nil {
+			return update.RowsAffected, err
+		}
+	}
 	return update.RowsAffected, nil
 }
 
@@ -738,6 +749,8 @@ func sensitiveImageScanStateAndMarkOfState(state string) (scanState string, mark
 	switch {
 	case strings.EqualFold(trimmed, string(SensitiveImageDetectClean)):
 		return entity.TicketAttachmentScanApproved, entity.TicketAttachmentMarkedByUpstream
+	case strings.EqualFold(trimmed, "error"), strings.EqualFold(trimmed, "failed"):
+		return entity.TicketAttachmentScanFailed, entity.TicketAttachmentMarkedByUpstream
 	case strings.EqualFold(trimmed, string(SensitiveImageDetectByQuota)):
 		return entity.TicketAttachmentScanSensitive, entity.TicketAttachmentMarkedByQuota
 	default:

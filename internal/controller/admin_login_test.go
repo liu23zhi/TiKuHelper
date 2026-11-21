@@ -768,3 +768,25 @@ func TestLoginFailureWritesExactlyOneResponse(t *testing.T) {
 		t.Fatalf("status = %d, want 429", recorder.Code)
 	}
 }
+
+func TestPublicAdministratorSetupPasswordIsNotAnHTTPLogin(t *testing.T) {
+	d := newLoginRateLimitControllerDB(t)
+	stubCtrlCaptcha(t, nil)
+	current := util.FactoryAdminPassword
+	hash, err := util.HashPassword(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.Create(&entity.User{ID: 1, Username: "admin", Password: hash, Role: "admin", Status: "enabled"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, peer := range []string{"127.0.0.1:4321", "192.0.2.44:4321"} {
+		for _, post := range []func(*testing.T, map[string]any, string) *httptest.ResponseRecorder{postAdminLogin, postUserLogin} {
+			reply := post(t, map[string]any{"username": "admin", "password": current, "captchaToken": "valid-fixture"}, peer)
+			b := decodeBody(t, reply)
+			if b["message"] != "用户名或密码错误" || b["jwt"] != nil || reply.Header().Get("Set-Cookie") != "" {
+				t.Fatal("public credential was not rejected as a password failure")
+			}
+		}
+	}
+}

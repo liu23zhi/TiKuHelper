@@ -32,6 +32,8 @@ async function createPage(overrides = {}) {
     computed, defineComponent, reactive, ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount, useId, useRoute, sumTableColumnWidths,
     useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch, getStoredCurrentUser, inheritTransportRequestId, inheritRequestFailureView,
     RequestFailureAlert: {}, OverflowTableText: {}, buildAIToolTestPayload,
+    AdminDataTransfer: {},
+    OCRBatchRecognition: {},
     Descriptions: { Item: {} }, message: { success() {} },
     Swal: { fire: async () => ({ isConfirmed: true }) },
     Blob,

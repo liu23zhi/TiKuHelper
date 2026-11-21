@@ -4,10 +4,12 @@
       <template #actions>
       <a-space wrap class="section-actions">
         <a-button @click="handleUserList" :loading="tabLoading">刷新</a-button>
+        <a-button :disabled="!canManageUsers || userTransferLoading" :loading="userTransferLoading" @click="exportUsers"><DownloadOutlined />导出用户</a-button>
         <a-button type="primary" @click="openCreateModal">新增用户</a-button>
       </a-space>
       </template>
     </ConsolePageHeading>
+    <input ref="userImportInput" class="visually-hidden" hidden style="display: none" type="file" accept=".csv,.json,.xlsx,.xls" aria-label="选择用户导入文件" @change="onUserImportFile" />
     <ConsoleSummaryGrid>
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="用户总数（筛选结果）" :value="summary.total" />
@@ -45,6 +47,8 @@
         class="page-alert"
         message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称、手机号与微信绑定。"
       />
+
+
 
       <a-form layout="inline" class="filter-form">
         <a-form-item label="关键词" :html-for="fieldId('filter-keyword')">
@@ -127,23 +131,9 @@
             <a-button type="link" style="padding: 0" @click="openEditModal(record)">编辑</a-button>
             <!-- 绑定历史（需求 5a / task_doc/70 §3.6）：管理员查某账号的换绑轨迹。 -->
             <a-button type="link" style="padding: 0" @click="openBindingsModal(record)">查看</a-button>
-            <!--
-              用户画像（T-17 / task_doc/98，用户 2026-11-13 决策）。
-              ⚠️ 这是**并列新增**的独立入口，不是替换上面的「查看」：
-              那个「查看」是绑定历史弹窗（GET /admin/users/:id/bindings），
-              语义与画像完全不同，不得合并也不得挪位。
-              画像本身是「一个页面的两种视角」（侧边栏页默认整体、可切单用户），
-              所以这里跳转到同一页面并带 ?userId=，不另开弹窗。
-            -->
+            <!-- 全站画像在独立页面查看，单用户画像在此直接弹出。 -->
             <a-button type="link" style="padding: 0" @click="openPortrait(record)">画像</a-button>
-            <!--
-              设备（A4-2）：该账号当前占用哪些设备槽位。
-              ⚠️ 同样是**并列新增**，不是替换「查看」：
-                「查看」= 绑定历史（换绑轨迹）
-                「设备」= 当前占用的槽位 + 可就地解绑/封禁
-              跳转到设备管理页并带 ?userId=，与画像同一范式（不另开弹窗，
-              因为设备列表本身已带分页与筛选，复制进弹窗会有两套分页状态）。
-            -->
+            <!-- 只读设备摘要按用户 ID 查询，不离开用户列表。 -->
             <a-button type="link" style="padding: 0" @click="openDevices(record)">设备</a-button>
             <a-button type="link" style="padding: 0" @click="openResetPasswordModal(record)">重置密码</a-button>
             <a-popconfirm
@@ -205,6 +195,43 @@
         />
       </div>
     </a-card>
+
+    <section v-if="canManageUsers" class="user-transfer-footer">
+      <h2>用户数据导入与任务</h2>
+      <a-space wrap>
+        <a-button :disabled="!canManageUsers || userTransferLoading" @click="openUserImport"><UploadOutlined />导入用户</a-button>
+        <a-button :disabled="!canManageUsers || userTransferLoading" :loading="userTemplateLoading" @click="downloadUserTemplate">下载用户模板</a-button>
+      </a-space>
+      <section v-if="canManageUsers" class="user-transfer-panel" aria-label="用户异步导入导出任务">
+        <div class="user-transfer-heading">
+          <div><h2>数据导入 / 导出</h2><p>支持 CSV、JSON、Excel 文件。导出任务完成后可下载结果。</p></div>
+          <a-button :loading="userTasksLoading" :disabled="userTasksLoading" @click="refreshUserTasks">刷新任务</a-button>
+        </div>
+        <a-alert v-if="userTransferNotice" class="page-alert" type="info" show-icon :message="userTransferNotice" />
+        <a-alert v-if="userTransferError" class="page-alert" type="error" show-icon :message="userTransferError" />
+        <a-table
+          :data-source="userTasks"
+          :columns="userTaskColumns"
+          :pagination="false"
+          row-key="taskId"
+          size="small"
+          table-layout="fixed"
+          :scroll="{ x: 700 }"
+        >
+          <template #bodyCell="{ column, record }">
+            <span v-if="column.key === 'createdAt'">{{ formatDateTime(record.createdAt) }}</span>
+            <span v-else-if="column.key === 'type'">{{ record.type === 'import' ? '导入' : '导出' }} · {{ record.format?.toUpperCase?.() || '文件' }}</span>
+            <span v-else-if="column.key === 'status'">{{ describeUserTask(record) }}</span>
+            <a v-else-if="column.key === 'result' && asyncTaskDownloadUrl(record)" :href="asyncTaskDownloadUrl(record)">下载结果</a>
+            <span v-else-if="column.key === 'result'">—</span>
+            <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
+          </template>
+          <template #emptyText>
+            <a-empty :description="userTasksLoading ? '正在读取异步任务' : '暂无用户导入或导出任务'" />
+          </template>
+        </a-table>
+      </section>
+    </section>
 
     <a-modal
       v-model:open="visible"
@@ -290,12 +317,14 @@
             </div>
           </a-form-item>
           <a-form-item label="封禁原因" required :html-for="fieldId('editor-ban-reason')" :validate-status="banReasonError ? 'error' : undefined">
-            <a-input
+            <a-auto-complete
               :id="fieldId('editor-ban-reason')"
               v-model:value="formState.banReason"
+              :options="banReasonOptions"
+              style="width:100%"
               :disabled="submittingBan"
-              placeholder="必填，会写入审计与封禁记录"
-              @input="banReasonError = ''"
+              placeholder="选择常用原因或自行输入，会向用户展示"
+              @change="banReasonError = ''"
             />
             <template #help><span v-if="banReasonError" role="alert">{{ banReasonError }}</span></template>
           </a-form-item>
@@ -477,6 +506,28 @@
     <!-- ── 绑定历史弹窗（需求 5a） ───────────────────────────────── -->
     <!-- 只读：增改走去侧边栏的微信/手机号绑定历史页，这里只回答「这个账号换过几次绑」。 -->
     <a-modal
+      v-model:open="deviceVisible"
+      :title="deviceTitle"
+      :width="860"
+      :body-style="{ maxHeight: '70vh', overflowY: 'auto' }"
+      :footer="null"
+      @cancel="closeDeviceModal"
+    >
+      <DeviceAdmin v-if="deviceVisible" :key="deviceTarget.id" :user-id="Number(deviceTarget.id)" embedded />
+    </a-modal>
+
+    <a-modal
+      v-model:open="userPortraitVisible"
+      :title="userPortraitTitle"
+      :width="900"
+      :body-style="{ maxHeight: '70vh', overflowY: 'auto' }"
+      :footer="null"
+      @cancel="closeUserPortrait"
+    >
+      <UserPortrait v-if="userPortraitVisible" :key="userPortraitTarget.id" :user-id="Number(userPortraitTarget.id)" embedded />
+    </a-modal>
+
+    <a-modal
       v-if="bindingsVisible"
       :key="bindingsModalKey"
       :open="bindingsVisible"
@@ -486,11 +537,12 @@
       :closable="!bindingsLoading"
       @cancel="closeBindingsModal"
     >
+      <UserAccountSummary :user="bindingsTarget" />
       <section v-if="bindingsFailure" class="page-alert">
         <RequestFailureAlert
           :key="bindingsFailureContextKey"
           :failure="bindingsFailure"
-          message="绑定历史请求未完成，请重试。"
+          message=""
           :retryable="true"
           :busy="bindingsLoading"
           :context-key="bindingsFailureContextKey"
@@ -511,7 +563,36 @@
         >
           <template #bodyCell="{ column, record }">
             <span v-if="column.key === 'kind'">{{ bindingKindLabel(record.kind) }}</span>
-            <span v-else-if="column.key === 'valueMasked'" class="binding-masked-cell">{{ record.valueMasked || '—' }}</span>
+            <!--
+              绑定值列：默认脱敏，「显示完整值」是**显式点击**才揭示。
+              用户 2026-11-15 拍板：「加一个「显示完整值」按钮并记审计日志，
+              而不是默认明文」。所以三态必须都能看见：
+                未揭示 → 脱敏值 + 「显示完整值」按钮
+                揭示中 → 脱敏值 + 按钮 loading（禁用，防连点重复审计）
+                已揭示 → 明文 + 「已显示」按钮（禁用，避免二次请求又写一条审计）
+            -->
+            <div v-else-if="column.key === 'valueMasked'" class="binding-value-cell">
+              <span v-if="isBindingRevealed(record.id)" class="binding-revealed-cell">{{ bindingRevealedValue(record.id) || '—' }}</span>
+              <span v-else class="binding-masked-cell">{{ record.valueMasked || '—' }}</span>
+              <a-button
+                v-if="isBindingRevealed(record.id)"
+                size="small"
+                type="link"
+                class="binding-reveal-button"
+                disabled
+                data-testid="binding-reveal-shown"
+              >已显示</a-button>
+              <a-button
+                v-else
+                size="small"
+                type="link"
+                class="binding-reveal-button"
+                :loading="isBindingRevealPending(record.id)"
+                :disabled="isBindingRevealPending(record.id)"
+                data-testid="binding-reveal-button"
+                @click="revealBinding(record)"
+              >显示完整值</a-button>
+            </div>
             <a-tag v-else-if="column.key === 'state'" :color="bindingStateColor(record.state)">{{ bindingStateLabel(record.state) }}</a-tag>
             <span v-else-if="column.key === 'releaseReason'">{{ bindingReleaseReasonLabel(record.releaseReason) }}</span>
             <span v-else-if="column.key === 'boundAt'" class="user-time-cell">{{ formatDateTime(record.boundAt) }}</span>
@@ -519,7 +600,7 @@
             <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
           </template>
         </a-table>
-        <a-empty v-else-if="!bindingsLoading" description="该账号还没有任何绑定记录" />
+        <a-empty v-else-if="!bindingsLoading && !bindingsFailure" description="该账号还没有任何绑定记录" />
       </a-spin>
     </a-modal>
   </div>
@@ -540,12 +621,23 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
-import { getAdminUserBindings } from '@/api/UserBindingApi';
+import { getAdminUserBindings, revealBindingValue } from '@/api/UserBindingApi';
+import { getAdminDevices } from '@/api/DeviceAdminApi';
+import { getUserPortrait } from '@/api/UserPortraitApi';
+import UserPortrait from '@/pages/UserPortrait/index.vue';
+import DeviceAdmin from '@/pages/DeviceAdmin/index.vue';
+import UserAccountSummary from '@/components/UserAccountSummary.vue';
+import {
+  submitImportTask, submitExportTask, listAsyncTasks, fetchImportTemplate,
+  describeTask, taskDownloadUrl as asyncTaskDownloadUrl,
+} from '../IntelligentImport/asyncTaskApi.mjs';
+import { buildPortraitTiles } from '@/utils/portraitCharts.mjs';
 // 封禁（t203）：与「封禁管理」页共用同一套 API（POST 封禁 / DELETE 解封）。
 // 不在本文件里手写请求，避免出现「两处各写一份封禁逻辑」的漂移。
 import { createUserBan, getUserBans, revokeUserBan } from '@/api/UserBanApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, formatBillingRecordTime, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
+import { readAdminBindingHistory } from '@/utils/bindingHistoryHelpers.mjs';
 import { ensurePhoneBeforeSMSCaptcha, normalizePhonePaste } from '@/utils/captchaHelpers.mjs';
 import MainlandPhoneInput from '@/components/MainlandPhoneInput.vue';
 import TableColumnSettings from '@/components/TableColumnSettings.vue';
@@ -564,9 +656,10 @@ import {
   normalizeLocationKey,
   formatValueWithLocation as formatValueWithLocationBase,
 } from '@/utils/locationHelpers.mjs';
-import { message } from 'ant-design-vue';
+import { message, Modal } from 'ant-design-vue';
 import Swal from 'sweetalert2';
 import { computed, defineComponent, getCurrentInstance, markRaw, nextTick, reactive, ref, shallowRef, useId, watch } from 'vue';
+import { DownloadOutlined, UploadOutlined } from '@ant-design/icons-vue';
 
 // Applied keywords may contain private identifiers: bounded tab-memory only, never storage.
 const userListKeywordSessions = new Map()
@@ -631,7 +724,9 @@ function bindingReleaseReasonLabel(value) {
 }
 const bindingsColumns = [
   { title: '类型', dataIndex: 'kind', key: 'kind', width: 80 },
-  { title: '绑定值（脱敏）', dataIndex: 'valueMasked', key: 'valueMasked', width: 170 },
+  // 标题去掉「（脱敏）」：默认仍是脱敏的，但现在同一列里有「显示完整值」入口，
+  // 标题写「（脱敏）」会与用户看到的行为矛盾（揭示了却还写着脱敏）。
+  { title: '绑定值', dataIndex: 'valueMasked', key: 'valueMasked', width: 210 },
   { title: '状态', dataIndex: 'state', key: 'state', width: 90 },
   { title: '释放原因', dataIndex: 'releaseReason', key: 'releaseReason', width: 105 },
   { title: '绑定时间', dataIndex: 'boundAt', key: 'boundAt', width: 165 },
@@ -825,7 +920,7 @@ function mergeLocations(target, addresses) {
 async function enrichColumns(rows, isCurrent = owner.capture().isAlive) {
   if (!isCurrent()) return
   const phones = collectLocationKeys(rows, 'phone')
-  const ips = collectLocationKeys(rows, ['lastLoginIp', 'registerIp'])
+  const ips = collectLocationKeys(rows, ['lastLoginIp', 'registerIp', 'firstIp', 'lastIp'])
 
   const tasks = []
   if (phones.length) {
@@ -992,6 +1087,72 @@ const bindingsFailureContextKey = ref(0)
 let bindingsFailureOwner = () => false
 // 请求票号：弹窗关闭或换用户时让在途响应失效，避免「切了用户但列表是上一个的」。
 let bindingsRequestVersion = 0
+const deviceVisible = ref(false)
+const deviceLoading = ref(false)
+const deviceRows = ref([])
+const deviceTarget = ref({})
+const deviceFailure = shallowRef(null)
+const deviceFailureContext = ref(0)
+const deviceRequestVersion = ref(0)
+const deviceTitle = computed(() => {
+  const user = deviceTarget.value || {}
+  return `${String(user.username || '用户')}（#${Number(user.id) || '—'}）的设备`
+})
+const userPortraitVisible = ref(false)
+const userPortraitLoading = ref(false)
+const userPortrait = shallowRef(null)
+const userPortraitTarget = ref({})
+const userPortraitFailure = shallowRef(null)
+const userPortraitFailureContext = ref(0)
+const userPortraitRequestVersion = ref(0)
+const userPortraitTitle = computed(() => {
+  const user = userPortraitTarget.value || {}
+  return `${String(user.nickname || user.username || '用户')}（#${Number(user.id) || '—'}）的画像`
+})
+const userPortraitTiles = computed(() => buildPortraitTiles(userPortrait.value || {}, {
+  money: value => formatMoneyValue(value), count: value => value,
+}))
+const userPortraitBreakdowns = computed(() => {
+  const data = userPortrait.value || {}
+  return [
+    { key: 'hours', title: '按小时', items: Array.isArray(data.hours) ? data.hours.map(row => ({ ...row, label: `${String(row.bucket ?? '').padStart(2, '0')}:00` })) : [] },
+    { key: 'weekdays', title: '按星期', items: Array.isArray(data.weekdays) ? data.weekdays.map(row => ({ ...row, label: row.label || `星期${row.bucket ?? ''}` })) : [] },
+    { key: 'billingTypes', title: '消费类型', items: Array.isArray(data.billingTypes) ? data.billingTypes : [] },
+    { key: 'tickets', title: '工单状态', items: Array.isArray(data.tickets) ? data.tickets : [] },
+    { key: 'registerSources', title: '注册来源', items: Array.isArray(data.registerSources) ? data.registerSources : [] },
+    { key: 'registerRegions', title: '注册地区', items: Array.isArray(data.registerRegions) ? data.registerRegions : [] },
+  ].filter(section => section.items.length)
+})
+const userTasks = ref([])
+const userTasksLoading = ref(false)
+const userTransferLoading = ref(false)
+const userTemplateLoading = ref(false)
+const userTransferNotice = ref('')
+const userTransferError = ref('')
+const userTransferVersion = ref(0)
+const userTaskRequestVersion = ref(0)
+const userTaskPollingTimer = ref(null)
+const userTaskColumns = [
+  { title: '提交时间', key: 'createdAt', dataIndex: 'createdAt', width: 180 },
+  { title: '操作', key: 'type', dataIndex: 'type', width: 120 },
+  { title: '状态 / 结果', key: 'status', dataIndex: 'status', width: 240 },
+  { title: '文件', key: 'result', dataIndex: 'result', width: 120 },
+]
+const deviceColumns = [
+  { title: '设备', key: 'device', dataIndex: 'deviceId', width: 240 },
+  { title: '首次使用时间', key: 'firstSeenAt', dataIndex: 'firstSeenAt', width: 180 },
+  { title: '首次使用 IP', key: 'firstIp', dataIndex: 'firstIp', width: 180 },
+  { title: '最近使用时间', key: 'lastSeenAt', dataIndex: 'lastSeenAt', width: 180 },
+  { title: '最近使用 IP', key: 'lastIp', dataIndex: 'lastIp', width: 180 },
+  { title: '状态', key: 'status', dataIndex: 'status', width: 110 },
+]
+const portraitBreakdownColumns = [
+  { title: '分类', dataIndex: 'label', key: 'label', width: 220 },
+  { title: '次数', dataIndex: 'count', key: 'count', width: 100 },
+  { title: '金额', dataIndex: 'amount', key: 'amount', width: 140 },
+]
+const isCurrentDeviceFailure = failure => Boolean(failure) && failure === deviceFailure.value && deviceVisible.value
+const isCurrentUserPortraitFailure = failure => Boolean(failure) && failure === userPortraitFailure.value && userPortraitVisible.value
 const bindingsActive = computed(() => bindingsRows.value.filter(row => String(row?.state).toLowerCase() === 'active'))
 const bindingsHistory = computed(() => bindingsRows.value.filter(row => String(row?.state).toLowerCase() !== 'active'))
 const bindingsTitle = computed(() => {
@@ -1002,6 +1163,42 @@ const bindingsTitle = computed(() => {
 })
 const isCurrentBindingsFailure = (source, context) => bindingsFailureOwner() && Boolean(source)
   && source === bindingsFailure.value && context === bindingsFailureContextKey.value
+// ── 绑定值明文揭示（用户 2026-11-15 拍板） ──────────────────────────
+//
+// 本地 state 而不是改行对象：reveal 接口的语义是「这一次读取留痕」，
+// 把明文写回 bindingsRows 会让「重新打开弹窗」也必须重置一次 —— 两类状态
+// 混在一个对象里，重置漏一处就变成「换了用户还显示上一个用户的手机号」。
+//
+// 用 Map 而不用对象：binding id 是后端主键，可能出现 "constructor" 这类
+// 看起来像属性名的值吗？不会（是数字），但 Map 顺便让「不存在的键」
+// 与「值恰好是 undefined」在语义上分开，也让 `has` 判定不依赖 truthiness
+// （一个空字符串的绑定值必须仍然算「已揭示」，否则按钮会一直可点、
+// 每点一次就多一条审计）。
+const bindingRevealValues = ref(new Map())
+const bindingRevealPendingIds = ref(new Set())
+function isBindingRevealed(id) {
+  const key = Number(id)
+  if (!Number.isSafeInteger(key) || key <= 0) return false
+  return bindingRevealValues.value.has(key)
+}
+function bindingRevealedValue(id) {
+  const key = Number(id)
+  if (!Number.isSafeInteger(key) || key <= 0) return ''
+  return bindingRevealValues.value.get(key) || ''
+}
+function isBindingRevealPending(id) {
+  const key = Number(id)
+  if (!Number.isSafeInteger(key) || key <= 0) return false
+  return bindingRevealPendingIds.value.has(key)
+}
+// resetBindingReveals 把所有行退回脱敏态。
+//
+// 三个调用点缺一不可：打开弹窗、重新加载列表、关闭弹窗。
+// 只重置其中一个的后果：换用户后仍显示上一个用户的明文（最严重）。
+function resetBindingReveals() {
+  bindingRevealValues.value = new Map()
+  bindingRevealPendingIds.value = new Set()
+}
 // 生效行排前面：管理员打开弹窗第一眼要看的是「现在绑的是什么」。
 watch(bindingsRows, rows => {
   if (!Array.isArray(rows)) return
@@ -1047,6 +1244,25 @@ function clearLocations() {
 }
 function clearPrincipalState() {
   owner.retire()
+  if (userTaskPollingTimer.value) clearTimeout(userTaskPollingTimer.value)
+  userTaskPollingTimer.value = null
+  deviceRequestVersion.value += 1
+  userPortraitRequestVersion.value += 1
+  userTransferVersion.value += 1
+  userTaskRequestVersion.value += 1
+  deviceVisible.value = userPortraitVisible.value = false
+  deviceRows.value = []
+  deviceLoading.value = false
+  deviceFailureContext.value += 1
+  deviceTarget.value = {}
+  deviceFailure.value = userPortraitFailure.value = null
+  userPortrait.value = null
+  userPortraitLoading.value = false
+  userPortraitFailureContext.value += 1
+  userPortraitTarget.value = {}
+  userTasks.value = []
+  userTasksLoading.value = userTransferLoading.value = userTemplateLoading.value = false
+  userTransferNotice.value = userTransferError.value = ''
   retireBalanceDraft()
   clearListFailure()
   clearDeleteFailure()
@@ -1146,6 +1362,13 @@ function resetWechatResolveState() {
     bindingsVisible, bindingsModalKey, bindingsLoading, bindingsRows, bindingsTarget,
     bindingsActive, bindingsHistory, bindingsTitle,
     bindingsFailure, bindingsFailureContextKey, isCurrentBindingsFailure,
+    // 明文揭示的本地状态（Map<bindingId, plaintext> + 在途 id 集合）。
+    bindingRevealValues, bindingRevealPendingIds,
+    isBindingRevealed, bindingRevealedValue, isBindingRevealPending, resetBindingReveals,
+    deviceVisible, deviceLoading, deviceRows, deviceTarget, deviceFailure, deviceFailureContext, deviceTitle, isCurrentDeviceFailure, deviceColumns, deviceRequestVersion,
+    userPortraitVisible, userPortraitLoading, userPortrait, userPortraitTarget, userPortraitFailure, userPortraitFailureContext,
+    userPortraitTitle, userPortraitTiles, userPortraitBreakdowns, isCurrentUserPortraitFailure, portraitBreakdownColumns, userPortraitRequestVersion,
+    userTasks, userTasksLoading, userTransferLoading, userTemplateLoading, userTransferNotice, userTransferError, userTaskColumns, userTransferVersion, userTaskRequestVersion, userTaskPollingTimer,
     captureBindingsOwner: () => { const ticket = ++bindingsRequestVersion; return () => bindingsVisible.value && ticket === bindingsRequestVersion },
     bindingsFailureOwnerRef: { set: fn => { bindingsFailureOwner = fn }, get: () => bindingsFailureOwner },
     clearBindingsFailure: () => { bindingsFailure.value = null; bindingsFailureOwner = () => false; bindingsFailureContextKey.value += 1 },
@@ -1155,17 +1378,23 @@ function resetWechatResolveState() {
 
 export default defineComponent({
   name: 'UserList',
-  components: { MainlandPhoneInput, TableColumnSettings, RequestFailureAlert },
+  components: { MainlandPhoneInput, TableColumnSettings, RequestFailureAlert, DownloadOutlined, UploadOutlined, UserPortrait, DeviceAdmin, UserAccountSummary },
   setup() {
     // Stable UI-only IDs keep labels unique across dialogs and sibling UserList instances.
     const fieldIdPrefix = `user-list-${useId()}`
     const fieldId = field => `${fieldIdPrefix}-${field}`
+    const userImportInput = ref(null)
     if (userListKeywordEpoch !== getCurrentUserLogoutEpoch()) {
       userListKeywordSessions.clear()
       userListKeywordEpoch = getCurrentUserLogoutEpoch()
     }
     const userListContext = markRaw(createUserListState())
-    const { dataSource, pagination, isEditing, formState, resetPasswordForm, visible, resetPasswordVisible, phoneLocations, ipLocations, formatValueWithLocation, tabLoading, filters, keywordInput, submitLoading, submittingBan, banReasonError, banFeedback, currentBanActive, balanceVisible, balanceSubmitting, balanceForm, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, userTableColumnWidths } = userListContext
+    const { dataSource, pagination, isEditing, formState, resetPasswordForm, visible, resetPasswordVisible, phoneLocations, ipLocations, formatValueWithLocation, tabLoading, filters, keywordInput, submitLoading, submittingBan, banReasonError, banFeedback, currentBanActive, balanceVisible, balanceSubmitting, balanceForm, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, userTableColumnWidths,
+      deviceVisible, deviceLoading, deviceRows, deviceTarget, deviceTitle, deviceFailure, deviceFailureContext, isCurrentDeviceFailure,
+      deviceColumns,
+      userPortraitVisible, userPortraitLoading, userPortrait, userPortraitTarget, userPortraitTitle, userPortraitFailure, userPortraitFailureContext, isCurrentUserPortraitFailure, userPortraitTiles, userPortraitBreakdowns,
+      portraitBreakdownColumns, userTasks, userTasksLoading, userTransferLoading, userTemplateLoading, userTransferNotice, userTransferError, userTaskColumns,
+    } = userListContext
 
     // 用户列表改为服务端分页后，这里的统计只覆盖「当前页」，
     // 因此标题里明确标注范围，避免被误读成全站合计。
@@ -1509,6 +1738,7 @@ export default defineComponent({
           if (!ownsPrincipal() || !canManageUsers.value) return
           instance.proxy.handleUserList()
           instance.proxy.loadNewUserBonusDefault()
+          instance.proxy.refreshUserTasks()
         })
       },
     })
@@ -1621,6 +1851,36 @@ export default defineComponent({
       isCurrentPasswordFailure: userListContext.isCurrentPasswordFailure,
       hasUnsubmittedSavedPassword: userListContext.hasUnsubmittedSavedPassword,
       userListContext,
+      userImportInput,
+      deviceVisible,
+      deviceLoading,
+      deviceRows,
+      deviceTarget,
+      deviceTitle,
+      deviceFailure,
+      deviceFailureContext,
+      isCurrentDeviceFailure,
+      deviceColumns,
+      userPortraitVisible,
+      userPortraitLoading,
+      userPortrait,
+      userPortraitTarget,
+      userPortraitTitle,
+      userPortraitFailure,
+      userPortraitFailureContext,
+      isCurrentUserPortraitFailure,
+      userPortraitTiles,
+      userPortraitBreakdowns,
+      portraitBreakdownColumns,
+      userTasks,
+      userTasksLoading,
+      userTransferLoading,
+      userTemplateLoading,
+      userTransferNotice,
+      userTransferError,
+      userTaskColumns,
+      describeUserTask: task => describeTask(task),
+      asyncTaskDownloadUrl,
       balanceFailure: userListContext.balanceFailure,
       balanceFailureContextKey: userListContext.balanceFailureContextKey,
       balanceFailureMessage: userListContext.balanceFailureMessage,
@@ -1650,6 +1910,7 @@ export default defineComponent({
       // 状态来自 userListContext（与 resetPasswordVisible 同一处），因此这里
       // 解构出来再下发；方法里一律走 this.userListContext。xxx，不用这些本地名。
       bindingsVisible: userListContext.bindingsVisible,
+      bindingsTarget: userListContext.bindingsTarget,
       bindingsModalKey: userListContext.bindingsModalKey,
       bindingsLoading: userListContext.bindingsLoading,
       bindingsRows: userListContext.bindingsRows,
@@ -1660,6 +1921,9 @@ export default defineComponent({
       bindingsFailure: userListContext.bindingsFailure,
       bindingsFailureContextKey: userListContext.bindingsFailureContextKey,
       isCurrentBindingsFailure: userListContext.isCurrentBindingsFailure,
+      isBindingRevealed: userListContext.isBindingRevealed,
+      bindingRevealedValue: userListContext.bindingRevealedValue,
+      isBindingRevealPending: userListContext.isBindingRevealPending,
       bindingKindLabel,
       bindingStateLabel,
       bindingStateColor,
@@ -1699,6 +1963,7 @@ export default defineComponent({
       modalTitle,
       // 封禁控件（t203）
       banModeOptions,
+      banReasonOptions: ['异常请求或接口滥用', '账号共享或转售', '违反服务使用规则', '异常注册或批量账号', '恶意提交内容', '支付或退款存在异常', '账号安全风险，暂时保护'].map(value => ({ value })),
       banDurationPresetOptions,
       banDurationUnitOptions,
       banExpiryPreview,
@@ -1750,8 +2015,16 @@ export default defineComponent({
 
     this.handleUserList()
     this.loadNewUserBonusDefault()
+    this.refreshUserTasks()
   },
   beforeUnmount() {
+    const ctx = this.userListContext
+    if (ctx.userTaskPollingTimer.value) clearTimeout(ctx.userTaskPollingTimer.value)
+    ctx.userTaskPollingTimer.value = null
+    ctx.deviceRequestVersion.value += 1
+    ctx.userPortraitRequestVersion.value += 1
+    ctx.userTransferVersion.value += 1
+    ctx.userTaskRequestVersion.value += 1
     this.userListContext.owner.dispose()
   },
   methods: {
@@ -2017,7 +2290,7 @@ export default defineComponent({
       this.userListContext.visible.value = true
       // 异步读该用户当前的封禁状态（决定是否显示「解除封禁」入口）。
       // 不 await：弹窗先渲染，封禁状态后到 —— 与「列表/详情分步加载」同策略。
-      this.userListContext.loadCurrentBanState(record.id)
+      this.loadCurrentBanState(record.id)
     },
     openResetPasswordModal(record) {
       const owner = this.userListContext.owner.capture()
@@ -2033,15 +2306,7 @@ export default defineComponent({
       }
       this.userListContext.resetPasswordVisible.value = true
     },
-    // ── 用户画像（T-17 / task_doc/98） ────────────────────────
-    // 跳转到侧边栏「用户画像」页并带 ?userId=，而不是另开一个弹窗。
-    //
-    // 为什么是跳转而不是弹窗：用户 2026-11-13 的决策是「一个页面的两种视角」——
-    // 侧边栏页默认展示整体画像（主要用途），选中用户后切到该用户。
-    // 若这里再开一个弹窗，就会出现「同一份画像渲染两份」，两处口径迟早不一致。
-    //
-    // ⚠️ 这里**不动** openBindingsModal：上面的「查看」按钮仍然是绑定历史弹窗
-    // （GET /admin/users/:id/bindings），两者是并列的独立入口。
+    // Per-user profile and device details stay in the user workspace.
     openPortrait(record) {
       const target = record || {}
       const id = Number(target.id)
@@ -2049,24 +2314,43 @@ export default defineComponent({
         message.warning('用户参数错误')
         return
       }
-      this.$router.push({ name: 'user-portrait', query: { userId: String(id) } })
-        .catch(error => {
-          // 重复导航（NavigationDuplicated）不是错误；其余才提示。
-          if (error?.name !== 'NavigationDuplicated') {
-            message.error('页面暂时无法打开，请稍后重试。')
-          }
-        })
+      const ctx = this.userListContext
+      ctx.userPortraitTarget.value = { id, username: String(target.username || ''), nickname: String(target.nickname || '') }
+      ctx.userPortrait.value = null
+      ctx.userPortraitFailure.value = null
+      ctx.userPortraitFailureContext.value += 1
+      ctx.userPortraitVisible.value = true
     },
-    // 设备（A4-2）：跳转到设备管理页并带上 ?userId=，与该用户面板同一范式。
-    //
-    // 为什么是「跳转 + query」而不是像「查看」那样开弹窗：
-    // 设备列表要做解绑/封禁/解封，已是带分页筛选的独立页面；在弹窗里复制一份
-    // 会立刻出现两套实现与两个分页状态。画像按钮已用同一取舍（见它的注释），
-    // 两者保持一致。
-    //
-    // ⚠️ 语义与上面的「查看」完全不同，不得合并：
-    //   「查看」= 绑定历史弹窗（GET /admin/users/:id/bindings，换绑轨迹）
-    //   「设备」= 该账号当前占用哪些槽位（GET /admin/devices?userId=）
+    async loadUserPortrait() {
+      const ctx = this.userListContext
+      if (!ctx.userPortraitVisible.value || !ctx.owner.capture().isAlive()) return
+      const id = Number(ctx.userPortraitTarget.value?.id)
+      if (!Number.isSafeInteger(id) || id <= 0) return
+      const ticket = ++ctx.userPortraitRequestVersion.value
+      const current = () => ticket === ctx.userPortraitRequestVersion.value && ctx.userPortraitVisible.value && ctx.owner.capture().isAlive()
+      ctx.userPortraitLoading.value = true
+      ctx.userPortraitFailure.value = null
+      try {
+        const response = await getUserPortrait(id)
+        if (!current()) return
+        if (response?.status === 200 && response.data && typeof response.data === 'object') ctx.userPortrait.value = response.data
+        else ctx.userPortraitFailure.value = ensureRequestFailure(response)
+      } catch (error) {
+        if (current()) ctx.userPortraitFailure.value = ensureRequestFailure(error)
+      } finally {
+        if (current()) ctx.userPortraitLoading.value = false
+      }
+    },
+    closeUserPortrait() {
+      const ctx = this.userListContext
+      ctx.userPortraitRequestVersion.value += 1
+      ctx.userPortraitVisible.value = false
+      ctx.userPortrait.value = null
+      ctx.userPortraitFailure.value = null
+      ctx.userPortraitTarget.value = {}
+      ctx.userPortraitLoading.value = false
+    },
+    // 「设备」在此显示指定用户的设备记录，完整设备管理仍可在设备管理页操作。
     openDevices(record) {
       const target = record || {}
       const id = Number(target.id)
@@ -2074,13 +2358,184 @@ export default defineComponent({
         message.warning('用户参数错误')
         return
       }
-      this.$router.push({ name: 'device-admin', query: { userId: String(id) } })
-        .catch(error => {
-          // 重复导航（NavigationDuplicated）不是错误；其余才提示。
-          if (error?.name !== 'NavigationDuplicated') {
-            message.error('页面暂时无法打开，请稍后重试。')
-          }
-        })
+      const ctx = this.userListContext
+      ctx.deviceTarget.value = { id, username: String(target.username || '') }
+      ctx.deviceRows.value = []
+      ctx.deviceFailure.value = null
+      ctx.deviceFailureContext.value += 1
+      ctx.deviceVisible.value = true
+    },
+    async loadUserDevices() {
+      const ctx = this.userListContext
+      if (!ctx.deviceVisible.value || !ctx.owner.capture().isAlive()) return
+      const id = Number(ctx.deviceTarget.value?.id)
+      if (!Number.isSafeInteger(id) || id <= 0) return
+      const ticket = ++ctx.deviceRequestVersion.value
+      const current = () => ticket === ctx.deviceRequestVersion.value && ctx.deviceVisible.value && ctx.owner.capture().isAlive()
+      ctx.deviceLoading.value = true
+      ctx.deviceFailure.value = null
+      try {
+        const response = await getAdminDevices({ userId: String(id), page: 1, pageSize: 100 })
+        if (!current()) return
+        const rows = response?.data?.data
+        if (response?.status !== 200 || !Array.isArray(rows)) {
+          ctx.deviceFailure.value = ensureRequestFailure(response)
+          return
+        }
+        ctx.deviceRows.value = rows.filter(row => row && typeof row === 'object').map(row => ({ ...row }))
+        await ctx.enrichColumns(ctx.deviceRows.value, current)
+      } catch (error) {
+        if (current()) ctx.deviceFailure.value = ensureRequestFailure(error)
+      } finally {
+        if (current()) ctx.deviceLoading.value = false
+      }
+    },
+    closeDeviceModal() {
+      const ctx = this.userListContext
+      ctx.deviceRequestVersion.value += 1
+      ctx.deviceVisible.value = false
+      ctx.deviceRows.value = []
+      ctx.deviceFailure.value = null
+      ctx.deviceTarget.value = {}
+      ctx.deviceLoading.value = false
+    },
+    deviceIpText(value) {
+      const ctx = this.userListContext
+      return ctx.formatValueWithLocation(value, ctx.ipLocations[normalizeLocationKey(value)])
+    },
+    openUserImport() {
+      if (!this.userListContext.owner.capture().isAlive() || this.userTransferLoading) return
+      this.userImportInput?.click?.()
+    },
+    async onUserImportFile(event) {
+      const input = event?.target
+      const file = input?.files?.[0]
+      if (input) input.value = ''
+      const ctx = this.userListContext
+      if (!file || !ctx.owner.capture().isAlive() || this.userTransferLoading) return
+      if (!/\.(csv|json|xlsx|xls)$/i.test(String(file.name || ''))) {
+        this.userTransferError = '仅支持 CSV、JSON、XLSX 或 XLS 用户文件。'
+        return
+      }
+      const transfer = this.captureUserTransferOwner()
+      this.userTransferLoading = true
+      this.userTransferError = ''
+      this.userTransferNotice = ''
+      try {
+        let response = await submitImportTask({ resource: 'users', file, dryRun: false })
+        if (!transfer.isCurrent()) return
+        if (response?.status === 409 && response?.data?.needConfirm === 'weakPassword') {
+          const accepted = await new Promise(resolve => Modal.confirm({
+            title: '檔案包含弱密码',
+            content: `检测到 ${Array.isArray(response.data.weakPasswordRows) ? response.data.weakPasswordRows.length : 0} 行弱密码。确认后会重新提交该文件进行异步导入。`,
+            okText: '确认导入', cancelText: '取消', onOk: () => resolve(true), onCancel: () => resolve(false),
+          }))
+          if (!transfer.isCurrent() || !accepted) return
+          response = await submitImportTask({ resource: 'users', file, dryRun: false, confirmWeakPassword: true })
+        }
+        if (!transfer.isCurrent()) return
+        if (response?.status !== 202 || !response?.data?.taskId) {
+          this.userTransferError = '用户导入任务未提交，请检查文件后重试。'
+          return
+        }
+        this.userTransferNotice = '用户导入任务已提交，后台正在处理。'
+        await this.refreshUserTasks()
+      } catch (error) {
+        if (transfer.isCurrent()) this.userTransferError = error?.code === 'UNKNOWN_OUTCOME'
+          ? '导入任务提交结果未确认，请先刷新任务列表，勿重复提交。'
+          : '用户导入任务提交失败，请检查文件后重试。'
+      } finally {
+        if (transfer.isCurrent()) this.userTransferLoading = false
+      }
+    },
+    captureUserTransferOwner() {
+      const ctx = this.userListContext
+      const owner = ctx.owner.capture()
+      const ticket = ++ctx.userTransferVersion.value
+      return { ticket, isCurrent: () => owner.isAlive() && ticket === ctx.userTransferVersion.value && this.canManageUsers }
+    },
+    async refreshUserTasks() {
+      const ctx = this.userListContext
+      if (!this.canManageUsers) return
+      if (ctx.userTaskPollingTimer.value) clearTimeout(ctx.userTaskPollingTimer.value)
+      ctx.userTaskPollingTimer.value = null
+      const owner = ctx.owner.capture()
+      const ticket = ++ctx.userTaskRequestVersion.value
+      const current = () => owner.isAlive() && ticket === ctx.userTaskRequestVersion.value && this.canManageUsers
+      ctx.userTasksLoading.value = true
+      try {
+        const [imports, exports] = await Promise.all([
+          listAsyncTasks({ type: 'import', resource: 'users', pageSize: 20 }),
+          listAsyncTasks({ type: 'export', resource: 'users', pageSize: 20 }),
+        ])
+        if (!current()) return
+        const read = result => Array.isArray(result?.data?.data) ? result.data.data : null
+        const importRows = read(imports), exportRows = read(exports)
+        if (imports?.status !== 200 || exports?.status !== 200 || !importRows || !exportRows) throw new Error('invalid task response')
+        ctx.userTasks.value = [...importRows, ...exportRows]
+          .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime())
+          .slice(0, 40)
+        ctx.userTransferError.value = ''
+        if (ctx.userTasks.value.some(task => ['pending', 'running'].includes(String(task?.status || '').toLowerCase()))) {
+          ctx.userTaskPollingTimer.value = setTimeout(() => {
+            ctx.userTaskPollingTimer.value = null
+            if (current()) this.refreshUserTasks()
+          }, 1500)
+        }
+      } catch {
+        if (current()) ctx.userTransferError.value = '用户导入导出任务列表读取失败，请重试。'
+      } finally {
+        if (current()) ctx.userTasksLoading.value = false
+      }
+    },
+    async exportUsers() {
+      if (!this.canManageUsers || this.userTransferLoading) return
+      const transfer = this.captureUserTransferOwner()
+      this.userTransferLoading = true
+      this.userTransferError = ''
+      this.userTransferNotice = ''
+      try {
+        const response = await submitExportTask({ resource: 'users' })
+        if (!transfer.isCurrent()) return
+        if (response?.status !== 202 || !response?.data?.taskId) throw new Error('missing task id')
+        this.userTransferNotice = '用户 CSV 导出任务已提交，完成后可在任务列表下载。'
+        await this.refreshUserTasks()
+      } catch (error) {
+        if (transfer.isCurrent()) this.userTransferError = error?.code === 'UNKNOWN_OUTCOME'
+          ? '导出任务提交结果未确认，请先刷新任务列表，勿重复提交。'
+          : '用户导出任务提交失败，请稍后重试。'
+      } finally {
+        if (transfer.isCurrent()) this.userTransferLoading = false
+      }
+    },
+    async downloadUserTemplate() {
+      const ctx = this.userListContext
+      if (!this.canManageUsers || this.userTemplateLoading) return
+      const owner = ctx.owner.capture()
+      this.userTemplateLoading = true
+      try {
+        const response = await fetchImportTemplate('users', 'csv')
+        if (!owner.isAlive()) return
+        if (response?.status !== 200 || !(response.data instanceof Blob)) throw new Error('invalid template response')
+        this.saveUserDownload(response.data, 'users-import-template.csv')
+      } catch {
+        if (owner.isAlive()) message.error('用户导入模板下载失败，请稍后重试。')
+      } finally {
+        if (owner.isAlive()) this.userTemplateLoading = false
+      }
+    },
+    saveUserDownload(blob, filename) {
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      try {
+        link.href = url
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+      } finally {
+        link.remove()
+        window.URL.revokeObjectURL(url)
+      }
     },
     // ── 绑定历史弹窗（需求 5a） ────────────────────────────────
     // 只读；数据来自 GET /admin/users/:id/bindings（管理员 + 脱敏）。
@@ -2092,12 +2547,64 @@ export default defineComponent({
         return
       }
       const ctx = this.userListContext
-      ctx.bindingsTarget.value = { id, username: String(target.username || '') }
+      ctx.bindingsTarget.value = { ...target, id }
       ctx.bindingsRows.value = []
+      // 换用户必须先把明文全部退回脱敏态：否则上一个用户的手机号会留在
+      // 这个用户的弹窗里（resetBindingReveals 的三个调用点之一）。
+      ctx.resetBindingReveals()
       ctx.clearBindingsFailure()
       ctx.bindingsModalKey.value += 1
       ctx.bindingsVisible.value = true
       await this.reloadBindings()
+    },
+    // revealBinding 揭示**单条**绑定值的明文（用户 2026-11-15 拍板）。
+    //
+    // 三条必须守住的边界：
+    //  1. 已揭示的直接 return —— 不能因为按钮被点第二次就再写一条审计
+    //     （后端每次调用都会留痕；重复调用等于污染审计）；
+    //  2. 在途判重（pending Set）—— loading 状态下的重复点击也要挡；
+    //  3. 失败必须**可见**：403/404/网络错误一律 message.error，不能默默无反应
+    //     （否则管理员会以为「这个号没有绑定值」而不是「我没权限 / 请求失败了」）。
+    async revealBinding(record) {
+      const ctx = this.userListContext
+      const target = record || {}
+      const id = Number(target.id)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        message.warning('绑定记录参数错误')
+        return
+      }
+      if (ctx.isBindingRevealed(id)) return
+      if (ctx.isBindingRevealPending(id)) return
+      const pending = new Set(ctx.bindingRevealPendingIds.value)
+      pending.add(id)
+      ctx.bindingRevealPendingIds.value = pending
+      try {
+        const res = await revealBindingValue(id)
+        const body = res?.data
+        const row = body && typeof body === 'object' && body.data && typeof body.data === 'object' ? body.data : body
+        const status = res?.status
+        if (status === 403) {
+          message.error('无权限查看绑定值，请确认账号权限后再操作。')
+          return
+        }
+        if (status === 404) {
+          message.error('该绑定记录已不存在，请重新打开弹窗刷新列表。')
+          return
+        }
+        if (status !== 200 || !row || typeof row !== 'object' || typeof row.value !== 'string') {
+          message.error('绑定值读取未完成，请稍后重试。')
+          return
+        }
+        const values = new Map(ctx.bindingRevealValues.value)
+        values.set(id, row.value)
+        ctx.bindingRevealValues.value = values
+      } catch {
+        message.error('绑定值读取未完成，请稍后重试。')
+      } finally {
+        const remaining = new Set(ctx.bindingRevealPendingIds.value)
+        remaining.delete(id)
+        ctx.bindingRevealPendingIds.value = remaining
+      }
     },
     async reloadBindings() {
       const ctx = this.userListContext
@@ -2112,14 +2619,16 @@ export default defineComponent({
       try {
         const res = await getAdminUserBindings(id, { page: 1, pageSize: 100 })
         if (!ownsFailure()) return
-        const body = res?.data
-        const list = Array.isArray(body?.items) ? body.items : (Array.isArray(body) ? body : null)
-        if (res?.status !== 200 || !Array.isArray(list)) {
+        const history = readAdminBindingHistory(res)
+        if (!history.ok) {
           setOwner(ownsFailure)
           ctx.bindingsFailure.value = ensureRequestFailure(res)
           return
         }
-        ctx.bindingsRows.value = list.filter(item => item && typeof item === 'object').map(item => ({ ...item }))
+        ctx.bindingsRows.value = history.rows
+        // 列表换了内容 ⇒ 已揭示的明文不再对应当前这批行，必须重置
+        // （resetBindingReveals 的三个调用点之二）。
+        ctx.resetBindingReveals()
       } catch (error) {
         if (ownsFailure()) {
           setOwner(ownsFailure)
@@ -2134,6 +2643,9 @@ export default defineComponent({
       ctx.bindingsVisible.value = false
       ctx.invalidateBindings()
       ctx.bindingsRows.value = []
+      // 关窗即清空明文（resetBindingReveals 的三个调用点之三）：
+      // 明文只应存活在「管理员正在看这个弹窗」的那段时间里。
+      ctx.resetBindingReveals()
     },
     openBalanceModal() {
       const owner = this.userListContext.owner.capture()
@@ -2575,6 +3087,40 @@ export default defineComponent({
   margin-top: 8px;
 }
 
+/*
+  绑定值单元格：脱敏值/明文 + 「显示完整值」按钮在同一格里。
+  display:flex + 允许换行 —— 明文（13800001111）比脱敏值长，列宽 210 时
+  按钮必须能掉到下一行，否则在窄屏会被 overflow-wrap:anywhere 从中间切开，
+  那会让手机号看起来是错的。
+*/
+.binding-value-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.binding-masked-cell,
+.binding-revealed-cell {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 明文用等宽数字 + 强调色：一眼能看出「这行已经被揭示过」。 */
+.binding-revealed-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--console-text-primary, #1d1d1f);
+  font-weight: 600;
+}
+
+.binding-reveal-button {
+  padding: 0 4px;
+  height: auto;
+  font-size: 12px;
+}
+
 .user-page {
   display: flex;
   flex-direction: column;
@@ -2606,6 +3152,65 @@ export default defineComponent({
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.user-transfer-panel {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 8px;
+  background: var(--console-surface-secondary, #f8faf9);
+}
+
+.user-transfer-panel :deep(.ant-table-placeholder) {
+  display: table-row;
+}
+
+.user-transfer-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.user-transfer-heading h2,
+.user-portrait-breakdown h3 {
+  margin: 0;
+  color: var(--console-text-primary, #1d1d1f);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.user-transfer-heading p {
+  margin: 4px 0 0;
+  color: var(--console-muted, #62766e);
+  line-height: 1.5;
+}
+
+.user-portrait-summary {
+  margin-bottom: 16px;
+}
+
+.user-portrait-tiles {
+  margin-bottom: 16px;
+}
+
+.user-portrait-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.user-portrait-breakdown {
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--console-border, #dce5e1);
+}
+
+.user-portrait-breakdown h3 {
+  margin-bottom: 8px;
 }
 
 .filter-form :deep(.ant-form-item) {
@@ -2682,6 +3287,15 @@ export default defineComponent({
 }
 
 @media (max-width: 640px) {
+  .user-transfer-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .user-portrait-breakdowns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .user-page :deep(.ant-card-body),
   .user-page .page-card :deep(.ant-card-body) {
     padding: 12px;

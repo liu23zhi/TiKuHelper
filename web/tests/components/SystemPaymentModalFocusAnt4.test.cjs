@@ -20,12 +20,13 @@ const oldAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'actual adapter precedes API/request load')
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url);calls.push({method,url})
+ const aux=require('../helpers/settings-panel-reads.cjs').settingsPanelRead(config);if(aux)return Promise.resolve(aux)
  const response=data=>Promise.resolve({status:200,data,headers:{},config,request:{memoryOnly:true}})
  if(method!=='get')return Promise.reject(deny('mutation-refused'))
- if(url==='/adapter-service/public/register-status')return response({siteName:'Synthetic label app'})
- if(url==='/adapter-service/system-settings')return response({siteName:'Synthetic settings',maxLogSizeBytes:2*1024*1024*1024,minRechargeAmount:1,captchaProvider:'local'})
- if(url==='/adapter-service/payment-methods')return response([{...METHOD}])
- if(url==='/adapter-service/system-metrics')return response({schemaVersion:1,startedAt:'2026-11-01T00:00:00Z',uptimeSeconds:10,http:{total:0,inFlight:0,failed:0,latencyCount:0,latencyTotalMillis:0,latencyMaxMillis:0,buckets:[]},cache:{search:{hits:0,misses:0,shared:0},fallback:{hits:0,misses:0,shared:0}},billing:{attempts:0,successes:0,failures:0}})
+ if(url==='/api/public/register-status')return response({siteName:'Synthetic label app'})
+ if(url==='/api/system-settings')return response({siteName:'Synthetic settings',maxLogSizeBytes:2*1024*1024*1024,minRechargeAmount:1,captchaProvider:'local'})
+ if(url==='/api/payment-methods')return response([{...METHOD}])
+ if(url==='/api/system-metrics')return response({schemaVersion:1,startedAt:'2026-11-01T00:00:00Z',uptimeSeconds:10,http:{total:0,inFlight:0,failed:0,latencyCount:0,latencyTotalMillis:0,latencyMaxMillis:0,buckets:[]},cache:{search:{hits:0,misses:0,shared:0},fallback:{hits:0,misses:0,shared:0}},billing:{attempts:0,successes:0,failures:0}})
  return Promise.reject(deny('unexpected-get'))
 }
 globalThis.fetch=window.fetch=()=>deny('fetch');window.XMLHttpRequest.prototype.open=function(){deny('xhr')};window.open=()=>deny('window-open');globalThis.WebSocket=window.WebSocket=class{constructor(){deny('websocket')}}
@@ -49,11 +50,11 @@ function entering(n){return /-(?:enter|appear)-(?:active|from|prepare|start)\b/.
 async function readyParent(w){await until(()=>w.vm.settingsLoaded&&w.vm.paymentMethodsLoaded&&!w.vm.tabLoading&&!w.vm.settingsDraining,'current parent ready; no actor metrics requirement')}
 async function appPage(){
  user.setStoredCurrentUser(ACTOR)
- const Host={render:()=>h('section',[h(Page)])},router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/system-settings',component:Host}]})
- await router.push('/adapter/system-settings');await router.isReady()
+ const Host={render:()=>h('section',[h(Page)])},router=createRouter({history:createMemoryHistory(),routes:[{path:'/system-settings',component:Host}]})
+ await router.push('/system-settings');await router.isReady()
  const app=mount(App,{attachTo:document.body,global:{plugins:[Antd,router],stubs:{transition:false,'transition-group':false},config:{errorHandler:e=>runtime.push(e?.name||'vue-error')}}})
  roots.push({app,router});await settle();const pages=app.findAllComponents(Page);assert.equal(pages.length,1,'one real Page inside App');const w=pages[0];await readyParent(w)
- const metrics=w.findComponent(MetricsPanel);assert.ok(metrics.exists());await until(()=>metrics.vm.metrics&&!metrics.vm.loading,'initial actual typed metrics only')
+ const metrics=w.findComponent(MetricsPanel);assert.equal(metrics.exists(),false,'server details owns diagnostics');assert.ok(calls.every(c=>c.url!=='/api/system-metrics'),'settings must not read server diagnostics')
  check(w.vm.canManageSettings(),'real cached admin admission','setup');check(app.findComponent(Antd.ConfigProvider).props('locale')?.locale==='zh-cn','real App zhCN','setup')
  return{w,app}
 }

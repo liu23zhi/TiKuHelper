@@ -63,6 +63,22 @@ test('有采样有请求：measured，成功率是真实值，不置灰', () => 
   assert.equal(view.totalText, '120')
   assert.equal(view.latencyText, '90 毫秒')
   assert.equal(view.hint, '')
+  assert.equal(view.statusLabel, '正常')
+  assert.equal(view.tone, 'ok')
+})
+
+test('搜题接口状态按自身成功率分档，不受全站 other 接口成功率影响', () => {
+  const degraded = buildEndpointView('search', bucket({ totalRequests: 100, successRequests: 94 }))
+  const down = buildEndpointView('search', bucket({ totalRequests: 100, successRequests: 69 }))
+  const healthyBoundary = buildEndpointView('search', bucket({ totalRequests: 100, successRequests: 95 }))
+  const degradedBoundary = buildEndpointView('search', bucket({ totalRequests: 10, successRequests: 7 }))
+
+  assert.equal(healthyBoundary.statusLabel, '正常')
+  assert.equal(degraded.statusLabel, '降级')
+  assert.equal(degraded.tone, 'warn')
+  assert.equal(degradedBoundary.statusLabel, '降级')
+  assert.equal(down.statusLabel, '异常')
+  assert.equal(down.tone, 'danger')
 })
 
 test('★S3：有采样但成功率恰好 0% → measured、0%、且**不置灰**', () => {
@@ -82,6 +98,8 @@ test('★S3：有采样但成功率恰好 0% → measured、0%、且**不置灰*
   // ④ 不得出现「暂无…采样数据」这类文案。
   assert.equal(view.hint, '')
   assert.doesNotMatch(view.hint, /暂无/)
+  assert.equal(view.statusLabel, '异常')
+  assert.equal(view.tone, 'danger')
 })
 
 test('★S2：samples=0 且 totalRequests=0 → unsampled、置灰、绝不显示 0%', () => {
@@ -97,6 +115,8 @@ test('★S2：samples=0 且 totalRequests=0 → unsampled、置灰、绝不显�
   assert.match(view.hint, /暂无搜题接口采样数据/)
   assert.match(view.hint, /重启后从零开始/)
   assert.equal(view.samplesText, '0')
+  assert.equal(view.statusLabel, '暂无采样数据')
+  assert.equal(view.tone, 'muted')
 })
 
 test('★S2 对照组：samples=0 但 totalRequests>0 → 仍必须置灰（不能用 totalRequests 判）', () => {
@@ -127,6 +147,8 @@ test('★samples>0 且 totalRequests=0 → idle：采样到了但没人用，不
   assert.equal(view.samplesText, '7')
   assert.match(view.hint, /没有搜题请求/)
   assert.doesNotMatch(view.hint, /暂无搜题接口采样数据/)
+  assert.equal(view.statusLabel, '暂无请求')
+  assert.equal(view.tone, 'muted')
 })
 
 test('三态必须互不相同：unsampled / idle / measured 在两两对照上都可区分', () => {

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { clearStoredCurrentUser, captureCurrentUserLease, getCurrentSessionRevision, advanceCurrentSessionRevision } from './currentUser'
+import { clearStoredCurrentUser, setStoredCurrentUser, getStoredCurrentUser, captureCurrentUserLease, getCurrentSessionRevision, advanceCurrentSessionRevision } from './currentUser'
 import { message } from 'ant-design-vue';
 import { buildAuthFailureHandling, buildResponsePayload, isPublicWechatRegisterRequest, captureTransportRequestError } from './requestHelpers.mjs'
 import { executeWithRetry, toUserRequestError } from './requestRetry.mjs'
@@ -28,6 +28,10 @@ const responseInterceptor = (response, lease, config, sessionRevision) => {
       }
       // Deliver the original payload/diagnostic ID, but never affect a later login.
       if (!lease.isCurrent() || sessionRevision !== getCurrentSessionRevision()) break
+      if (response.status === 403 && response.data?.code === 'ACCOUNT_BANNED') {
+        const user = getStoredCurrentUser()
+        if (user) setStoredCurrentUser({ ...user, status: 'banned' })
+      }
       const handling = buildAuthFailureHandling(response)
       // A caller with owned persistent feedback suppresses only this toast.
       // Authentication, cleanup, lease checks and the original payload remain.

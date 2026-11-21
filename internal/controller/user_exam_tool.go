@@ -186,7 +186,7 @@ const MaxUserExamInspectUploadBytes = service.MaxUserExamInspectBytes + 65536
 // 四种错误文案的设计目标：让用户一眼看出下一步该做什么。
 //
 //	① 不是数据库         → 「不是有效的 SQLite 数据库」（用户传错文件）
-//	② 密钥不对           → 「密钥不正确」+ 提示去后台改密钥（管理员能自助）
+//	② 解不开             → 「内置口令解不开」+ 列出三种常见原因（不引导去改密钥）
 //	③ 密钥未配置         → 理论上不会出现（有内置默认值），但保留分支：
 //	                        若默认值被清空且后台没配，明确提示去配置
 //	④ 算法不支持         → 「仅支持 SQLite3MC aes256cbc」（换方案或换工具）
@@ -265,11 +265,19 @@ func UserExamInspect(c *gin.Context) {
 				return
 			}
 		case errors.Is(decryptErr, service.ErrUserExamDecryptWrongKey):
-			// ② 密钥不对：这是管理员自己能解决的，必须给出明确动作。
+			// ② 解不开：不能再说「去换密钥」。
+			//
+			// 界面上的「解密密钥」设置已经移除（用户要求），普通管理员没有可换的密钥；
+			// 而且内置口令是从考试客户端逆向出来的固定值（参考工具 db/README.md：
+			// 「内置口令用于文件格式兼容，不适合为个人机密数据提供新的密码保护」），
+			// 换个密钥并不能让一个「不是这个客户端生成的库」变得能解开。
+			//
+			// 真实原因通常是：库不是考试客户端生成的、来自未适配的客户端版本、
+			// 或文件本身损坏。把这三种可能说清楚，比让用户去找一个不存在的开关有用。
 			writeUserExamInspectDecryptError(c, http.StatusBadRequest,
-				"该数据库是加密的，但用当前密钥解密失败（密钥不正确）。"+
-					"请到「系统设置 → 考试客户端数据库密钥」核对或更换密钥后重试。"+
-					"如果你从未改过密钥，说明这个库是用别处的密钥加密的。", decrypted, usedDefaultKey, isDefault)
+				"该数据库是加密的，但用内置口令解不开。"+
+					"常见原因：这个库不是考试客户端生成的，或来自尚未适配的客户端版本，也可能文件已损坏。"+
+					"请确认文件来自考试客户端（UserExamInfo.db），并尝试重新导出一次。", decrypted, usedDefaultKey, isDefault)
 			return
 		case errors.Is(decryptErr, service.ErrUserExamDecryptKeyMissing):
 			// ③ 密钥未配置（默认值被清空且后台没配）
@@ -309,7 +317,7 @@ func UserExamInspect(c *gin.Context) {
 		// 只可能是密钥碰巧通过了页头校验（概率极低）或库损坏。
 		// 仍按「密钥不对」提示，因为这是管理员唯一能尝试的动作。
 		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "解密后的数据不是有效的 SQLite 数据库（可能是密钥不正确或文件已损坏）。",
+			"message": "解密后的数据不是有效的 SQLite 数据库（文件可能已损坏，或不是考试客户端导出的库）。",
 		})
 		return
 	case err != nil:
@@ -339,11 +347,10 @@ func UserExamInspect(c *gin.Context) {
 // writeUserExamInspectDecryptError 输出解密失败的分类错误。
 //
 // 响应体带 `reason` 字段（machine-readable），让前端可以做差异化引导
-// （例如 reason=wrong-key 时直接给「去改密钥」的按钮）。
-func writeUserExamInspectDecryptError(c *gin.Context, status int, message string, decrypted bool, usedDefaultKey bool, usingDefault bool) {
+func writeUserExamInspectDecryptError(c *gin.Context, status int, message string, decrypted bool, usedDefaultKey, isDefaultKey bool) {
 	reason := "not-database"
 	switch {
-	case strings.Contains(message, "密钥不正确"):
+	case strings.Contains(message, "内置口令解不开"), strings.Contains(message, "密钥不正确"):
 		reason = "wrong-key"
 	case strings.Contains(message, "尚未配置解密密钥"):
 		reason = "key-missing"
@@ -359,7 +366,7 @@ func writeUserExamInspectDecryptError(c *gin.Context, status int, message string
 	c.JSON(status, gin.H{
 		"message":        message,
 		"reason":         reason,
-		"usedDefaultKey": usingDefault,
+		"usedDefaultKey": usedDefaultKey,
 	})
 }
 

@@ -36,6 +36,7 @@ export const BILLING_RECORD_TYPE_VALUES = Object.freeze([
   'referral_rebate',
   'referral_rebate_reversal',
   'review_rebate',
+  'review_rebate_clawback',
   'script_reservation',
   'script_refund',
 ])
@@ -55,6 +56,7 @@ export const BILLING_TYPE_OPTIONS = Object.freeze([
   Object.freeze({ label: '邀请返佣', value: 'referral_rebate' }),
   Object.freeze({ label: '邀请返佣冲回', value: 'referral_rebate_reversal' }),
   Object.freeze({ label: '评价返现', value: 'review_rebate' }),
+  Object.freeze({ label: '评价返现追缴', value: 'review_rebate_clawback' }),
   Object.freeze({ label: '脚本预扣', value: 'script_reservation' }),
   Object.freeze({ label: '脚本退款', value: 'script_refund' }),
 ])

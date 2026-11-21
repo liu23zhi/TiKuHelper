@@ -2,15 +2,11 @@ package service
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -43,10 +39,7 @@ const (
 )
 
 var (
-	// ErrTicketAttachmentDisabled 表示加密密钥未配置。加密是落库的前置条件：
-	// 没有密钥就不该把用户图片写到磁盘上，因此上传直接失败而不是明文降级。
-	ErrTicketAttachmentDisabled = errors.New("工单图片加密未配置")
-	ErrTicketAttachmentLimit    = errors.New("单条消息携带的图片数量超出限制")
+	ErrTicketAttachmentLimit = errors.New("单条消息携带的图片数量超出限制")
 	// ErrTicketAttachmentQuota 是「工单图片总占用超限」。
 	//
 	// 与 ErrTicketAttachmentLimit 分开：前者是我传的这张图太大，后者是这个工单里
@@ -80,41 +73,15 @@ func ticketAttachmentUsageBytes(db *gorm.DB, ticketID int64, userID int32) (int6
 	if ticketID > 0 {
 		scope = scope.Where("ticket_id = ?", ticketID)
 	} else {
-		scope = scope.Where("ticket_id = ? AND user_id = ?", 0, userID)
+		// Discarded drafts have no retained message relationship to account for.
+		// Keep the existing lifetime logical quota for already-bound tickets.
+		scope = scope.Where("ticket_id = ? AND user_id = ? AND purged_at IS NULL", 0, userID)
 	}
 	var used int64
 	if err := scope.Select("COALESCE(SUM(byte_size), 0)").Scan(&used).Error; err != nil {
 		return 0, err
 	}
 	return used, nil
-}
-
-// ticketAttachmentCipher 返回附件加密用的 AEAD。
-//
-// 密钥来源优先级：
-//  1. TIKU_TICKET_ATTACHMENT_KEY —— 专用密钥（推荐独立配置）；
-//  2. 回退到 TIKU_REFUND_PROOF_KEY —— 复用部署中已有的 32 字节密钥。
-//
-// 复用同一份密钥材料是**有意的**：两个子系统用不同的 AAD 域前缀
-// （tikuhelper-ticket-attachment-v1: 与 tikuhelper-refund-proof-v1:），
-// 因此密文无法跨系统互换解密；这样做只为避免「没配新密钥 ⇒ 功能整体不可用」。
-func ticketAttachmentCipher() (cipher.AEAD, error) {
-	raw := strings.TrimSpace(os.Getenv("TIKU_TICKET_ATTACHMENT_KEY"))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("TIKU_REFUND_PROOF_KEY"))
-	}
-	key, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
-		key, err = base64.RawStdEncoding.DecodeString(raw)
-	}
-	if err != nil || len(key) != 32 {
-		return nil, ErrTicketAttachmentDisabled
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, ErrTicketAttachmentDisabled
-	}
-	return cipher.NewGCM(block)
 }
 
 // ticketAttachmentAAD 把附件身份绑进密文。
@@ -268,7 +235,7 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 			return TicketAttachmentInfo{}, err
 		}
 	}
-	aead, err := ticketAttachmentCipher()
+	aead, err := ticketAttachmentCipher(db)
 	if err != nil {
 		return TicketAttachmentInfo{}, err
 	}
@@ -481,10 +448,19 @@ func ReadTicketAttachmentWithDB(db *gorm.DB, user *entity.User, attachmentID int
 	if _, err := ticketForAttachmentWithDB(db, user, attachment.TicketID); err != nil {
 		return "", nil, false, err
 	}
+	if !isTicketAdmin(user) {
+		protected, err := isHistoricalRefundPayoutQr(db, attachment.ID)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if protected {
+			return "", nil, false, ErrTicketForbidden
+		}
+	}
 	if !ticketAttachmentVisible(attachment) && !isTicketAdmin(user) {
 		return "", nil, false, ErrTicketAttachmentHidden
 	}
-	aead, cipherErr := ticketAttachmentCipher()
+	aead, cipherErr := ticketAttachmentCipher(db)
 	if cipherErr != nil {
 		return "", nil, false, cipherErr
 	}
@@ -629,7 +605,7 @@ func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.Ti
 }
 
 func decryptTicketAttachmentForScan(db *gorm.DB, row entity.TicketAttachment) ([]byte, string, error) {
-	aead, err := ticketAttachmentCipher()
+	aead, err := ticketAttachmentCipher(db)
 	if err != nil {
 		return nil, "", err
 	}
@@ -656,6 +632,10 @@ func decryptTicketAttachmentForScan(db *gorm.DB, row entity.TicketAttachment) ([
 // 异步结果都不能把它**改回 approved** —— 同步审核的结论更贴近上传时刻，
 // 异步复核只允许「pending → approved/sensitive」，不允许放宽已有结论。
 func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
+	return db.Transaction(func(tx *gorm.DB) error { return persistTicketAttachmentScanResultInTx(tx, row, scan, now) })
+}
+
+func persistTicketAttachmentScanResultInTx(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
 	attempts := row.AttemptCount + 1
 	updates := map[string]interface{}{
 		"attempt_count": attempts,
@@ -695,6 +675,11 @@ func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment,
 		// 改成非 scanning（典型：上传前已判 sensitive），此时不能静默——留一条
 		// 可追溯的日志，说明为什么这张图没被改成 approved。
 		logger.SysLog(fmt.Sprintf("ticket_attachment_scan_result_discarded attachmentId=%d want=%s reason=state_changed", row.ID, scan.State))
+	}
+	if result.RowsAffected > 0 {
+		if err := persistTicketImageSharedVerdict(db, row, scan, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }

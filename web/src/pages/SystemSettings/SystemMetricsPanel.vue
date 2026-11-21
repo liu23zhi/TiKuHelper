@@ -37,6 +37,17 @@
             <div><dt>最大耗时</dt><dd data-metric="latency-max">{{ maxLatency }}</dd></div>
           </dl>
         </article>
+        <article v-if="metrics.memory" class="metrics-card">
+          <h3>Go 进程内存</h3>
+          <dl>
+            <div><dt>当前堆占用</dt><dd data-metric="memory-heap-alloc">{{ mebibytes(metrics.memory.heapAllocBytes) }}</dd></div>
+            <div><dt>堆已申请</dt><dd data-metric="memory-heap-sys">{{ mebibytes(metrics.memory.heapSysBytes) }}</dd></div>
+            <div><dt>运行时总申请</dt><dd data-metric="memory-sys">{{ mebibytes(metrics.memory.sysBytes) }}</dd></div>
+            <div><dt>栈占用</dt><dd data-metric="memory-stack-inuse">{{ mebibytes(metrics.memory.stackInuseBytes) }}</dd></div>
+            <div><dt>GC 次数</dt><dd data-metric="memory-gc-cycles">{{ count(metrics.memory.gcCycles) }}</dd></div>
+          </dl>
+          <p class="metrics-help">运行时内存快照，单位 MiB；它不等于容器/主机的 RSS 或内存限制。</p>
+        </article>
         <article v-for="entry in cacheEntries" :key="entry.key" class="metrics-card">
           <h3>{{ entry.label }}缓存</h3>
           <dl>
@@ -64,6 +75,9 @@
           </dl>
         </article>
       </ConsoleSummaryGrid>
+      <div class="metrics-charts">
+        <PortraitChart v-for="chart in runtimeCharts" :key="chart.key" :title="chart.title" :hint="chart.hint" :options="chart.options" :aria-label="chart.title" />
+      </div>
       <p v-if="!metrics.tasks" class="metrics-help">当前接口未提供任务摘要；不将未知状态填成零。</p>
       <p class="metrics-help">失败响应按 HTTP 状态码 ≥400 统计。此处搜索/回退缓存统计结果复用，不是上游模型输入 Token 缓存命中率。请求、缓存、结算事件与当前保留任务采用不同统计口径，不能相加推算用户数、排队数或账单金额。</p>
     </template>
@@ -77,6 +91,9 @@ import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
+import PortraitChart from '@/pages/UserPortrait/PortraitChart.vue'
+import { useChartPalette } from '@/utils/useChartPalette'
+import { buildRuntimeCharts } from '@/utils/operationalCharts.mjs'
 import { getSystemMetrics } from '@/api/TikuComponentApi'
 import { isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
@@ -89,6 +106,7 @@ function supportedSnapshot(value) {
     Array.isArray(value.http.buckets) && value.http.buckets.every(bucket => hasCounts(bucket, ['upperMillis', 'count'])) &&
     hasCounts(value.cache?.search, ['hits', 'misses', 'shared']) && hasCounts(value.cache?.fallback, ['hits', 'misses', 'shared']) &&
     hasCounts(value.billing, ['attempts', 'successes', 'failures']) &&
+    (value.memory === undefined || hasCounts(value.memory, ['allocBytes', 'totalAllocBytes', 'sysBytes', 'heapAllocBytes', 'heapSysBytes', 'heapInuseBytes', 'heapIdleBytes', 'heapReleasedBytes', 'stackInuseBytes', 'gcCycles'])) &&
     (value.tasks === undefined || (hasCounts(value.tasks?.search, ['total', 'running', 'succeeded', 'failed']) && hasCounts(value.tasks?.fallback, ['total', 'running', 'succeeded', 'failed'])))
 }
 function readError(status) {
@@ -99,11 +117,13 @@ function readError(status) {
 
 export default {
   name: 'SystemMetricsPanel',
-  components: { RequestFailureAlert, ConsolePanel, ConsoleSummaryGrid },
+  components: { RequestFailureAlert, ConsolePanel, ConsoleSummaryGrid, PortraitChart },
   setup() {
     const { currentUser } = useCurrentUserDisplay()
     const canView = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
     const metrics = ref(null)
+    const palette = useChartPalette()
+    const runtimeCharts = computed(() => buildRuntimeCharts(metrics.value, palette.value))
     const loading = ref(false)
     const errorText = ref('')
     const failure = shallowRef(null)
@@ -162,6 +182,7 @@ export default {
     // No polling or automatic reads after identity/role changes; re-entry and refresh are explicit.
     onMounted(() => { handleRefresh() })
     const count = value => value.toLocaleString('zh-CN')
+    const mebibytes = value => `${(value / (1024 * 1024)).toFixed(1)} MiB`
     const startedAtText = computed(() => metrics.value ? new Date(metrics.value.startedAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '')
     const meanLatency = computed(() => metrics.value?.http.latencyCount > 0 ? `${(metrics.value.http.latencyTotalMillis / metrics.value.http.latencyCount).toFixed(1)} ms` : '暂无耗时样本')
     const maxLatency = computed(() => metrics.value?.http.latencyCount > 0 ? `${metrics.value.http.latencyMaxMillis.toFixed(1)} ms` : '暂无耗时样本')
@@ -173,13 +194,14 @@ export default {
       { key: 'search', label: '搜索', value: metrics.value.tasks.search },
       { key: 'fallback', label: '回退', value: metrics.value.tasks.fallback },
     ] : [])
-    return { canView, metrics, loading, errorText, failure, failureContext, isCurrentFailure, retryFailure, sampledAt, handleRefresh, count, startedAtText, meanLatency, maxLatency, cacheEntries, taskEntries }
+    return { canView, metrics, loading, errorText, failure, failureContext, isCurrentFailure, retryFailure, sampledAt, handleRefresh, count, mebibytes, startedAtText, meanLatency, maxLatency, cacheEntries, taskEntries, runtimeCharts }
   },
 }
 </script>
 
 <style scoped>
 .system-metrics-panel { margin-bottom: 24px; min-width: 0; }
+.metrics-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; margin-top: 20px; min-width: 0; }
 .metrics-notice { margin-bottom: 16px; }
 .metrics-meta, .metrics-help { color: var(--console-muted); font-size: 13px; overflow-wrap: anywhere; }
 .metrics-meta { margin: 0 0 16px; }

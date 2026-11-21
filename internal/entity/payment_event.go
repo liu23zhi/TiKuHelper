@@ -4,6 +4,15 @@ import "time"
 
 const TableNamePaymentEvent = "payment_events"
 
+// RechargeCreditEvidenceSQL correlates the recharge_orders row with the ledger
+// entry written by the same wallet transaction. Older operator corrections set
+// both status and paid_at without moving money; neither is proof on its own.
+const RechargeCreditEvidenceSQL = `EXISTS (SELECT 1 FROM billing_records br
+	WHERE br.related_order_id = recharge_orders.id AND br.user_id = recharge_orders.user_id
+	AND br.type = 'recharge' AND br.amount = recharge_orders.amount AND br.request_id = recharge_orders.order_no)`
+
+const PaymentEventSourceBackfill = "backfill"
+
 // PaymentEvent 是「支付已入账」的唯一事件账本（第 20.1.5 节状态机定稿要求）。
 //
 // 为什么需要它 —— 一个真金白银的重复加款漏洞：

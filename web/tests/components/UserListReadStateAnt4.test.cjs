@@ -40,6 +40,7 @@ const UNCONFIRMED = '用户列表尚未确认，请使用具有用户管理权�
 const PRIVATE = 'SYNTHETIC_PRIVATE_UPSTREAM_URL_CONFIG_TOKEN'
 const DIAGNOSTIC = '1234567890abcdef1234567890abcdef'
 const otherReads = []
+const portraitReads = []
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 const ok = (rows, payload = { page: 1, pageSize: 10 }, total = rows.length) => ({ status: 200, data: { data: rows, total, page: payload.page, pageSize: payload.pageSize } })
 const row = name => ({ id: 371, username: name, nickname: '合成用户', role: 'user', status: 'enabled', balance: -1.234567, phone: '', wechatId: '', registerSource: 'admin', createdAt: '2026-10-29T00:00:00Z' })
@@ -59,8 +60,20 @@ const originalLoad = Module._load
 Module._load = function (request, parent, main) {
   let filename
   try { filename = Module._resolveFilename(request, parent, main) } catch { return originalLoad.call(this, request, parent, main) }
+  if ([fallbackWeb, targetWeb].some(root => filename === path.join(root, 'src/utils/request.js'))) {
+    return async config => {
+      if (config.method !== 'get' || config.url !== '/api/export/tasks') return deny('UNEXPECTED_REQUEST')
+      return { status: 200, data: { data: [] } }
+    }
+  }
   if (typeof filename === 'string' && (filename.startsWith(path.join(fallbackWeb, 'src/api') + path.sep) || filename.startsWith(path.join(targetWeb, 'src/api') + path.sep))) {
     if (path.basename(filename) === 'TikuComponentApi.js') return api
+    if (path.basename(filename) === 'UserPortraitApi.js') return {
+      async getUserPortrait(id) {
+        portraitReads.push(id)
+        return { status: 200, data: { scope: 'user', targetUserId: id, base: { userId: id, username: 'portrait-user', registerSource: 'system' } } }
+      },
+    }
     return new Proxy({}, { get(_, name) { if (name === '__esModule' || name === 'then') return undefined; return () => deny('OTHER_API_' + String(name)) } })
   }
   return originalLoad.call(this, request, parent, main)
@@ -119,8 +132,9 @@ async function clickRead(w, label) {
 function http503() { return buildResponsePayload({ status: 503, headers: { 'X-Request-ID': DIAGNOSTIC }, data: { message: PRIVATE, detail: PRIVATE, config: { url: PRIVATE, token: PRIVATE } } }) }
 function rejectedNetwork() { return captureTransportRequestError(Object.assign(new Error(PRIVATE), { code: 'ERR_NETWORK', config: { url: PRIVATE, token: PRIVATE } })) }
 function snapshot(w, result, label) {
-  const table = w.element.querySelector('.ant-table'), empty = [...w.element.querySelectorAll('.ant-table-placeholder .ant-empty')].filter(visible)
-  const status = [...w.element.querySelectorAll('.ant-table-placeholder p[role="status"]')].filter(visible)
+  const table = w.element.querySelector('.desktop-user-table')
+  const empty = [...table.querySelectorAll('.ant-table-placeholder .ant-empty')].filter(visible)
+  const status = [...table.querySelectorAll('.ant-table-placeholder p[role="status"]')].filter(visible)
   const failure = [...w.element.querySelectorAll('.request-failure')].filter(visible)
   const mobileEmpty = [...w.element.querySelectorAll('.mobile-user-list .ant-empty')].filter(visible)
   const mobileStatus = [...w.element.querySelectorAll('.mobile-user-list p[role="status"]')].filter(visible)
@@ -186,6 +200,22 @@ afterEach(async () => {
   assert.deepEqual(runtimeErrors, [], 'ZERO_HIDDEN_VUE_ANTD_RUNTIME_EXCEPTION')
 })
 after(() => { record(); Module._load = originalLoad })
+
+test('clicking the real UserList portrait action loads its target in the shared dialog', async () => {
+  const w = await open()
+  await finish(calls.at(-1), ok([row('portrait-user')]))
+  nativeButton(w, '画像').click()
+  await settle()
+  assert.deepEqual(portraitReads, [371])
+  const dialog = document.querySelector('.ant-modal')
+  assert.ok(dialog)
+  assert.match(dialog.textContent, /合成用户（#371）的画像/)
+  assert.match(dialog.textContent, /portrait-user/)
+  assert.match(dialog.textContent, /系统初始化创建/)
+  dialog.querySelector('.ant-modal-close').click()
+  await settle()
+  assert.equal(document.querySelector('.user-portrait-page'), null)
+})
 
 scenario('admin original successful empty remains desktop and mobile positive', async result => {
   const w = await open(), read = calls.at(-1)

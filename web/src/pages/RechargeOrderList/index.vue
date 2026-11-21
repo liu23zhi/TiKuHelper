@@ -28,7 +28,7 @@
         type="info"
         show-icon
         class="page-alert"
-        :message="isAdmin ? '管理员可查看全部充值记录，包含用户、订单号、支付方式、金额和支付状态。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
+        :message="isAdmin ? '管理员可查看全部充值记录。人工核对不会入账或执行退款。历史入账待核对的订单，请按订单号核对支付渠道与账单流水；不要重复加款。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
       />
 
       <RequestFailureAlert v-if="loadFailure" :failure="loadFailure" :message="loadFailureMessage"
@@ -109,25 +109,72 @@
         <template #bodyCell="{ column, record }">
           <span v-if="column.key === 'username'">{{ record.username || `用户 #${record.userId || '-'}` }}</span>
           <span v-else-if="column.key === 'amount'" class="money-cell">¥ {{ formatAmount(record.amount) }}</span>
-          <a-tag v-else-if="column.key === 'status'" :color="buildStatusColor(record.status)">
-            {{ buildStatusLabel(record.status) }}
-          </a-tag>
+          <div v-else-if="column.key === 'status'">
+            <a-tag :color="record.settlementNeedsReview ? 'orange' : buildStatusColor(record.status)">{{ record.settlementNeedsReview ? '历史入账待核对' : buildStatusLabel(record.status) }}</a-tag>
+            <div v-if="record.refundMarked">退款工单已核销</div>
+            <div v-else-if="record.refundReserved">已有退款申请</div>
+            <div v-else-if="record.refundOrderCapCents > 0">订单退款上限 ¥{{ formatAmount(record.refundOrderCapCents / 100) }}</div>
+          </div>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
+          <a-button v-else-if="column.key === 'review' && canEditStatus" type="link" size="small"
+            :disabled="record.settlementNeedsReview || record.refundReserved || record.refundMarked"
+            @click="renderHandlers.openStatusModal(record)">核对状态</a-button>
         </template>
         <template #emptyText>
           <a-empty v-if="hasLoaded && !tableLoading && !loadFailure" description="当前还没有充值记录。" />
           <span v-else>{{ tableLoading ? '正在加载充值记录…' : '充值记录尚未加载成功，请重试读取。' }}</span>
         </template>
       </a-table></ConsoleTableShell>
+
+      <a-modal
+        v-model:open="statusModalVisible"
+        :get-container="false"
+        title="核对充值订单状态"
+        :confirm-loading="statusSubmitting"
+        ok-text="保存"
+        cancel-text="取消"
+        data-testid="recharge-status-modal"
+        @ok="renderHandlers.submitStatusChange"
+      >
+        <a-form layout="vertical">
+          <a-form-item label="订单号">
+            <span class="refund-order-no" data-recharge-private>{{ statusTarget.orderNo }}</span>
+          </a-form-item>
+          <a-form-item label="当前状态">
+            <a-tag :color="buildStatusColor(statusTarget.current)">
+              {{ buildStatusLabel(statusTarget.current) }}
+            </a-tag>
+          </a-form-item>
+          <a-form-item label="改为">
+            <a-select
+              :value="statusTarget.next"
+              :options="reviewOptions"
+              data-testid="recharge-status-select"
+              @update:value="value => (statusTarget.next = value)"
+            />
+          </a-form-item>
+          <a-alert
+            type="info"
+            show-icon
+            message="人工核对不会入账，也不会触发退款。只有支付渠道的有效回调会写入钱包和充值流水；请勿另行加款。"
+            data-testid="recharge-status-hint"
+          />
+          <a-alert v-if="statusError" type="error" show-icon :message="statusError" />
+        </a-form>
+      </a-modal>
     </ConsolePanel>
+    <AdminDataTransfer v-if="isAdmin" resource="recharge_orders" title="充值订单" />
+
   </div>
 </template>
 
 <script>
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { computed, defineComponent, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
-import { getRechargeOrders } from '@/api/TikuComponentApi'
+import { getRechargeOrders, updateRechargeOrderStatus } from '@/api/TikuComponentApi'
+import { message } from 'ant-design-vue'
 import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -140,11 +187,11 @@ function readNonnegativeNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) && number >= 0 ? number : null
 }
-const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
+const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'settlementNeedsReview', 'refundMarked', 'refundReserved', 'refundOrderCapCents', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
 
 export default defineComponent({
   name: 'RechargeOrderList',
-  components: { RequestFailureAlert },
+  components: { AdminDataTransfer, RequestFailureAlert },
   setup() {
     const filterIdPrefix = 'recharge-orders-' + useId()
     const filterFieldId = field => filterIdPrefix + '-' + field
@@ -169,6 +216,52 @@ export default defineComponent({
     })
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+
+    const STATUS_OPTIONS = [
+      { label: '待支付', value: 'pending' },
+      { label: '已核对，待回调', value: 'awaiting_callback' },
+      { label: '已支付', value: 'paid' },
+      { label: '已退款', value: 'refunded' },
+    ]
+    // 已支付可筛选，但只有支付回调才能写入，不是管理员可选的目标。
+    const reviewOptions = STATUS_OPTIONS.filter(option => option.value !== 'paid')
+    const statusModalVisible = ref(false), statusSubmitting = ref(false), statusError = ref('')
+    const statusTarget = reactive({ orderId: 0, orderNo: '', current: '', next: undefined })
+    const canEditStatus = computed(() => isAdmin.value)
+    let statusRequest = 0
+    const resetStatusReview = () => {
+      ++statusRequest
+      statusModalVisible.value = false; statusSubmitting.value = false; statusError.value = ''
+      Object.assign(statusTarget, { orderId: 0, orderNo: '', current: '', next: undefined })
+    }
+    const openStatusModal = (record) => {
+      if (!canEditStatus.value || record?.settlementNeedsReview || record?.refundReserved || record?.refundMarked) return
+      resetStatusReview()
+      Object.assign(statusTarget, { orderId: record.id, orderNo: record.orderNo, current: record.status })
+      statusModalVisible.value = true
+    }
+    const submitStatusChange = async () => {
+      if (!canEditStatus.value || !statusModalVisible.value || statusSubmitting.value) return
+      if (!statusTarget.next) { statusError.value = '请选择运营标记'; return }
+      if (statusTarget.next === statusTarget.current) { statusModalVisible.value = false; return }
+      const request = ++statusRequest
+      statusSubmitting.value = true; statusError.value = ''
+      try {
+        const response = await updateRechargeOrderStatus(statusTarget.orderId, statusTarget.next)
+        if (request !== statusRequest) return
+        if (response?.status !== 200) {
+          statusError.value = response?.data?.message || '状态更新失败，请稍后重试'
+          return
+        }
+        statusModalVisible.value = false
+        message.success(response?.data?.message || '运营标记已保存，不会入账或执行退款')
+        await handleLoad()
+      } catch (error) {
+        if (request === statusRequest) statusError.value = error?.response?.data?.message || '状态更新失败，请刷新后重试'
+      } finally {
+        if (request === statusRequest) statusSubmitting.value = false
+      }
+    }
     const instance = getCurrentInstance()
     const router = useRouter()
     const route = () => router?.currentRoute?.value || instance?.proxy?.$route || {}
@@ -205,7 +298,7 @@ export default defineComponent({
     const retireView = () => {
       const epoch = ++renderEpoch
       queryEpoch.value += 1; tableLoading.value = false; loadFailure.value = null
-      clearData(); resetInputs(); scrubPrivateDom()
+      clearData(); resetInputs(); resetStatusReview(); scrubPrivateDom()
       // Drain Antd's accepted controlled input work before disposing its refs.
       nextTick().then(() => nextTick()).then(() => {
         if (!alive || epoch !== renderEpoch) return
@@ -270,6 +363,7 @@ export default defineComponent({
         guardEvent(event) { if (!current()) { event.preventDefault(); event.stopImmediatePropagation() } },
         load: run(handleLoad), applyKeyword: run(applyKeyword), onFilterChange: run(onFilterChange),
         resetFilters: run(resetFilters), handleTableChange: run(handleTableChange),
+        openStatusModal: run(openStatusModal), submitStatusChange: run(submitStatusChange),
         setKeyword: run(value => { keywordInput.value = value }), setStatus: run(value => { filters.status = value }),
         setProvider: run(value => { filters.paymentProvider = value }),
         setUserId: run(value => { filters.userId = value }),
@@ -289,8 +383,11 @@ export default defineComponent({
       if (changed) retireView()
     }, { flush: 'sync' })
     watch(routeKey, retireView, { flush: 'sync' })
-    onMounted(() => { mounted = true; void handleLoad() })
-    onBeforeUnmount(() => { alive = false; mounted = false; retireView() })
+  onMounted(() => {
+    mounted = true
+    void handleLoad()
+  })
+  onBeforeUnmount(() => { alive = false; mounted = false; retireView() })
     const summary = computed(() => ({
       total: hasLoaded.value ? pagination.total : '--',
       currentPageCount: hasLoaded.value ? dataSource.value.length : '--',
@@ -311,16 +408,11 @@ export default defineComponent({
       tableLoading,
       pagination,
       summary,
-      isAdmin,
-      filters,
-      keywordInput,
-      sumTableColumnWidths,
+      isAdmin, filters, keywordInput, sumTableColumnWidths, canEditStatus, statusModalVisible,
+      statusSubmitting, statusTarget, statusError, reviewOptions,
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, status: filters.status, paymentProvider: filters.paymentProvider, userId: filters.userId, createdFrom: filters.createdFrom, createdTo: filters.createdTo, paidFrom: filters.paidFrom, paidTo: filters.paidTo, amountMin: filters.amountMin, amountMax: filters.amountMax })),
-      statusOptions: [
-        { label: '待支付', value: 'pending' },
-        { label: '已支付', value: 'paid' },
-      ],
-      columns: [
+      statusOptions: STATUS_OPTIONS,
+      columns: computed(() => [
         {
           title: '订单号',
           dataIndex: 'orderNo',
@@ -369,7 +461,8 @@ export default defineComponent({
           key: 'createdAt',
           width: 122,
         },
-      ],
+        ...(canEditStatus.value ? [{ title: '运营核对', key: 'review', width: 120 }] : []),
+      ]),
     }
   },
   methods: {
@@ -395,6 +488,8 @@ export default defineComponent({
       const normalized = String(value || '').trim().toLowerCase()
       if (normalized === 'paid') return '已支付'
       if (normalized === 'pending') return '待支付'
+      if (normalized === 'awaiting_callback') return '已核对，待回调'
+      if (normalized === 'refunded') return '已退款'
       if (normalized === 'closed') return '已关闭'
       return value || '-'
     },

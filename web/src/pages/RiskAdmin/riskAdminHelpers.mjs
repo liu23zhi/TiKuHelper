@@ -88,9 +88,13 @@ export const RISK_SEVERITY_META = Object.freeze({
 export const RISK_ADVISORY_NOTE =
   '风控只产生告警记录与企业微信推送。命中后不会封禁账号、不会拒绝请求、不会修改任何用户状态；处置请到「黑名单管理」或其他对应页面人工执行。'
 
-export function riskRuleLabel(ruleId) {
+export function riskRuleLabel(ruleId, detail = '', rules = []) {
   const key = String(ruleId ?? '').trim()
   if (!key) return '未知规则'
+  const snapshotName = parseRiskEvidence(detail).evidence.ruleName
+  if (typeof snapshotName === 'string' && snapshotName.trim()) return snapshotName.trim()
+  const current = Array.isArray(rules) ? rules.find(item => item?.ruleId === key) : null
+  if (typeof current?.name === 'string' && current.name.trim()) return current.name.trim()
   return RISK_RULE_LABELS[key] || key
 }
 
@@ -338,4 +342,153 @@ export function readRiskThrownMessage(error, fallback) {
 // 「能填、能点保存、没有任何反应」，比缺失更难排查（本仓「假钉子」的同族形态）。
 // 落地判据②需要后端补一对 handler + 两条路由，那超出本任务的可写范围
 // （禁碰 router.go、risk_admin.go 不在可写清单），已在汇报里给出原文给队长接线。
+//
+// ─────────────────────────────────────────────────────────────────────
+// 2026-11 更新：上述阻塞**已解除**。后端补齐了
+// GET/PUT/DELETE /risk/thresholds[/:key] 与 GET /risk/config + PUT/DELETE /risk/config/:key，
+// 页面已提供全部输入控件。上面这段保留为历史记录（它解释了为什么这个页面
+// 曾经「有面板没输入框」）。
+
+// ─────────────────────────────────────────────────────────────────────
+// 旧版规则管理只支持内置项；当前规则目录与 CRUD 由服务端白名单检测器驱动。
+//
+// 当前已支持受控类型的新建与管理。任意表达式/脚本仍不得由浏览器提交执行。
+//
+//  1. `risk_rules` 确实是数据库表（entity/risk.go 的 RiskRule），但它**不是规则的来源**：
+//     `loadRiskRules`（service/risk_alert.go:464）遍历的是
+//     `entity.DefaultRiskRules()` 这个**代码常量切片**，只把 DB 行当「覆盖值」用。
+//     它在 L478 用 `result := make(..., len(defaults))` 只按 defaults 迭代 ——
+//     表里多出来的行会被**直接丢弃**，不报错、不告警。所以往表里插一条新规则，
+//     判定链根本看不到它。
+//
+//  2. 判定逻辑是代码：`EvaluateDebtAlerts`（risk_alert.go:511）是一串硬编码的
+//     `if rule, ok := enabledRules[entity.RiskRuleIDXxx]; ok { collectXxxCandidates(...) }`。
+//     新增一条规则必须新写一个 `collectXxxCandidates` + 在 entity 里登记常量 +
+//     在 riskThresholdSpecs 里登记阈值 —— 三处都是代码改动，不是数据录入。
+//
+//  3. `SetRiskRuleEnabledWithDB` 走 `isKnownRiskRuleID` 白名单（risk_threshold.go:620），
+//     未知 ruleId 直接返回 ErrRiskRuleUnknown。即「新建的规则连启停都设不了」。
+//
+// 以上仅记录原实现问题；执行层接入 registry 后，数据库中的受支持类型规则会参与判定。
+// ─────────────────────────────────────────────────────────────────────
+
+// RISK_BUILTIN_RULE_NOTICE 是「规则集内置、不可在管理页新增」的用户可见说明。
+//
+// 为什么必须有这段文案：管理员看到「规则清单」一定会找「新建」按钮。
+// 没有按钮却没有解释，最容易被理解成「这功能忘了做/坏了」，然后是反复提工单。
+// 写明「新增需要代码改动 + 需要的是哪一种改动」既解释现状，也给出正确路径。
+// 非数值配置的 kind → 前端控件类型。
+//
+// 与后端 service.RiskConfigKind* 逐字对齐；未知 kind 必须**报错而不是猜**
+// （猜成数字框会让 ASN 名单无法输入，而界面上不会提示任何原因）。
+const RISK_CONFIG_KIND_CONTROL = Object.freeze({
+  asn_list: 'textarea',
+  positive_int: 'number',
+  // hour_of_day 用数字框（0-23 整点），与 positive_int 同控件但语义是「时刻」。
+  // 不加这一项会让 riskAdminHelpers 的 if (!control) throw 整表报错 ——
+  // 表现是「风控配置区整块空白」，而不是「少了一项」。
+  hour_of_day: 'number',
+})
+
+// RISK_CONFIG_KIND_LABELS 是控件类型的中文说明（用于占位符/提示）。
+const RISK_CONFIG_KIND_LABELS = Object.freeze({
+  asn_list: '名单',
+  positive_int: '整数',
+  hour_of_day: '整点小时（0-23）',
+})
+
+// normalizeRiskConfigItems 校验并归一化 GET /risk/config 的响应。
+//
+// 三条不可协商的性质：
+//  1. 未知 kind 必须抛错 —— 静默降级成文本域会让「1–1440 整数」这一层完全失效
+//     （运营填 "abc" 之后只有后端 400，而前端本来能提前拦住）。
+//  2. `value` / `defaultValue` 一律用 String() 归一：后端是 string，但一旦它
+//     变回数字（历史行是数值形态），界面上 `value === ''` 之类的判空会静默失效。
+//  3. **空串是合法值**，不能把空串当成「缺值」丢掉那一项 —— 空串对名单
+//     意味着「关闭 R10」，把它过滤掉等于让人无法看到自己刚清空的状态。
+export function normalizeRiskConfigItems(items) {
+  const list = Array.isArray(items) ? items : []
+  return list
+    .filter(item => item && typeof item === 'object' && typeof item.key === 'string' && item.key)
+    .map(item => {
+      const kind = String(item.kind ?? '').trim()
+      const control = RISK_CONFIG_KIND_CONTROL[kind]
+      if (!control) {
+        // 明确的失败信息：让「后端加了新 kind、前端没跟上」立刻可见。
+        throw new Error(`风控配置 ${item.key} 的类型 ${kind || '(空)'} 前端不认识，请先更新管理页`)
+      }
+      const minValue = Number(item.minValue)
+      const maxValue = Number(item.maxValue)
+      return {
+        key: item.key,
+        ruleId: String(item.ruleId ?? '').trim(),
+        label: String(item.label ?? item.key),
+        kind,
+        control,
+        kindLabel: RISK_CONFIG_KIND_LABELS[kind] || '',
+        value: String(item.value ?? ''),
+        defaultValue: String(item.defaultValue ?? ''),
+        // 只有「有显式配置」才允许重置：没有配置时重置是空操作，
+        // 按钮还留着会让人以为「重置过了但没生效」。
+        configured: item.configured === true,
+        source: String(item.source ?? ''),
+        unit: String(item.unit ?? ''),
+        help: String(item.help ?? ''),
+        // ASN 名单类没有数值区间：min/max 为 0 表示不适用，不能当成「区间是 [0,0]」。
+        min: control === 'number' && Number.isFinite(minValue) ? minValue : null,
+        max: control === 'number' && Number.isFinite(maxValue) && maxValue > 0 ? maxValue : null,
+      }
+    })
+}
+
+// RISK_CONFIG_EMPTY_MEANING 给出「清空这一项会发生什么」的说明。
+//
+// 这是本页最容易让人误操作的一处：空串对两项配置的语义**完全不同**，
+// 共用一句「留空表示使用默认值」会把「关闭 R10」错说成「回到默认」。
+export function describeRiskConfigEmptyMeaning(item) {
+  if (!item) return ''
+  if (item.kind === 'asn_list') {
+    return '留空 = 关闭这条规则（名单为空时该规则完全不告警，这是有意的「宁可漏报不要误报」）'
+  }
+  if (item.kind === 'positive_int') {
+    return `留空 = 回到默认值 ${item.defaultValue}${item.unit ? ' ' + item.unit : ''}`
+  }
+  if (item.kind === 'hour_of_day') {
+    // 凌晨时段两项必须一起配：只配一半会整体回落默认（后端 riskOffhoursWindow 的判断），
+    // 所以这里明确提示「要和对面那项一起改」，而不是只说「留空回到默认」。
+    return `留空 = 回到默认值 ${item.defaultValue}${item.unit || ''}（需与另一项一起配置）`
+  }
+  return ''
+}
+
+// validateRiskConfigDraft 是保存前的**前端类型守卫**（范围裁决仍在后端）。
+//
+// 只拦「一眼就是打错」的输入，不重复实现后端的白名单/归一化：
+//  · 数字控件：必须是纯数字且落在 [min,max] —— 这一步前端有 min/max，能提前拦住；
+//  · 文本控件：只校验长度上限（后端会做 ASN 形态校验，前端不抄那套归一化逻辑，
+//    抄了就会在「大小写 / 分隔符」上与后端漂移）。
+// 返回空串表示通过。
+export function validateRiskConfigDraft(item, draft) {
+  if (!item?.key) return '配置项参数错误'
+  const raw = String(draft ?? '')
+  if (item.control === 'number') {
+    const trimmed = raw.trim()
+    // 空串合法（= 回到默认值），不在这里拦。
+    if (!trimmed) return ''
+    if (!/^[0-9]+$/.test(trimmed)) {
+      return `${item.label} 必须是整数（当前「${trimmed}」）—— 不支持小数、负号与科学计数法`
+    }
+    const value = Number(trimmed)
+    if (Number.isFinite(item.min) && value < item.min) {
+      return `${item.label} 不能小于 ${item.min}`
+    }
+    if (Number.isFinite(item.max) && value > item.max) {
+      return `${item.label} 不能大于 ${item.max}（超过这个值会让规则实际失效，请用启用开关停用规则）`
+    }
+    return ''
+  }
+  // 文本类（ASN 名单）：只做长度上限。后端 ValidateProxyASNList 负责形态校验。
+  if (raw.length > 2000) return `${item.label} 过长（上限 2000 字符）`
+  return ''
+}
 

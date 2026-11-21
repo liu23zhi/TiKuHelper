@@ -300,3 +300,56 @@ func TestRefundAbuseNeverTakesAction(t *testing.T) {
 		t.Fatalf("C1：风控不得写黑名单，实际 %d 行", blacklist)
 	}
 }
+
+func TestRefundAbuseCountsSettledAllocationsOncePerRequest(t *testing.T) {
+	db := newRiskAlertTestDBNamed(t, "refund-lines")
+	seedRiskRules(t, db)
+	if err := db.AutoMigrate(&entity.TicketRefundOrderLine{}); err != nil {
+		t.Fatal(err)
+	}
+	now := riskR1TestTime()
+	const uid = 8811
+	type line struct {
+		id          int32
+		status      string
+		cents, paid int64
+	}
+	group := func(age int, kind, status string, approved, legacyPaid int64, parent *int32, lines ...line) {
+		row := seedTicketRefund(t, db, uid, status, approved, legacyPaid, now.Add(-time.Duration(age)*time.Hour), parent)
+		if err := db.Model(&row).Update("kind", kind).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range lines {
+			dbLine := entity.TicketRefundOrderLine{RefundID: row.ID, OrderID: l.id, OrderNo: itoaRisk(l.id), RefundNo: "r13-" + itoaRisk(l.id), Status: l.status, Cents: l.cents, PaidCents: l.paid}
+			if err := db.Create(&dbLine).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	const orig, manual, yes, fail, partial = TicketRefundKindOriginal, TicketRefundKindManual, TicketRefundStatusSucceeded, TicketRefundStatusFailed, TicketRefundStatusPartial
+	group(1, orig, yes, 900, 1000, orderIDPtr(1))                                                  // legacy single
+	group(2, orig, yes, 1500, 1000, orderIDPtr(2), line{2, yes, 750, 750}, line{3, yes, 750, 750}) // shadow parent must not be counted twice
+	group(3, orig, partial, 1000, 0, nil, line{4, yes, 450, 500}, line{5, fail, 550, 3000})        // only 450 actually went out
+	group(4, orig, partial, 499, 0, nil, line{6, yes, 10, 500}, line{7, fail, 489, 500})           // below 90%
+	group(5, manual, yes, 180, 100, orderIDPtr(8), line{8, yes, 0, 100}, line{9, yes, 0, 100})     // manual payout once, parent order unique
+	group(6, orig, fail, 999, 1000, orderIDPtr(10), line{10, fail, 999, 1000})
+	group(7, orig, TicketRefundStatusProcessing, 1000, 1000, orderIDPtr(11), line{11, TicketRefundStatusUnknown, 1000, 1000})
+	group(8, orig, yes, 1000, 1000, orderIDPtr(12), line{12, fail, 1000, 1000}) // line-backed request must not fall back to parent
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatal(err)
+	}
+	var warning entity.RiskWarning
+	if err := db.Where("rule_id = ?", "refund_abuse").Take(&warning).Error; err != nil {
+		t.Fatal(err)
+	}
+	var d struct {
+		NearFullCount, TotalRefunds   int
+		ApprovedTotal, OrderPaidTotal int64
+	}
+	if err := json.Unmarshal([]byte(warning.Detail), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.NearFullCount != 4 || d.TotalRefunds != 5 || d.ApprovedTotal != 3040 || d.OrderPaidTotal != 3700 {
+		t.Fatalf("refund requests and confirmed cents must reconcile: %+v", d)
+	}
+}

@@ -90,7 +90,7 @@ func UAPIIPInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": locations, "configured": apiKey != "", "message": service.LocationQueryErrorMessage(lookupErr)})
 }
 
-// UAPIMyLocations 查询当前用户自己的手机号和登录 IP 归属地。
+// UAPIMyLocations 查询当前用户自己的手机号、登录与设备 IP 归属地。
 // 普通用户账单与个人中心只能走此接口，避免把管理员批量查询接口暴露给普通用户。
 func UAPIMyLocations(c *gin.Context) {
 	operator, ok := currentOperator(c)

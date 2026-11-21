@@ -212,7 +212,12 @@ func validateBcryptPasswordLength(password string) error {
 // Auth 鉴权
 func Auth(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	tokenValue := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	// 兼容 `Bearer <jwt>` 与裸 token（2026-11-18）。
+	//
+	// ⚠️ 剥离**只作用于 Authorization 头**，不作用于 Cookie：
+	// setAuthCookie 写入的本来就是裸 token，对 cookie 值做剥离会让
+	// 「token 恰好以 Bearer 开头」的极端情况被误处理，而那是无意义的风险。
+	tokenValue := stripBearerTokenPrefix(c.Request.Header.Get("Authorization"))
 	cookieCredential := false
 	if tokenValue == "" {
 		cookieValue, err := c.Cookie(authCookieName)
@@ -254,7 +259,11 @@ func Auth(c *gin.Context) {
 		})
 		return
 	}
-	if !isUserSessionAllowed(user) {
+	if err := refreshSessionBan(user); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(user) {
 		c.AbortWithStatusJSON(401, gin.H{
 			"message": "用户已被禁用",
 		})
@@ -272,6 +281,37 @@ func Auth(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
 		return
 	}
+	if strings.EqualFold(user.Status, "banned") {
+		c.Set("account_banned", true)
+		if !bannedSessionRouteAllowed(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": "ACCOUNT_BANNED", "message": "账号已被封禁，仅可查看封禁提示和提交工单申诉"})
+			return
+		}
+		// Appeal access never inherits administrator permissions, even if the
+		// banned account used to be an administrator.
+		user.Role = "user"
+	}
+	// 滑动续期（2026-11-19）：所有校验通过后，若这枚令牌已走过半程，就重发一次。
+	//
+	// 为什么需要：JWTTTL 是 24 小时且没有 refresh 接口，用户正常每天使用也会在
+	// 登录满 24 小时的那一刻被踢回登录页 —— 表现为「莫名其妙掉登录」，而真实
+	// 原因是自然过期（很多人会误以为是重启导致的，因为重启往往发生在隔天）。
+	//
+	// 续期条件用「剩余寿命不足一半」而不是「每次都续」：
+	//   · 每次都续等于给每个请求都写一次 Set-Cookie，浪费带宽且会让令牌
+	//     在日志里高频变化，难以排查；
+	//   · 过半才续，最坏情况下用户只要每 12 小时用一次就永不掉线。
+	//
+	// 只在 cookie 凭证下续期：Authorization 头的调用方（脚本/CLI）自己管理
+	// 令牌生命周期，服务端不该替它们改写行为。
+	// 同时要求 sid 匹配已在上面的 tokenLoginSessionMatches 里校验过，
+	// 所以续出来的新令牌仍绑定同一登录会话，不会绕过单设备登录。
+	if cookieCredential && c.FullPath() != ticketAppealVerificationPath {
+		if refreshed := util.RefreshJwtIfNeeded(tokenValue, user.ID, user.Password, user.LoginSessionID); refreshed != "" {
+			setAuthCookie(c, refreshed)
+		}
+	}
+
 	c.Set("user", user)
 	c.Next()
 }
@@ -332,7 +372,16 @@ func AuthAccessToken(c *gin.Context) {
 
 // UserSession is a read-only heartbeat; Auth already checked the current session.
 func UserSession(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+	user, _ := c.Get("user")
+	response := gin.H{"message": "ok", "status": ""}
+	if value, ok := user.(*entity.User); ok && value != nil {
+		response["status"] = value.Status
+		if ban := currentUserBanNotice(c, value); ban != nil {
+			response["banReason"] = ban.Reason
+			response["banExpiresAt"] = ban.ExpiresAt
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // UserInfo 获取用户信息
@@ -347,10 +396,38 @@ func UserInfo(c *gin.Context) {
 	// 普通用户也需要知道当前生效的充值下限，避免管理员调整后页面仍按旧默认值提交。
 	// 读取失败时使用服务层默认值，不影响用户信息接口本身。
 	minimum := service.GetMinRechargeAmountWithDB(withDatabasePriority(dao.User.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow))
-	c.JSON(http.StatusOK, struct {
+	response := struct {
 		*entity.User
-		MinRechargeAmount float64 `json:"minRechargeAmount"`
-	}{User: user, MinRechargeAmount: minimum})
+		MinRechargeAmount float64    `json:"minRechargeAmount"`
+		BanReason         string     `json:"banReason,omitempty"`
+		BanExpiresAt      *time.Time `json:"banExpiresAt,omitempty"`
+	}{User: user, MinRechargeAmount: minimum}
+	if ban := currentUserBanNotice(c, user); ban != nil {
+		response.BanReason = ban.Reason
+		response.BanExpiresAt = ban.ExpiresAt
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func currentUserBanNotice(c *gin.Context, user *entity.User) *entity.UserBan {
+	if !strings.EqualFold(user.Status, service.UserBanStatusBanned) {
+		return nil
+	}
+	ban, err := service.ActiveUserBanWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), user.ID, time.Now())
+	if err != nil {
+		logger.SysWarn("读取账号封禁提示失败：" + err.Error())
+	}
+	return ban
+}
+
+func writeUserLoginResponse(c *gin.Context, user *entity.User, token string) {
+	setAuthCookie(c, token)
+	response := gin.H{"message": "user login", "jwt": token, "status": user.Status}
+	if ban := currentUserBanNotice(c, user); ban != nil {
+		response["banReason"] = ban.Reason
+		response["banExpiresAt"] = ban.ExpiresAt
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // UserLogin 用户登录
@@ -403,12 +480,16 @@ func UserLogin(c *gin.Context) {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
-	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, payload.Password)
+	passwordMatches, needsUpgrade := util.VerifyAccountLoginPassword(user.ID, user.Role, user.Password, payload.Password)
 	if !passwordMatches {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
-	if !isUserSessionAllowed(user) {
+	if err := refreshSessionBan(user); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(user) {
 		loginGate.failAccount(payload.Username, "用户已被禁用")
 		return
 	}
@@ -429,18 +510,26 @@ func UserLogin(c *gin.Context) {
 	loginGate.succeed(payload.Username)
 	bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
 	recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
-	// 设备池准入（T-25 判定侧）：同步、且在 setAuthCookie 之前 ——
-	// 异步判定的结论写不进已经发出的响应，用户已经拿到 cookie 再判「该拒绝」
-	// 就只是事后通知。被拒时本函数已写好 403，直接 return。
-	if !enforceAccountDeviceLimit(c, user.ID) {
-		return
-	}
-	// 设备指纹登记（T-25 采集侧）：异步 + fail-open，失败只记 SysLog。
-	// 位置：凭据已验过、token 已签发之后 —— 失败登录不该在设备表里留痕，
-	// 否则撞库会顺带把账号的设备额度打满（DoS 一个用户只需试错几次）。
-	_ = recordAccountDeviceBinding(c, user.ID)
-	setAuthCookie(c, token)
-	c.JSON(http.StatusOK, gin.H{"message": "user login", "jwt": token})
+	// ⚠️ 登录路径**既不登记设备、也不做设备准入**（2026-11-17 用户定案）。
+	//
+	// 用户口径（原话）：「Web UI 登录不需要查看设备上限，确保只能在一个设备登录即可」。
+	//
+	// 两件事分开看：
+	//
+	//  1. 设备池（X-Device-Id）只约束 chaoxing 调 API 的台数，由
+	//     middleware.DeviceLimit 在 /api/search 等业务路由上判定并登记。
+	//     Web UI 登录不占那批名额，也不该出现在「我的设备」里。
+	//
+	//  2. Web UI 的「只能一台设备登录」由**会话**机制保证，与设备池无关：
+	//     IssueUserLoginJWTWithDB 每次登录都生成新的 login_session_id 写回 users，
+	//     JWT 里带 `sid` claim；Auth 中间件比对不一致即视为失效。
+	//     所以新设备登录会让旧设备的 JWT 立刻作废 —— 这正是「单设备登录」。
+	//
+	// 为什么必须把 enforceAccountDeviceLimit 也去掉：登录时拿不到 chaoxing 的
+	// X-Device-Id，只能退化成 UA 哈希当设备标识。那个哈希与 API 路径的
+	// device_id 不是同一个键，于是会出现「登录被设备池拦下、但该设备调 API 完全正常」
+	// 的自相矛盾状态，且拦截依据是一台从未登记过的「幽灵设备」。
+	writeUserLoginResponse(c, user, token)
 }
 
 // UserRegister 公开注册
@@ -730,8 +819,7 @@ func evaluateUserLevelAfterRegister(userID int32) {
 // applyReferralOnRegister 在注册事务内完成邀请归因并生成新用户自己的邀请码。
 //
 // 语义（对应 04 稿 3.6 节）：
-//   - 总开关关闭：整段跳过，不生成邀请码、不绑定邀请人、也不因为带了
-//     inviteCode 而报错（老客户端可能带着历史码）；
+//   - 注册始终生成邀请码并保留有效邀请关系；返佣开关只控制奖励发放。
 //   - inviteCode 为空：只生成自己的邀请码；
 //   - inviteCode 非法 / 自邀：返回业务错误，整个注册事务回滚（用户必须改输入重来）；
 //   - 生成邀请码失败：**不阻断注册** —— 邀请码是附加权益，下次可补发。
@@ -739,9 +827,6 @@ func evaluateUserLevelAfterRegister(userID int32) {
 // 邀请码只在注册时生效，注册后不可改绑（绑定入口只有这里）。
 func applyReferralOnRegister(tx *gorm.DB, user *entity.User, inviteCode string) error {
 	if tx == nil || user == nil || user.ID <= 0 {
-		return nil
-	}
-	if !service.GetReferralRebateEnabledWithDB(tx) {
 		return nil
 	}
 	if code := strings.TrimSpace(inviteCode); code != "" {
@@ -1039,10 +1124,14 @@ func BindCurrentUserWechat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	// 换绑成功后的设备指纹登记（T-25 采集侧）：异步 + fail-open。
-	// 为什么换绑也要记：换绑常发生在**新设备**上（旧设备丢了/换手机），
-	// 那恰恰是「第一次见到这台设备」的时刻；漏记它会让设备池永远学不到新设备。
-	_ = recordAccountDeviceBinding(c, currentUser.ID)
+	// ⚠️ 换绑**不再**登记设备（2026-11-17 用户定案，与 UserLogin 同一理由）。
+	//
+	// 原注释说「换绑常发生在**新设备**上，那恰恰是第一次见到这台设备」——
+	// 那个论证在旧设计（登录即登记）下成立，但设备池的语义已收窄为
+	// 「chaoxing 调 API 的设备」。在 Web UI 里换绑微信不等于「新设备开始调 API」，
+	// 记进设备表只会让「我的设备」堆一批从不调 API 的浏览器指纹。
+	//
+	// 真正的新设备识别由 chaoxing 首次请求时携带的 X-Device-Id 完成。
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -1082,8 +1171,7 @@ func BindCurrentUserWechatByCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	// 换绑成功（验证码路径）后的设备指纹登记，与 bindToken 路径同源同理。
-	_ = recordAccountDeviceBinding(c, currentUser.ID)
+	// ⚠️ 换绑成功（验证码路径）**不再**登记设备，与 bindToken 路径同源同理。
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -1159,7 +1247,11 @@ func UserSMSLogin(c *gin.Context) {
 		return
 	}
 	user := users[0]
-	if !isUserSessionAllowed(&user) {
+	if err := refreshSessionBan(&user); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "账号状态暂时无法确认，请稍后重试"})
+		return
+	}
+	if !isUserAppealSessionAllowed(&user) {
 		loginGate.failAccount(phone, "用户已被禁用")
 		return
 	}
@@ -1176,17 +1268,12 @@ func UserSMSLogin(c *gin.Context) {
 	loginGate.succeed(phone)
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneLoginSMS, smsEvidence)
 	recordAccountAudit(c, &user, "auth", logActionLogin, "用户短信登录成功", map[string]any{"status": "success", "message": "用户短信登录成功", "scene": "sms"})
-	// 设备指纹登记（T-25 采集侧）：短信登录走同一个账号维度，也要记设备。
-	// 漏掉这一处会让「只用短信登录」的用户永远不产生设备行 —— 而移动端用户
-	// 恰恰是最依赖短信登录的那批人。
+	// ⚠️ 短信登录同样**既不登记设备、也不做设备准入**（2026-11-17 用户定案，
+	// 与密码登录完全同源同理）。
 	//
-	// 准入判定与密码登录同源：短信登录同样是「获得访问权」的入口，不能绕过设备上限。
-	if !enforceAccountDeviceLimit(c, user.ID) {
-		return
-	}
-	_ = recordAccountDeviceBinding(c, user.ID)
-	setAuthCookie(c, token)
-	c.JSON(200, gin.H{"message": "user login", "jwt": token})
+	// 「只能一台设备登录」由 login_session_id（JWT 的 sid claim）保证，
+	// 不靠设备池；设备池只约束 chaoxing 调 API 的台数。
+	writeUserLoginResponse(c, &user, token)
 }
 
 func UserLogout(c *gin.Context) {
@@ -1683,6 +1770,39 @@ func requestIsHTTPS(c *gin.Context) bool {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https")
+}
+
+// stripBearerTokenPrefix 让 controller.Auth 同时接受裸 token 与 `Bearer <token>`
+// （2026-11-18 兼容需求）。
+//
+// # 背景
+//
+// 仓内原本有两条鉴权链，对 `Bearer ` 的处理相反：
+//
+//	controller.Auth（Web UI JWT）     → 不剥离
+//	AuthAccessToken → parseBasicToken → 剥离（strings.Fields 取第 2 段）
+//
+// 于是「带 Bearer 的 JWT 打 /api/scripts」必然 401，报
+// `illegal base64 data at input byte 6` —— `"Bearer "` 恰好 7 字节，下标 6 是
+// `r`，不是合法 base64。这个错误信息指向「token 格式坏」，与真实原因（多了个
+// 前缀）极易看岔。
+//
+// # ⚠️ 只认 Bearer，不是「按空格取最后一段」
+//
+// 写成 `strings.Fields(raw)[len-1]` 会让 `Basic <jwt>`、`Whatever <jwt>`
+// 也通过 —— 那等于取消了对 scheme 的校验。方案名按 RFC 7235 是大小写不敏感，
+// 所以只对 Bearer 做 EqualFold，其余前缀原样返回、由 ParseJwtWithClaims 拒绝。
+//
+// 只有一段（裸 token）时原样返回，因此 Cookie 路径与既有前端完全不受影响。
+func stripBearerTokenPrefix(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	fields := strings.Fields(trimmed)
+	// 恰好两段且首段是 Bearer 才剥离。三段及以上（`Bearer a b`）不剥离，
+	// 让它作为非法 token 被下游拒绝，而不是猜哪一段是 token。
+	if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+		return fields[1]
+	}
+	return trimmed
 }
 
 func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool {

@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestScriptActivationHTTPChecksFreshAdminAndKeepsCodeOwnerBound(t *testing.T) {
+func TestScriptActivationHTTPChecksFreshAdminAndKeepsPurchaseOwnerWithSeparateRedeemer(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	if err := db.AutoMigrate(&entity.ScriptActivationEntitlement{}, &entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
@@ -52,6 +52,7 @@ func TestScriptActivationHTTPChecksFreshAdminAndKeepsCodeOwnerBound(t *testing.T
 	router.PUT(priceURL, PutScriptActivationCodePrice)
 	router.POST(purchaseURL, PurchaseScriptActivationCode)
 	router.POST(redeemURL, RedeemScriptActivationCode)
+	router.GET(purchaseURL+"s", ListScriptActivationCodePurchases)
 
 	request := func(method, path, actor, key, body string, want int) *httptest.ResponseRecorder {
 		t.Helper()
@@ -95,8 +96,8 @@ func TestScriptActivationHTTPChecksFreshAdminAndKeepsCodeOwnerBound(t *testing.T
 		t.Fatal("invalid wallet purchase response")
 	}
 	redeemJSON, _ := json.Marshal(map[string]string{"code": bought.Code})
-	wrong := request(http.MethodPost, redeemURL, "other", "", string(redeemJSON), http.StatusBadRequest)
-	redeemed := request(http.MethodPost, redeemURL, "owner", "", string(redeemJSON), http.StatusOK)
+	redeemed := request(http.MethodPost, redeemURL, "other", "", string(redeemJSON), http.StatusOK)
+	wrong := request(http.MethodPost, redeemURL, "owner", "", string(redeemJSON), http.StatusConflict)
 	for _, rec := range []*httptest.ResponseRecorder{wrong, redeemed} {
 		if strings.Contains(rec.Body.String(), bought.Code) || strings.Contains(rec.Body.String(), signingKey) || strings.Contains(rec.Body.String(), "CodeHash") {
 			t.Fatal("redemption exposed private data")
@@ -107,6 +108,17 @@ func TestScriptActivationHTTPChecksFreshAdminAndKeepsCodeOwnerBound(t *testing.T
 	}
 	if err := json.Unmarshal(redeemed.Body.Bytes(), &grant); err != nil || grant.ID != bought.EntitlementID {
 		t.Fatal("redemption did not return the bought entitlement")
+	}
+	if !strings.Contains(redeemed.Body.String(), "frozenUntil") || strings.Contains(redeemed.Body.String(), "userId") {
+		t.Fatal("redeemer needs freeze expiry but not buyer identity")
+	}
+	history := request(http.MethodGet, purchaseURL+"s", "owner", "", "", http.StatusOK)
+	if !strings.Contains(history.Body.String(), bought.Code) || !strings.Contains(history.Body.String(), `"status":"frozen"`) {
+		t.Fatal("buyer cannot recover frozen purchase receipt")
+	}
+	otherHistory := request(http.MethodGet, purchaseURL+"s", "other", "", "", http.StatusOK)
+	if strings.Contains(otherHistory.Body.String(), bought.Code) {
+		t.Fatal("redeemer gained buyer's purchase history")
 	}
 	var updated entity.User
 	if err := db.First(&updated, owner.ID).Error; err != nil || updated.Balance != 12.654322 {

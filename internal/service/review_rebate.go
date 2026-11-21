@@ -299,25 +299,101 @@ func normalizeReviewRebateClaimURL(value string) string {
 
 // GetReviewRebateProgramWithDB 取「当前生效」的活动（用户端入口用）。
 //
-// 选择口径：开关开启 + program.Enabled 的最新一行（ID 最大）。
-// 一行都没有 → ErrReviewRebateProgramNotFound（不是 500）。
+// 以最新启用的活动为准；历史隐藏开关不再参与判定。
 func GetReviewRebateProgramWithDB(db *gorm.DB) (entity.ReviewRebateProgram, error) {
-	if !GetReviewRebateEnabledWithDB(db) {
-		return entity.ReviewRebateProgram{}, ErrReviewRebateDisabled
+	return GetReviewRebateStoreProgramWithDB(db, entity.ReviewRebateSourceEdge)
+}
+
+func NormalizeReviewRebateSource(source string) (string, error) {
+	switch source = strings.ToLower(strings.TrimSpace(source)); source {
+	case "", entity.ReviewRebateSourceEdge:
+		return entity.ReviewRebateSourceEdge, nil
+	case entity.ReviewRebateSourceChrome:
+		return entity.ReviewRebateSourceChrome, nil
+	default:
+		return "", fmt.Errorf("%w: 无效的商店", ErrReviewRebateInvalidInput)
 	}
-	if !ReviewRebateSchemaAvailable(db) {
-		return entity.ReviewRebateProgram{}, ErrReviewRebateSchemaUnavailable
-	}
-	var program entity.ReviewRebateProgram
-	err := reviewRebateSession(db).Model(&entity.ReviewRebateProgram{}).
-		Where("enabled = ?", true).Order("id desc").Take(&program).Error
+}
+
+func reviewRebateStoreIDs(db *gorm.DB) (map[string]string, error) {
+	config, overrides, err := extensionStoreConfigFromEnv()
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return entity.ReviewRebateProgram{}, ErrReviewRebateProgramNotFound
+		return nil, err
+	}
+	environment := config
+	settings, found, err := loadExtensionSettings(reviewRebateSession(db))
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		applyExtensionSettings(&config, settings)
+		applyExtensionEnvironment(&config, environment, overrides)
+	}
+	return config.IDs, nil
+}
+
+func reviewRebateStoreProgram(program entity.ReviewRebateProgram, storeIDs map[string]string) entity.ReviewRebateProgram {
+	program.ExtensionID = storeIDs[program.Source]
+	switch program.Source {
+	case entity.ReviewRebateSourceEdge:
+		program.StoreURL = "https://microsoftedge.microsoft.com/addons/detail/" + program.ExtensionID
+	case entity.ReviewRebateSourceChrome:
+		program.StoreURL = "https://chromewebstore.google.com/detail/" + program.ExtensionID
+	}
+	return program
+}
+
+func ListActiveReviewRebateStoreProgramsWithDB(db *gorm.DB) ([]entity.ReviewRebateProgram, error) {
+	if !ReviewRebateSchemaAvailable(db) {
+		return nil, ErrReviewRebateSchemaUnavailable
+	}
+	var programs []entity.ReviewRebateProgram
+	if err := reviewRebateSession(db).Where("enabled = ?", true).Order("id desc").Find(&programs).Error; err != nil {
+		return nil, err
+	}
+	active := make([]entity.ReviewRebateProgram, 0, 2)
+	if len(programs) == 0 {
+		return active, nil
+	}
+	storeIDs, err := reviewRebateStoreIDs(db)
+	if err != nil {
+		return nil, err
+	}
+	for _, program := range programs {
+		if storeIDs[program.Source] == "" {
+			continue
 		}
+		active = append(active, reviewRebateStoreProgram(program, storeIDs))
+		delete(storeIDs, program.Source)
+	}
+	return active, nil
+}
+
+func GetReviewRebateStoreProgramWithDB(db *gorm.DB, source string) (entity.ReviewRebateProgram, error) {
+	source, err := NormalizeReviewRebateSource(source)
+	if err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
-	return program, nil
+	programs, err := ListActiveReviewRebateStoreProgramsWithDB(db)
+	if err != nil {
+		return entity.ReviewRebateProgram{}, err
+	}
+	for _, program := range programs {
+		if program.Source == source {
+			return program, nil
+		}
+	}
+	return entity.ReviewRebateProgram{}, ErrReviewRebateDisabled
+}
+
+// ReviewRebateAvailabilityWithDB shares the activity state used by user reads
+// and submissions, without loading private usage, claim history or rule details.
+func ReviewRebateAvailabilityWithDB(db *gorm.DB) (bool, error) {
+	if !ReviewRebateSchemaAvailable(db) {
+		return false, nil
+	}
+	programs, err := ListActiveReviewRebateStoreProgramsWithDB(db)
+	return len(programs) > 0, err
 }
 
 // ListReviewRebateProgramsWithDB 返回全部活动（管理员），按 ID 升序。
@@ -420,6 +496,11 @@ func UpdateReviewRebateProgramWithDB(db *gorm.DB, id int32, update ReviewRebateP
 			Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
+		if update.Enabled != nil && *update.Enabled {
+			if err := openReviewRebateSiteInTx(tx); err != nil {
+				return err
+			}
+		}
 		return reviewRebateSession(tx).Model(&entity.ReviewRebateProgram{}).Where("id = ?", id).Take(&program).Error
 	})
 	if err != nil {
@@ -436,6 +517,11 @@ func CreateReviewRebateProgramWithDB(db *gorm.DB, program entity.ReviewRebatePro
 	if err := validateReviewRebateProgram(program); err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
+	source, err := NormalizeReviewRebateSource(program.Source)
+	if err != nil {
+		return entity.ReviewRebateProgram{}, err
+	}
+	program.Source = source
 	program.Name = strings.TrimSpace(program.Name)
 	program.StoreURL = strings.TrimSpace(program.StoreURL)
 	program.ExtensionID = strings.TrimSpace(program.ExtensionID)
@@ -445,10 +531,25 @@ func CreateReviewRebateProgramWithDB(db *gorm.DB, program entity.ReviewRebatePro
 	}
 	program.MaxAmountPerUser = util.RoundMoney(program.MaxAmountPerUser)
 	program.MinAgentConfidence = util.RoundMoney(program.MinAgentConfidence)
-	if err := reviewRebateSession(db).Create(&program).Error; err != nil {
+	if err := reviewRebateSession(db).Transaction(func(tx *gorm.DB) error {
+		if err := reviewRebateSession(tx).Create(&program).Error; err != nil {
+			return err
+		}
+		if program.Enabled {
+			return openReviewRebateSiteInTx(tx)
+		}
+		return nil
+	}); err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
 	return program, nil
+}
+
+// Enabling an activity is the administrator's explicit request to open it.
+// Keep the legacy site switch in the same transaction so the UI and submission
+// guard cannot disagree. Editing unrelated fields preserves a global shutdown.
+func openReviewRebateSiteInTx(tx *gorm.DB) error {
+	return saveSystemSettingValue(tx.Session(&gorm.Session{NewDB: true}), ReviewRebateEnabledSettingKey, "true", "启用评价返现")
 }
 
 // ListReviewRebateRulesWithDB 返回规则表。

@@ -28,6 +28,12 @@ export function getArchivedUserDetail(id) {
   })
 }
 
+export function getArchivedUserIdentity(id) {
+  const value = Number(id)
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2147483647) throw new Error('已归档账号参数错误')
+  return request({ errorFeedback: 'local', url: `/api/admin/archived-users/${value}/identity`, method: 'get' })
+}
+
 // 恢复：confirmRename 是**语义字段**而不是可选优化。
 //
 //   confirmRename=false（缺省）→ 用户名被占用时后端返回 409 + 冲突信息，

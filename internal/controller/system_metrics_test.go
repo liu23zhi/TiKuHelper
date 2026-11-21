@@ -43,6 +43,9 @@ func TestGetSystemMetricsReturnsDetachedReadOnlyAggregates(t *testing.T) {
 		if !reflect.DeepEqual(got.Snapshot, before) || got.Tasks != tasksBefore {
 			t.Fatalf("snapshot differs: %#v", got)
 		}
+		if got.Memory.SysBytes == 0 || got.Memory.HeapSysBytes == 0 || got.Memory.AllocBytes > got.Memory.SysBytes {
+			t.Fatalf("runtime memory snapshot is missing or inconsistent: %#v", got.Memory)
+		}
 		// A caller can mutate a detached response without changing collector state.
 		got.HTTP.Buckets[0].Count = 999
 	}

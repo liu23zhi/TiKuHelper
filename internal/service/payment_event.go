@@ -16,6 +16,18 @@ import (
 // 这里降级会让同一个网关订单被加款两次。
 var ErrRechargePaymentEventUnavailable = errors.New("支付已入账事件表不可用，暂不能处理充值回调")
 
+// ErrRechargeSettlementReviewRequired is not permission to move funds: a legacy
+// paid label/event without a matching bill cannot distinguish an old credit from
+// an operator correction. Preserve both records for reconciliation.
+var ErrRechargeSettlementReviewRequired = errors.New("历史充值缺少匹配的入账流水，请按订单号核对支付渠道与账单流水；请勿重复加款")
+
+func hasRechargeCreditBill(tx *gorm.DB, orderID int32) (bool, error) {
+	var credited bool
+	err := tx.Model(&entity.RechargeOrder{}).Select(entity.RechargeCreditEvidenceSQL).
+		Where("id = ?", orderID).Scan(&credited).Error
+	return credited, err
+}
+
 // paymentEventSourceNotify 标记事件来源是网关回调。
 const paymentEventSourceNotify = "notify"
 
@@ -38,12 +50,12 @@ func paymentEventSession(db *gorm.DB) *gorm.DB {
 
 // claimRechargePaymentEventInTx 尝试记入「支付已入账」唯一事件。
 //
-// 这是加款幂等的**唯一分岔判据**（第 20.1.5 节状态机定稿要求）：
+// 这是首次回调入账的唯一写入令牌；旧库的流水与事件可能不一致，调用方须先核对流水。
 //
 //   - 返回 firstCredit=true  → 本次插入真的发生了，即这笔网关订单的首次入账，
 //     调用方可以继续加余额、写账单、发赠金、生成返佣；
 //   - 返回 firstCredit=false → 插入被 `OnConflict{DoNothing}` 忽略，说明这笔网关订单
-//     早已入过账，本次是重复回调，调用方必须直接返回成功且**一分钱都不能动**。
+//     已被占用。本次绝不加款；若没有匹配账单，交给运营核对，不能成功 ACK。
 //
 // 为什么不能只看 order.Status == "paid"：status 是可变的运营字段。管理员把订单
 // 改成 refunded 之后，网关重投的同一条成功回调会因「现在不等于 paid」而再次加款 ——
@@ -55,7 +67,7 @@ func paymentEventSession(db *gorm.DB) *gorm.DB {
 // 并发语义：唯一索引 + DoNothing 让并发的两条同回调只有一条拿到 firstCredit=true；
 // 另一条（RowsAffected==0）不加款。注意某些驱动在唯一冲突被忽略时可能返回
 // ErrDuplicatedKey 而不是 0 行 —— 两种都按「非首次」处理，绝不当成错误抛出。
-func claimRechargePaymentEventInTx(tx *gorm.DB, order entity.RechargeOrder, tradeNo, tradeStatus string) (bool, error) {
+func claimRechargePaymentEventInTx(tx *gorm.DB, order entity.RechargeOrder, tradeNo, tradeStatus, source string) (bool, error) {
 	if !paymentEventSchemaAvailable(tx) {
 		return false, ErrRechargePaymentEventUnavailable
 	}
@@ -67,7 +79,7 @@ func claimRechargePaymentEventInTx(tx *gorm.DB, order entity.RechargeOrder, trad
 		Amount:      normalizeRechargeAmount(order.Amount),
 		TradeNo:     tradeNo,
 		TradeStatus: tradeStatus,
-		Source:      paymentEventSourceNotify,
+		Source:      source,
 	}
 	result := paymentEventSession(tx).Clauses(clause.OnConflict{DoNothing: true}).Create(&event)
 	if result.Error != nil {

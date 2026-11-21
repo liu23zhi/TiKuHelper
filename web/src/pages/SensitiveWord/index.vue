@@ -111,10 +111,13 @@
         </ConsoleTableShell>
       </ConsolePanel>
     </template>
+    <AdminDataTransfer v-if="canManage" resource="sensitive_words" title="敏感词检测记录" />
+
   </div>
 </template>
 
 <script>
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { computed, defineComponent, reactive, ref, useId } from 'vue'
 import {
   SENSITIVE_WORD_CACHE_STATES,
@@ -133,6 +136,7 @@ import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 export default defineComponent({
   name: 'SensitiveWordCachePage',
+  components: { AdminDataTransfer },
   // ConsoleTableShell / ConsolePanel / ConsoleSummaryGrid / ConsolePageHeading
   // 都已在 main.js 里 app.component 全局注册，这里不重复注册。
   setup() {

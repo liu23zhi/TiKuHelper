@@ -17,3 +17,7 @@ run/config.yaml
 reamed.md
 /logs/
 /run/logs/
+
+# Never send operator-only bootstrap credentials in an image build context.
+admin-bootstrap-*.password
+**/admin-bootstrap-*.password

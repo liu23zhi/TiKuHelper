@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual UserList + Antd zhCN + real API/request/Axios, inert allowlisted transport only.
  * Client guards/owned confirmation qualification, not server authorization or physical-browser proof. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')
@@ -19,11 +20,11 @@ function row(actor){return{id:TARGET_ID,username:'SYNTHETIC_MEMBER_'+(actor?.id=
 const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),actor=user.getStoredCurrentUser(),call={method,url,actor:actor?.id||null,role:actor?.role||null,params:clone(config.params||{})};calls.push(call)
- const allowed=method==='get'&&['/adapter-service/user','/adapter-service/system-settings'].includes(url)||method==='delete'&&url==='/adapter-service/user/'+TARGET_ID
+ const allowed=method==='get'&&['/api/user','/api/system-settings'].includes(url)||method==='delete'&&url==='/api/user/'+TARGET_ID
  if(!allowed){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  let body
  if(method==='delete'){call.hasRequestBody=config.data!==undefined&&config.data!==null&&config.data!=='';deleted=true;body={message:'删除用户成功'}}
- else if(url==='/adapter-service/system-settings')body={newUserBonusAmount:.123456}
+ else if(url==='/api/system-settings')body={newUserBonusAmount:.123456}
  else body={data:deleted?[]:[row(actor)],total:deleted?0:1,page:Number(config.params?.page)||1,pageSize:Number(config.params?.pageSize)||10}
  return Promise.resolve({status:200,data:body,headers:{'x-request-id':calls.length.toString(16).padStart(32,'0')},config,request:{memoryOnly:true}})
 }
@@ -52,7 +53,7 @@ async function open(actor=A){
  check(app.findComponent(Antd.ConfigProvider).props('locale')?.locale==='zh-cn','actual zhCN provider')
  if(actor.role==='admin'){
   await until(()=>!w.vm.tabLoading&&w.vm.dataSource.some(r=>r.id===TARGET_ID),'valid actual admin list response publishes')
-  check(calls.filter(c=>c.url==='/adapter-service/user'&&c.method==='get').length>=1&&calls.some(c=>c.url==='/adapter-service/system-settings'&&c.method==='get'),'actual API/request makes only original user-list and synthetic bonus-default reads')
+  check(calls.filter(c=>c.url==='/api/user'&&c.method==='get').length>=1&&calls.some(c=>c.url==='/api/system-settings'&&c.method==='get'),'actual API/request makes only original user-list and synthetic bonus-default reads')
   check(w.vm.dataSource.length===1&&w.vm.pagination.total===1&&!!w.element.querySelector('tr[data-row-key="'+TARGET_ID+'"]')&&w.element.textContent.includes(row(actor).username),'valid public DTO reaches actual native user row and total')
  }
  return w
@@ -78,9 +79,9 @@ register('UM02 administrator valid read and actual Popconfirm cancel preserve ze
  await click(button(p,'取消'))
  check(calls.length===initial&&w.vm.dataSource.some(r=>r.id===TARGET_ID),'actual native Cancel keeps target row and causes zero DELETE/GET')
  await click(nativeDelete(w));p=await popup();await click(button(p,'确定'));await until(()=>!w.vm.tabLoading&&w.vm.dataSource.length===0&&calls.some(c=>c.method==='delete'),'confirmed delete and original followup GET finish')
- const writes=calls.filter(c=>c.method==='delete'),reads=calls.filter(c=>c.method==='get'&&c.url==='/adapter-service/user')
- check(writes.length===1&&writes[0].url==='/adapter-service/user/'+TARGET_ID&&writes[0].actor===A.id&&!writes[0].hasRequestBody,'one explicit confirmation dispatches original single owned bodyless DELETE at selected target id')
- check(reads.length===2&&calls.filter(c=>c.url==='/adapter-service/system-settings').length===1&&w.vm.pagination.total===0&&w.vm.dataSource.length===0,'successful deletion preserves only original one user-list readback and valid empty total, not bonus/config mutation')
+ const writes=calls.filter(c=>c.method==='delete'),reads=calls.filter(c=>c.method==='get'&&c.url==='/api/user')
+ check(writes.length===1&&writes[0].url==='/api/user/'+TARGET_ID&&writes[0].actor===A.id&&!writes[0].hasRequestBody,'one explicit confirmation dispatches original single owned bodyless DELETE at selected target id')
+ check(reads.length===2&&calls.filter(c=>c.url==='/api/system-settings').length===1&&w.vm.pagination.total===0&&w.vm.dataSource.length===0,'successful deletion preserves only original one user-list readback and valid empty total, not bonus/config mutation')
  check(w.element.textContent.includes('当前还没有用户记录')&&!w.element.querySelector('tr[data-row-key="'+TARGET_ID+'"]'),'actual current native DOM removes target after successful readback')
  cur.observations.push({label:'explicit delete original workflow, synthetic server only',state:view(w),writeCount:writes.length})
 })

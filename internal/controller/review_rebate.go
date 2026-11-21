@@ -120,6 +120,13 @@ var (
 		}
 		return service.ListReviewRebateProgramsWithDB(db)
 	}
+	createReviewRebateProgram = func(program entity.ReviewRebateProgram) (entity.ReviewRebateProgram, error) {
+		db, err := requireReviewRebateDB()
+		if err != nil {
+			return entity.ReviewRebateProgram{}, err
+		}
+		return service.CreateReviewRebateProgramWithDB(db, program)
+	}
 	updateReviewRebateProgram = func(id int32, update service.ReviewRebateProgramUpdate) (entity.ReviewRebateProgram, error) {
 		db, err := requireReviewRebateDB()
 		if err != nil {
@@ -158,13 +165,45 @@ var (
 )
 
 // ReviewRebateProgram 返回当前活动、规则表（脱敏）与本人额度（用户端）。
+func ReviewRebateAvailability(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if _, ok := currentOperator(c); !ok {
+		return
+	}
+	db, err := requireReviewRebateDB()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "无法确认评价返现状态"})
+		return
+	}
+	enabled, err := service.ReviewRebateAvailabilityWithDB(db.WithContext(c.Request.Context()))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "无法确认评价返现状态"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
+}
+
 func ReviewRebateProgram(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)
 	if !ok {
 		return
 	}
-	view, err := loadReviewRebateProgramView(operator.ID)
+	source := c.Query("source")
+	var view service.ReviewRebateProgramView
+	var err error
+	if source == "" {
+		view, err = loadReviewRebateProgramView(operator.ID)
+	} else {
+		if source == "active" {
+			source = ""
+		}
+		var db *gorm.DB
+		db, err = requireReviewRebateDB()
+		if err == nil {
+			view, err = service.GetReviewRebateStoreProgramViewWithDB(db, operator.ID, source)
+		}
+	}
 	if err != nil {
 		writeReviewRebateError(c, err)
 		return
@@ -179,8 +218,7 @@ func ReviewRebateProgram(c *gin.Context) {
 //   - claimedStars（可选）：用户自填 1–5；
 //   - claimedReviewUrl（可选）：评价链接。
 //
-// 落盘：`data/review-rebate/<userID>/<sha256 前 2 位>/<sha256>.png|jpg`。
-// 用内容摘要做文件名：同一张图重复上传只占一份磁盘，且文件名不含用户可见信息。
+// 按用户和内容摘要前缀归档，每条上传尝试使用独立的私有文件。
 func CreateReviewRebateClaim(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)
@@ -230,6 +268,12 @@ func CreateReviewRebateClaim(c *gin.Context) {
 		return
 	}
 
+	program, err := loadActiveReviewRebateProgram(c.PostForm("source"))
+	if err != nil {
+		writeReviewRebateError(c, err)
+		return
+	}
+
 	digest := sha256.Sum256(data)
 	digestHex := hex.EncodeToString(digest[:])
 	relativePath, err := storeReviewRebateScreenshot(operator.ID, digestHex, extension, data)
@@ -239,14 +283,9 @@ func CreateReviewRebateClaim(c *gin.Context) {
 		return
 	}
 
-	program, err := loadActiveReviewRebateProgram()
-	if err != nil {
-		writeReviewRebateError(c, err)
-		return
-	}
-
 	claim, err := createReviewRebateClaim(service.ReviewRebateClaimCreateInput{
 		ProgramID:        program.ID,
+		Source:           program.Source,
 		UserID:           operator.ID,
 		ScreenshotPath:   relativePath,
 		ScreenshotSHA256: digestHex,
@@ -254,8 +293,7 @@ func CreateReviewRebateClaim(c *gin.Context) {
 		ClaimedReviewURL: reviewRebateClaimURLFromForm(c.PostForm("claimedReviewUrl"), c.PostForm("reviewUrl")),
 	})
 	if err != nil {
-		// 落盘成功但落账失败（重复/超限）：把刚写的文件删掉，避免私有目录被
-		// 「反复重试的同一张图」灌满。文件是按摘要命名的，删掉不影响其他行。
+		// 清理失败的尝试。文件路径只属于本次上传。
 		removeReviewRebateScreenshot(relativePath)
 		writeReviewRebateError(c, err)
 		return
@@ -271,6 +309,7 @@ func CreateReviewRebateClaim(c *gin.Context) {
 		"id":        claim.ID,
 		"programId": claim.ProgramID,
 		"status":    claim.Status,
+		"source":    claim.Source,
 		// 明确告知边界：不声称能识别「这条评论就是这个人写的」。
 		"authorshipVerified": false,
 		"notice":             "已收到截图。系统只核验公开评价是否存在且内容一致，不做作者归属断言；结果由人工复核。",
@@ -323,6 +362,45 @@ func AdminReviewRebatePrograms(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": programs})
+}
+
+// AdminCreateReviewRebateProgram provides the first-use initialization path.
+func AdminCreateReviewRebateProgram(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name               string  `json:"name"`
+		Source             string  `json:"source"`
+		StoreURL           string  `json:"storeUrl"`
+		ExtensionID        string  `json:"extensionId"`
+		Enabled            bool    `json:"enabled"`
+		MaxClaimsPerUser   int     `json:"maxClaimsPerUser"`
+		MaxAmountPerUser   float64 `json:"maxAmountPerUser"`
+		MinAgentConfidence float64 `json:"minAgentConfidence"`
+		PolicyVersion      string  `json:"policyVersion"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
+		return
+	}
+	program, err := createReviewRebateProgram(entity.ReviewRebateProgram{
+		Name: input.Name, Source: input.Source, StoreURL: input.StoreURL, ExtensionID: input.ExtensionID,
+		Enabled: input.Enabled, MaxClaimsPerUser: input.MaxClaimsPerUser,
+		MaxAmountPerUser: input.MaxAmountPerUser, MinAgentConfidence: input.MinAgentConfidence,
+		PolicyVersion: input.PolicyVersion,
+	})
+	if err != nil {
+		writeReviewRebateError(c, err)
+		return
+	}
+	recordAccountAudit(c, &operator, "review_rebate", 1, "创建评价返现活动", map[string]any{"programId": program.ID, "enabled": program.Enabled})
+	c.JSON(http.StatusCreated, program)
 }
 
 // AdminUpdateReviewRebateProgram 部分更新活动配置（管理员）。
@@ -737,12 +815,12 @@ func reviewRebateScreenshotContentType(path string) (string, error) {
 }
 
 // loadActiveReviewRebateProgram 取当前生效活动（提交时用来填 ProgramID）。
-func loadActiveReviewRebateProgram() (entity.ReviewRebateProgram, error) {
+func loadActiveReviewRebateProgram(source string) (entity.ReviewRebateProgram, error) {
 	db, err := requireReviewRebateDB()
 	if err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
-	return service.GetReviewRebateProgramWithDB(db)
+	return service.GetReviewRebateStoreProgramWithDB(db, source)
 }
 
 // readReviewRebateScreenshot 读取上传内容，同时把大小上限作为硬闸再核一次。
@@ -789,11 +867,6 @@ func reviewRebateScreenshotExtension(data []byte) (string, error) {
 
 // storeReviewRebateScreenshot 把截图落到私有目录并返回相对路径。
 //
-// 目录布局：data/review-rebate/<userID>/<sha256[:2]>/<sha256>.<ext>
-//   - 按用户分目录：管理员排查时不必在一堆哈希里翻；
-//   - 按摘要前 2 位分流：单目录文件数上限从「全站」降到「1/256 全站」；
-//   - 文件名 = 内容摘要：重复上传天然幂等（同一张图只占一份磁盘）。
-//
 // 权限：目录 0700、文件 0600 —— 截图里有用户账号信息，不能让同机其他进程顺手读到。
 func storeReviewRebateScreenshot(userID int32, digestHex string, extension string, data []byte) (string, error) {
 	if userID <= 0 || len(digestHex) < 4 {
@@ -805,35 +878,17 @@ func storeReviewRebateScreenshot(userID int32, digestHex string, extension strin
 	if err := os.MkdirAll(absoluteDir, 0o700); err != nil {
 		return "", err
 	}
-	filename := digestHex + "." + extension
-	absolutePath := filepath.Join(absoluteDir, filename)
-	// 已存在就直接复用：内容相同的图没必要重写，也避免并发写的半个文件。
-	if _, statErr := os.Stat(absolutePath); statErr == nil {
-		return filepath.Join(relativeDir, filename), nil
-	}
-	temporary, err := os.CreateTemp(absoluteDir, ".upload-*")
+	upload, err := os.CreateTemp(absoluteDir, digestHex+"-*."+extension)
 	if err != nil {
 		return "", err
 	}
-	temporaryPath := temporary.Name()
-	defer func() {
-		// 正常路径已经在下面 Close；这里只保证异常路径不留残片。
-		_ = os.Remove(temporaryPath)
-	}()
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
+	path := upload.Name()
+	_, writeErr := upload.Write(data)
+	if err := errors.Join(writeErr, upload.Close()); err != nil {
+		_ = os.Remove(path)
 		return "", err
 	}
-	if err := temporary.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(temporaryPath, 0o600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(temporaryPath, absolutePath); err != nil {
-		return "", err
-	}
-	return filepath.Join(relativeDir, filename), nil
+	return filepath.Join(relativeDir, filepath.Base(path)), nil
 }
 
 // removeReviewRebateScreenshot 删除一张截图（落账失败时的补偿）。

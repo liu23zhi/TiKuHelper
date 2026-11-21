@@ -77,7 +77,20 @@ test('DeviceAdminApi 保留四个关键校验与语义', () => {
   assert.match(code, /Number\.isInteger\(id\)\s*\|\|\s*id\s*<=\s*0/)
   // 全部请求走 errorFeedback: 'local'（页面自己有失败态，不能重复弹全局提示）。
   const calls = code.match(/errorFeedback:/g) || []
-  assert.equal(calls.length, 4, `四条请求都必须带 errorFeedback: 'local'，实际 ${calls.length} 处`)
+  assert.equal(calls.length, 5, `五条请求都必须带 errorFeedback: 'local'，实际 ${calls.length} 处`)
+})
+
+test('DeviceAdminApi 删除已解绑记录按绑定行ID发DELETE，不调用解封接口', () => {
+  const calls = []
+  const code = apiSource().replace(/^import .*$/gm, '').replace(/export function/g, 'function')
+  const remove = new Function('request', `${code}\nreturn deleteAdminDevice;`)(request => { calls.push(request); return request })
+  assert.deepEqual(remove(123), { errorFeedback: 'local', url: '/api/admin/devices/123', method: 'delete' })
+  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, 'device:uuid']) assert.throws(() => remove(value), /删除参数错误/)
+  assert.equal(calls.length, 1, '非法记录ID不能发请求')
+  const page = pageSource()
+  assert.match(page, /:disabled="[^"]*!record\.revokedAt/)
+  assert.match(page, /deleteAdminDevice\(/)
+  assert.match(page, /设备封禁和账号拉黑状态会保留/)
 })
 
 test('DeviceAdmin 页面不直接 import request，只用 DeviceAdminApi', () => {
@@ -85,7 +98,7 @@ test('DeviceAdmin 页面不直接 import request，只用 DeviceAdminApi', () =>
   assert.doesNotMatch(code, /from ['"]@\/utils\/request['"]/,
     '页面不得绕过 DeviceAdminApi 直接发请求（中间层会重新挑字段）')
   assert.match(code, /from '@\/api\/DeviceAdminApi'/)
-  for (const fn of ['banAdminDevice', 'getAdminDevices', 'unbanAdminDevice', 'unbindAdminDevice']) {
+  for (const fn of ['banAdminDevice', 'getAdminDevices', 'unbanAdminDevice', 'unbindAdminDevice', 'deleteAdminDevice']) {
     assert.ok(code.includes(fn), `页面必须使用 ${fn}`)
   }
 })

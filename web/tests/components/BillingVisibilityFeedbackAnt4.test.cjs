@@ -8,6 +8,7 @@ const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter)
 Module._initPaths()
 require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/transfer-history-read.cjs')(web, ['billing'])
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 for (const key of ['DOMParser', 'HTMLInputElement', 'HTMLButtonElement', 'HTMLDivElement', 'CustomEvent']) globalThis[key] = window[key]
@@ -123,7 +124,7 @@ async function issue(w, show = !w.vm.selectedBillingRecord.showInStatement) {
 }
 function unknown() {
   const raw = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK', config: { url: PRIVATE }, privatePayload: PRIVATE })
-  const error = toUserRequestError({ method: 'put', url: '/adapter-service/billing-records/8091/statement-visibility' }, raw)
+  const error = toUserRequestError({ method: 'put', url: '/api/billing-records/8091/statement-visibility' }, raw)
   assert.equal(error.code, 'UNKNOWN_OUTCOME'); return error
 }
 function failure(status = 503, mode = 'rejected', id = ID) {

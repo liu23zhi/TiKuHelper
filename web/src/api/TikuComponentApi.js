@@ -1,4 +1,5 @@
 import request from '../utils/request'
+import { requireTicketResponse } from '../utils/ticketHelpers.mjs'
 import { buildDeleteQuestionParams } from '../utils/questionArchiveReason.mjs'
 
 
@@ -575,6 +576,67 @@ export function getRechargeOrders(params) {
   })
 }
 
+// getRefundAgreement 读取退款收款码使用承诺书全文（2026-11-19）。
+// 协议文本存在 system_settings，管理员可改，所以不能写死在前端。
+export function getRefundAgreement() {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/refund-agreement',
+    method: 'get',
+  }).then(requireTicketResponse)
+}
+
+// updateRefundAgreement 修改承诺书全文（仅管理员）。
+export function updateRefundAgreement(text) {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/refund-agreement',
+    method: 'put',
+    data: { text },
+  })
+}
+
+// 仅返回服务端生成的模糊缩略图，原图恢复需要密码。
+export function previewTicketRefundPayoutQr() {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/ticket-refunds/payout-qr/preview',
+    method: 'get',
+  }).then(requireTicketResponse)
+}
+
+// recoverTicketRefundPayoutQr 用当前密码取回「上次用过的收款码」（2026-11-19）。
+//
+// 只在「换设备 / 清过本地缓存」时被调用一次：同一台设备曾上传过
+// 收款码时，前端已从 localStorage 直接带出，不需要密码。
+// 刷新不走密码 —— 手上就有新图，没有验证的必要。
+export function recoverTicketRefundPayoutQr(password) {
+  return request({
+    errorFeedback: 'local',
+    url: `/api/ticket-refunds/payout-qr/recover`,
+    method: 'post',
+    data: { password },
+  }).then(requireTicketResponse)
+}
+
+export function getRefundPhoneVerification() {
+  return request({ errorFeedback: 'local', url: '/api/ticket-refunds/phone-verification', method: 'get' }).then(requireTicketResponse)
+}
+
+export function sendRefundPhoneSMSCode() {
+  return request({ errorFeedback: 'local', url: '/api/ticket-refunds/phone-verification/sms-code', method: 'post', data: {} }).then(requireTicketResponse)
+}
+
+// 人工核对仅改运营标记；旧版的 paid 请求在待支付订单上也只表示等待渠道回调。
+export function updateRechargeOrderStatus(id, status) {
+  return request({
+    errorFeedback: 'local',
+    url: `/api/recharge-orders/${id}/status`,
+    method: 'patch',
+    data: { status }
+  })
+}
+
 export function getPaymentMethods(feedback) {
   const config = {
     url: `/api/payment-methods`,
@@ -798,6 +860,20 @@ export function updateScript(data) {
   })
 }
 
+export function configureScriptShortAuthorization(id, data) {
+  return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    url: `/api/scripts/${id}/short-authorization`,
+    method: 'put',
+    data,
+  })
+}
+
+export function configureScriptLauncherAuthorization(id, data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/api/scripts/${id}/launcher-authorization`, method: 'put', data })
+}
+
 export function deleteScript(data) {
   const sessionId = data.confirmActiveSessionId
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(sessionId))) {
@@ -899,6 +975,10 @@ export function redeemScriptActivationCode(data) {
   })
 }
 
+export function getScriptActivationCodePurchases(params = {}) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: '/api/script-activation-codes/purchases', method: 'get', params })
+}
+
 // A diagnostic snapshot is explicit-only: one request per mount or manual refresh.
 export function getSystemMetrics() {
   return request({
@@ -965,6 +1045,26 @@ export function updateAISearchConfig(data) {
 
 const ticketRefundBase = '/api/ticket-refunds'
 
+export function getRefundPayoutQrStatus() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/status', method: 'get' }).then(requireTicketResponse)
+}
+
+export function registerRefundPayoutQr(data) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/register', method: 'post', data }).then(requireTicketResponse)
+}
+
+export function challengeRefundPayoutQr() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/challenge', method: 'post', data: {} }).then(requireTicketResponse)
+}
+
+export function unlockRefundPayoutQrDevice(data) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/device-unlock', method: 'post', data }).then(requireTicketResponse)
+}
+
+export function deleteRefundPayoutQr() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr', method: 'delete' }).then(requireTicketResponse)
+}
+
 function ticketRefundRequest(config) {
   return request({ errorFeedback: 'local', retryPolicy: 'single', ...config })
 }
@@ -974,11 +1074,27 @@ function ticketRefundItem(id, action) {
 }
 
 export function getEligibleTicketRefundOrders(signal) {
-  return ticketRefundRequest({ url: ticketRefundBase + '/eligible-orders', method: 'get', signal })
+  return ticketRefundRequest({ url: ticketRefundBase + '/eligible-orders', method: 'get', signal }).then(requireTicketResponse)
+}
+
+export function getTicketRefundSummary() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/summary', method: 'get' }).then(requireTicketResponse)
 }
 
 export function listTicketRefunds(signal) {
   return ticketRefundRequest({ url: ticketRefundBase, method: 'get', signal })
+}
+
+export function getTicketRefundDetail(id, signal) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'get', signal }).then(requireTicketResponse)
+}
+
+export function getTicketRefundRechargeOrders(id, manage, signal) {
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'recharge-orders'), method: 'get', params: { manage }, signal }).then(requireTicketResponse)
+}
+
+export function updateTicketRefund(id, data, signal) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'patch', data, signal })
 }
 
 export function createTicketRefund(data, signal) {
@@ -1037,8 +1153,36 @@ export function removeMyDevice(id, signal) {
   })
 }
 
+export function deleteMyRemovedDevice(id, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id),
+    method: 'delete',
+    signal,
+  })
+}
+
+export function getMyDeviceExpiry(signal) {
+  return myDeviceRequest({ url: '/api/user/device-expiry', method: 'get', signal })
+}
+
+export function updateMyDeviceExpiry(days, signal) {
+  return myDeviceRequest({ url: '/api/user/device-expiry', method: 'put', data: { days: Number(days) }, signal })
+}
+
+export function renameMyDevice(id, label, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id) + '/label',
+    method: 'put',
+    // 后端读的是 {"label":"..."}。空串是**合法**输入（= 恢复「未命名的设备」显示），
+    // 所以不能像 blockMyDevice 那样写成 `label ? {...} : {}` —— 那会让「清空名字」
+    // 变成「没传 label」，后端 bind 到零值空串，行为恰好一致但语义含混。
+    // 显式传空串让意图可读。
+    data: { label: String(label === null || label === undefined ? '' : label) },
+    signal,
+  })
+}
+
 export function blockMyDevice(id, reason, signal) {
-  // reason 是可选的展示字段；不传就发空对象（后端允许空 body）。
   const data = reason ? { reason: String(reason) } : {}
   return myDeviceRequest({
     url: '/api/user/devices/' + encodeURIComponent(id) + '/block',

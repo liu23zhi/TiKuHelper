@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual Vue/Antd/Swal lifecycle contract, not a server-authentication test.
  * The only storage fault is this jsdom localStorage's existing current-user key.
  * Password/whole form/credential values never enter ledgers. Mock calls record

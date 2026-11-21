@@ -763,15 +763,21 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		// 归属地查询结果的持久化缓存（节省按积分计费的 UAPI 调用）。
 		&entity.LocationCache{},
 		&entity.Ticket{},
+		&entity.TicketAppealProof{},
 		&entity.TicketMessage{},
 		&entity.TicketNotification{},
 		&entity.TicketRefund{},
+		&entity.TicketRefundOrderLine{},
 		&entity.TicketRefundLedger{},
 		&entity.TicketRefundProof{},
+		&entity.RefundPayoutQrMemory{},
+		&entity.RefundPayoutQrBinding{},
+		&entity.RefundPayoutQrChallenge{},
 		&entity.AIOCRCache{},
 		&entity.AIOCRCacheSequence{},
 		&entity.ScriptVersion{},
 		&entity.UserScript{},
+		&entity.ScriptAddressReservation{},
 		&entity.ScriptExchangeToken{},
 		&entity.ScriptRunSession{},
 		&entity.ScriptEscrow{},
@@ -791,6 +797,9 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	err = autoMigrateAccountDomainWithBillingLookupIndex(db, accountDomainModels)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+	if err := runStartupMigration("backfillScriptAddressReservations", func() error { return service.BackfillScriptAddressReservationsWithDB(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("backfill script address reservations: %w", err))
 	}
 	if err := runStartupMigration("ensureAIOCRCacheIDs", func() error { return ensureAIOCRCacheIDs(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("OCR 缓存 ID 回填失败（不影响启动，将在下次启动重试）：%v", err))
@@ -847,6 +856,15 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	if err := runStartupMigration("ensureScriptPriceMultiplierSchema", func() error { return ensureScriptPriceMultiplierSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare script answer price schema fail: %w", err))
 	}
+	// 会话撤销原因（2026-11-17）：「我的脚本」通知区要靠它区分「心跳中断」
+	// 与「用户自己关闭」。缺列不会让任何查询报错（本列只读不参与 WHERE），
+	// 但会让通知区对所有撤销都只能说「已撤销」—— 属于「静默失去诊断能力」，
+	// 因此与其它结构性列一样按 Fatal 处理，宁可启动失败也不带病上线。
+	if err := runStartupMigration("ensureScriptRunSessionRevokeReasonSchema", func() error {
+		return ensureScriptRunSessionRevokeReasonSchema(db)
+	}); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare script run session revoke reason schema fail: %w", err))
+	}
 
 	// 邀请码与充值返佣：建 referral_invites / referral_rebates 表，并给 users 补归因两列。
 	// 结构性失败 FATAL（要让人看见）；标记写失败只记日志，下次启动幂等重跑。
@@ -891,7 +909,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	}
 
 	// 充值阶梯赠送：建 recharge_promotion_grants（赠送发放账本，recharge_order_id 唯一）。
-	// 与开关解耦：开关默认 false，表照建，运营打开开关时结构已就位。
+	// 发放由配置档位决定，账本结构始终准备就绪。
 	// 必须排在 ensureReviewRebateSchema 之后 —— 它依赖 users.gift_balance 已存在。
 	if err := runStartupMigration("ensureRechargePromotionSchema", func() error { return ensureRechargePromotionSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion schema fail: %w", err))
@@ -1018,8 +1036,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	}
 
 	// 充值阶梯赠送的可配置档位表（Q75-2，94-*.md §2 C2）。
-	// 只建表、不写数据：表空时服务层回退到 DefaultRechargePromotionTiers，
-	// 因此本迁移对既有发放行为零影响，可安全先上。
+	// 只建表、不写数据：表空表示不赠送，不回退到默认六档。
 	if err := runStartupMigration("ensureRechargePromotionTierSchema", func() error { return ensureRechargePromotionTierSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion tier schema fail: %w", err))
 		return nil

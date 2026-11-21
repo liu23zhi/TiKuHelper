@@ -305,7 +305,7 @@ func TestMariaDBBlacklistRebuildsMismatchedIndex(t *testing.T) {
 // 回填是否真的把 paid_at 非空的历史订单复制成事件、标记是否落库。
 func TestMariaDBPaymentEventMigrationRunsForReal(t *testing.T) {
 	database := mysqlTestFreshDB(t)
-	mustAutoMigrate(t, database, &entity.SystemSetting{}, &entity.User{}, &entity.RechargeOrder{})
+	mustAutoMigrate(t, database, &entity.SystemSetting{}, &entity.User{}, &entity.RechargeOrder{}, &entity.BillingRecord{})
 
 	paidAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	orders := []entity.RechargeOrder{
@@ -318,6 +318,8 @@ func TestMariaDBPaymentEventMigrationRunsForReal(t *testing.T) {
 		t.Fatalf("种入充值订单失败：%v", err)
 	}
 
+	seedBackfillBill(t, database, "MARIA-PAID-1")
+	seedBackfillBill(t, database, "MARIA-PAID-2")
 	if err := ensurePaymentEventSchema(database); err != nil {
 		t.Fatalf("真实 MariaDB 上跑支付事件迁移失败：%v", err)
 	}
@@ -583,13 +585,14 @@ func mariaDBSignNotifyValues(t *testing.T, values url.Values, privateKey *rsa.Pr
 // （`key` 是保留字，读不到就会每次重跑）且事件行数不再增长。
 func TestMariaDBPaymentEventMigrationIsNoOpOnSecondStartup(t *testing.T) {
 	database := mysqlTestFreshDB(t)
-	mustAutoMigrate(t, database, &entity.SystemSetting{}, &entity.User{}, &entity.RechargeOrder{})
+	mustAutoMigrate(t, database, &entity.SystemSetting{}, &entity.User{}, &entity.RechargeOrder{}, &entity.BillingRecord{})
 	paidAt := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 	if err := database.Create(&entity.RechargeOrder{
 		UserID: 21, OrderNo: "MARIA-NOOP-1", PaymentProvider: "mock", Amount: 5, Status: "paid", PaidAt: &paidAt,
 	}).Error; err != nil {
 		t.Fatalf("种入订单失败：%v", err)
 	}
+	seedBackfillBill(t, database, "MARIA-NOOP-1")
 	if err := ensurePaymentEventSchema(database); err != nil {
 		t.Fatalf("首次迁移失败：%v", err)
 	}

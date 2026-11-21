@@ -40,10 +40,11 @@ func TestIntegrationAdminBootstrapChild(t *testing.T) {
 func TestIntegrationAdminBootstrap(t *testing.T) {
 	cases := []struct {
 		name, mode, password, seed, expected string
-		reject, missing                      bool
+		localOnly                            bool
 	}{
-		{name: "missing_production_password", reject: true, missing: true},
-		{name: "weak_production_password", password: "123456", reject: true, missing: true},
+		{name: "missing_production_password_is_local_setup", expected: "123456", localOnly: true},
+		{name: "factory_placeholder_is_local_setup", password: "123456", expected: "123456", localOnly: true},
+		{name: "operator_weak_non_placeholder_is_not_rejected", password: "mine", expected: "mine"},
 		{name: "explicit_development_compat", mode: "development", expected: "123456"},
 		{name: "strong_production_bootstrap", password: "Create#123", expected: "Create#123"},
 		{name: "legacy_same_secret_upgrade_not_environment_reset", password: "Replace#456", seed: "Original#123", expected: "Original#123"},
@@ -74,18 +75,8 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 			c := exec.Command(os.Args[0], "-test.run=^TestIntegrationAdminBootstrapChild$", "-log-dir", filepath.Join(t.TempDir(), "logs"))
 			c.Env = append(os.Environ(), "ADMIN_INTEGRATION_CHILD=1", "ADMIN_INTEGRATION_DB="+path, "TIKU_APP_MODE="+tc.mode, "TIKU_ADMIN_PASSWORD="+tc.password, "SQL_DSN=")
 			out, err := c.CombinedOutput()
-			if tc.reject {
-				if err == nil {
-					t.Fatalf("production policy accepted unsafe startup; child=%s", out)
-				}
-				if tc.missing {
-					if _, e := os.Stat(path); !os.IsNotExist(e) {
-						t.Fatal("rejected startup created SQLite file")
-					}
-					return
-				}
-			} else if err != nil {
-				t.Fatalf("valid fixture rejected: %v child=%s", err, out)
+			if err != nil {
+				t.Fatalf("valid fixture rejected: %v", err)
 			}
 			d := integrationAdminDB(t, path)
 			defer func() { s, _ := d.DB(); _ = s.Close() }()
@@ -93,13 +84,19 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 			if e := d.Where("id=?", 1).First(&row).Error; e != nil {
 				t.Fatal(e)
 			}
-			if tc.reject {
-				if row.Password != tc.seed {
-					t.Fatal("refused credential was reset")
+			expected := tc.expected
+			if tc.localOnly {
+				if !strings.Contains(string(out), "--init-admin-password") || strings.Contains(string(out), tc.expected) {
+					t.Fatal("missing safe local setup directions or plaintext disclosed")
 				}
-				return
+				if ok, _ := util.VerifyAccountLoginPassword(row.ID, row.Role, row.Password, expected); ok {
+					t.Fatal("public setup credential grants a web session")
+				}
 			}
-			matched, _ := util.VerifyPassword(row.Password, tc.expected)
+			if paths, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "admin-bootstrap-*.password")); len(paths) != 0 {
+				t.Fatal("unexpected initial password file")
+			}
+			matched, _ := util.VerifyPassword(row.Password, expected)
 			if !matched {
 				t.Fatal("stored credential does not preserve intended secret")
 			}

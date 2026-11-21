@@ -11,7 +11,8 @@ import (
 
 const (
 	// reviewRebateSchemaReadyKey 标记「评价返现四张表与 users.gift_balance 已就绪」。
-	reviewRebateSchemaReadyKey = "review_rebate_schema_ready"
+	reviewRebateSchemaReadyKey      = "review_rebate_schema_ready"
+	reviewRebateStoreSchemaReadyKey = "review_rebate_store_schema_ready"
 )
 
 // ensureReviewRebateSchema 建立评价返现所需的表结构。
@@ -59,9 +60,17 @@ func ensureReviewRebateSchema(db *gorm.DB) error {
 		if err := ensureReviewRebateClaimScorerColumn(db); err != nil {
 			return err
 		}
+		claim := &entity.ReviewRebateClaim{}
+		for _, field := range []string{"StoreURLSnapshot", "ExtensionIDSnapshot"} {
+			if !db.Migrator().HasColumn(claim, field) {
+				if err := db.Migrator().AddColumn(claim, field); err != nil {
+					return fmt.Errorf("add review rebate claim %s: %w", field, err)
+				}
+			}
+		}
 	}
 	if systemSettingFlagIsSet(db, reviewRebateSchemaReadyKey) {
-		return nil
+		return ensureReviewRebateStoreSchema(db)
 	}
 	applied, err := safeEnsureReviewRebateSchema(db)
 	if err != nil {
@@ -77,7 +86,47 @@ func ensureReviewRebateSchema(db *gorm.DB) error {
 		// 标记写失败不算迁移失败：结构已经建好，下次启动重跑是幂等的。
 		logger.SysLog(fmt.Sprintf("写入评价返现迁移标记失败（下次启动会重跑，幂等）：%v", err))
 	}
-	return nil
+	return ensureReviewRebateStoreSchema(db)
+}
+
+func ensureReviewRebateStoreSchema(db *gorm.DB) error {
+	if systemSettingFlagIsSet(db, reviewRebateStoreSchemaReadyKey) {
+		return nil
+	}
+	for _, model := range []any{&entity.ReviewRebateProgram{}, &entity.ReviewRebateClaim{}, &entity.ReviewRebateAward{}} {
+		if !db.Migrator().HasColumn(model, "Source") {
+			if err := db.Migrator().AddColumn(model, "Source"); err != nil {
+				return err
+			}
+		}
+	}
+	award := &entity.ReviewRebateAward{}
+	if !db.Migrator().HasColumn(award, "EligibilityKey") {
+		if err := db.Migrator().AddColumn(award, "EligibilityKey"); err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasIndex(award, "uk_review_rebate_award_eligibility") {
+		if err := db.Migrator().CreateIndex(award, "uk_review_rebate_award_eligibility"); err != nil {
+			return err
+		}
+	}
+	if err := db.AutoMigrate(&entity.ReviewRebateVerification{}, &entity.ReviewRebateClawback{}); err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("UPDATE review_rebate_programs SET source = 'chrome' WHERE LOWER(store_url) LIKE ? OR LOWER(store_url) LIKE ?",
+			"https://chromewebstore.google.com/%", "https://chrome.google.com/webstore/%").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("UPDATE review_rebate_claims SET source = COALESCE((SELECT source FROM review_rebate_programs WHERE id = review_rebate_claims.program_id), 'edge')").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("UPDATE review_rebate_awards SET source = COALESCE((SELECT source FROM review_rebate_claims WHERE id = review_rebate_awards.claim_id), 'edge') WHERE eligibility_key IS NULL").Error; err != nil {
+			return err
+		}
+		return setSystemSettingFlag(tx, reviewRebateStoreSchemaReadyKey)
+	})
 }
 
 // safeEnsureReviewRebateSchema 在外层兜一层 recover，脏数据不能让服务反复崩溃。

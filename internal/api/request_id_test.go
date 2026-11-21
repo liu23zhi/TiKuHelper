@@ -56,7 +56,7 @@ func TestAPITransportCorrelationCoversAbortAndNotFound(t *testing.T) {
 		if response.Code != test.status || !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(id) || contexts[test.name] != id || seen[id] {
 			t.Fatalf("production global registration/association missing: %s", test.name)
 		}
-		if response.Header().Get("Access-Control-Allow-Origin") != "*" || response.Header().Get("Access-Control-Allow-Credentials") != "" || response.Header().Get("Access-Control-Allow-Headers") != "Authorization, Content-Type, Idempotency-Key" {
+		if response.Header().Get("Access-Control-Allow-Origin") != "*" || response.Header().Get("Access-Control-Allow-Credentials") != "" || response.Header().Get("Access-Control-Allow-Headers") != "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity" {
 			t.Fatal("request correlation must preserve the current idempotency CORS and no-credentials policy")
 		}
 		seen[id] = true

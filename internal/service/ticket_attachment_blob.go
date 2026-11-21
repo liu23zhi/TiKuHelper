@@ -283,7 +283,7 @@ func StoreTicketAttachmentBlobWithDB(db *gorm.DB, sha256Hex, mediaType string, p
 	if sha == "" || len(plain) == 0 {
 		return entity.TicketAttachmentBlob{}, false, ErrTicketAttachmentBlobInvalid
 	}
-	nonce, ciphertext, err := sealTicketAttachmentBlob(plain, sha)
+	nonce, ciphertext, err := sealTicketAttachmentBlob(db, plain, sha)
 	if err != nil {
 		return entity.TicketAttachmentBlob{}, false, err
 	}
@@ -380,8 +380,8 @@ func RunTicketAttachmentBlobPurge(db *gorm.DB, now time.Time, maxBatches int) (i
 //
 // 与附件侧 ticketAttachmentAAD 的差别：那边 AAD 含自增 id，必须「先插占位行再 UPDATE 密文」；
 // 这边 sha256 在加密前已知，因此**一次插入即完整**，不存在残缺中间态。
-func sealTicketAttachmentBlob(plain []byte, sha256Hex string) ([]byte, []byte, error) {
-	aead, err := ticketAttachmentCipher()
+func sealTicketAttachmentBlob(db *gorm.DB, plain []byte, sha256Hex string) ([]byte, []byte, error) {
+	aead, err := ticketAttachmentCipher(db)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -397,8 +397,8 @@ func sealTicketAttachmentBlob(plain []byte, sha256Hex string) ([]byte, []byte, e
 }
 
 // openTicketAttachmentBlob 用 blob AAD 解密一份 blob 密文。
-func openTicketAttachmentBlob(blob entity.TicketAttachmentBlob) ([]byte, error) {
-	aead, err := ticketAttachmentCipher()
+func openTicketAttachmentBlob(db *gorm.DB, blob entity.TicketAttachmentBlob) ([]byte, error) {
+	aead, err := ticketAttachmentCipher(db)
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +435,7 @@ func ReadTicketAttachmentBlobWithDB(db *gorm.DB, sha256Hex string) (string, []by
 		}
 		return "", nil, err
 	}
-	plain, err := openTicketAttachmentBlob(blob)
+	plain, err := openTicketAttachmentBlob(db, blob)
 	if err != nil {
 		return "", nil, err
 	}
@@ -510,7 +510,7 @@ func LinkUploadedTicketAttachmentBlobWithDB(db *gorm.DB, attachmentID int64) (re
 			}
 			return readErr
 		}
-		plain, openErr := openTicketAttachmentPlain(row)
+		plain, openErr := openTicketAttachmentPlain(tx, row)
 		if openErr != nil {
 			// 残缺行（旧版「先插占位行、再 UPDATE 密文」崩在中间的产物）：
 			// 不搬进 blobs 表 —— 放一份解不开的密文只会让人以为「已经搬过去了」。
@@ -525,7 +525,7 @@ func LinkUploadedTicketAttachmentBlobWithDB(db *gorm.DB, attachmentID int64) (re
 				"ticket_attachment_blob_sha_mismatch attachmentId=%d recorded=%s computed=%s（以实际字节为准）",
 				attachmentID, recorded, sha))
 		}
-		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(plain, sha)
+		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(tx, plain, sha)
 		if sealErr != nil {
 			return sealErr
 		}
@@ -553,8 +553,8 @@ func LinkUploadedTicketAttachmentBlobWithDB(db *gorm.DB, attachmentID int64) (re
 //
 // 单独抽出来是因为解密参数（id + userID + mediaType）只有这里能拼出来，
 // 且上传路径与后续可能的补齐路径都要用它。
-func openTicketAttachmentPlain(row entity.TicketAttachment) ([]byte, error) {
-	aead, err := ticketAttachmentCipher()
+func openTicketAttachmentPlain(db *gorm.DB, row entity.TicketAttachment) ([]byte, error) {
+	aead, err := ticketAttachmentCipher(db)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +610,7 @@ func LinkUploadedTicketAttachmentBlobWithContentWithDB(db *gorm.DB, link TicketA
 	err = db.Transaction(func(tx *gorm.DB) error {
 		// 加密在这里做（而不是让 controller 做）：blob 的 AAD 域前缀是 blob 自己的，
 		// 与附件侧 AAD 不同，两套密文不可互换解密。
-		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(link.Plain, sha)
+		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(tx, link.Plain, sha)
 		if sealErr != nil {
 			return sealErr
 		}
@@ -903,6 +903,7 @@ const (
 
 // TicketImageCacheRetention 是页面显示的「当前生效的三个保留策略值」。
 type TicketImageCacheRetention struct {
+	Mode string `json:"mode"`
 	// MaxAgeDays 是按时间清理的天数。
 	MaxAgeDays int `json:"maxAgeDays"`
 	// MaxTotalGiB 是总量上限，单位 GiB。
@@ -1024,7 +1025,9 @@ func ticketImageCacheReady(db *gorm.DB) bool {
 
 // resolveTicketImageCacheRetention 读取三个保留策略值（缺记录/越界回落默认值）。
 func resolveTicketImageCacheRetention(db *gorm.DB) TicketImageCacheRetention {
+	policy := GetTicketAttachmentRetentionSettingsWithDB(db)
 	settings := TicketImageCacheRetention{
+		Mode:                   policy.Mode,
 		MaxAgeDays:             int(defaultTicketImageCacheRetentionMaxAgeDays),
 		MaxTotalGiB:            defaultTicketImageCacheRetentionMaxTotalGiB,
 		CleanupIntervalMinutes: int(defaultTicketImageCacheRetentionCleanupIntervalMinutes),

@@ -45,8 +45,32 @@ export function readInt(value) {
  * 关键点：`upperBound` 为 null 表示「等级不限，无上界」；它不是「未知」，
  * 所以不能退回默认值。用 `hasUpperBound` 显式区分两种 nil。
  */
+// unwrapDevicePayload 剥掉后端 `{data: {...}}` 信封。
+//
+// 为什么需要它（真实缺陷，2026-11-16）：
+//   后端 controller/device_user.go 两个接口都是 c.JSON(200, gin.H{"data": view})，
+//   而传输层 buildResponsePayload（requestHelpers.mjs）把**整个响应体**放进 payload.data：
+//       const payload = { data: response?.data, ... }
+//   ⇒ 页面里 res.data === {data: view}，真正的字段在 res.data.data。
+//   原实现直接读 res.data.limit / res.data.devices，全是 undefined，于是：
+//     · 上限显示「未知」/来源「未知」/输入框禁用
+//     · 设备列表显示「还没有设备」
+//   两个现象同源，只修一个会留下另一个。
+//
+// 判据：**只在顶层缺少本函数关心的字段时才深入 data**。
+// 不能无条件 `raw.data || raw` —— 一个恰好同时有顶层 limit 与无关 data 字段的
+// 对象会被错误地降级到 data 里读，把合法值覆盖掉。
+export function unwrapDevicePayload(raw, probeKeys) {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  const keys = Array.isArray(probeKeys) ? probeKeys : []
+  // 顶层已经带任一关心的字段 → 视为已解包，不再下钻。
+  if (keys.some((key) => source[key] !== undefined)) return source
+  const inner = source.data
+  if (inner && typeof inner === 'object' && !Array.isArray(inner)) return inner
+  return source
+}
 export function normalizeDeviceLimit(raw) {
-  const data = raw && typeof raw === 'object' ? raw : {}
+  const data = unwrapDevicePayload(raw, ['limit', 'source', 'unlimited', 'upperBound'])
   const upperRaw = data.upperBound
   const hasUpperBound = upperRaw !== null && upperRaw !== undefined
   const upper = hasUpperBound ? readInt(upperRaw) : null
@@ -69,6 +93,16 @@ export function normalizeDeviceLimit(raw) {
     editable: data.editable === true,
     hookReady: data.hookReady !== false,
   }
+}
+
+/** deviceLimitMaximumText 展示等级允许设置的最高上限，与当前生效值分开计算。 */
+export function deviceLimitMaximumText(view) {
+  const state = view && typeof view === 'object' ? view : {}
+  if (state.loaded !== true) return '读取中…'
+  if (state.hookReady === false || state.editable !== true) return '暂不可用'
+  if (state.hasUpperBound !== true) return '不限'
+  const upperBound = readInt(state.upperBound)
+  return upperBound !== null && upperBound >= 0 ? `${upperBound} 台` : '未知'
 }
 
 /** deviceLimitSourceText 把来源串翻成文案（137 §4 的四个取值）。 */
@@ -144,6 +178,15 @@ export function validateDeviceLimitInput(input, view) {
   return { ok: true, value, error: '', message: '' }
 }
 
+export function validateDeviceExpiryInput(input, maxDays, allowDisable) {
+  const text = String(input === null || input === undefined ? '' : input).trim()
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text))) return { ok: false, message: '请填写非负整数天数' }
+  const value = Number(text)
+  if (value > maxDays) return { ok: false, message: `不能超过管理员设置的 ${maxDays} 天` }
+  if (value === 0 && !allowDisable) return { ok: false, message: '管理员未允许用户关闭自动移除' }
+  return { ok: true, value, message: '' }
+}
+
 /** normalizeDeviceItem 归一化列表里的一台设备（缺字段一律显式置空/未知）。 */
 export function normalizeDeviceItem(raw) {
   const item = raw && typeof raw === 'object' ? raw : {}
@@ -154,6 +197,12 @@ export function normalizeDeviceItem(raw) {
     id: readInt(item.id) ?? 0,
     deviceId: typeof item.deviceId === 'string' ? item.deviceId : '',
     deviceLabel: typeof item.deviceLabel === 'string' ? item.deviceLabel : '',
+    firstIp: typeof item.firstIp === 'string' ? item.firstIp : '',
+    // lastIp 是「最近一次使用时的来源 IP」，由后端在登记设备时写入。
+    // 缺失/非字符串一律置空串（**不伪造** '0.0.0.0' 或 '未知'），
+    // 展示层用 deviceIPText 统一翻成「未记录」——那是文案决定，不是数据决定。
+    lastIp: typeof item.lastIp === 'string' ? item.lastIp : '',
+    firstSeenAt: typeof item.firstSeenAt === 'string' ? item.firstSeenAt : '',
     lastSeenAt: typeof item.lastSeenAt === 'string' ? item.lastSeenAt : '',
     status,
     statusText: typeof item.statusText === 'string' && item.statusText ? item.statusText : meta.text,
@@ -161,16 +210,93 @@ export function normalizeDeviceItem(raw) {
     revokedAt: typeof item.revokedAt === 'string' ? item.revokedAt : '',
     revokedReason: typeof item.revokedReason === 'string' ? item.revokedReason : '',
     blocked: item.blocked === true,
+    deletable: item.deletable === true && status === 'removed' && item.blocked !== true,
     // blockId 只在 >0 时可用（列表里的「解除拉黑」按钮依赖它）。
     blockId: blockId !== null && blockId > 0 ? blockId : 0,
     blockOnly: item.blockOnly === true,
     removable: item.removable === true,
+    // renamable：只有真实的绑定行（id>0）能改名。
+    //
+    // 孤儿拉黑行（id=0、blockOnly=true）没有绑定行，重命名接口按 id 定位，
+    // 传 0 只会拿到 404。在这里显式算成 false，而不是让用户点了按钮才发现失败。
+    renamable: (readInt(item.id) ?? 0) > 0,
   }
+}
+
+/**
+ * deviceIPText 把来源 IP 翻成文案。
+ *
+ * 两态而不是三态：**没有 IP** 一律「未记录」。
+ * 为什么不能显示成空单元格：空白会被读成「渲染坏了」或「这台设备没有 IP」，
+ * 而真实语义是「还没采到」——老数据（补列前的行）与采不到 IP 的请求都落在这里。
+ */
+export function deviceIPText(value) {
+  const text = String(value || '').trim()
+  return text === '' ? '未记录' : text
+}
+
+/** Both usage timestamps use the same explicit time zone as other account pages. */
+export function formatDeviceUsageTime(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text || text.startsWith('0001-')) return '未记录'
+  const date = new Date(text)
+  if (!Number.isFinite(date.getTime())) return '未知时间'
+  return date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).replace(/\//g, '-')
+}
+
+/** DEVICE_LABEL_MAX_RUNES 是设备名的字符上限，与后端 device_label VARCHAR(64) 一致。 */
+export const DEVICE_LABEL_MAX_RUNES = 64
+
+/**
+ * validateDeviceLabel 校验用户输入的设备名（与后端 400 文案同口径）。
+ *
+ * 返回 `{ ok, value, error, message }`：
+ *   - 含换行/制表符/控制字符 → 拒绝
+ *   - 超过 64 个字符 → 拒绝
+ *   - 空串/纯空白 → **通过**（语义是「恢复默认显示」）
+ *
+ * 为什么空串必须通过：用户想取消自己起的名字是合理需求。把它判成非法，
+ * 用户就只能随便填一个字符来「清空」，反而造出脏数据。
+ *
+ * 为什么必须复刻后端的控制字符校验：后端 400 是最后防线，但用户点了保存
+ * 才看到红字是糟糕体验；更重要的是**两处文案必须一致**，否则同一个错误
+ * 在不同层显示不同的说法（这正是本仓把校验放进纯函数层的原因）。
+ */
+export function validateDeviceLabel(raw) {
+  const text = String(raw === null || raw === undefined ? '' : raw).trim()
+  if (text === '') {
+    return { ok: true, value: '', error: '', message: '' }
+  }
+  // 与控制字符同口径：\r \n \t 与 C0/C1 区段、DEL。
+  // 用码点判断而不是正则字面量，避免把中文/emoji 误伤。
+  for (const ch of text) {
+    const code = ch.codePointAt(0)
+    if (code === 0 || code === 0x7f || (code < 0x20 && code >= 0x00)) {
+      return { ok: false, value: '', error: 'control-char', message: '设备名称不能包含换行或控制字符' }
+    }
+  }
+  // 按**字符**（码点）计长度而不是 .length：后者是 UTF-16 码元数，
+  // emoji 会被算成 2，导致「用户看到 32 个 emoji 就被拒」。
+  const runes = Array.from(text)
+  if (runes.length > DEVICE_LABEL_MAX_RUNES) {
+    return {
+      ok: false,
+      value: '',
+      error: 'too-long',
+      message: `设备名称最多 ${DEVICE_LABEL_MAX_RUNES} 个字符`,
+    }
+  }
+  return { ok: true, value: text, error: '', message: '' }
 }
 
 /** normalizeDeviceList 归一化 `GET /user/devices` 的 data。 */
 export function normalizeDeviceList(raw) {
-  const data = raw && typeof raw === 'object' ? raw : {}
+  // 同 normalizeDeviceLimit：后端返回 {data: {...}} 信封，必须剥掉。
+  const data = unwrapDevicePayload(raw, ['devices', 'total', 'active', 'blocked'])
   const list = Array.isArray(data.devices) ? data.devices : []
   return {
     loaded: true,

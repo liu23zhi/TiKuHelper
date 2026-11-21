@@ -334,7 +334,6 @@ func TestTicketRefundEPayFingerprintFailClosedAndRejectBeforeTransport(t *testin
 		name string
 		edit func(*entity.RechargeOrder)
 	}{
-		{"legacy-unverified", func(o *entity.RechargeOrder) { o.RefundChannelFingerprint = "" }},
 		{"wrong-merchant", func(o *entity.RechargeOrder) {
 			o.RefundChannelFingerprint = refundChannelFingerprint(f.cfg.gatewayURL, "different-pid", f.cfg.platformKey)
 		}},
@@ -354,6 +353,40 @@ func TestTicketRefundEPayFingerprintFailClosedAndRejectBeforeTransport(t *testin
 				t.Fatalf("mismatched query error: status=%q ref=%q err=%v", status, ref, err)
 			}
 		})
+	}
+}
+
+func TestTicketRefundEPayLegacyOrderUsesVisibleTradeNumber(t *testing.T) {
+	f := newRefundEPayFixture(t)
+	f.order.RefundChannelFingerprint = ""
+	f.order.RefundOriginalTradeNo = ""
+	f.order.ThirdPartyOrderNo = "legacy-original-trade-27"
+	f.refund.OriginalTradeNo = f.order.ThirdPartyOrderNo
+	if ref, err := f.cfg.VerifyOriginalOrder(nil, f.order); err != nil || ref != f.cfg.fingerprint {
+		t.Fatalf("legacy paid order must use configured channel: %q, %v", ref, err)
+	}
+	requests := 0
+	installRefundEPayTransport(t, func(r *http.Request) (*http.Response, error) {
+		requests++
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.URL.Path == "/api/pay/refund" && r.Form.Get("trade_no") != f.order.ThirdPartyOrderNo {
+			t.Fatalf("refund sent wrong legacy trade: %q", r.Form.Get("trade_no"))
+		}
+		fields := f.replyFields()
+		fields.Set("trade_no", f.order.ThirdPartyOrderNo)
+		signSyntheticRefundEPay(t, fields, f.platformPrivate)
+		return refundEPayResponse(http.StatusOK, refundEPayJSON(t, fields)), nil
+	})
+	if err := SubmitTicketRefundEPay(context.Background(), f.cfg, f.refund, f.order); err != nil {
+		t.Fatalf("submit legacy: %v", err)
+	}
+	if outcome, _, err := QueryTicketRefundEPay(context.Background(), f.cfg, f.refund, f.order); err != nil || outcome != TicketRefundStatusSucceeded {
+		t.Fatalf("query legacy: %s, %v", outcome, err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected submit and query, got %d", requests)
 	}
 }
 

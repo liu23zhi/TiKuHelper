@@ -25,7 +25,7 @@ const oldAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'install memory transport before actual request module')
 axios.defaults.adapter=config=>{
   const method=String(config.method).toLowerCase(),url=String(config.url)
-  if(method!=='get'||url!=='/adapter-service/system-metrics'){network.push('UNEXPECTED_OPERATION');return Promise.reject(new Error('UNEXPECTED_METRICS_OPERATION'))}
+  if(method!=='get'||url!=='/api/system-metrics'){network.push('UNEXPECTED_OPERATION');return Promise.reject(new Error('UNEXPECTED_METRICS_OPERATION'))}
   const next=plan.shift();assert.ok(next,'every request must have an explicit actual producer case')
   const c=next.input,headers=wireHeaders(c.headers)
   calls.push({method,url,retryPolicy:config.retryPolicy,withCredentials:config.withCredentials,producerCase:c.name,status:c.status,bodySHA256:crypto.createHash('sha256').update(typeof c.body==='string'?c.body:JSON.stringify(c.body)).digest('hex'),originalHeaderKeys:Object.keys(c.headers).sort(),noInjectedHeaders:true})
@@ -47,7 +47,9 @@ async function open(actor=ACTOR_A){user.setStoredCurrentUser(actor);const w=moun
 function finish(held){assert.ok(held&&held.promise instanceof Promise&&!held.done,'actual admitted pending transport Promise');held.done=true;held.resolve(held.response)}
 function countText(value){return value.toLocaleString('zh-CN')}
 function assertSchemaPrivacy(body,label){
-  check(Object.keys(body).sort().join(',')==='billing,cache,http,schemaVersion,startedAt,tasks,uptimeSeconds',label+' exact fixed top-level snapshot contains no private fields')
+  check(Object.keys(body).sort().join(',')==='billing,cache,http,memory,schemaVersion,startedAt,tasks,uptimeSeconds',label+' exact fixed top-level snapshot contains no private fields')
+  check(Object.keys(body.memory).sort().join(',')==='allocBytes,gcCycles,heapAllocBytes,heapIdleBytes,heapInuseBytes,heapReleasedBytes,heapSysBytes,stackInuseBytes,sysBytes,totalAllocBytes',label+' fixed runtime memory snapshot contains only process aggregates')
+  check(Number.isFinite(body.memory.heapAllocBytes)&&Number.isFinite(body.memory.sysBytes)&&body.memory.sysBytes>0,label+' Go runtime memory values are finite and populated')
   for(const name of ['search','fallback']){
     check(Object.keys(body.cache[name]).sort().join(',')==='hits,misses,shared',label+' fixed low-cardinality cache dimensions '+name)
     check(Object.keys(body.tasks[name]).sort().join(',')==='failed,running,succeeded,total',label+' task counts expose no IDs/owners/status contents '+name)
@@ -64,6 +66,7 @@ function assertRendered(w,body,label){
     for(const metric of ['total','running','succeeded','failed'])paths['tasks-'+key+'-'+metric]=body.tasks[key][metric]
   }
   for(const [name,value] of Object.entries(paths))check(field(w,name)===countText(value),label+' exact actual producer scalar '+name)
+  for(const [name,value] of Object.entries({'memory-heap-alloc':body.memory.heapAllocBytes,'memory-heap-sys':body.memory.heapSysBytes,'memory-sys':body.memory.sysBytes,'memory-stack-inuse':body.memory.stackInuseBytes}))check(field(w,name)===((value/(1024*1024)).toFixed(1)+' MiB'),label+' exact actual runtime memory '+name)
   check(field(w,'latency-mean')===(body.http.latencyCount?((body.http.latencyTotalMillis/body.http.latencyCount).toFixed(1)+' ms'):'暂无耗时样本'),label+' completed-sample mean, not started-request average')
   check(field(w,'latency-max')===(body.http.latencyCount?(body.http.latencyMaxMillis.toFixed(1)+' ms'):'暂无耗时样本'),label+' real empty/max latency semantics')
   check(w.text().includes('诊断事件，不是账务凭证/收入')&&w.text().includes('不提供排队容量或持久化历史')&&w.text().includes('当前保留任务'),label+' existing safe process-local/non-queue/non-ledger notice stays')

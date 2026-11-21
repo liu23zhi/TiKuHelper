@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -190,6 +191,39 @@ func NormalizeDevicePoolDeviceID(deviceID string) string {
 		return string(runes[:DevicePoolDeviceIDMaxLength])
 	}
 	return trimmed
+}
+
+// NormalizeDeviceClientIP 归一化来源 IP 为可落库的文本，非法/空返回空串。
+//
+// ## 为什么用 net.ParseIP 而不是只 TrimSpace
+//
+// 同一个客户端可能以 `::ffff:203.0.113.7`、`203.0.113.7`、`  203.0.113.7 ` 三种
+// 写法出现（IPv4-mapped IPv6 是双栈监听下的常态）。IP.String() 把它们收敛成
+// 同一个字面量，这样「同一台设备换了写法」不会被显示成两个不同的地址。
+// 与 blacklist_cache.go:147 的取舍一致（那里明确禁止字符串前缀比较）。
+//
+// ## 为什么非法值返回空串而不是原样返回
+//
+// 本列是**展示用**。把 `unknown`、`<nil>`、`192.168.1.1:8080`、代理塞进来的
+// 乱码原样落库，会让用户以为自己的设备从某个奇怪的地方连进来 —— 那是误报，
+// 比「未记录」更糟。所以宁可不显示。
+//
+// ## 为什么保留内网/回环地址
+//
+// 「我的设备」是给**设备主人**看的，不是对外泄露面：用户需要看到
+// 「这台设备从 192.168.1.7 连的」来判断是不是自己家里的机器。
+// 与 location.go 的 IsPrivateOrReservedIP 用途相反 —— 那个是「省一次付费查询」，
+// 这个是「让用户认得出自己的设备」，不能共用同一条过滤。
+func NormalizeDeviceClientIP(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // devicePoolSession 清掉继承的模型（同 userLevelSession 的成因）。
@@ -557,17 +591,17 @@ func BuildDevicePoolLimitExceededMessage(limit int32, used int) string {
 //
 // 判定顺序（137 §5，**顺序本身就是需求**）：
 //
-//	0. 参数不全（db nil / userID<=0 / 设备指纹为空） → fail-open 放行
-//	1. 绑定表不可用                                  → fail-open 放行 + SysLog 留痕
-//	2. **全局黑名单 kind=device**                     → 拒绝（用户不可解除）
-//	3. **用户拉黑 user_device_blocks**               → 拒绝（用户可自行解除）
-//	4. 有效上限（EffectiveDeviceLimit）：
-//	     level_missing                              → 放行（no-limit-configured）
-//	     == 0（不限）                                → 放行 + 调用方登记（unlimited）
-//	     < 0（禁止档）                               → 拒绝（forbidden）
-//	5. 已绑定且 revoked_at IS NULL                   → 刷新 last_seen_at，放行
-//	6. 已用台数 < 上限                               → 放行（within-limit）
-//	7. 已满                                          → 拒绝 + 文案（limit-exceeded）
+//  0. 参数不全（db nil / userID<=0 / 设备指纹为空） → fail-open 放行
+//  1. 绑定表不可用                                  → fail-open 放行 + SysLog 留痕
+//  2. **全局黑名单 kind=device**                     → 拒绝（用户不可解除）
+//  3. **用户拉黑 user_device_blocks**               → 拒绝（用户可自行解除）
+//  4. 有效上限（EffectiveDeviceLimit）：
+//     level_missing                              → 放行（no-limit-configured）
+//     == 0（不限）                                → 放行 + 调用方登记（unlimited）
+//     < 0（禁止档）                               → 拒绝（forbidden）
+//  5. 已绑定且 revoked_at IS NULL                   → 刷新 last_seen_at，放行
+//  6. 已用台数 < 上限                               → 放行（within-limit）
+//  7. 已满                                          → 拒绝 + 文案（limit-exceeded）
 //
 // ## 为什么第 2 步必须在第 5 步之前（137 §5.1，判据 D5）
 //
@@ -576,6 +610,40 @@ func BuildDevicePoolLimitExceededMessage(limit int32, used int) string {
 // 用户拍板了「封禁设备 → 立即撤销所有旧绑定」，但撤销是异步的、可能失败的，
 // 而黑名单判定是同步的、必然生效的 —— 两道保险，顺序不能反。
 func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
+	return CanUseDeviceWithClientIP(db, userID, deviceID, "")
+}
+
+// CanUseDeviceWithClientIP 在设备通过准入时同步刷新最近来源 IP。
+// 已有设备的请求热路径只需一次 UPDATE；未采到合法 IP 时保留原地址。
+func CanUseDeviceWithClientIP(db *gorm.DB, userID int32, deviceID string, clientIP string) DevicePoolDecision {
+	return inspectDeviceAccess(db, userID, deviceID, clientIP, true)
+}
+
+// InspectDeviceAccessWithDB evaluates the same admission rules without updating
+// activity or registering a device. Configuration tests must not consume a slot.
+func InspectDeviceAccessWithDB(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
+	return inspectDeviceAccess(db, userID, deviceID, "", false)
+}
+
+// CheckDeviceBlockWithDB checks explicit bans independently of capacity settings.
+// Unlimited accounts and a disabled capacity switch must not bypass a device ban.
+func CheckDeviceBlockWithDB(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
+	normalized := NormalizeDevicePoolDeviceID(deviceID)
+	if db == nil || userID <= 0 || normalized == "" {
+		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Used: DevicePoolUsedUnknown}
+	}
+	if entryID, hit := devicePoolGlobalDeviceBlacklistEntry(db, normalized, time.Now()); hit {
+		return DevicePoolDecision{Allowed: false, Reason: DevicePoolReasonDeviceBlacklisted,
+			Used: DevicePoolUsedUnknown, Message: "该设备已被限制使用", BlacklistEntryID: entryID}
+	}
+	if devicePoolUserBlocked(db, userID, normalized) {
+		return DevicePoolDecision{Allowed: false, Reason: DevicePoolReasonUserBlocked,
+			Used: DevicePoolUsedUnknown, Message: "你已拉黑该设备"}
+	}
+	return DevicePoolDecision{Allowed: true, Used: DevicePoolUsedUnknown}
+}
+
+func inspectDeviceAccess(db *gorm.DB, userID int32, deviceID string, clientIP string, recordActivity bool) DevicePoolDecision {
 	if db == nil || userID <= 0 {
 		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Used: DevicePoolUsedUnknown}
 	}
@@ -592,25 +660,9 @@ func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision
 
 	now := time.Now()
 
-	// ── ① 全局黑名单（kind=device）：必须在已绑定判定之前 ──
-	if entryID, hit := devicePoolGlobalDeviceBlacklistEntry(db, normalized, now); hit {
-		return DevicePoolDecision{
-			Allowed:          false,
-			Reason:           DevicePoolReasonDeviceBlacklisted,
-			Used:             DevicePoolUsedUnknown,
-			Message:          "该设备已被限制使用",
-			BlacklistEntryID: entryID,
-		}
-	}
-
-	// ── ② 用户自己拉黑：同样在已绑定判定之前 ──
-	if devicePoolUserBlocked(db, userID, normalized) {
-		return DevicePoolDecision{
-			Allowed: false,
-			Reason:  DevicePoolReasonUserBlocked,
-			Used:    DevicePoolUsedUnknown,
-			Message: "你已拉黑该设备",
-		}
+	// 显式拉黑优先于额度与已绑定豁免。
+	if blocked := CheckDeviceBlockWithDB(db, userID, normalized); !blocked.Allowed {
+		return blocked
 	}
 
 	// ── ③ 有效上限 ──
@@ -667,18 +719,25 @@ func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision
 		}
 	}
 
-	// ── ④ 已绑定且未撤销：放行并刷新 last_seen_at ──
+	// ── ④ 已绑定且未撤销：放行并刷新最近使用时间和 IP ──
 	if id, bound, err := activeDeviceBindingID(db, userID, normalized); err != nil {
 		devicePoolFailOpenLog(userID, "查询设备绑定失败："+err.Error())
 		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Limit: limit, Used: DevicePoolUsedUnknown, LimitSource: source}
 	} else if bound {
 		// 刷新 last_seen_at：它是「10 天闲置解绑」的唯一数据源，
 		// 只靠登录路径的 RegisterDevice 刷新会让「同一设备高频请求」的活跃度失真。
-		// 用 UpdateColumn 而不是 Updates：后者会顺带刷新 updated_at，
+		// 用 UpdateColumns 而不是 Updates：后者会顺带刷新 updated_at，
 		// 把「行被改过」与「设备被使用过」两种事实混在一起。
-		if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-			Where("id = ?", id).UpdateColumn("last_seen_at", now).Error; err != nil {
-			devicePoolFailOpenLog(userID, "刷新设备活跃时间失败："+err.Error())
+		if recordActivity {
+			activity := map[string]any{"last_seen_at": now}
+			if ip := NormalizeDeviceClientIP(clientIP); ip != "" &&
+				db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+				activity["last_ip"] = ip
+			}
+			if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
+				Where("id = ?", id).UpdateColumns(activity).Error; err != nil {
+				devicePoolFailOpenLog(userID, "刷新设备活跃时间失败："+err.Error())
+			}
 		}
 		return DevicePoolDecision{
 			Allowed:     true,
@@ -712,19 +771,13 @@ func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision
 	}
 }
 
-// CanUseDeviceWithSwitch 是 CanUseDevice 的**开关感知**版本（接线层用）。
+// CanUseDeviceWithSwitch 保留接线层的历史入口，现与 CanUseDevice 使用同一判定。
 //
-// system_settings.device_limit_enabled 默认 false（"启用账户设备池上限（默认关闭）"，
-// 见 system_setting.go 的同名键）。关闭时整档限制不生效、零查询直接放行 ——
-// 与黑名单总开关「关闭时零查询」的同款纪律。
+// system_settings.device_limit_enabled 是兼容旧客户端的历史字段，服务端始终按启用处理。
+// 等级 device_limit=0 表示该等级不限设备数；其它正数按设备池上限判定。
 //
-// 为什么不在 CanUseDevice 内部直接读开关：核心判定要被单测直接驱动，
-// 而开关是运营配置（默认关）。把两件事揉在一起，会让「等级上限算错了」
-// 与「开关没打开」这两种完全不同的故障在测试里长得一模一样。
+// 不再读取旧开关，避免旧客户端留下的 false 绕过当前等级上限。
 func CanUseDeviceWithSwitch(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
-	if !GetDeviceLimitEnabledWithDB(db) {
-		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonSwitchOff, Used: DevicePoolUsedUnknown}
-	}
 	return CanUseDevice(db, userID, deviceID)
 }
 
@@ -744,6 +797,10 @@ type DeviceBindingRegisterOptions struct {
 	// 它只在**首次登记**那一刻参与冲突判定，之后同一设备的重连不再比对
 	// —— 理由见 device_conflict.go 文件头（写反了会让用户每次重开浏览器都被判冲突）。
 	ClientInstance string
+	// ClientIP 是本次请求的来源 IP（已归一化或未归一化都可，内部会再归一，
+	// 见 NormalizeDeviceClientIP）。空串 = 调用方没采/采不到，此时**不覆盖**
+	// 库里已有的 last_ip，避免一次缺 IP 的请求把已知地址抹成空。
+	ClientIP string
 }
 
 // RegisterDevice 登记「该账号用过这台设备」，并把判定结论一并返回。
@@ -846,6 +903,16 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "client_instance") {
 		updates["client_instance"] = instance
 	}
+	// last_ip：只在本次真的采到合法 IP 时才写。
+	//
+	// ⚠️ **不能**无条件写（含空串）：daemon 重启、请求来自 unix socket、
+	// 反向代理没配 TrustedProxies 都会让 c.ClientIP() 拿到空/不可解析的值，
+	// 无条件写等于「偶尔一次缺 IP 就把用户已经看习惯的地址抹掉」，用户会以为
+	// 设备换人了。与 device_label 的「空不覆盖」同一纪律。
+	if clientIP := NormalizeDeviceClientIP(options.ClientIP); clientIP != "" &&
+		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+		updates["last_ip"] = clientIP
+	}
 
 	result := session.Model(&entity.AccountDeviceBinding{}).
 		Where("user_id = ? AND device_id = ?", userID, normalized).
@@ -887,6 +954,14 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 	if instance := NormalizeDeviceClientInstance(options.ClientInstance); instance != "" &&
 		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "client_instance") {
 		createValues["client_instance"] = instance
+	}
+	// 首次登记同样只在有合法 IP 时写；列缺失时不写（老库，展示层会显示「未记录」）。
+	if clientIP := NormalizeDeviceClientIP(options.ClientIP); clientIP != "" {
+		for _, column := range []string{"first_ip", "last_ip"} {
+			if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, column) {
+				createValues[column] = clientIP
+			}
+		}
 	}
 	if err := session.Model(&entity.AccountDeviceBinding{}).Create(createValues).Error; err != nil {
 		// 并发首次登记：另一个请求刚插入了同一行。这不是错误，

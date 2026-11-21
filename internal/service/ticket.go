@@ -59,6 +59,7 @@ var (
 // TicketListQuery 是列表筛选。Origin / Category 只做**精确匹配**，
 // 空串表示不过滤（与 Status 同构）。
 type TicketListQuery struct {
+	SelfOnly    bool
 	Status      string
 	Keyword     string
 	Origin      string
@@ -102,9 +103,37 @@ type TicketDetail struct {
 	Ticket       entity.Ticket           `json:"ticket"`
 	Messages     []entity.TicketMessage  `json:"messages"`
 	Notification *TicketNotificationInfo `json:"notification,omitempty"`
+	// User is returned only to the administrator management view. Keeping this
+	// separate from Ticket.UserName lets the management page show current
+	// account metadata without exposing it through the feedback view.
+	User         *TicketUserSummary  `json:"user,omitempty"`
+	AppealTarget *TicketAppealTarget `json:"appealTarget,omitempty"`
 	// Attachments 是工单的全部图片（含「未通过检测」的条目，后者只有占位信息）。
 	// 敏感图**永远**只以占位条目出现，字节必须走单独的下载接口。
 	Attachments []TicketAttachmentInfo `json:"attachments"`
+	// Refund 只在 category=refund 的行上有值。
+	//
+	// 为什么详情也要带它：退款工单的「提交→审核→打款」操作入口已从独立面板
+	// 并入工单详情（前端只保留一个列表，见 2026-11-18 重构）。
+	// 详情不带退款摘要，管理员点开退款单就看不到金额与状态、也无从操作。
+	//
+	// 字段与列表用的是同一个 TicketRefundSummary（refundSummaryOf 单一实现），
+	// 避免「列表显示的金额」与「详情显示的金额」两处口径漂移。
+	Refund *TicketRefundSummary `json:"refund,omitempty"`
+}
+
+type TicketUserSummary struct {
+	ID           int32      `json:"id"`
+	Username     string     `json:"username"`
+	Nickname     string     `json:"nickname"`
+	Role         string     `json:"role"`
+	Status       string     `json:"status"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	LastLoginAt  *time.Time `json:"lastLoginAt,omitempty"`
+	LastLoginIP  string     `json:"lastLoginIp,omitempty"`
+	Banned       bool       `json:"banned"`
+	BanReason    string     `json:"banReason,omitempty"`
+	BanExpiresAt *time.Time `json:"banExpiresAt,omitempty"`
 }
 
 type TicketNotificationInfo struct {
@@ -135,7 +164,9 @@ type CreateTicketInput struct {
 	// 归因类（registration_bonus / blacklist_appeal / account_*）仍然只能由
 	// 服务端按来源强制赋值，客户端传了也不认 —— 那条安全用例
 	// （TestTicketCategoryCannotBeChosenByUser）因此依旧成立。
-	TicketType string `json:"ticketType,omitempty"`
+	TicketType   string `json:"ticketType,omitempty"`
+	AccountIssue string `json:"accountIssue,omitempty"`
+	AppealProof  string `json:"appealProof,omitempty"`
 	// 以下三个字段只在 TicketType=refund 时有意义，其余类型必须留空。
 	//
 	// 它们是**退款流程的入参**，不是工单字段：选了退款就走
@@ -144,6 +175,32 @@ type CreateTicketInput struct {
 	RefundOrderID        *int32 `json:"refundOrderId,omitempty"`
 	RefundRequestedCents int64  `json:"refundRequestedCents,omitempty"`
 	RefundReason         string `json:"refundReason,omitempty"`
+	// RefundMethod distinguishes explicit original refund from manual refund
+	// with no order. Empty remains accepted for older clients.
+	RefundMethod string `json:"refundMethod,omitempty"`
+	// RefundPayoutQrAttachmentID 是用户上传的收款码（可选）。
+	//
+	// 2026-11-19 用户要求：「即便可以原路退回也可以要求用户设置退款账号」。
+	// 它服务于**人工打款**：管理员据此扫码转账，所以与 refundOrderId 无关 ——
+	// 无单人工退款同样可以带收款码。
+	//
+	// 与 AttachmentIds 分开而不是复用：AttachmentIds 是挂在工单消息上的截图，
+	// 会出现在工单详情里供双方查看；收款码是付款凭据，归属退款单本身，
+	// 语义与可见性都不同。混用一个字段会让「截图」和「收款码」再也分不开。
+	RefundPayoutQrAttachmentID *int64 `json:"refundPayoutQrAttachmentId,omitempty"`
+	// RefundOrderIDs / RefundOrderAllocations 是**多笔**退款（2026-11-19）。
+	//
+	// 为什么要两个：
+	//   · RefundOrderIDs         —— 同额模式（每笔都退 RefundRequestedCents）
+	//   · RefundOrderAllocations —— 分摊模式（每笔各自金额，合计 = 申请额）
+	//
+	// 两者同时给时以 Allocations 为准（它携带更多信息）。
+	RefundOrderIDs         []int32                       `json:"refundOrderIds,omitempty"`
+	RefundOrderAllocations []TicketRefundOrderAllocation `json:"refundOrderAllocations,omitempty"`
+	// RefundSignatureAttachmentID 是承诺书签名图（2026-11-19）。
+	RefundSignatureAttachmentID *int64 `json:"refundSignatureAttachmentId,omitempty"`
+	RefundAgreementText         string `json:"refundAgreementText,omitempty"`
+	RefundPhoneSMSCode          string `json:"refundPhoneSmsCode,omitempty"`
 }
 
 // 用户可自选的工单类型（T-209 建立，本任务扩到四项）。
@@ -311,13 +368,19 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 	if err != nil {
 		return TicketDetail{}, err
 	}
+	accountIssue := strings.TrimSpace(input.AccountIssue)
+	appealProof := strings.TrimSpace(input.AppealProof)
+	if (accountIssue != "" && ticketType != TicketTypeAccount) ||
+		(appealProof != "" && accountIssue != TicketAccountIssueBanAppeal) {
+		return TicketDetail{}, ErrTicketInvalidCategory
+	}
 	if ticketType == TicketTypeRefund {
 		// 选了「退款」就必须真的走退款流程：落 ticket_refunds 行、进 7 态状态机，
 		// 而不是只把工单的 category 改成 refund。
 		return createRefundTicketWithDB(db, user, input)
 	}
 	// 选了退款却带了退款字段（或反之）：视作参数错，避免「提交了但字段被忽略」。
-	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" {
+	if hasTicketRefundFields(input) {
 		return TicketDetail{}, ErrTicketInvalidCategory
 	}
 	subject, err := normalizeTicketText(input.Subject, TicketSubjectMaxLength, ErrTicketSubjectRequired)
@@ -344,6 +407,16 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 			Category:      ticketType,
 			Priority:      entity.TicketPriorityNormal,
 			LastMessageAt: now,
+		}
+		if accountIssue == TicketAccountIssueBanAppeal {
+			targetUserID, err := resolveTicketAppealTarget(tx, user, appealProof, now)
+			if err != nil {
+				return err
+			}
+			ticket.Origin = entity.TicketOriginAppeal
+			ticket.Category = entity.TicketCategoryBlacklistAppeal
+			ticket.Priority = defaultTicketPriorityForCategory(ticket.Category)
+			ticket.AppealTargetUserID = &targetUserID
 		}
 		if err := tx.Create(&ticket).Error; err != nil {
 			return err
@@ -787,7 +860,8 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 		}
 	}
 	base := db.Model(&entity.Ticket{})
-	if !isTicketAdmin(user) {
+	managementView := isTicketAdmin(user) && !query.SelfOnly
+	if !managementView {
 		// 隔离**只靠 user_id**（45-*.md §0.23.2 / Q69-2：被涉及用户**可见**发给自己的
 		// 系统单，原「保密」建议已被用户推翻）。因此这里**不加** `origin <> 'system'`：
 		// 加了会把 Q26 自动建的赠金核对单从用户视野里彻底抹掉，
@@ -795,14 +869,24 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 		// 别人的系统单靠 user_id 天然看不到。
 		base = base.Where("tickets.user_id = ?", user.ID)
 	}
-	status := strings.TrimSpace(query.Status)
+	status := strings.ToLower(strings.TrimSpace(query.Status))
 	if status != "" {
-		var err error
-		status, err = normalizeTicketStatus(status)
-		if err != nil {
-			return TicketListResult{}, err
+		switch status {
+		case entity.TicketRefundStatusPendingReview, entity.TicketRefundStatusRejected, entity.TicketRefundStatusFrozen,
+			entity.TicketRefundStatusProcessing, entity.TicketRefundStatusUnknown, entity.TicketRefundStatusSucceeded,
+			entity.TicketRefundStatusFailed, entity.TicketRefundStatusPartial:
+			base = base.Where("tickets.category = ? AND EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.ticket_id = tickets.id AND ticket_refunds.status = ?)", entity.TicketCategoryRefund, status)
+		default:
+			var err error
+			status, err = normalizeTicketStatus(status)
+			if err != nil {
+				return TicketListResult{}, err
+			}
+			base = base.Where("tickets.status = ?", status)
+			if db.Migrator().HasTable(&entity.TicketRefund{}) {
+				base = base.Where("(tickets.category <> ? OR NOT EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.ticket_id = tickets.id))", entity.TicketCategoryRefund)
+			}
 		}
-		base = base.Where("tickets.status = ?", status)
 	}
 	category, err := normalizeTicketCategory(query.Category)
 	if err != nil {
@@ -821,7 +905,7 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 	if origin != "" && isTicketAdmin(user) {
 		base = base.Where("tickets.origin = ?", origin)
 	}
-	if condition, args := ticketKeywordCondition(query.Keyword); condition != "" {
+	if condition, args := ticketKeywordCondition(query.Keyword, managementView); condition != "" {
 		base = base.Where(condition, args...)
 	}
 	if query.CreatedFrom != nil {
@@ -903,14 +987,20 @@ func ticketIDs(tickets []entity.Ticket) []int64 {
 	return ids
 }
 
-func ticketKeywordCondition(keyword string) (string, []interface{}) {
+func ticketKeywordCondition(keyword string, managementView bool) (string, []interface{}) {
 	normalized := util.NormalizeSearchKeyword(keyword)
 	if normalized == "" {
 		return "", nil
 	}
 	mainCondition, args := util.BuildInstrCondition(normalized,
 		"COALESCE(tickets.subject, '')", "COALESCE(tickets.user_name, '')")
-	messageCondition, messageArgs := util.BuildInstrCondition(normalized, "COALESCE(ticket_messages.body, '')", "COALESCE(ticket_messages.author_name, '')")
+	authorNameExpr := "COALESCE(ticket_messages.author_name, '')"
+	if !managementView {
+		// 搜索结果同样属于身份可见性边界，否则用户仍能通过命中与否猜出被隐藏的管理员姓名。
+		// 正文保持可搜索；只排除管理回复的署名，不影响用户昵称与系统署名。
+		authorNameExpr = "CASE WHEN LOWER(TRIM(COALESCE(ticket_messages.author_role, ''))) = 'admin' THEN '' ELSE COALESCE(ticket_messages.author_name, '') END"
+	}
+	messageCondition, messageArgs := util.BuildInstrCondition(normalized, "COALESCE(ticket_messages.body, '')", authorNameExpr)
 	args = append(args, messageArgs...)
 	parts := []string{mainCondition}
 	if messageCondition != "" {
@@ -929,6 +1019,16 @@ func ticketKeywordCondition(keyword string) (string, []interface{}) {
 }
 
 func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, error) {
+	return getTicketWithDBScope(db, user, id, false)
+}
+
+// GetTicketWithDBForView keeps administrator-only notification details inside
+// the management view. The self view remains private even for administrators.
+func GetTicketWithDBForView(db *gorm.DB, user *entity.User, id int64, selfView bool) (TicketDetail, error) {
+	return getTicketWithDBScope(db, user, id, selfView)
+}
+
+func getTicketWithDBScope(db *gorm.DB, user *entity.User, id int64, selfView bool) (TicketDetail, error) {
 	if db == nil || user == nil {
 		return TicketDetail{}, ErrTicketForbidden
 	}
@@ -936,7 +1036,7 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 		return TicketDetail{}, ErrTicketNotFound
 	}
 	query := db.Where("id = ?", id)
-	if !isTicketAdmin(user) {
+	if !isTicketAdmin(user) || selfView {
 		// 同列表：隔离只靠 user_id（系统单对被涉及用户可见，45-*.md §0.23.2）。
 		query = query.Where("user_id = ?", user.ID)
 	}
@@ -951,14 +1051,90 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 	if err := db.Where("ticket_id = ?", ticket.ID).Order("created_at ASC, id ASC").Find(&messages).Error; err != nil {
 		return TicketDetail{}, err
 	}
+	// 署名快照保留审计用途；详情展示始终读取用户当前的昵称。
+	authorIDs := []int32{ticket.UserID}
+	for _, message := range messages {
+		if message.AuthorRole == entity.TicketAuthorRoleUser || message.AuthorRole == entity.TicketAuthorRoleAdmin {
+			authorIDs = append(authorIDs, message.UserID)
+		}
+	}
+	var authors []entity.User
+	if err := db.Select("id", "username", "nickname").Where("id IN ?", authorIDs).Find(&authors).Error; err != nil {
+		return TicketDetail{}, err
+	}
+	names := make(map[int32]string, len(authors))
+	for _, author := range authors {
+		names[author.ID] = ticketUserName(&author)
+	}
+	if name := names[ticket.UserID]; name != "" {
+		ticket.UserName = name
+	}
+	for i := range messages {
+		if messages[i].AuthorRole == entity.TicketAuthorRoleUser || messages[i].AuthorRole == entity.TicketAuthorRoleAdmin {
+			if name := names[messages[i].UserID]; name != "" {
+				messages[i].AuthorName = name
+			}
+		}
+	}
 	detail := TicketDetail{Ticket: ticket, Messages: messages}
 	attachments, err := ListTicketAttachmentsWithDB(db, ticket.ID)
 	if err != nil {
 		return TicketDetail{}, err
 	}
 	detail.Attachments = attachments
-	if !isTicketAdmin(user) {
+	// 退款摘要：**所有能看到这张单的人都取**（含普通用户看自己的单）。
+	//
+	// 取不到不影响详情可用性 —— 与列表同一取舍：缺退款摘要时只是少一块信息，
+	// 详情本身仍然完整。所以这里 err 只静默跳过，不把整张单判成读失败。
+	if ticket.Category == entity.TicketCategoryRefund {
+		var refundRow entity.TicketRefund
+		if err := db.Session(&gorm.Session{NewDB: true}).
+			Where("ticket_id = ?", ticket.ID).
+			Order("id DESC").First(&refundRow).Error; err == nil {
+			detail.Refund = refundSummaryOf(refundRow)
+			// 历史自动消息保留入库原文，只替换已经失效的操作指引。
+			for i := range detail.Messages {
+				if detail.Messages[i].AuthorRole == entity.TicketAuthorRoleSystem {
+					detail.Messages[i].Body = strings.ReplaceAll(detail.Messages[i].Body, "审核、打款与对账请在「退款」详情中操作，不要在本工单里回复金额。", "管理员可在本工单详情的退款信息中审核、办理退款与核对结果。")
+				}
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return TicketDetail{}, err
+		}
+	}
+	if !isTicketAdmin(user) || selfView {
+		// 反馈接口只公开管理员身份，不公开具体工作人员的姓名或账号 ID。
+		// 只净化响应副本，管理视图及数据库中的审计信息保持完整。
+		for i := range detail.Messages {
+			if detail.Messages[i].AuthorRole == entity.TicketAuthorRoleAdmin {
+				detail.Messages[i].AuthorName = "管理员"
+				detail.Messages[i].UserID = 0
+			}
+		}
 		return detail, nil
+	}
+	var ticketUser entity.User
+	if err := db.First(&ticketUser, ticket.UserID).Error; err == nil {
+		detail.User = &TicketUserSummary{
+			ID: ticketUser.ID, Username: ticketUser.Username, Nickname: ticketUser.Nickname,
+			Role: ticketUser.Role, Status: ticketUser.Status, CreatedAt: ticketUser.CreatedAt,
+			LastLoginAt: ticketUser.LastLoginAt, LastLoginIP: ticketUser.LastLoginIP,
+		}
+		state, err := ticketUserBanState(db, ticketUser.ID, ticketUser.Status)
+		if err != nil {
+			return TicketDetail{}, err
+		}
+		detail.User.Status, detail.User.Banned = state.Status, state.Banned
+		detail.User.BanReason, detail.User.BanExpiresAt = state.BanReason, state.BanExpiresAt
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return TicketDetail{}, err
+	}
+	if ticket.Category == entity.TicketCategoryBlacklistAppeal && ticket.AppealTargetUserID != nil {
+		target, err := loadTicketAppealTarget(db, *ticket.AppealTargetUserID)
+		if err != nil {
+			return TicketDetail{}, err
+		}
+		detail.AppealTarget = target
 	}
 	var notification entity.TicketNotification
 	if err := db.Where("ticket_id = ?", ticket.ID).Order("id DESC").First(&notification).Error; err == nil {
@@ -970,6 +1146,17 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 }
 
 func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input ReplyTicketInput) (TicketDetail, error) {
+	return addTicketMessageWithDBScope(db, user, id, input, false)
+}
+
+// AddTicketMessageWithDBForView applies the same response boundary as detail
+// reads. A self-view reply must not return enterprise notification metadata,
+// even when the operator is an administrator.
+func AddTicketMessageWithDBForView(db *gorm.DB, user *entity.User, id int64, input ReplyTicketInput, selfView bool) (TicketDetail, error) {
+	return addTicketMessageWithDBScope(db, user, id, input, selfView)
+}
+
+func addTicketMessageWithDBScope(db *gorm.DB, user *entity.User, id int64, input ReplyTicketInput, selfView bool) (TicketDetail, error) {
 	if db == nil || user == nil {
 		return TicketDetail{}, ErrTicketForbidden
 	}
@@ -979,9 +1166,10 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 	}
 	var ticket entity.Ticket
 	now := time.Now()
+	managementReply := isTicketAdmin(user) && !selfView
 	err = db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("id = ?", id)
-		if !isTicketAdmin(user) {
+		if !isTicketAdmin(user) || selfView {
 			// 隔离只靠 user_id：系统单可见 **且可回复**（45-*.md §0.23.2 的
 			// 「可见 ≠ 可回复」补充结论是「可回复」，但不能改 category / priority）。
 			query = query.Where("user_id = ?", user.ID)
@@ -993,16 +1181,20 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 			return err
 		}
 		status := entity.TicketStatusPending
-		if !isTicketAdmin(user) {
+		if !managementReply {
 			status = entity.TicketStatusOpen
 		}
-		if input.Status != nil && isTicketAdmin(user) {
+		if input.Status != nil && managementReply {
 			status, err = normalizeTicketStatus(*input.Status)
 			if err != nil {
 				return err
 			}
 		}
-		message := entity.TicketMessage{TicketID: ticket.ID, UserID: user.ID, AuthorName: ticketUserName(user), Body: body, AuthorRole: ticketAuthorRole(user), CreatedAt: now}
+		authorRole := entity.TicketAuthorRoleUser
+		if managementReply {
+			authorRole = entity.TicketAuthorRoleAdmin
+		}
+		message := entity.TicketMessage{TicketID: ticket.ID, UserID: user.ID, AuthorName: ticketUserName(user), Body: body, AuthorRole: authorRole, CreatedAt: now}
 		if err := tx.Create(&message).Error; err != nil {
 			return err
 		}
@@ -1019,7 +1211,7 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 			return err
 		}
 		ticket.Status, ticket.LastMessageAt = status, now
-		if !isTicketAdmin(user) {
+		if !managementReply {
 			return enqueueTicketNotificationInTx(tx, ticket, body, "user_reply")
 		}
 		return nil
@@ -1027,7 +1219,7 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 	if err != nil {
 		return TicketDetail{}, err
 	}
-	return GetTicketWithDB(db, user, id)
+	return getTicketWithDBScope(db, user, id, selfView)
 }
 
 func UpdateTicketWithDB(db *gorm.DB, user *entity.User, id int64, input UpdateTicketInput) (TicketDetail, error) {

@@ -2,7 +2,7 @@
   <div class="console-page user-level-page">
     <ConsolePageHeading
       title="等级与充值阶梯"
-      description="等级按「累计充值 + 累计消费」两个门槛判定，达标即取最高级（允许跳级，级数无上限）。退款会让累计充值回落并自动降级。充值阶梯决定充多少送多少；档位表为空时使用系统默认六档。"
+      description="等级按「累计充值 + 累计消费」两个门槛判定，达标即取最高级（允许跳级，级数无上限）。退款会让累计充值回落并自动降级。充值阶梯决定充多少送多少；没有可用档位时不发放赠金。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || busy()" @click="load">刷新</a-button>
@@ -38,7 +38,7 @@
       />
 
       <!-- ───────────── 等级定义 ───────────── -->
-      <ConsolePanel title="等级定义" description="排序号决定高低（必须唯一；0 保留给「无等级」）。两个门槛同时满足才算达到该级。设备上限是本轮的契约占位，暂不参与任何判定。">
+      <ConsolePanel title="等级定义" description="排序号决定高低（必须唯一；0 保留给「无等级」）。两个门槛同时满足才算达到该级。设备上限直接用于客户端设备准入，0 表示该等级不限设备数。">
         <template #actions>
           <a-button type="primary" :disabled="busy()" @click="openCreate">新增等级</a-button>
           <a-button :loading="reevaluating" :disabled="busy()" @click="runReevaluate">重评一批用户</a-button>
@@ -61,8 +61,6 @@
               <!-- ⚠️ 0 = 「不限」，不是「不限制（未启用）」（138 §10.4）。
                    旧文案把两件事合并成一个比喻：「未启用」让人以为功能坏了/没配，
                    而实际语义是「这一档不限设备数」。
-                   要表达「设备池总开关未开」应该由 system_settings.device_limit_enabled
-                   单独显示，不要混进每个等级行 —— 那是全局状态，不是等级属性。
                    走 buildDeviceLimitText 而不是就地写三元：设备上限的取值语义
                    （0=不限 / 负数与脏数据=—）已经在 helper 里定死并被单测钉住，
                    两处各写一遍必然漂移。 -->
@@ -91,18 +89,25 @@
       </ConsolePanel>
 
       <!-- ───────────── 充值阶梯 ───────────── -->
-      <ConsolePanel title="充值阶梯赠送档位" description="取不高于本笔实付金额的最高门槛，整笔按该档比例赠送。同一门槛不允许配两个不同比例（那会让选档结果不确定）。清空并保存 = 回退到系统默认六档。">
+      <ConsolePanel title="充值阶梯赠送档位" description="取不高于本笔实付金额的最高门槛，整笔按该档比例赠送。同一门槛不允许配两个不同比例（那会让选档结果不确定）。清空并保存 = 停止充值赠送。">
         <template #actions>
           <a-button :disabled="busy()" @click="addTierRow">加一档</a-button>
           <a-button type="primary" :loading="savingTiers" :disabled="busy()" @click="saveTiers">保存档位</a-button>
         </template>
 
         <a-alert
-          v-if="tierSource === 'default'"
-          type="info"
+          v-if="tierSource === 'unavailable'"
+          type="warning"
           show-icon
           class="tier-source-alert"
-          message="当前档位表为空，正在使用系统默认六档（8.8→10%、28→25%、88→50%、288→100%、888→150%、1688→200%）。保存任意档位后将以表为准。"
+          message="充值赠送档位配置当前不可用，系统不会发放赠金。请确认服务端已完成数据库迁移后再配置档位。"
+        />
+        <a-alert
+          v-else-if="tierSource === 'empty'"
+          type="warning"
+          show-icon
+          class="tier-source-alert"
+          message="当前没有可用充值赠送档位，充值不会发放赠金。添加并启用档位后才会恢复赠送。"
         />
 
         <a-table
@@ -153,7 +158,7 @@
             </template>
           </template>
         </a-table>
-        <a-empty v-if="tierRows.length === 0" description="没有配置任何档位（保存后回退到系统默认六档，等于不限制）。" />
+        <a-empty v-if="tierRows.length === 0" description="没有配置任何档位，保存后不会发放充值赠送。" />
 
         <div class="tier-preview-box">
           <a-form layout="inline" :onFinish="runTierPreview">
@@ -206,7 +211,7 @@
         <a-form-item label="累计消费门槛（元）" :html-for="fieldId('level-consumption')">
           <a-input-number :id="fieldId('level-consumption')" :value="editor.minConsumptionTotal" :min="0" :precision="2" @update:value="value => (editor.minConsumptionTotal = value)" />
         </a-form-item>
-        <a-form-item label="设备上限（契约占位，当前不参与判定）" :html-for="fieldId('level-device')">
+        <a-form-item label="设备上限（0 表示不限）" :html-for="fieldId('level-device')">
           <a-input-number :id="fieldId('level-device')" :value="editor.deviceLimit" :min="0" :precision="0" @update:value="value => (editor.deviceLimit = value)" />
         </a-form-item>
         <a-form-item label="备注">
@@ -288,7 +293,7 @@ export default {
 
     const levels = ref([])
     const tierRows = ref([])
-    const tierSource = ref('default')
+    const tierSource = ref('unavailable')
 
     const previewAmount = ref(100)
     const previewLoading = ref(false)
@@ -368,7 +373,7 @@ export default {
         if (!alive) return
         levels.value = Array.isArray(levelRes?.data?.data) ? levelRes.data.data : (Array.isArray(levelRes?.data) ? levelRes.data : [])
         const tierPayload = tierRes?.data ?? {}
-        tierSource.value = tierPayload.source === 'table' ? 'table' : 'default'
+        tierSource.value = ['table', 'empty'].includes(tierPayload.source) ? tierPayload.source : 'unavailable'
         const rows = Array.isArray(tierPayload.rows) ? tierPayload.rows : []
         tierRows.value = rows.length > 0 ? rows.map(decodeTierRow) : []
         hasLoaded.value = true
@@ -503,12 +508,12 @@ export default {
       try {
         const res = await replaceRechargePromotionTiers(tierRows.value.map(encodeTierRow))
         const payload = res?.data ?? {}
-        tierSource.value = payload.source === 'table' ? 'table' : 'default'
+        tierSource.value = ['table', 'empty'].includes(payload.source) ? payload.source : 'unavailable'
         const rows = Array.isArray(payload.rows) ? payload.rows : []
         tierRows.value = rows.map(decodeTierRow)
         actionNotice.value = tierRows.value.length > 0
           ? '档位已保存，此后按表发放'
-          : '档位表已清空，改用系统默认六档'
+          : '档位表已清空，充值赠送已停止'
       } catch (error) {
         // 「同门槛不同比例」的冲突文案带具体门槛与两个比例，必须原样展示。
         actionWarning.value = readErrorMessage(error, '保存档位失败')

@@ -226,9 +226,32 @@ func TestUserExamInspectWrongKeyReason(t *testing.T) {
 	if reason != "wrong-key" {
 		t.Fatalf("reason = %q, want wrong-key", reason)
 	}
-	// 文案必须给出可执行动作（去后台改密钥），不能只是「解密失败」。
-	if !strings.Contains(message, "密钥") {
-		t.Fatalf("文案应提到密钥，实际 %q", message)
+	// 文案必须说出**真实原因**，不能只是「解密失败」。
+	//
+	// 原来这里断言「必须包含『密钥』二字」，因为当时的文案引导用户去后台改密钥。
+	// 2026-11-15 用户拍板移除「解密密钥」设置，那个引导已经指向不存在的功能 ——
+	// 断言改成钉「必须解释清楚为什么解不开」：
+	//   · 明确说出用的是「内置口令」（而不是让用户以为有自己的密钥可换）
+	//   · 给出至少一种可排查的原因（库来路 / 客户端版本 / 文件损坏）
+	if !strings.Contains(message, "内置口令") {
+		t.Fatalf("文案应说明用的是内置口令，实际 %q", message)
+	}
+	reasons := []string{"不是考试客户端生成", "尚未适配的客户端版本", "文件已损坏"}
+	matched := false
+	for _, reason := range reasons {
+		if strings.Contains(message, reason) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("文案应给出至少一种可排查原因（%v），实际 %q", reasons, message)
+	}
+	// 反向钉子：不能再引导用户去改一个已经删除的设置。
+	for _, forbidden := range []string{"更换密钥", "核对指纹"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("文案不得提「%s」—— 该设置已移除，实际 %q", forbidden, message)
+		}
 	}
 	if strings.Contains(message, "脱机工具") {
 		t.Fatalf("密钥错不应推给脱机工具：%q", message)

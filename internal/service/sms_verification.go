@@ -15,6 +15,7 @@ import (
 const SMSSceneRegister = "register"
 const SMSSceneLogin = "login"
 const SMSSceneChangePhone = "change_phone"
+const SMSSceneRefund = "refund"
 const SMSCodeStatusPending = "pending"
 const SMSCodeStatusUsed = "used"
 const SMSCodeStatusExpired = "expired"
@@ -224,6 +225,11 @@ func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string, targetUserID
 		return ErrPhoneBindingConflict
 	}
 	switch strings.TrimSpace(scene) {
+	case SMSSceneRefund:
+		if targetUserID <= 0 || len(users) != 1 || users[0].ID != targetUserID || users[0].Status != "enabled" {
+			return fmt.Errorf("退款手机号必须为当前账户绑定的手机号")
+		}
+		return nil
 	case SMSSceneRegister:
 		if len(users) > 0 {
 			return ErrPhoneAlreadyBound

@@ -57,7 +57,7 @@ func TestB04SystemMetricsProductionRouteAdminAuthorizationAndSchema(t *testing.T
 		if o.CacheControl != "no-store" {
 			t.Fatalf("admin metrics must not be cached across accounts: %q", o.CacheControl)
 		}
-		data := b04RequireKeys(t, o.Body, "schemaVersion", "startedAt", "uptimeSeconds", "http", "cache", "billing", "tasks")
+		data := b04RequireKeys(t, o.Body, "schemaVersion", "startedAt", "uptimeSeconds", "http", "cache", "billing", "tasks", "memory")
 		if string(data["schemaVersion"]) != "1" {
 			t.Fatalf("schemaVersion=%s", data["schemaVersion"])
 		}
@@ -97,6 +97,13 @@ func TestB04SystemMetricsProductionRouteAdminAuthorizationAndSchema(t *testing.T
 		tasks := b04RequireKeys(t, data["tasks"], "search", "fallback")
 		for _, kind := range []string{"search", "fallback"} {
 			b04RequireCounts(t, tasks[kind], "total", "running", "succeeded", "failed")
+		}
+		memory := b04RequireKeys(t, data["memory"], "allocBytes", "totalAllocBytes", "sysBytes", "heapAllocBytes", "heapSysBytes", "heapInuseBytes", "heapIdleBytes", "heapReleasedBytes", "stackInuseBytes", "gcCycles")
+		for name := range memory {
+			var n uint64
+			if err := json.Unmarshal(memory[name], &n); err != nil {
+				t.Fatalf("memory.%s must be an observed unsigned count: %s", name, memory[name])
+			}
 		}
 		for _, private := range []string{"B04_QUERY_SENTINEL", "b04-admin", "b04-user", "B04_SYNTHETIC_CREDENTIAL_VERSION", "owner", "requestId", "route", "question", "token", "amount", "income", "revenue"} {
 			if strings.Contains(string(o.Body), private) {

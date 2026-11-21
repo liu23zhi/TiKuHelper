@@ -26,8 +26,8 @@ const query = { keyword: 'synthetic-check', role: 'user', status: 'enabled', pag
 function balancePayload() { return buildUserBalanceAdjustmentPayload(form) }
 function writeBalance() { logicalWrites++; return api.adjustUserBalance(balancePayload()) }
 const methods = [
-  { name: 'GET', method: 'get', url: '/adapter-service/user', invoke: () => api.getUserList({ ...query }) },
-  { name: 'POST', method: 'post', url: '/adapter-service/user/71/balance', invoke: writeBalance },
+  { name: 'GET', method: 'get', url: '/api/user', invoke: () => api.getUserList({ ...query }) },
+  { name: 'POST', method: 'post', url: '/api/user/71/balance', invoke: writeBalance },
 ]
 class FixtureStorage {
   values = new Map()
@@ -216,7 +216,7 @@ for (const status of [401, 403]) {
     const value = await api.getSystemMetrics()
     assert.equal(requests.length, 1)
     assert.equal(requests[0].method, 'get')
-    assert.equal(requests[0].url, '/adapter-service/system-metrics')
+    assert.equal(requests[0].url, '/api/system-metrics')
     assert.equal(requests[0].errorFeedback, undefined)
     assert.equal(logicalWrites, 0)
     assertPayload(value, status, body)

@@ -1,7 +1,7 @@
 <template>
   <div class="console-page log-page">
     <ConsolePageHeading title="操作日志" description="按关键词、模块和操作类型查看操作记录。">
-      <template #actions><a-button type="primary" :loading="tabLoading" :disabled="!isAdmin" @click="handleLogList">刷新</a-button></template>
+      <template #actions><a-space wrap><a-button type="primary" :loading="tabLoading" :disabled="!isAdmin" @click="handleLogList">刷新</a-button></a-space></template>
     </ConsolePageHeading>
     <ConsolePanel class="filter-panel">
       <a-form layout="inline" class="filter-form">
@@ -261,6 +261,8 @@
         <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
       </div>
     </ConsolePanel>
+    <AdminDataTransfer v-if="isAdmin" resource="logs" title="操作日志" />
+
   </div>
 </template>
 
@@ -273,6 +275,7 @@ import TableColumnSettings from '@/components/TableColumnSettings.vue'
 import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs'
 import OverflowTableText from '@/components/OverflowTableText.vue';
 import SensitiveText from '@/components/SensitiveText.vue';
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue';
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser';
@@ -426,7 +429,7 @@ function createLogListState() {
 
 const moduleLabels = LOG_MODULE_OPTIONS.map((option) => option.label)
 const logColumnWidths = {
-  createTime: 112, // 2026-10-25 plus cell padding
+  createTime: 190,
   module: Math.max(...moduleLabels.map((label) => [...label].reduce((width, character) => width + (character.codePointAt(0) > 127 ? 13 : 7), 0))) + 48,
   status: 76,
   // 敏感词徽章：两字标签 + 内边距
@@ -449,7 +452,7 @@ const logColumnWidths = {
 }
 export default defineComponent({
   name: 'LogList',
-  components: { RequestFailureAlert, TableColumnSettings, OverflowTableText, SensitiveText },
+  components: { RequestFailureAlert, TableColumnSettings, OverflowTableText, SensitiveText, AdminDataTransfer },
   setup() {
     const filterIdPrefix = 'log-list-' + useId()
     const filterFieldId = field => filterIdPrefix + '-' + field
@@ -820,7 +823,7 @@ export default defineComponent({
       this.handleLogList()
     },
     formatDateForTable(dateString) {
-      return formatShanghaiLogDate(dateString, '\n')
+      return formatShanghaiLogDate(dateString)
     }
   }
 });
@@ -832,7 +835,8 @@ export default defineComponent({
 .filter-form { display: flex; flex-wrap: wrap; gap: 12px 0; }
 .filter-form :deep(.ant-form-item) { margin-bottom: 0; }
 .filter-panel :deep(.ant-alert) { margin-top: 16px; }
-.log-params-cell, .log-billing-ids, .log-time-cell, .location-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-params-cell, .log-billing-ids, .location-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-time-cell { white-space: nowrap; }
 .log-time-cell { font-variant-numeric: tabular-nums; }
 .log-channel-cell { display: grid; gap: 8px; text-align: center; }
 .log-channel-name { white-space: pre-wrap; overflow-wrap: anywhere; }

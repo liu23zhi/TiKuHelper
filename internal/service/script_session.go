@@ -69,7 +69,12 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
-		if err := ValidateScriptDomainWithDB(tx, script.BaseDomain); err != nil {
+		if activation.UsedAt == nil {
+			if err := validateIssuedScriptAuthorization(script, activation, now); err != nil {
+				return err
+			}
+		}
+		if err := validateScriptLauncherDomainWithDB(tx, script); err != nil {
 			return err
 		}
 		if script.AccessTokenID <= 0 {
@@ -84,6 +89,9 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		}
 		var user entity.User
 		if err := tx.Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
+			return ErrScriptTokenInvalid
+		}
+		if banned, err := IsBanned(tx, user.ID); err != nil || banned {
 			return ErrScriptTokenInvalid
 		}
 		if script.BillingMode != "" && lease == nil {
@@ -229,7 +237,7 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, 
 	if err := freshDB.Where("id = ? AND user_id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL", session.ScriptID, session.UserID, session.AccessTokenID, true).First(&script).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本已停用或删除")
 	}
-	if err := ValidateScriptDomainWithDB(freshDB, script.BaseDomain); err != nil {
+	if err := validateScriptLauncherDomainWithDB(freshDB, script); err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本域名不可用")
 	}
 	var accessToken entity.AccessToken
@@ -242,6 +250,9 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, 
 	var user entity.User
 	if err := freshDB.Where("id = ? AND status = ?", session.UserID, "enabled").First(&user).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本所属用户已停用")
+	}
+	if banned, err := IsBanned(freshDB, user.ID); err != nil || banned {
+		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本所属账号已封禁")
 	}
 	return AccessTokenAuthContext{User: user, AccessToken: accessToken}, session, nil
 }
@@ -293,6 +304,9 @@ func DownloadScriptVersionByActivationTokenWithDB(db *gorm.DB, shortCode, activa
 		return entity.ScriptVersion{}, ErrScriptTokenInvalid
 	}
 	if err := validateScriptLaunchActorWithDB(db, script); err != nil {
+		return entity.ScriptVersion{}, err
+	}
+	if err := validateIssuedScriptAuthorization(script, activation, time.Now()); err != nil {
 		return entity.ScriptVersion{}, err
 	}
 	versionID := activation.VersionID

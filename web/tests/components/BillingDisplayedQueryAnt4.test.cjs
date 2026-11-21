@@ -21,7 +21,7 @@ const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),params=clone(config.params||{}),plan=plans.shift()||{label:'A',status:200}
  const call={method,url,params,actor:user.getStoredCurrentUser()?.id||null,status:plan.status||200,label:plan.label||'A',tag:plan.tag||null,id:(calls.length+1).toString(16).padStart(32,'0')};calls.push(call)
- if(method!=='get'||url!=='/adapter-service/billing-records'){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
+ if(method!=='get'||url!=='/api/billing-records'){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  const response={status:call.status,data:call.status===200?dto(call.label,params):{message:'SYNTHETIC_QUERY_READ_FORBIDDEN'},headers:{'x-request-id':call.id},config,request:{memoryOnly:true}}
  if(plan.tag){let item;const promise=new Promise(resolve=>{item={tag:plan.tag,call,response,resolve,done:false};pending.push(item)});item.promise=promise;return promise}
  return Promise.resolve(response)
@@ -72,7 +72,7 @@ register('BQ01 same committed query failure retains A correctly; different commi
  cur.observations.push({label:'native page2 read403 after successful page1 A',view:paged,pageText:compact(w.element.textContent)});cur.pageBindingDecision={oldPage1Rows:oldPageRows,currentPageServerAmountOrRateKnown:pageKnown,explicitPreviousPageLabel:pagePrior}
  check(pageCall.params.page===2&&pageCall.params.pageSize===10&&!pageCall.params.keyword&&paged.page===2,'page2 is actual native committed request/caption, not invented server pagination')
  check((!oldPageRows&&!pageKnown)||pagePrior,'failed native page2 does not claim prior page1 rows/page amount/cache rate as confirmed page2')
- check(calls.every(c=>c.method==='get'&&c.url==='/adapter-service/billing-records')&&calls.every(c=>c.actor===A.id),'all actions are actual owned readonly GET, never statement/payment mutations')
+ check(calls.every(c=>c.method==='get'&&c.url==='/api/billing-records')&&calls.every(c=>c.actor===A.id),'all actions are actual owned readonly GET, never statement/payment mutations')
 })
 
 register('BQ02 old committed query completion cannot overwrite fresh pending query or release its busy state; current C success publishes exact current DTO',async()=>{

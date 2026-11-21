@@ -162,6 +162,7 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
     sumTableColumnWidths,
     RequestFailureAlert,
     TableColumnSettings: {},
+    AdminDataTransfer: {},
     OverflowTableText: {},
     BillingDetailDialog: {},
     getStoredCurrentUser: () => ({ id: 1, role }),

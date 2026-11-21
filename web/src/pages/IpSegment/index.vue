@@ -5,7 +5,22 @@
       description="上游一次查询会返回 beginip/endip，说明一次查询覆盖一整段。这里维护那些段：段内的后续 IP 直接命中段表，不再重复外呼上游。"
     >
       <template #actions>
-        <a-button :loading="loading" :disabled="!canManage() || busy()" @click="load">刷新列表</a-button>
+        <!--
+          「立即同步」：把 IP 归属地缓存里还没沉淀的段补写进段表。
+
+          为什么全自动了还要这个按钮（2026-11-15 方案 B）：自动沉淀有三条通路
+          （查询实时沉淀 / 缓存命中补写 / 启动回填），但**时机都不由管理员控制** ——
+          刚上线段表要等重启，或等某个 IP 恰好被查一次。页面空着时无法判断是
+          「没数据」还是「还没轮到」。
+
+          它不是导入：不读外部文件、不新增数据来源，后端复用自动沉淀的同一个函数，
+          所以不会出现两套唯一键口径。
+        -->
+        <a-button
+          :loading="syncing"
+          :disabled="!canManage() || busy()"
+          @click="syncFromCache"
+        >立即同步</a-button>        <a-button :loading="loading" :disabled="!canManage() || busy()" @click="load">刷新列表</a-button>
       </template>
     </ConsolePageHeading>
 
@@ -194,7 +209,7 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
-import { batchDeleteIPSegments, deleteIPSegment, getIPSegments, lookupIPSegment, refreshIPSegment } from '@/api/IpSegmentApi'
+import { batchDeleteIPSegments, deleteIPSegment, getIPSegments, lookupIPSegment, refreshIPSegment, syncIPSegmentsFromCache } from '@/api/IpSegmentApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -235,6 +250,7 @@ export default {
     const filters = reactive(emptyFilters())
     const appliedFilters = ref({})
     const loading = ref(false)
+const syncing = ref(false)
     const mutating = ref(false)
     const hasLoaded = ref(false)
     const filterError = ref('')
@@ -615,6 +631,40 @@ export default {
       clearLoadFailure()
     })
 
+  // syncFromCache 「立即同步」：现在就跑一次自动沉淀（2026-11-15 方案 B）。
+  //
+  // 单独写而不复用 runMutation：
+  //   ① 它没有「单条记录 404」这类失败面，runMutation 的 404 分支在这里是死代码；
+  //   ② 成功提示要报后端返回的 scanned/inserted，不能只说「成功」；
+  //   ③ 必须给「0 条新增」一个解释 —— 那是正常结果，只说「成功」会让人以为按钮没生效。
+  const syncFromCache = async () => {
+    if (!canManage() || busy() || syncing.value) return
+    syncing.value = true
+    actionWarning.value = ''
+    try {
+      const res = await syncIPSegmentsFromCache()
+      if (res?.status !== 200) {
+        // 503 = 段表还没就绪，后端给的是可读中文，直接展示。
+        actionWarning.value = res?.data?.message
+          || '同步失败，请稍后重试。已显示的仍是上次读取的结果。'
+        return
+      }
+      const scanned = Number(res.data?.scanned ?? 0)
+      const inserted = Number(res.data?.inserted ?? 0)
+      if (inserted > 0) {
+        message.success(`已从归属地缓存补写 ${inserted} 条 IP 段（检查了 ${scanned} 条缓存）`)
+      } else {
+        message.info('缓存里的归属地都已经在段表里了，没有需要补写的段。')
+      }
+      await load()
+    } catch (error) {
+      actionWarning.value = error?.response?.data?.message
+        || error?.message
+        || '同步失败，请稍后重试。'
+    } finally {
+      syncing.value = false
+    }
+  }
     return {
       fieldId, canManage, busy, columns, rows, filters, appliedFilters, loading, mutating,
       hasLoaded, filterError, actionWarning, loadFailure, failureContextKey, failureMessage,
@@ -623,6 +673,8 @@ export default {
       lookupInput, lookup, runLookup, formatSegmentRange, operatorText, formatDateTime,
       setFilter, load, reload, resetFilters, onTableChange, refreshRow, confirmDelete,
       confirmBatchDelete, sumTableColumnWidths,
+      // 「立即同步」（2026-11-15 方案 B）
+      syncing, syncFromCache,
     }
   },
 }

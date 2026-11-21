@@ -54,7 +54,7 @@ afterEach(async () => {
 })
 test('positive native UI: five connection fields retain complete order, zero/bool values, attributes and readonly sampling', async () => {
  const w = await start(), canonical = w.vm.formState, snap = w.vm.savedConfigSnapshot
- assert.deepEqual(w.findAll('.ai-config-form .ant-form-item-label').map(x => x.text()), ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表', '模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '本地题库检索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数', 'Prompt 设置', '温度', 'Top P'])
+ assert.deepEqual(w.findAll('.ai-config-form .ant-form-item-label').map(x => x.text()), ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表', '模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数', 'Prompt 设置', '温度', 'Top P'])
  const region = connection(w); assert.equal(region.attributes('tabindex'), '-1'); assert.equal(region.attributes('aria-labelledby'), region.find('h2').attributes('id'))
  assert.equal(w.findAll('form.ai-config-form').length, 1)
  const endpoint = item(w, '服务地址').get('input'); assert.equal(endpoint.attributes('name'), 'ai-service-endpoint'); assert.equal(endpoint.attributes('type'), 'url'); assert.equal(endpoint.attributes('autocomplete'), 'off'); assert.equal(endpoint.attributes('autocapitalize'), 'none'); assert.equal(endpoint.attributes('spellcheck'), 'false')
@@ -220,4 +220,19 @@ test('native main and backup intents use the actual shared test-model select wit
  assert.equal(actions().filter(x => x[0] !== 'test-provider').length, 0, 'no save, model discovery or other write')
  assert.deepEqual(w.findComponent(require(childPath)).emitted('test'), [[]], 'one exact entry event, not invented primary/backup buttons')
  assert.equal(w.vm.formState, canonical); assert.equal(canonical.baseUrl, original.baseUrl); assert.equal(canonical.apiKey, original.apiKey)
+})
+
+test('connection layout contract: direct section owns content spacing and constrains long form content', () => {
+ const source = fs.readFileSync(childPath, 'utf8')
+ const grid = source.match(/\.console-form-grid\s*\{([^}]*)\}/)?.[1] || ''
+ assert.match(grid, /padding:\s*24px/, 'direct section grid owns its 24px content inset')
+ assert.match(grid, /min-width:\s*0/, 'grid can shrink inside responsive parents')
+ assert.match(source, /\.connection-grid\s*>\s*\*/, 'grid children have a dedicated rule')
+ assert.match(source, /\.model-editor\s*>\s*\*/, 'model editor children have a dedicated rule')
+ assert.match(source, /min-width:\s*0/)
+ assert.match(source, /max-width:\s*100%/)
+ assert.match(source, /\.hint[^}]*overflow-wrap:\s*anywhere/s, 'long hints can wrap')
+ assert.match(source, /\.model-tags[^}]*overflow-wrap:\s*anywhere/s, 'long model tags can wrap')
+ assert.match(source, /\.model-editor[^}]*min-width:\s*0/s, 'model editor flex contents can shrink')
+ assert.match(source, /:deep\(\.ant-form-item[^}]*min-width:\s*0/s, 'Ant form items can shrink')
 })

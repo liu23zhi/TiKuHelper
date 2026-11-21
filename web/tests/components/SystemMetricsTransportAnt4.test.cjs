@@ -21,7 +21,7 @@ test('SM_TRANSPORT real wrapper sends exactly one same-origin GET and preserves 
   respond = request => result(request, 200, data)
   const value = await getSystemMetrics()
   assert.equal(requests.length, 1)
-  assert.equal(requests[0].url, '/adapter-service/system-metrics')
+  assert.equal(requests[0].url, '/api/system-metrics')
   assert.equal(requests[0].method, 'get')
   assert.equal(requests[0].retryPolicy, 'single')
   assert.equal(requests[0].withCredentials, true)

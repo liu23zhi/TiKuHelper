@@ -148,7 +148,10 @@ export const TICKET_ACCOUNT_ISSUE_OPTIONS = Object.freeze([
   { value: "login", label: "登录异常", titlePrefix: "【登录异常】" },
   { value: "binding", label: "绑定问题", titlePrefix: "【绑定问题】" },
   { value: "banned", label: "封禁申诉", titlePrefix: "【封禁申诉】" },
+  { value: "other", label: "其它问题", titlePrefix: "【其它问题】" },
 ]);
+
+export const DEFAULT_TICKET_ACCOUNT_ISSUE = TICKET_ACCOUNT_ISSUE_OPTIONS[0].value;
 
 export function ticketAccountIssueLabel(issueType) {
   const matched = TICKET_ACCOUNT_ISSUE_OPTIONS.find(
@@ -219,6 +222,15 @@ export function getTicketCreateDraftValidation(draft = {}) {
     return getRefundDraftValidation({
       requestedYuan: draft.requestedYuan,
       reason: draft.reason,
+      refundMethod: draft.refundMethod,
+      refundAllocations: draft.refundAllocations,
+      refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
+      refundPhoneConfirmed: draft.refundPhoneConfirmed,
+      refundSignatureAttachmentId: draft.refundSignatureAttachmentId,
+      refundAgreementSigned: draft.refundAgreementSigned,
+      refundPhoneVerificationRequired: draft.refundPhoneVerificationRequired,
+      refundPhoneSmsCode: draft.refundPhoneSmsCode,
+      boundPhone: draft.boundPhone,
     });
   }
   if (type === TICKET_CREATE_TYPE_ACCOUNT) {
@@ -235,7 +247,17 @@ export function getTicketCreateDraftValidation(draft = {}) {
 // 返回 { field, message }，message 为空表示通过。判据与后端
 // createRefundTicketWithVerifier 完全一致（金额 > 0、理由必填且不超 500 字），
 // 这样用户不会「前端通过、后端报错」。
-export function getRefundDraftValidation({ requestedYuan, reason } = {}) {
+export function getRefundDraftValidation({
+  requestedYuan,
+  reason,
+  refundMethod,
+  refundAllocations,
+  refundPayoutQrAttachmentId,
+  refundSignatureAttachmentId,
+  refundAgreementSigned,
+  refundPhoneVerificationRequired,
+  refundPhoneSmsCode,
+} = {}) {
   const yuan = String(requestedYuan ?? "").trim();
   if (!yuan) return Object.freeze({ field: "requestedYuan", message: "请输入退款金额" });
   // 只接受「正整数或最多两位小数」，避免 1e3 / 0x10 这类被 Number() 吃掉的形式。
@@ -245,6 +267,48 @@ export function getRefundDraftValidation({ requestedYuan, reason } = {}) {
     Number(matched[1]) * 100 + Number((matched[2] ?? "").padEnd(2, "0"));
   if (!Number.isSafeInteger(cents) || cents <= 0) {
     return Object.freeze({ field: "requestedYuan", message: "退款金额必须大于 0" });
+  }
+  // 退回方式必选（2026-11-19）：两条路的后续字段完全不同，
+  // 不能推断。没选时不要默认成原路 —— 那会让用户在不知情下走错路。
+  const method = String(refundMethod || "").trim();
+  if (method !== "original" && method !== "manual") {
+    return Object.freeze({ field: "refundMethod", message: "请选择退回方式" });
+  }
+  if (method === "original") {
+    const allocations = Array.isArray(refundAllocations) ? refundAllocations : [];
+    const allocated = allocations.reduce((sum, item) => sum + (Number(item?.cents) || 0), 0);
+    if (!allocations.length || allocated <= 0) {
+      return Object.freeze({ field: "order", message: "请至少选择一笔充值记录" });
+    }
+    // 分摊合计必须**等于**申请金额。
+    //
+    // 不放宽成“小于等于”：那会出现「申请退 100、实际只分配 30」
+    // 而用户以为能退 100 的误解。差额必须当场说清楚。
+    if (allocated !== cents) {
+      return Object.freeze({
+        field: "order",
+        message: `所选订单合计 ${(allocated / 100).toFixed(2)} 元，与申请金额 ${(cents / 100).toFixed(2)} 元不一致`,
+      });
+    }
+  }
+  if (method === "manual") {
+    const qr = Number(refundPayoutQrAttachmentId);
+    if (!Number.isSafeInteger(qr) || qr <= 0) {
+      return Object.freeze({ field: "payoutQr", message: "人工退回必须上传收款码" });
+    }
+    // 没绑手机号时不要求确认（否则这类用户永远退不了）。
+    if (refundPhoneVerificationRequired && !/^\d{6}$/.test(String(refundPhoneSmsCode || '').trim())) {
+      return Object.freeze({ field: "refundPhone", message: "请输入绑定手机号收到的六位验证码" });
+    }
+    // 承诺书签署（2026-11-19）：人工打款把钱打给收款码对应账户，
+    // 而平台无法逐一核实那个账户是不是本人，所以必须有本人承诺。
+    const signature = Number(refundSignatureAttachmentId);
+    if (!Number.isSafeInteger(signature) || signature <= 0 || refundAgreementSigned === false) {
+      return Object.freeze({
+        field: "refundAgreement",
+        message: "请阅读并签署《退款收款码使用承诺书》",
+      });
+    }
   }
   const text = String(reason ?? "").replace(/\r\n?/g, "\n").trim();
   if (!text) return Object.freeze({ field: "reason", message: "请填写退款理由" });
@@ -277,9 +341,58 @@ export function buildTicketCreatePayload(draft = {}) {
         : parseRefundYuanToCents(draft.requestedYuan),
       refundReason: normalizeTicketText(draft.reason, 500),
     };
-    // 订单可选：不选 = 无单人工退款（后端会落 kind=manual）。
-    const orderId = Number(draft.refundOrderId);
-    if (Number.isSafeInteger(orderId) && orderId > 0) payload.refundOrderId = orderId;
+    if (draft.refundMethod === "original" || draft.refundMethod === "manual") {
+      payload.refundMethod = draft.refundMethod;
+    }
+    // 订单可选**多笔**（2026-11-18）：不选 = 无单人工退款（后端会落 kind=manual）。
+    //
+    // 传对外的 refundOrderIds；后端按「一笔订单一张退款单」展开，因为
+    // ticket_refunds.order_id 有唯一索引（防重复退款）。
+    // 单笔也走数组，只保留一条代码路径 —— 两套写法迟早漂移。
+    //
+    // 过滤非法值：多选框理论上只产出合法 id，但草稿可能残留旧数据；
+    // 把 NaN 发给后端会让整批 400，且报错指不到具体哪一笔。
+    // 2026-11-19：改为上传**每笔各自的金额**（分摊）。
+    //
+    // refundOrderIds（只有 id）表达不出「7.5 + 2.5」；而且 Go 端
+    // CreateTicketInput 从来没有过这个字段 —— 旧写法下工单页的
+    // 多选退款是被**静默忽略**的（提交了但订单没带上）。
+    //
+    // 过滤非法值：多选框理论上只产出合法 id，但草稿可能残留旧数据；
+    // 把 NaN 发给后端会让整批 400，且报错指不到具体哪一笔。
+    const allocations = (
+      Array.isArray(draft.refundAllocations) ? draft.refundAllocations : []
+    )
+      .map((item) => ({
+        orderId: Number(item?.orderId),
+        cents: Number(item?.cents),
+      }))
+      .filter(
+        (item) =>
+          Number.isSafeInteger(item.orderId) &&
+          item.orderId > 0 &&
+          Number.isSafeInteger(item.cents) &&
+          item.cents > 0,
+      );
+    if (draft.refundMethod !== 'manual' && allocations.length) payload.refundOrderAllocations = allocations;
+    // 显式告知后端退款方式，让它能拒绝「原路退回却没有订单」的请求。
+    if (draft.refundMethod === 'manual') {
+      payload.refundPhoneSmsCode = String(draft.refundPhoneSmsCode || '').trim();
+      payload.refundAgreementText = String(draft.refundAgreementText || '');
+    }
+    // 签名图（2026-11-19）：每张退款单各自一份。
+    const signatureId = Number(draft.refundSignatureAttachmentId);
+    if (draft.refundMethod === 'manual' && Number.isSafeInteger(signatureId) && signatureId > 0) {
+      payload.refundSignatureAttachmentId = signatureId;
+    }
+  // 收款码（可选，2026-11-19）：人工打款时管理员据此扫码转账。
+  // 与 attachmentIds 分开传 —— 后者是工单截图，会挂在消息上供双方查看；
+  // 收款码归属退款单本身。混成一个字段会让两者再也分不开。
+  // 只接受单个正整数：一张码就够，多张会让管理员不知道该扫哪张。
+  const payoutQrId = Number(draft.refundPayoutQrAttachmentId);
+  if (draft.refundMethod === 'manual' && Number.isSafeInteger(payoutQrId) && payoutQrId > 0) {
+    payload.refundPayoutQrAttachmentId = payoutQrId;
+  }
     if (attachmentIds.length) payload.attachmentIds = attachmentIds;
     return Object.freeze({ payload: Object.freeze(payload), validation });
   }

@@ -88,10 +88,99 @@ afterEach(async () => {
 
 test('SMART_IMPORT existing native Upload beforeUpload and done parse retain exact file CRC and paper', async () => {
   const w = await mountPage()
+  const uploaders = w.findAllComponents(Antd.Upload)
+  assert.equal(uploaders.length, 1, 'ONE_SHARED_FILE_UPLOADER')
+  assert.equal(uploaders[0].props('accept'), '.docx,.txt')
+  assert.ok(w.find('textarea').exists(), 'PASTE_REMAINS_AVAILABLE')
+  assert.ok(w.find('.compileContent').exists() === false, 'CORRECTION_AREA_REMAINS_AVAILABLE')
+  assert.equal(await callback(uploaders[0], 'beforeUpload')({ name: 'questions.txt', size: 18, text: async () => '题目\n答案：A' }), false)
+  await settle()
+  assert.equal(w.vm.plainTextContent, '题目\n答案：A')
   const native = await doneUpload(w)
   assert.notEqual(native.accepted, false); assert.equal(w.vm.loading, false)
   assert.equal(w.vm.UploadId, 'SYNTHETIC_CRC_A'); assert.deepEqual(JSON.parse(JSON.stringify(w.vm.data)), paper())
   assert.ok(w.text().includes('SYNTHETIC_IMPORT_PRIVATE_A')); assert.equal(w.findAll('[contenteditable]').length, 1)
+})
+
+test('SMART_IMPORT pasted text uses the shared parser preview path after escaping HTML', async () => {
+  const w = await mountPage()
+  w.vm.plainTextContent = 'SYNTHETIC_TEXT_QUESTION <script>safe</script>\n答案：A & B'
+  const parsing = w.vm.parsePlainText(); await settle()
+  assert.equal(calls.reparse.length, 1)
+  assert.deepEqual(calls.reparse[0].payload, { html: '<p>SYNTHETIC_TEXT_QUESTION &lt;script&gt;safe&lt;/script&gt;</p><p>答案：A &amp; B</p>' })
+  calls.reparse[0].resolve({ paper: paper('TEXT') }); await parsing; await settle()
+  assert.equal(w.vm.data[0].content, 'SYNTHETIC_IMPORT_PRIVATE_TEXT')
+  assert.equal(w.findAll('[contenteditable]').length, 1)
+})
+
+test('SMART_IMPORT .txt upload reads plaintext and sends it through the same parser', async () => {
+  const w = await mountPage()
+  const accepted = w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_TEXT.txt', size: 25, text: async () => 'SYNTHETIC_FILE_QUESTION\n答案：B' })
+  assert.equal(accepted, false, 'the file must be read locally, not uploaded as markup')
+  await settle()
+  assert.equal(w.vm.plainTextContent, 'SYNTHETIC_FILE_QUESTION\n答案：B')
+  assert.deepEqual(calls.reparse[0].payload, { html: '<p>SYNTHETIC_FILE_QUESTION</p><p>答案：B</p>' })
+  calls.reparse[0].resolve({ paper: paper('FILE_TEXT') }); await settle()
+  assert.equal(w.vm.data[0].content, 'SYNTHETIC_IMPORT_PRIVATE_FILE_TEXT')
+})
+
+test('SMART_IMPORT .txt reading owns loading state and retires bytes after identity switch', async () => {
+  const w = await mountPage()
+  let resolveText
+  w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_DELAYED.txt', size: 25, text: () => new Promise(resolve => { resolveText = resolve }) })
+  await settle()
+  assert.equal(w.vm.loading, true, 'file reading is part of the parse operation')
+  user.setStoredCurrentUser(B); await settle()
+  resolveText('SYNTHETIC_RETIRED_TEXT'); await settle()
+  assert.equal(w.vm.plainTextContent, '')
+  assert.equal(calls.reparse.length, 0)
+})
+
+test('SMART_IMPORT a newer Word upload retires a delayed .txt read', async () => {
+  const w = await mountPage()
+  let resolveText
+  w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_DELAYED.txt', size: 25, text: () => new Promise(resolve => { resolveText = resolve }) })
+  await settle()
+  assert.equal(w.findComponent(Antd.Upload).props('disabled'), false, 'WORD_REPLACEMENT_REMAINS_AVAILABLE_WHILE_TXT_READS')
+  assert.equal(button(w, '上传文件').element.disabled, false)
+  const native = await beginUpload(w, 'NEWER_WORD')
+  assert.notEqual(native.accepted, false)
+  resolveText('SYNTHETIC_OLDER_TEXT'); await settle()
+  assert.equal(calls.reparse.length, 0)
+  assert.equal(w.vm.loading, true, 'the newer upload keeps its loading ownership')
+})
+
+test('SMART_IMPORT unsupported file feedback names both supported formats and blocks transport', async () => {
+  const w = await mountPage()
+  assert.equal(uploadCallbacks(w).before({ name: 'questions.pdf', size: 18 }), false)
+  assert.ok(notices.some(item => item.kind === 'error' && item.text.includes('.docx') && item.text.includes('.txt')))
+  assert.equal(calls.parse.length, 0)
+  assert.equal(calls.reparse.length, 0)
+})
+
+test('SMART_IMPORT downloads missing-answer and failed-request questions as a scoped text report', async () => {
+  const w = await mountPage()
+  await doneUpload(w, 'REVIEW', [...paper('VALID'), { content: 'SYNTHETIC_MISSING_ANSWER_REPORT', typeAlias: '简答题' }])
+  const blobs = [], downloads = [], revoked = []
+  const originalCreate = window.URL.createObjectURL, originalRevoke = window.URL.revokeObjectURL, originalClick = window.HTMLAnchorElement.prototype.click
+  window.URL.createObjectURL = blob => { blobs.push(blob); return 'blob:synthetic-review-report' }
+  window.URL.revokeObjectURL = value => revoked.push(value)
+  window.HTMLAnchorElement.prototype.click = function () { downloads.push(this.download) }
+  try {
+    const download = button(w, '下载待核对题目'); assert.ok(download)
+    download.element.click(); await settle()
+    assert.equal(downloads.length, 1); assert.match(downloads[0], /\.txt$/)
+    assert.match(await blobs[0].text(), /SYNTHETIC_MISSING_ANSWER_REPORT/)
+    assert.doesNotMatch(await blobs[0].text(), /SYNTHETIC_IMPORT_PRIVATE_VALID/)
+    assert.deepEqual(revoked, ['blob:synthetic-review-report'])
+    w.vm.setSkipMissingAnswers({ target: { checked: true } }); click(w, '确认导入'); await settle()
+    calls.create[0].reject(new Error('SYNTHETIC_FAILURE')); await settle()
+    click(w, '下载待核对题目'); await settle()
+    assert.match(await blobs[1].text(), /SYNTHETIC_IMPORT_PRIVATE_VALID/)
+    assert.match(await blobs[1].text(), /请核对题库/)
+  } finally {
+    window.URL.createObjectURL = originalCreate; window.URL.revokeObjectURL = originalRevoke; window.HTMLAnchorElement.prototype.click = originalClick
+  }
 })
 
 test('SMART_IMPORT existing native groups filters and paired scroll retain page behavior', async () => {
@@ -423,7 +512,7 @@ test('SMART_IMPORT legacy option values without presentation names still parse a
 test('SMART_IMPORT real UNKNOWN_OUTCOME create error preserves draft and says unconfirmed rather than failed or automatically replaying', async () => {
   const w = await mountPage(); await doneUpload(w); click(w, '确认导入'); await settle(); const before = JSON.stringify(w.vm.data)
   const networkError = new Error('SYNTHETIC_NETWORK_DOWN'); networkError.code = 'ERR_NETWORK'
-  const unknown = toUserRequestError({ method: 'post', url: '/adapter-service/questions' }, networkError)
+  const unknown = toUserRequestError({ method: 'post', url: '/api/questions' }, networkError)
   assert.equal(unknown.code, 'UNKNOWN_OUTCOME', 'ACTUAL_MUTATION_UNKNOWN_OUTCOME_CONTRACT')
   calls.create[0].reject(unknown); await settle(); await new Promise(resolve => setTimeout(resolve, 25)); await settle()
   assert.equal(JSON.stringify(w.vm.data), before); assert.equal(w.vm.submitLoading, false); assert.equal(calls.create.length, 1); assert.equal(calls.parse.length, 1)

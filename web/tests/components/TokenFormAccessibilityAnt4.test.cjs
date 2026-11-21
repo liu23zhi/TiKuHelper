@@ -38,6 +38,7 @@ api.exports = {
   ...Object.fromEntries(['createAccessToken', 'updateAccessToken', 'deleteAccessToken'].map(name => [name, () => denyMutation(name)])),
 }
 require.cache[apiPath] = api
+require('../helpers/token-level-read.cjs').install(web)
 window.XMLHttpRequest.prototype.open = function () { return denyIO('XHR') }
 globalThis.fetch = window.fetch = () => denyIO('FETCH')
 globalThis.WebSocket = window.WebSocket = class { constructor() { denyIO('WEBSOCKET') } }

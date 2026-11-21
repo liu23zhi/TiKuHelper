@@ -37,6 +37,8 @@ jobs:
         run: npm ci
       - name: CI contracts and audit parser behavior
         run: node --test ../scripts/ci/*.test.cjs
+      - name: Verify actual frontend embed helper on missing and present artifacts
+        run: node --test ../scripts/prepare-web-dist.test.mjs
       - name: Lint without modifying source
         run: npm run lint -- --no-fix
       - name: Dependency compatibility consumers
@@ -77,10 +79,11 @@ jobs:
         with:
           name: frontend-dist
           path: web/dist
+      # 统一走仓库脚本，避免「CI 一套、本地一套」两套复制逻辑漂移。
+      # 脚本内部会自证 web/dist/index.html 存在且含 id="app"，缺失即 exit 1。
       - name: Embed this run's frontend
-        run: |
-          mkdir -p cmd/adapter-service/dist ci-output
-          cp -R web/dist/. cmd/adapter-service/dist/
+        shell: pwsh
+        run: ./scripts/prepare-web-dist.ps1 -SkipBuild -Json
       - name: HTTP gate behavior including deliberate failures
         run: python3 -B -m unittest discover -s scripts/ci -p '*_test.py'
       - name: Build

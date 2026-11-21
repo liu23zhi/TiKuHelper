@@ -14,8 +14,21 @@ WORKDIR /build
 ADD go.mod go.sum ./
 RUN go mod download
 COPY . .
+# builder1 的 `npm run build` 产出在 /build/dist，复制到 go:embed 读取的目录。
+#
+# 注意 COPY . . 会把宿主机的 cmd/adapter-service/dist/ 也带进来（如果本地构建过），
+# 所以这一行是**覆盖**而不是「补上」；体积上也只可能变小（宿主的可能含旧哈希文件）。
 COPY --from=builder1 /build/dist ./cmd/adapter-service/dist
+
+# 构建期自证：go:embed 缺文件时 go build 依然 exit 0（只是嵌入空目录），
+# 失败会被推迟到运行时 —— 镜像能启动、访问任何页面返回 503。
+# 这里在编译前就把它变成构建失败，避免发布一个前端为空的镜像。
+RUN test -f cmd/adapter-service/dist/index.html \
+ && grep -q 'id="app"' cmd/adapter-service/dist/index.html \
+ && echo "嵌入前端产物：$(find cmd/adapter-service/dist -type f | wc -l) 个文件"
+
 RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapter-service
+
 
 FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 

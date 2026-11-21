@@ -194,6 +194,7 @@
               <span v-else-if="column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record.createdAt) }}</span>
               <span v-else-if="column.key === 'updatedAt'" class="time-cell">{{ formatDateTime(record.updatedAt) }}</span>
               <template v-else-if="column.key === 'action'">
+                <SensitiveImageDetectButton :sha="record.sha256" :disabled="busy()" @detected="load" />
                 <!-- 判据 ①：ref_count > 0 时按钮就是禁用态（真正的保护在后端 409） -->
                 <a-tooltip :title="canDeleteBlob(record) ? '删除这份缓存字节' : deleteBlockedHint(record)">
                   <a-button
@@ -223,6 +224,7 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import SensitiveImageDetectButton from '@/components/SensitiveImageDetectButton.vue'
 import {
   batchDeleteTicketImageCache,
   cleanTicketImageCacheNow,
@@ -261,7 +263,7 @@ const SCAN_STATE_COLORS = Object.freeze({
 
 export default {
   name: 'TicketImageCachePage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert, SensitiveImageDetectButton },
   setup() {
     const route = useRoute()
     const prefix = 'ticket-image-cache-' + useId()

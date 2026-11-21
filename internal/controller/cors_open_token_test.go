@@ -143,7 +143,7 @@ func TestOpenTokenCORSHeadersAndAuth(t *testing.T) {
 		if strings.TrimSpace(origin) != "" {
 			expected = "*"
 		}
-		checks := map[string]bool{"status": w.Code == want, "wildcardInsteadOfReflection": w.Header().Get("Access-Control-Allow-Origin") == expected, "noCredentialSharingHeader": w.Header().Get("Access-Control-Allow-Credentials") == "", "existingVaryPreservedNoOriginAdded": w.Header().Get("Vary") == "Accept-Encoding", "sameAllowHeaders": w.Header().Get("Access-Control-Allow-Headers") == "Authorization, Content-Type, Idempotency-Key", "sameFiveMethods": w.Header().Get("Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS"}
+		checks := map[string]bool{"status": w.Code == want, "wildcardInsteadOfReflection": w.Header().Get("Access-Control-Allow-Origin") == expected, "noCredentialSharingHeader": w.Header().Get("Access-Control-Allow-Credentials") == "", "existingVaryPreservedNoOriginAdded": w.Header().Get("Vary") == "Accept-Encoding", "sameAllowHeaders": w.Header().Get("Access-Control-Allow-Headers") == "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity", "sameFiveMethods": w.Header().Get("Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS"}
 		if method == "OPTIONS" {
 			checks["preflightAuthNotCalled"] = authCalls == beforeA
 			checks["preflightHandlerNotCalled"] = handlerCalls == beforeH
@@ -172,7 +172,13 @@ func TestOpenTokenCORSHeadersAndAuth(t *testing.T) {
 		name, path, authorization string
 		cookie                    bool
 		want                      int
-	}{{"no-auth", "/fixture/access", "", false, 401}, {"bearer-access-token", "/fixture/access", "Bearer " + value, false, 200}, {"cookie-login-jwt", "/fixture/auth", "", true, 200}, {"raw-login-jwt", "/fixture/auth", login, false, 200}, {"invalid-bearer-with-valid-cookie", "/fixture/access", "Bearer S01_INVALID", true, 401}, {"bearer-login-jwt-not-supported", "/fixture/auth", "Bearer " + login, false, 401}}
+	}{{"no-auth", "/fixture/access", "", false, 401}, {"bearer-access-token", "/fixture/access", "Bearer " + value, false, 200}, {"cookie-login-jwt", "/fixture/auth", "", true, 200}, {"raw-login-jwt", "/fixture/auth", login, false, 200}, {"invalid-bearer-with-valid-cookie", "/fixture/access", "Bearer S01_INVALID", true, 401},
+		// 2026-11-18：login JWT 的 Bearer 形式由「不支持」翻转为「支持」
+		// （用户要求做兼容，Auth 会剥离 Bearer 前缀）。
+		// 注意同时补了 Basic 前缀的反例 —— 放宽的只有 scheme 白名单，
+		// 不是「任何前缀都认」。
+		{"bearer-login-jwt-now-supported", "/fixture/auth", "Bearer " + login, false, 200},
+		{"basic-login-jwt-still-rejected", "/fixture/auth", "Basic " + login, false, 401}}
 	for _, o := range origins {
 		for _, c := range controls {
 			want := c.want

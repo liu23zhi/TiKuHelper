@@ -94,10 +94,12 @@ function buildApplyProgram(region) {
     loadedProgram: refs(),
     programLoaded: refs(),
     programMissing: refs(),
+    programs: refs(),
+    programSource: { value: 'edge' },
   }
   const emptyProgramForm = () => ({
     name: '', storeUrl: '', extensionId: '', enabled: false,
-    maxClaimsPerUser: 3, maxAmountPerUser: 5.04, minAgentConfidence: 0.6, policyVersion: '',
+    maxClaimsPerUser: 1, maxAmountPerUser: 5.04, minAgentConfidence: 0.6, policyVersion: '',
   })
   const readNonnegativeNumber = (value) => {
     if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null
@@ -108,10 +110,10 @@ function buildApplyProgram(region) {
   // 区段使用了 `const isProgramMissing = ...` 与 `function applyProgram(...)`，
   // 直接拼进函数体会变成嵌套声明（在块里合法但外部看不到），所以显式 return 出去。
   const factory = new Function('loadedProgram', 'programLoaded', 'programMissing',
-    'programForm', 'emptyProgramForm', 'readNonnegativeNumber',
+    'programForm', 'emptyProgramForm', 'readNonnegativeNumber', 'programs', 'programSource',
     `${region}\n      return { isProgramMissing, applyProgram }`)
   const built = factory(state.loadedProgram, state.programLoaded, state.programMissing,
-    programForm, emptyProgramForm, readNonnegativeNumber)
+    programForm, emptyProgramForm, readNonnegativeNumber, state.programs, state.programSource)
   assert.equal(typeof built.applyProgram, 'function', '区段执行后必须导出 applyProgram（区段被改坏时这里会先失败）')
   assert.equal(typeof built.isProgramMissing, 'function', '区段执行后必须导出 isProgramMissing')
   return { ...built, programForm, state }
@@ -150,7 +152,7 @@ test('零活动时 applyProgram 不抛错，清空表单并把 programLoaded 置
   // 表单必须被重置成空配置：否则「保存」会把上一家的值当成本次创建内容。
   assert.equal(programForm.name, '', '零活动时表单必须清空')
   assert.equal(programForm.enabled, false, '零活动时活动开关必须为关闭')
-  assert.equal(programForm.maxClaimsPerUser, 3, '零活动时回落到默认次数')
+  assert.equal(programForm.maxClaimsPerUser, 1, '同一商店限领一次')
   assert.equal(programForm.maxAmountPerUser, 5.04, '零活动时回落到默认金额')
 })
 
@@ -164,21 +166,17 @@ test('有活动时 applyProgram 正常套用，且不残留 missing 标记', asy
   assert.equal(state.programMissing.value, false, '有活动时 missing 必须归位，否则会误显示「尚未创建」')
   assert.equal(state.loadedProgram.value.id, 42, '必须保留活动 id（保存时要 PUT /programs/:id）')
   assert.equal(programForm.name, '商店评价')
-  assert.equal(programForm.maxClaimsPerUser, 5)
+  assert.equal(programForm.maxClaimsPerUser, 1)
 })
 
-test('保存路径在零活动时给出「缺接口」的明确提示，而不是 MALFORMED_RESPONSE', async () => {
+test('保存路径在零活动时调用创建接口而已有活动继续更新', async () => {
   const source = await loadAdminPage()
 
-  // 原实现在没有 id 时报 ensureRequestFailure({code:'MALFORMED_RESPONSE'})，
-  // 那会让管理员以为后端返回了坏数据，实际是**后端根本没有创建接口**
-  // （service.CreateReviewRebateProgramWithDB 全仓零调用方，router 只有 GET/PUT）。
   assert.doesNotMatch(source, /code: 'MALFORMED_RESPONSE'/,
-    '零活动保存不得伪造「数据格式错误」—— 真正缺的是创建接口')
-
-  // 必须给出可执行的下一步，光说「失败」等于把问题丢回给管理员。
-  assert.match(source, /尚未提供「创建活动」接口/, '必须说明缺的是创建接口')
-  assert.match(source, /review_rebate_programs/, '必须指出绕过方式落在哪张表')
+    '零活动保存不得伪造数据格式错误')
+  assert.match(source, /createReviewRebateProgram\(/, '首次保存必须调用创建接口')
+  assert.match(source, /updateReviewRebateProgram\(/, '已有活动保留更新接口')
+  assert.doesNotMatch(source, /尚未提供「创建活动」接口|请先在数据库中插入/, '管理员可直接创建，无需操作数据库')
 })
 
 test('零活动提示用 info 而不是 error（这是正常状态，不是故障）', async () => {

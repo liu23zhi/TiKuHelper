@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   TICKET_ACCOUNT_ISSUE_OPTIONS,
+  DEFAULT_TICKET_ACCOUNT_ISSUE,
   TICKET_CREATE_FORBIDDEN_TYPES,
   TICKET_CREATE_TYPE_ACCOUNT,
   TICKET_CREATE_TYPE_ACCOUNT_CLOSURE,
@@ -158,15 +159,16 @@ test("只有退款类型会切换到退款专属字段", () => {
 test("account 的问题类型是三项固定枚举，不是自由文本（B2-6）", () => {
   assert.deepEqual(
     TICKET_ACCOUNT_ISSUE_OPTIONS.map((item) => item.value),
-    ["login", "binding", "banned"],
+    ["login", "binding", "banned", "other"],
   );
   assert.deepEqual(
     TICKET_ACCOUNT_ISSUE_OPTIONS.map((item) => item.label),
-    ["登录异常", "绑定问题", "封禁申诉"],
+    ["登录异常", "绑定问题", "封禁申诉", "其它问题"],
   );
+  assert.equal(DEFAULT_TICKET_ACCOUNT_ISSUE, "login");
   assert.equal(ticketAccountIssueLabel("login"), "登录异常");
   assert.equal(ticketAccountIssueLabel(" BANNED "), "封禁申诉");
-  assert.equal(ticketAccountIssueLabel("other"), "");
+  assert.equal(ticketAccountIssueLabel("other"), "其它问题");
   assert.equal(ticketAccountIssueLabel(""), "");
 });
 
@@ -177,28 +179,51 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "25.50",
     reason: "  充错了金额  ",
-    refundOrderId: 88,
+    refundMethod: "original",
+    refundAllocations: [{ orderId: 88, cents: 2550 }],
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
+  assert.equal(payload.refundMethod, "original");
   // 金额必须转成分（后端只认分）。
   assert.equal(payload.refundRequestedCents, 2550);
   // 理由要去掉首尾空白。
   assert.equal(payload.refundReason, "充错了金额");
-  assert.equal(payload.refundOrderId, 88);
+  // 多选后是数组（2026-11-18）：后端按「一笔订单一张退款单」展开。
+  // 2026-11-19：改为上传每笔各自的金额 —— 只有 id 表达不出 7.5+2.5。
+  assert.deepEqual(payload.refundOrderAllocations, [{ orderId: 88, cents: 2550 }]);
   // 退款流程不接受 subject/body —— 壳工单的标题与正文由服务端按订单号生成。
   assert.equal("subject" in payload, false);
   assert.equal("body" in payload, false);
 });
 
-test("选退款但没指定订单时不传 refundOrderId（后端会归为人工退款）", () => {
+test("选退款但没指定订单时不传 refundOrderIds（后端会归为人工退款）", () => {
   const { payload } = buildTicketCreatePayload({
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "10",
     reason: "理由",
   });
-  assert.equal("refundOrderId" in payload, false);
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
+});
+
+test("原路退款必须有订单且订单分摊合计必须覆盖申请金额", () => {
+  const oneFiveDollarOrder = getRefundDraftValidation({
+    requestedYuan: "10.00", reason: "理由", refundMethod: "original",
+    refundAllocations: [{ orderId: 1, cents: 500 }],
+  });
+  assert.equal(oneFiveDollarOrder.field, "order");
+  assert.match(oneFiveDollarOrder.message, /所选订单合计 5.00 元，与申请金额 10.00 元不一致/);
+
+  const noOrders = buildTicketCreatePayload({
+    ticketType: TICKET_CREATE_TYPE_REFUND, requestedYuan: "10.00",
+    reason: "理由", refundMethod: "original", refundAllocations: [],
+  });
+  assert.equal(noOrders.payload.refundMethod, "original");
+  assert.equal(noOrders.validation.field, "order");
+  assert.equal("refundOrderAllocations" in noOrders.payload, false);
 });
 
 test("普通类型只带标题正文，一个退款字段都不带", () => {
@@ -217,7 +242,9 @@ test("普通类型只带标题正文，一个退款字段都不带", () => {
   assert.equal(payload.body, "点登录没反应");
   assert.equal("refundRequestedCents" in payload, false);
   assert.equal("refundReason" in payload, false);
-  assert.equal("refundOrderId" in payload, false);
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
 });
 
 test("老客户端不传 ticketType 时按一般问题处理", () => {
@@ -244,6 +271,14 @@ test("account 类型的标题带固定前缀、正文是用户说明、不带退
   assert.equal("refundReason" in payload, false);
   // 问题类型不进 payload（后端没有这个字段）。
   assert.equal("issueType" in payload, false);
+
+  const other = buildTicketCreatePayload({
+    ticketType: TICKET_CREATE_TYPE_ACCOUNT,
+    issueType: "other",
+    body: "其它账号问题说明",
+  });
+  assert.equal(other.validation.message, "");
+  assert.equal(other.payload.subject, "【其它问题】账号问题");
 });
 
 test("account_closure 类型的标题固定生成、用户只填原因（B2-2）", () => {
@@ -279,24 +314,66 @@ test("退款金额校验挡住空值、非法格式与 0", () => {
 });
 
 test("退款理由必填且不超 500 字", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "" }).field, "reason");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "   " }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
+  }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "   ",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
+  }).field, "reason");
   assert.equal(
-    getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(501) }).field,
+    getRefundDraftValidation({
+      requestedYuan: "1",
+      reason: "长".repeat(501),
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
+    }).field,
     "reason",
   );
   // 500 字符整好通过（边界值，不能少算一个）。
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(500) }).message, "");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "长".repeat(500),
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
+  }).message, "");
 });
 
 test("合法退款表单完全通过校验", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "0.01", reason: "理由" }).message, "");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "12345.67", reason: "r" }).message, "");
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "0.01",
+      reason: "理由",
+      refundMethod: "original",
+      refundAllocations: [{ orderId: 1, cents: 1 }],
+    }).message,
+    "",
+  );
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "12345.67",
+      reason: "r",
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
+    }).message,
+    "",
+  );
 });
 
 test("account 校验：问题类型必选、说明必填（B2-6）", () => {
   assert.equal(getAccountDraftValidation({ issueType: "", body: "说明" }).field, "issueType");
-  assert.equal(getAccountDraftValidation({ issueType: "other", body: "说明" }).field, "issueType");
+  assert.equal(getAccountDraftValidation({ issueType: "unknown", body: "说明" }).field, "issueType");
+  assert.equal(getAccountDraftValidation({ issueType: "other", body: "说明" }).message, "");
   assert.equal(getAccountDraftValidation({ issueType: "login", body: "   " }).field, "body");
   assert.equal(getAccountDraftValidation({ issueType: "login", body: "说明" }).message, "");
   assert.equal(
@@ -387,8 +464,9 @@ test("列表页接上两步向导、注销引导与自助注销入口", async ()
   // 注销引导必须被渲染（而不是只 import）。
   assert.match(page, /<ClosureGuide/, "注销类型必须先渲染引导组件");
   // 列表要能显示退款真实状态。
-  assert.match(page, /ticketRowRefundStatus/, "列表行必须显示退款真实状态");
-  assert.match(page, /isRefundTicketRow/, "列表必须能区分退款行");
+  assert.match(page, /effectiveStatusLabel\(record\)/, "列表必须渲染统一的有效状态");
+  assert.match(page, /return ticket\?\.refund \? refundStatusLabel\(ticket\.refund\.status\) : ticketStatusLabel\(ticket\?\.status\)/, "退款行须使用退款真实状态，普通工单须使用工单状态");
+  assert.doesNotMatch(page, /key:\s*["']refundStatus["']/, "退款行不能再有第二列退款状态");
 
   // 个人中心必须挂自助注销入口（B2-5）。
   //
@@ -398,20 +476,21 @@ test("列表页接上两步向导、注销引导与自助注销入口", async ()
   assert.match(profile, /<ClosureGuide\b/, "个人中心必须真的渲染自助注销组件（不只是 import）");
   assert.match(profile, /data-section="account-closure"/, "个人中心必须有稳定的区块标记");
 
-  // 引导页主按钮=自助注销、次按钮=仍然提交工单（顺序不能反）。
-  //
-  // 同样断言**元素**而不是词面：两个 data-closure-action 都必须以属性形式出现。
-  assert.match(guide, /<a-button[\s\S]{0,200}data-closure-action="self-service"/, "必须有「去自助注销」按钮元素");
-  assert.match(guide, /<a-button[\s\S]{0,200}data-closure-action="fallback"/, "必须有「仍然提交工单」按钮元素");
-  // 主按钮必须带 type="primary"（视觉上也是主按钮，而不只是顺序在前）。
-  const selfButtonBlock = guide.slice(
-    Math.max(0, guide.indexOf('data-closure-action="self-service"') - 300),
-    guide.indexOf('data-closure-action="self-service"'),
-  );
+  // 只有确实支持自助注销时，推荐引导才显示自助主按钮和工单兜底按钮。
+  // 限定到 eligible 分支，避免 loading/error/pending 分支里的兜底按钮
+  // 干扰顺序断言。
+  const eligibleStart = guide.indexOf('v-else-if="status && status.eligible"');
+  const eligibleEnd = guide.indexOf('</template>', eligibleStart);
+  assert.ok(eligibleStart >= 0 && eligibleEnd > eligibleStart, "必须有 status.eligible 引导分支");
+  const eligibleGuide = guide.slice(eligibleStart, eligibleEnd);
+  assert.match(eligibleGuide, /<a-button[\s\S]{0,200}data-closure-action="self-service"/, "可自助注销时必须有「去自助注销」按钮元素");
+  assert.match(eligibleGuide, /<a-button[\s\S]{0,200}data-closure-action="fallback"/, "可自助注销时必须有「仍然提交工单」按钮元素");
+  // 自助注销必须是 primary 主按钮，并排在工单兜底之前。
+  const selfButtonAt = eligibleGuide.indexOf('data-closure-action="self-service"');
+  const selfButtonBlock = eligibleGuide.slice(Math.max(0, selfButtonAt - 300), selfButtonAt);
   assert.match(selfButtonBlock, /type="primary"/, "「去自助注销」必须是 primary 主按钮");
-  // 主按钮必须排在次按钮之前。
-  const selfAt = guide.indexOf('data-closure-action="self-service"');
-  const fallbackAt = guide.indexOf('data-closure-action="fallback"');
+  const selfAt = selfButtonAt;
+  const fallbackAt = eligibleGuide.indexOf('data-closure-action="fallback"');
   assert.ok(selfAt > 0 && fallbackAt > selfAt, "主按钮（自助注销）必须排在次按钮之前");
 
   // 三条 closure 接口必须真的指向后端已存在的路由。
@@ -436,7 +515,8 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "25.50",
     reason: "  充错了金额  ",
-    refundOrderId: 88,
+    refundMethod: "original",
+    refundAllocations: [{ orderId: 88, cents: 2550 }],
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
@@ -444,19 +524,23 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
   assert.equal(payload.refundRequestedCents, 2550);
   // 理由要去掉首尾空白。
   assert.equal(payload.refundReason, "充错了金额");
-  assert.equal(payload.refundOrderId, 88);
+  // 多选后是数组（2026-11-18）：后端按「一笔订单一张退款单」展开。
+  // 2026-11-19：改为上传每笔各自的金额 —— 只有 id 表达不出 7.5+2.5。
+  assert.deepEqual(payload.refundOrderAllocations, [{ orderId: 88, cents: 2550 }]);
   // 退款流程不接受 subject/body —— 壳工单的标题与正文由服务端按订单号生成。
   assert.equal("subject" in payload, false);
   assert.equal("body" in payload, false);
 });
 
-test("选退款但没指定订单时不传 refundOrderId（后端会归为人工退款）", () => {
+test("选退款但没指定订单时不传 refundOrderIds（后端会归为人工退款）", () => {
   const { payload } = buildTicketCreatePayload({
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "10",
     reason: "理由",
   });
-  assert.equal("refundOrderId" in payload, false);
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
 });
 
@@ -476,7 +560,9 @@ test("普通类型只带标题正文，一个退款字段都不带", () => {
   assert.equal(payload.body, "点登录没反应");
   assert.equal("refundRequestedCents" in payload, false);
   assert.equal("refundReason" in payload, false);
-  assert.equal("refundOrderId" in payload, false);
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
 });
 
 test("老客户端不传 ticketType 时按一般问题处理", () => {
@@ -504,19 +590,60 @@ test("退款金额校验挡住空值、非法格式与 0", () => {
 });
 
 test("退款理由必填且不超 500 字", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "" }).field, "reason");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "   " }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
+  }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "   ",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
+  }).field, "reason");
   assert.equal(
-    getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(501) }).field,
+    getRefundDraftValidation({
+      requestedYuan: "1",
+      reason: "长".repeat(501),
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
+    }).field,
     "reason",
   );
   // 500 字符整好通过（边界值，不能少算一个）。
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(500) }).message, "");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "长".repeat(500),
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
+  }).message, "");
 });
 
 test("合法退款表单完全通过校验", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "0.01", reason: "理由" }).message, "");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "12345.67", reason: "r" }).message, "");
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "0.01",
+      reason: "理由",
+      refundMethod: "original",
+      refundAllocations: [{ orderId: 1, cents: 1 }],
+    }).message,
+    "",
+  );
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "12345.67",
+      reason: "r",
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
+    }).message,
+    "",
+  );
 });
 
 test("元转分是精确整数（不走浮点）", () => {
@@ -566,6 +693,7 @@ test("新建表单与列表都接上了类型选择与退款展示", async () =>
   assert.match(page, /ticketCreateTypeNeedsRefundFields/, "必须按类型切换字段");
   assert.match(page, /buildTicketCreatePayload/, "提交必须走统一的 payload 构造");
   // 列表要能显示退款真实状态。
-  assert.match(page, /ticketRowRefundStatus/, "列表行必须显示退款真实状态");
-  assert.match(page, /isRefundTicketRow/, "列表必须能区分退款行");
+  assert.match(page, /effectiveStatusLabel\(record\)/, "列表必须渲染统一的有效状态");
+  assert.match(page, /return ticket\?\.refund \? refundStatusLabel\(ticket\.refund\.status\) : ticketStatusLabel\(ticket\?\.status\)/, "退款行须使用退款真实状态，普通工单须使用工单状态");
+  assert.doesNotMatch(page, /key:\s*["']refundStatus["']/, "退款行不能再有第二列退款状态");
 });

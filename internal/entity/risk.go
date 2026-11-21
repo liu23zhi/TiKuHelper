@@ -4,7 +4,8 @@ import "time"
 
 const (
 	// TableNameRiskRule 是风控规则表（96-风控管理仅告警与用户画像-设计.md / 121 §4.7）。
-	TableNameRiskRule = "risk_rules"
+	TableNameRiskRule      = "risk_rules"
+	TableNameRiskRuleAudit = "risk_rule_audits"
 	// TableNameRiskWarning 是风控告警记录表（96 §2.3 / 121 §4.6）。
 	//
 	// 表名用 risk_warnings 而不是 118 号里建议的 risk_alert_*：
@@ -399,25 +400,9 @@ func DefaultRiskRules() []RiskRuleDefault {
 	return all
 }
 
-// RiskRule 是一条风控规则的可配置行（risk_rules）。
-//
-// # 哪几列真的可调（如实描述，勿再宣称「四列都运营可调」）
-//
-//   - **Enabled**：可通过管理页调整（PUT /risk/rules/:ruleId/enabled）。
-//     接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
-//   - **Threshold**：可通过管理页调整（PUT /risk/thresholds/:key）。
-//     写入时会同步 system_settings 的 `risk_rule_<id>_threshold` 键，两处一致，
-//     见 service/risk_threshold.go。
-//   - **Severity / ThrottleSeconds**：**当前仅代码默认值**，没有写接口。
-//     为什么不打通（2026-11 决策）：
-//     · severity 改错只影响告警展示分级，不影响判定正确性（代价小）；
-//     · throttle_seconds 改错代价大 —— 设 0 会让同一事件每次评估都新建一行（刷屏），
-//     负数语义完全不同（`< 0` = 每次都新建）。而它没有任何校验逻辑，
-//     要开放必须先设计「合法区间」。
-//     · 这两个都不是运营日常会调的，enabled 与 threshold 才是。
-//
-// 判定逻辑本身在代码里（service/risk_alert.go），不做可编程规则引擎 ——
-// 119 §5.2 已把「可配置规则引擎」划到完整风控（后续），本期只做最小集。
+// RiskRule stores an editable instance of a server-registered risk detector.
+// RuleID is immutable and keeps warning history and instance throttling stable.
+// Deleted rows remain as tombstones so default seeding and evaluation cannot restore them.
 type RiskRule struct {
 	ID int64 `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	// RuleID 是稳定的字符串标识（debt_user / debt_batch / debt_system）。
@@ -455,12 +440,30 @@ type RiskRule struct {
 	//
 	// 2048 是留足余量：当前最长 549，留约 3.7 倍空间给后续规则补限制说明。
 	// 不设 TEXT 是为了保持「有明确上限」的纪律 —— 描述是说明文字，不该无限增长。
-	Description string    `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
-	CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt   time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	Description string     `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
+	Type        string     `gorm:"column:rule_type;type:varchar(64);not null;default:''" json:"type"`
+	ConfigJSON  string     `gorm:"column:config_json;type:varchar(4096);not null;default:'{}'" json:"-"`
+	Source      string     `gorm:"column:source;type:varchar(16);not null;default:'builtin'" json:"source"`
+	CreatedBy   int32      `gorm:"column:created_by;not null;default:0" json:"createdBy"`
+	UpdatedBy   int32      `gorm:"column:updated_by;not null;default:0" json:"updatedBy"`
+	DeletedAt   *time.Time `gorm:"column:deleted_at;index:idx_risk_rule_deleted" json:"deletedAt,omitempty"`
+	CreatedAt   time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt   time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*RiskRule) TableName() string { return TableNameRiskRule }
+
+// RiskRuleAudit is an append-only record of every management mutation.
+type RiskRuleAudit struct {
+	ID           int64     `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	RuleID       string    `gorm:"column:rule_id;type:varchar(64);not null;index:idx_risk_rule_audit_rule_created,priority:1" json:"ruleId"`
+	Action       string    `gorm:"column:action;type:varchar(16);not null" json:"action"`
+	ActorID      int32     `gorm:"column:actor_id;not null;default:0" json:"actorId"`
+	SnapshotJSON string    `gorm:"column:snapshot_json;type:text;not null" json:"-"`
+	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime;index:idx_risk_rule_audit_rule_created,priority:2" json:"createdAt"`
+}
+
+func (*RiskRuleAudit) TableName() string { return TableNameRiskRuleAudit }
 
 // RiskWarning 是一条告警记录（risk_warnings）。
 //

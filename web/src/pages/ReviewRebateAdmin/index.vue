@@ -23,7 +23,7 @@
       </section>
 
       <!-- ── 活动配置 ────────────────────────────────────────────── -->
-      <ConsolePanel title="活动配置" description="修改后立即生效。关闭开关后用户端整页显示「功能未开启」。">
+      <ConsolePanel title="活动配置" description="启用活动后开放用户入口。关闭所有活动后，侧栏隐藏「评价返现」。">
         <!-- 零活动是正常状态，不是读取失败：全新部署第一次进来就是这里。
              用 info（不是 warning/error）告诉管理员「还没建过」，而不是让他以为系统坏了。 -->
         <a-alert
@@ -46,17 +46,17 @@
         />
         <a-form layout="vertical" class="config-form" :disabled="loading || savingProgram">
           <div class="config-grid">
+            <a-form-item label="商店">
+              <a-radio-group :value="programSource" :disabled="loading || busy" @update:value="selectProgramSource">
+                <a-radio-button value="edge">Edge</a-radio-button>
+                <a-radio-button value="chrome">Chrome</a-radio-button>
+              </a-radio-group>
+            </a-form-item>
             <a-form-item label="活动名称" :html-for="fieldId('programName')">
               <a-input :id="fieldId('programName')" :value="programForm.name" @update:value="value => setProgramField('name', value)" placeholder="例如：商店评价返现" />
             </a-form-item>
-            <a-form-item label="商店条目地址" :html-for="fieldId('storeUrl')">
-              <a-input :id="fieldId('storeUrl')" :value="programForm.storeUrl" type="url" @update:value="value => setProgramField('storeUrl', value)" placeholder="https://…" />
-            </a-form-item>
-            <a-form-item label="扩展 ID" :html-for="fieldId('extensionId')">
-              <a-input :id="fieldId('extensionId')" :value="programForm.extensionId" @update:value="value => setProgramField('extensionId', value)" placeholder="用于限定抓取范围的扩展条目 ID" />
-            </a-form-item>
-            <a-form-item label="每账号可领次数" :html-for="fieldId('maxClaimsPerUser')">
-              <a-input-number :id="fieldId('maxClaimsPerUser')" :value="programForm.maxClaimsPerUser" :min="1" :precision="0" style="width: 100%" @update:value="value => setProgramField('maxClaimsPerUser', value)" />
+            <a-form-item label="每账号可领次数">
+              <span>该商店 1 次</span>
             </a-form-item>
             <a-form-item label="每账号可领金额（元）" :html-for="fieldId('maxAmountPerUser')">
               <a-input-number :id="fieldId('maxAmountPerUser')" :value="programForm.maxAmountPerUser" :min="0" :precision="6" style="width: 100%" @update:value="value => setProgramField('maxAmountPerUser', value)" />
@@ -133,7 +133,7 @@
         <!-- 筛选。时间控件**追加在末尾**（在状态、用户 ID 之后）：
              位置选择器（querySelector 取第一个同类元素）在新增同级控件时会选错，
              保持既有控件顺序不变可以避免整类误点。 -->
-        <a-form layout="inline" class="claim-filter-form" :onFinish="reloadClaims">
+        <a-form :model="claimFilters" layout="inline" class="claim-filter-form" :onFinish="reloadClaims">
           <a-form-item label="状态" :html-for="fieldId('claimStatusFilter')">
             <a-select
               :id="fieldId('claimStatusFilter')"
@@ -221,6 +221,7 @@
                 >查看截图</a>
                 <span v-else class="action-disabled">无图</span>
               </span>
+              <span v-else-if="column.key === 'source'">{{ record.source === 'chrome' ? 'Chrome' : 'Edge' }}</span>
               <span v-else-if="column.key === 'agentScore'">
                 {{ buildAgentScore(record) }}
                 <a-tag v-if="scorerLabel(record)" :color="scorerColor(record)" class="scorer-tag">{{ scorerLabel(record) }}</a-tag>
@@ -237,6 +238,7 @@
                   <a-button type="link" :disabled="loading || busy" @click="openDecisionDialog(record, 'approve')">批准</a-button>
                   <a-button type="link" danger :disabled="loading || busy" @click="openDecisionDialog(record, 'reject')">拒绝</a-button>
                 </template>
+                <a-button v-else-if="['approved', 'clawed_back'].includes(record.status)" type="link" :disabled="loading || busy" @click="verificationRecord = record">重核验与追缴</a-button>
                 <span v-else class="action-disabled">{{ claimStatusLabel(record.status) }}</span>
               </a-space>
             </template>
@@ -244,6 +246,14 @@
         </ConsoleTableShell>
         <a-empty v-else-if="claimsLoaded && !loadingClaims" description="当前没有待处理的提交" />
       </ConsolePanel>
+
+      <ReviewRebateVerificationDialog
+        v-if="verificationRecord"
+        :record="verificationRecord"
+        :can-manage="canManage"
+        @close="verificationRecord = null"
+        @changed="loadClaims"
+      />
 
       <!-- ── 规则编辑弹窗 ────────────────────────────────────────── -->
       <a-modal
@@ -340,7 +350,7 @@
               :maxlength="255"
               show-count
               :disabled="deciding"
-              placeholder="说明依据，会展示给用户"
+              placeholder="说明审核依据"
               @update:value="updateDecisionNote"
             />
           </a-form-item>
@@ -363,6 +373,7 @@ import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import {
   getReviewRebatePrograms,
   updateReviewRebateProgram,
+  createReviewRebateProgram,
   getReviewRebateRules,
   createReviewRebateRule,
   updateReviewRebateRule,
@@ -370,6 +381,8 @@ import {
   getReviewRebateClaims,
   decideReviewRebateClaim,
 } from '@/api/ReviewRebateApi'
+import { notifyReviewRebateAvailabilityChanged } from '@/utils/reviewRebateAvailability'
+import ReviewRebateVerificationDialog from './VerificationDialog.vue'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -382,6 +395,7 @@ const CLAIM_STATUS = {
   scored: { label: '已打分', color: 'cyan' },
   pending_review: { label: '待人工复核', color: 'gold' },
   approved: { label: '已通过', color: 'green' },
+  clawed_back: { label: '已追缴', color: 'default' },
   rejected: { label: '已拒绝', color: 'red' },
   below_threshold: { label: '未达门槛', color: 'default' },
   duplicate: { label: '疑似重复', color: 'orange' },
@@ -401,7 +415,7 @@ function readPositiveInt(value) {
 
 const emptyProgramForm = () => ({
   name: '', storeUrl: '', extensionId: '', enabled: false,
-  maxClaimsPerUser: 3, maxAmountPerUser: 5.04, minAgentConfidence: 0.6, policyVersion: '',
+  maxClaimsPerUser: 1, maxAmountPerUser: 5.04, minAgentConfidence: 0.6, policyVersion: '',
 })
 const emptyRuleForm = () => ({
   minStars: 5, maxStars: 5, minContentScore: 1, maxContentScore: 10,
@@ -412,7 +426,7 @@ const emptyClaimFilters = () => ({ status: undefined, userId: '', createdFrom: '
 
 export default {
   name: 'ReviewRebateAdminPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleTableShell, RequestFailureAlert },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleTableShell, RequestFailureAlert, ReviewRebateVerificationDialog },
   setup() {
     const route = useRoute()
     const prefix = 'review-rebate-admin-' + useId()
@@ -422,6 +436,8 @@ export default {
 
     const loading = ref(false)
     const loadedProgram = ref(null)
+    const programs = ref([])
+    const programSource = ref('edge')
     const programForm = reactive(emptyProgramForm())
     const programLoaded = ref(false)
     // programMissing 与 programLoaded 是两个不同的概念，不能合并：
@@ -462,6 +478,7 @@ export default {
     const decisionDialogOpen = ref(false)
     const decisionDialogKey = ref(0)
     const decisionRecord = ref({})
+    const verificationRecord = ref(null)
     const decisionForm = reactive({ decision: 'approve', note: '' })
 
     const programFailure = shallowRef(null)
@@ -506,6 +523,7 @@ export default {
       { title: '操作', key: 'action', width: 150 },
     ]
     const claimColumns = [
+      { title: '商店', dataIndex: 'source', key: 'source', width: 100 },
       { title: '提交号', dataIndex: 'id', key: 'id', width: 90 },
       { title: '用户', dataIndex: 'username', key: 'username', width: 175 },
       { title: '状态', dataIndex: 'status', key: 'status', width: 125 },
@@ -676,7 +694,7 @@ export default {
     })
 
     // ── 失败态 ──────────────────────────────────────────────────
-    const clearProgramFailure = () => { programFailure.value = null; programFailureOwner = () => false; programFailureContextKey.value += 1 }
+    const clearProgramFailure = () => { programFailure.value = null; programWarning.value = ''; programFailureOwner = () => false; programFailureContextKey.value += 1 }
     const clearRulesFailure = () => { rulesFailure.value = null; rulesFailureOwner = () => false; rulesFailureContextKey.value += 1 }
     const clearClaimsFailure = () => { claimsFailure.value = null; claimsFailureOwner = () => false; claimsFailureContextKey.value += 1 }
     const isCurrentProgramFailure = (source, context) => programFailureOwner() && Boolean(source) && source === programFailure.value && context === programFailureContextKey.value
@@ -710,13 +728,13 @@ export default {
       // 后端 GET /admin/review-rebate/programs 返回 {data:[...]}（与 rules 一致的信封）；
       // 直接把 {data:[...]} 当成活动对象会让整张表单变成空值 —— 看起来像「配置丢了」。
       // 多种历史形状都兼容：裸对象 / 裸数组 / {data:[...]} / {program:{...}}。
-      const empty = isProgramMissing(data)
-      const body = empty
-        ? null
-        : (Array.isArray(data)
-          ? data[0]
-          : (data?.program
-            || (Array.isArray(data?.data) ? data.data[0] : (data?.data && typeof data.data === 'object' ? data.data : data))))
+      const list = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : null)
+      if (list) programs.value = list
+      const candidates = list?.filter(item => (item?.source || 'edge') === programSource.value) || []
+      const body = list
+        ? [...candidates].reverse().find(item => item.enabled) || candidates.at(-1)
+        : data?.program || (data?.data && typeof data.data === 'object' ? data.data : data)
+      const empty = isProgramMissing(data) || (list && !body)
       if (!empty && (!body || typeof body !== 'object')) throw new Error('invalid program payload')
       programMissing.value = empty
       if (empty) {
@@ -733,12 +751,19 @@ export default {
       programForm.storeUrl = String(body.storeUrl || '')
       programForm.extensionId = String(body.extensionId || '')
       programForm.enabled = body.enabled === true
-      programForm.maxClaimsPerUser = readNonnegativeNumber(body.maxClaimsPerUser) ?? 3
+      programForm.maxClaimsPerUser = 1
       programForm.maxAmountPerUser = readNonnegativeNumber(body.maxAmountPerUser) ?? 5.04
       programForm.minAgentConfidence = readNonnegativeNumber(body.minAgentConfidence) ?? 0.6
       programForm.policyVersion = String(body.policyVersion || '')
       programMissing.value = false
       programLoaded.value = true
+    }
+    function selectProgramSource(source) {
+      if (!canManage() || loading.value || busy.value || programSource.value === source) return
+      programSource.value = source
+      programSaved.value = false
+      programWarning.value = ''
+      applyProgram(programs.value)
     }
     const loadProgram = async () => {
       if (!canManage()) return false
@@ -827,17 +852,6 @@ export default {
     const saveProgram = async () => {
       if (!canManage() || savingProgram.value || programValidation.value) return
       const id = readPositiveInt(loadedProgram.value?.id)
-      if (!id) {
-        // 零活动时没有 id 可 PUT。**这不是数据格式错误**（原来的
-        // MALFORMED_RESPONSE 会让管理员以为后端坏了），而是后端**没有
-        // 创建活动的 HTTP 接口** —— service.CreateReviewRebateProgramWithDB
-        // 全仓零调用方，router.go 只有 GET/PUT。这里如实说明缺口，
-        // 并给出可执行的绕过方式，而不是把责任推给网络。
-        programWarning.value = '当前没有任何评价返现活动，且后端尚未提供「创建活动」接口，因此无法在此页新建。'
-          + '请先在数据库中插入一条 review_rebate_programs 记录（id 会自动生成），刷新后即可在此编辑。'
-        programWarningContextKey.value += 1
-        return
-      }
       const ticket = ++writeVersion
       const owns = () => canManage() && ticket === writeVersion
       clearProgramFailure()
@@ -848,22 +862,29 @@ export default {
       try {
         const payload = {
           name: String(programForm.name || '').trim(),
-          storeUrl: String(programForm.storeUrl || '').trim(),
-          extensionId: String(programForm.extensionId || '').trim(),
           enabled: programForm.enabled === true,
           maxClaimsPerUser: Number(programForm.maxClaimsPerUser),
           maxAmountPerUser: Number(programForm.maxAmountPerUser),
           minAgentConfidence: Number(programForm.minAgentConfidence),
           policyVersion: String(programForm.policyVersion || '').trim(),
         }
-        const res = await updateReviewRebateProgram(id, payload)
+        const res = await (id ? updateReviewRebateProgram(id, payload) : createReviewRebateProgram({ ...payload, source: programSource.value }))
+        const saved = [200, 201].includes(res?.status)
+        if (saved) notifyReviewRebateAvailabilityChanged()
         if (!ownsFailure()) return
-        if (res?.status !== 200) { programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return }
+        if (!saved) {
+          if (res?.status === 400 && typeof res.data?.message === 'string') programWarning.value = res.data.message
+          programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return
+        }
+        programs.value = [...programs.value.filter(row => row.id !== res.data?.id), { ...res.data, source: res.data?.source || programSource.value }]
         applyProgram(res.data)
         programSaved.value = true
         message.success('活动配置已保存')
       } catch (error) {
-        if (ownsFailure()) { programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(error) }
+        if (ownsFailure()) {
+          if (error?.response?.status === 400 && typeof error.response.data?.message === 'string') programWarning.value = error.response.data.message
+          programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(error)
+        }
       } finally {
         if (owns()) savingProgram.value = false
       }
@@ -1014,6 +1035,7 @@ export default {
       rules.value = []; rulesLoaded.value = false
       claims.value = []; claimsLoaded.value = false; loadingClaims.value = false
       ruleDialogOpen.value = false; decisionDialogOpen.value = false
+      verificationRecord.value = null
       ruleWarning.value = ''; decisionWarning.value = ''
       savingProgram.value = false; savingRule.value = false; deciding.value = false
       clearProgramFailure(); clearRulesFailure(); clearClaimsFailure()
@@ -1044,6 +1066,7 @@ export default {
     return {
       fieldId, canManage, busy, loading,
       programForm, programLoaded, savingProgram, programSaved, programValidation,
+      programSource, selectProgramSource, verificationRecord,
       programMissing, programWarning, programWarningContextKey,
       rules, rulesLoaded, savingRule, ruleWarning, ruleColumns,
       claims, claimsLoaded, loadingClaims, deciding, decisionWarning, claimColumns,

@@ -15,7 +15,7 @@ const (
 	// paymentEventBackfillBatchSize 是回填时 recharge_orders 的分批大小。
 	paymentEventBackfillBatchSize = 500
 	// paymentEventBackfillSource 标记回填产生的事件来源，与实时回调区分。
-	paymentEventBackfillSource = "backfill"
+	paymentEventBackfillSource = entity.PaymentEventSourceBackfill
 )
 
 // ensurePaymentEventSchema 建立「支付已入账」唯一事件表，并回填历史已入账订单。
@@ -28,10 +28,8 @@ const (
 // 于是同一个网关订单被加款第二次 —— 这是真实资金漏洞，见
 // internal/entity/payment_event.go 的注释。
 //
-// 回填的判据是 `paid_at IS NOT NULL`（不是 status='paid'）：
-// paid_at 只在加款路径写入，所以它才是「曾经入过账」的准确集合，
-// 同时覆盖「现在仍是 paid」与「paid 之后被改成 refunded」两种情况。
-// 不回填会让历史订单继续暴露在同一个漏洞下。
+// 老版本运营也会写 paid_at。仅回填有匹配充值流水的历史订单（含已退款），
+// 既有事件、歧义订单和钱包一律不改。歧义订单由运营核对原渠道流水与账单。
 //
 // 纪律：
 //   - 结构性建表失败 → 返回错误，让启动 FATAL 看见；
@@ -128,9 +126,8 @@ func backfillPaymentEvents(db *gorm.DB) error {
 		rows := make([]paymentEventBackfillRow, 0, paymentEventBackfillBatchSize)
 		if err := db.Table(entity.TableNameRechargeOrder).
 			Select("id, user_id, order_no, amount, third_party_order_no").
-			// paid_at 只在加款路径写入 —— 它才是「曾经入过账」的准确判据，
-			// 且不随 status 被改成 refunded 而丢失。
 			Where("id > ? AND paid_at IS NOT NULL AND COALESCE(order_no, '') <> ''", lastID).
+			Where(entity.RechargeCreditEvidenceSQL).
 			Order("id asc").
 			Limit(paymentEventBackfillBatchSize).
 			Scan(&rows).Error; err != nil {
