@@ -7,6 +7,27 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 )
 
+func TestReviewRebateExistingEnabledActivityIgnoresLegacySwitch(t *testing.T) {
+	db := newReviewRebateTestDB(t)
+	user := seedReviewRebateUser(t, db, 52, "rebate-existing", "user")
+	program := seedReviewRebateProgram(t, db, true, 3, 5.04, 0.6)
+	setReviewRebateSwitch(t, db, false)
+	view, err := GetReviewRebateProgramViewWithDB(db, user.ID)
+	if err != nil || !view.Program.Enabled || view.Program.ID != program.ID || !GetReviewRebateEnabledWithDB(db) {
+		t.Fatalf("existing enabled activity must open without re-saving legacy settings: %+v %v", view, err)
+	}
+	if _, err := UpdateReviewRebateProgramWithDB(db, program.ID, ReviewRebateProgramUpdate{Enabled: boolPointer(false)}); err != nil {
+		t.Fatal(err)
+	}
+	setReviewRebateSwitch(t, db, true)
+	if GetReviewRebateEnabledWithDB(db) {
+		t.Fatal("legacy true must not open a disabled activity")
+	}
+	if _, err := GetReviewRebateProgramViewWithDB(db, user.ID); !errors.Is(err, ErrReviewRebateDisabled) {
+		t.Fatalf("disabled activity must close the user view: %v", err)
+	}
+}
+
 func TestReviewRebateSavingEnabledActivityOpensUserEntry(t *testing.T) {
 	for _, create := range []bool{true, false} {
 		name := "update"
@@ -33,15 +54,14 @@ func TestReviewRebateSavingEnabledActivityOpensUserEntry(t *testing.T) {
 			if err != nil || !view.Program.Enabled || view.Program.ID != program.ID {
 				t.Fatalf("saving enabled activity must open the real user view: %+v %v", view, err)
 			}
-			// An explicit global shutdown still takes effect until an administrator
-			// deliberately enables the activity again; unrelated edits cannot reopen it.
+			// A stale hidden switch cannot undo an explicitly enabled activity.
 			setReviewRebateSwitch(t, db, false)
 			title := "仅改活动名称"
 			if _, err := UpdateReviewRebateProgramWithDB(db, program.ID, ReviewRebateProgramUpdate{Name: &title}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := GetReviewRebateProgramWithDB(db); !errors.Is(err, ErrReviewRebateDisabled) {
-				t.Fatalf("unrelated edit bypassed shutdown: %v", err)
+			if current, err := GetReviewRebateProgramWithDB(db); err != nil || current.ID != program.ID {
+				t.Fatalf("stale hidden switch closed an enabled activity: %+v %v", current, err)
 			}
 		})
 	}

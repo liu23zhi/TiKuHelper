@@ -161,11 +161,11 @@ func TestReviewRebateSettingDefaults(t *testing.T) {
 	}
 }
 
-// Test 1a：开关关闭 → 提交被拒，规则表不生效。
+// Disabled activities reject submissions even if the old site flag is true.
 func TestReviewRebateDisabledRejectsSubmitAndRules(t *testing.T) {
 	db := newReviewRebateTestDB(t)
 	user := seedReviewRebateUser(t, db, 11, "rr-disabled-user", "user")
-	program := seedReviewRebateProgram(t, db, true, 3, 5.04, 0.6)
+	program := seedReviewRebateProgram(t, db, false, 3, 5.04, 0.6)
 	seedReviewRebateRule(t, db, entity.ReviewRebateRule{
 		ProgramID: program.ID, MinStars: 1, MaxStars: 1, MinContentScore: 1, MaxContentScore: 1,
 		Amount: 0.001, Priority: 10, Enabled: true,

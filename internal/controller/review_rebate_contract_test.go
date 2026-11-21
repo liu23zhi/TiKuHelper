@@ -482,7 +482,10 @@ func TestReviewRebateHTTPAdminClaimsExposeReviewFields(t *testing.T) {
 func TestReviewRebateHTTPDisabledShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newReviewRebateControllerTestDB(t)
-	seedReviewRebateControllerProgram(t, db)
+	program, _ := seedReviewRebateControllerProgram(t, db)
+	if err := db.Model(&program).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
 	member := seedReviewRebateControllerUser(t, db, 695, "rr-disabled-shape", "user")
 	installReviewRebateTestDB(t, db)
 

@@ -2,6 +2,7 @@ import request from '../utils/request'
 
 // 评价返现：用户端「评价返现」+ 管理端「评价返现管理」。
 // 后端契约（设计定稿 16-评价返现与邀请返现 §1.8）：
+//   GET    /api/user/review-rebate/availability            是否有开启的活动
 //   GET    /api/user/review-rebate/program                 当前活动、规则表（脱敏）、我的已领
 //   POST   /api/user/review-rebate/claims                  multipart 提交截图（字段名 file）
 //   GET    /api/user/review-rebate/claims                  我的提交列表
@@ -43,6 +44,17 @@ export function submitReviewRebateClaim(file, reviewUrl = '') {
 
 export function getReviewRebateProgram() {
   return request({ errorFeedback: 'local', url: `${userBase}/program`, method: 'get' })
+}
+
+export function getReviewRebateAvailability(signal) {
+  return request({
+    errorFeedback: 'local',
+    url: `${userBase}/availability`,
+    method: 'get',
+    signal,
+    retryPolicy: 'single',
+    timeout: 10_000,
+  })
 }
 
 export function getMyReviewRebateClaims() {

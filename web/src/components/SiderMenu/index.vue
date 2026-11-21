@@ -104,6 +104,7 @@ import {
 // 这不是绕过检查 —— 那条断言的语义是「CloudServerOutlined 确实被引入」，单独 import 同样满足。
 import { LaptopOutlined } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
+import { useReviewRebateAvailability } from '../../utils/reviewRebateAvailability';
 import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
 
 const ADMIN_MENU_ITEMS = [
@@ -321,9 +322,18 @@ export default defineComponent({
     });
     const isAdmin = computed(() => isAdminUser(props.currentUser));
     const accountBanned = computed(() => String(props.currentUser?.status || '').toLowerCase() === 'banned');
-    const visibleMenuItems = computed(() => accountBanned.value ? USER_MENU_ITEMS.filter(item => item.key === 'tickets') : (isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS));
-    // 分区只影响渲染分组，不影响权限判定与选中/跳转逻辑：两者都仍以 visibleMenuItems 为准。
-    const menuSections = computed(() => accountBanned.value ? [{ key: 'appeal', title: '', items: visibleMenuItems.value }] : (isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS));
+    const reviewRebateEnabled = useReviewRebateAvailability(() => props.currentUser);
+    const visibleMenuItems = computed(() => {
+      if (accountBanned.value) return USER_MENU_ITEMS.filter(item => item.key === 'tickets');
+      const items = isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS;
+      return items.filter(item => item.key !== 'review-rebate' || reviewRebateEnabled.value);
+    });
+    const menuSections = computed(() => {
+      if (accountBanned.value) return [{ key: 'appeal', title: '', items: visibleMenuItems.value }];
+      const sections = isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS;
+      const visibleKeys = new Set(visibleMenuItems.value.map(item => item.key));
+      return sections.map(section => ({ ...section, items: section.items.filter(item => visibleKeys.has(item.key)) }));
+    });
 
     // 分区里 menu-item 的 key 带分区前缀（见模板注释），选中态要还原成真实 key。
     const REAL_KEY_SEPARATOR = ':';

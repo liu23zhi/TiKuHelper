@@ -342,8 +342,9 @@ test('模板按标题决定是否渲染分区标题（缺标题即退化为扁�
 test('分区不影响权限判定与选中态：仍以 visibleMenuItems 为准', () => {
   // 红线：不动 isAdminUser 那套权限判定；分区只是渲染分组。
   assert.match(source, /const isAdmin = computed\(\(\) => isAdminUser\(props\.currentUser\)\)/);
-  assert.match(source, /const visibleMenuItems = computed\(\(\) => accountBanned\.value \? USER_MENU_ITEMS\.filter\(item => item\.key === 'tickets'\) : \(isAdmin\.value \? ADMIN_MENU_ITEMS : USER_MENU_ITEMS\)\)/);
-  assert.match(source, /const menuSections = computed\(\(\) => accountBanned\.value \? \[\{ key: 'appeal', title: '', items: visibleMenuItems\.value \}\] : \(isAdmin\.value \? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS\)\)/);
+  const sectionSetup = source.slice(source.indexOf('const menuSections = computed'), source.indexOf('const REAL_KEY_SEPARATOR'));
+  assert.match(sectionSetup, /const visibleKeys = new Set\(visibleMenuItems\.value\.map/);
+  assert.match(sectionSetup, /section\.items\.filter\(item => visibleKeys\.has\(item\.key\)\)/);
 
   // 选中态 / 点击 / watch 仍读 visibleMenuItems 做**权限判定与真实 key 选择**，
   // 不因分区划分而改变「哪个 key 是合法的」。

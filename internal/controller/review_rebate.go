@@ -165,6 +165,24 @@ var (
 )
 
 // ReviewRebateProgram 返回当前活动、规则表（脱敏）与本人额度（用户端）。
+func ReviewRebateAvailability(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if _, ok := currentOperator(c); !ok {
+		return
+	}
+	db, err := requireReviewRebateDB()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "无法确认评价返现状态"})
+		return
+	}
+	enabled, err := service.ReviewRebateAvailabilityWithDB(db.WithContext(c.Request.Context()))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "无法确认评价返现状态"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
+}
+
 func ReviewRebateProgram(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)

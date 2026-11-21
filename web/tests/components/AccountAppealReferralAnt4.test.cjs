@@ -9,6 +9,7 @@ axios.defaults.adapter=config=>{
  const method=String(config.method||'get'),url=String(config.url),data=typeof config.data==='string'?JSON.parse(config.data):config.data;calls.push({method,url,data})
  let body,status=200
  if(url==='/api/admin/referral-settings')body={enabled:true,rate:0.125}
+ else if(url==='/api/user/review-rebate/availability'&&method==='get')body={enabled:true}
  else if(url==='/api/tickets/31/account-action'&&method==='post')body={message:'账号处理完成'}
  else if(url==='/api/admin/review-rebate/programs'&&method==='post'){body={message:'活动名称不能为空'};status=400}
  else if(['/api/admin/review-rebate/programs','/api/admin/review-rebate/rules','/api/admin/review-rebate/claims'].includes(url))body={data:[]}
@@ -24,7 +25,7 @@ test('banned administrator sees only feedback and enabled administrator shares r
  assert.match(wrapper.text(),/工单反馈/)
  assert.doesNotMatch(wrapper.text(),/系统管理|个人中心|我的邀请|评价返现|工单管理/)
  await wrapper.setProps({currentUser:admin});await settle()
- assert.match(wrapper.text(),/我的邀请/);assert.match(wrapper.text(),/评价返现/);assert.match(wrapper.text(),/邀请码管理/)
+ assert.match(wrapper.text(),/我的邀请/);assert.equal(wrapper.get('a[href="/review-rebate"]').text(),'评价返现');assert.match(wrapper.text(),/邀请码管理/)
 })
 test('referral panel reads percent and saves only dedicated reward settings',async()=>{
  const wrapper=await page(Referral)

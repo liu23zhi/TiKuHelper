@@ -455,6 +455,7 @@ func SetAPIRouter(router *gin.Engine) {
 	// 评价返现（16-*.md §1.8）。用户端只碰自己的数据（handler 内固定用当前账户），
 	// 管理端一律 Auth + RequireAdmin；开关默认关闭，关闭时入口返回 400。
 	apiRouter.GET("/user/review-rebate/program", controller.Auth, controller.ReviewRebateProgram)
+	apiRouter.GET("/user/review-rebate/availability", controller.Auth, controller.ReviewRebateAvailability)
 	apiRouter.POST("/user/review-rebate/claims", controller.Auth, controller.CreateReviewRebateClaim)
 	apiRouter.GET("/user/review-rebate/claims", controller.Auth, controller.MyReviewRebateClaims)
 	apiRouter.GET("/admin/review-rebate/programs", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebatePrograms)

@@ -26,13 +26,15 @@ function pendingRow(foreign=false){return{id:foreign?502:501,userId:foreign?6100
 function orderBody(mode){const rows=mode==='own'?[pendingRow()]:mode==='mixed'?[pendingRow(),pendingRow(true)]:[];return{data:rows,total:rows.length,page:1,pageSize:10,summary:{totalAmount:rows.length*12.34,currentPageAmount:rows.length*12.34}}}
 const previousAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
- const methodName=String(config.method||'get').toLowerCase(),url=String(config.url),kind=kindOf(methodName,url)
+ const methodName=String(config.method||'get').toLowerCase(),url=String(config.url)
+ const kind=methodName==='get'&&url==='/api/user/review-rebate/availability'?'review-rebate-availability':kindOf(methodName,url)
  const data=typeof config.data==='string'?JSON.parse(config.data):config.data,params=clone(config.params||{}),key=config.headers?.get?.('Idempotency-Key')||config.headers?.['Idempotency-Key']
  const call={kind,method:methodName,url,params,data:clone(data),actor:user.getStoredCurrentUser()?.id||null,id:(calls.length+1).toString(16).padStart(32,'0'),idempotencyKeyPresent:typeof key==='string'&&!!key,idempotencyKeySHA256:typeof key==='string'?crypto.createHash('sha256').update(key).digest('hex'):null}
  calls.push(call)
  if(kind==='forbidden'){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  assert.ok(cur,'API belongs to an active native case')
  const mode=cur.mode;let status=200,body
+ if(kind==='review-rebate-availability')body={enabled:false}
  if(kind==='session'){assert.equal(user.getStoredCurrentUser()?.id,A.id,'heartbeat belongs only to the legitimate protected synthetic actor');assert.ok(config.signal&&config.data==null&&config.params===undefined,'original bodyless cancellable heartbeat GET');body={message:'ok'}}
  if(kind==='public')body={siteName:'Synthetic Pending Flow',registerEnabled:true}
  if(kind==='balance'){status=mode.balanceStatus;body={...A,balance:mode.balance,minRechargeAmount:1}}

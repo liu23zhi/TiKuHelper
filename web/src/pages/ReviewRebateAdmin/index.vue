@@ -23,7 +23,7 @@
       </section>
 
       <!-- ── 活动配置 ────────────────────────────────────────────── -->
-      <ConsolePanel title="活动配置" description="保存开启的活动会同时开启站点评价返现；关闭活动后用户无法提交该活动。">
+      <ConsolePanel title="活动配置" description="启用活动后开放用户入口。关闭所有活动后，侧栏隐藏「评价返现」。">
         <!-- 零活动是正常状态，不是读取失败：全新部署第一次进来就是这里。
              用 info（不是 warning/error）告诉管理员「还没建过」，而不是让他以为系统坏了。 -->
         <a-alert
@@ -371,6 +371,7 @@ import {
   getReviewRebateClaims,
   decideReviewRebateClaim,
 } from '@/api/ReviewRebateApi'
+import { notifyReviewRebateAvailabilityChanged } from '@/utils/reviewRebateAvailability'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -847,8 +848,10 @@ export default {
           policyVersion: String(programForm.policyVersion || '').trim(),
         }
         const res = await (id ? updateReviewRebateProgram(id, payload) : createReviewRebateProgram(payload))
+        const saved = [200, 201].includes(res?.status)
+        if (saved) notifyReviewRebateAvailabilityChanged()
         if (!ownsFailure()) return
-        if (![200, 201].includes(res?.status)) {
+        if (!saved) {
           if (res?.status === 400 && typeof res.data?.message === 'string') programWarning.value = res.data.message
           programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return
         }

@@ -361,8 +361,11 @@ func TestReviewRebateUploadRejectsNonImage(t *testing.T) {
 func TestReviewRebateHTTPDisabledRejectsSubmit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newReviewRebateControllerTestDB(t)
-	// 不写开关 = 默认关闭。
-	seedReviewRebateControllerProgram(t, db)
+	// Explicit activity state closes the feature, independent of the old flag.
+	program, _ := seedReviewRebateControllerProgram(t, db)
+	if err := db.Model(&program).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
 	member := seedReviewRebateControllerUser(t, db, 621, "rr-off-member", "user")
 	installReviewRebateTestDB(t, db)
 	t.Chdir(t.TempDir())

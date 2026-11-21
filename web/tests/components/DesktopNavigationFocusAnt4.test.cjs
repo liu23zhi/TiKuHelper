@@ -7,6 +7,7 @@ const assert = require('node:assert/strict'), path = require('node:path'), fs = 
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter); Module._initPaths()
 const helper = require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
+const { reviewRebateAvailabilityResponse } = require('../helpers/review-rebate-availability.cjs')
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises, DOMWrapper } = require('@vue/test-utils'), { h, ref, nextTick } = require('vue'), { createRouter, createMemoryHistory, onBeforeRouteLeave, isNavigationFailure, NavigationFailureType } = require('vue-router'), Antd = require('ant-design-vue')
@@ -18,6 +19,7 @@ function deny(kind) { network.push(kind); throw new Error('FORBIDDEN_DESKTOP_FOC
 window.XMLHttpRequest.prototype.open = () => deny('XHR'); globalThis.fetch = window.fetch = () => deny('FETCH'); window.open = () => deny('WINDOW_OPEN')
 globalThis.WebSocket = window.WebSocket = class { constructor() { deny('WEBSOCKET') } }
 for (const name of ['node:http', 'node:https']) { const transport = require(name); transport.request = () => deny(name); transport.get = () => deny(name) }
+require('axios').defaults.adapter = config => reviewRebateAvailabilityResponse(config) || deny('unexpected-api')
 window.addEventListener('error', event => runtime.push(String(event.error?.name || event.message))); window.addEventListener('unhandledrejection', event => runtime.push(String(event.reason?.name || event.reason)))
 const apiPath = path.join(web, 'src/api/TikuComponentApi.js'), api = new Module(apiPath); api.loaded = true
 api.exports = {

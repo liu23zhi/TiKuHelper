@@ -96,15 +96,12 @@ const ReferralRebateEnabledSettingKey = "referral_rebate_enabled"
 // 比例在产生返佣时快照进 referral_rebates.rate，改配置不回溯已产生的记录。
 const ReferralRebateRateSettingKey = "referral_rebate_rate"
 
-// 评价返现的四项配置。全部默认关闭/保守值：缺表、缺记录、值非法一律回落默认，
-// 其中 enabled 必须回落 false —— 配置读不出来绝不能变成「悄悄开活动」。
+// 评价返现保留历史配置键；当前开放状态由活动表的 enabled 决定。
+// 次数、金额及置信度的缺省值仍保持保守处理。
 //
 // 规则表本身**不塞进 system_settings**（条数不定），走 review_rebate_rules 表 + 管理页。
 const (
-	// ReviewRebateEnabledSettingKey 是评价返现总开关，默认 false。
-	//
-	// 关闭时：提交接口拒绝、Agent 打分拒绝、管理端决策接口拒绝。
-	// 关闭只影响「是否继续产生新数据」，已存在的 claim/award 行保持原样可查。
+	// ReviewRebateEnabledSettingKey 仅保留旧配置兼容，不能覆盖活动状态。
 	ReviewRebateEnabledSettingKey = "review_rebate_enabled"
 	// ReviewRebateMaxClaimsPerUserSettingKey 是每账号累计提交次数上限，默认 3。
 	ReviewRebateMaxClaimsPerUserSettingKey = "review_rebate_max_claims_per_user"
@@ -1210,10 +1207,12 @@ func resolveBoolSettingInput(db *gorm.DB, requested *bool, key string) bool {
 	return getBoolSystemSetting(db, key)
 }
 
-// GetReviewRebateEnabledWithDB 返回评价返现总开关，默认关闭。
-// 缺表、缺记录、值非法一律按关闭处理：配置读不出来时绝不能变成「悄悄开活动」。
+// GetReviewRebateEnabledWithDB reports the effective activity state. The legacy
+// review_rebate_enabled value remains readable for old configurations but no
+// longer overrides an activity's explicit enabled flag.
 func GetReviewRebateEnabledWithDB(db *gorm.DB) bool {
-	return getBoolSystemSetting(db, ReviewRebateEnabledSettingKey)
+	enabled, err := ReviewRebateAvailabilityWithDB(db)
+	return err == nil && enabled
 }
 
 // GetReviewRebateMaxClaimsPerUserWithDB 返回每账号累计提交次数上限，默认 3。

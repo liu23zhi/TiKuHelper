@@ -299,12 +299,8 @@ func normalizeReviewRebateClaimURL(value string) string {
 
 // GetReviewRebateProgramWithDB 取「当前生效」的活动（用户端入口用）。
 //
-// 选择口径：开关开启 + program.Enabled 的最新一行（ID 最大）。
-// 一行都没有 → ErrReviewRebateProgramNotFound（不是 500）。
+// 以最新启用的活动为准；历史隐藏开关不再参与判定。
 func GetReviewRebateProgramWithDB(db *gorm.DB) (entity.ReviewRebateProgram, error) {
-	if !GetReviewRebateEnabledWithDB(db) {
-		return entity.ReviewRebateProgram{}, ErrReviewRebateDisabled
-	}
 	if !ReviewRebateSchemaAvailable(db) {
 		return entity.ReviewRebateProgram{}, ErrReviewRebateSchemaUnavailable
 	}
@@ -313,11 +309,25 @@ func GetReviewRebateProgramWithDB(db *gorm.DB) (entity.ReviewRebateProgram, erro
 		Where("enabled = ?", true).Order("id desc").Take(&program).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return entity.ReviewRebateProgram{}, ErrReviewRebateProgramNotFound
+			return entity.ReviewRebateProgram{}, ErrReviewRebateDisabled
 		}
 		return entity.ReviewRebateProgram{}, err
 	}
 	return program, nil
+}
+
+// ReviewRebateAvailabilityWithDB shares the activity state used by user reads
+// and submissions, without loading private usage, claim history or rule details.
+func ReviewRebateAvailabilityWithDB(db *gorm.DB) (bool, error) {
+	if !ReviewRebateSchemaAvailable(db) {
+		return false, nil
+	}
+	var program entity.ReviewRebateProgram
+	err := reviewRebateSession(db).Select("id").Where("enabled = ?", true).Order("id DESC").Take(&program).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // ListReviewRebateProgramsWithDB 返回全部活动（管理员），按 ID 升序。

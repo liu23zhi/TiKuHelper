@@ -24,6 +24,7 @@ assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'actua
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url);calls.push({method,url})
  const response=(status,data,id)=>({status,data,headers:id?{'x-request-id':id}:{},config,request:{memoryOnly:true}})
+ if(method==='get'&&url==='/api/user/review-rebate/availability')return Promise.resolve(response(200,{enabled:false}))
  if(method==='get'&&url==='/adapter-service/user/session'){assert.ok(Number.isSafeInteger(Number(user.getStoredCurrentUser()?.id))&&Number(user.getStoredCurrentUser()?.id)>0,'protected synthetic actor only; anonymous polling stays forbidden');assert.ok(config.signal&&config.data==null&&config.params===undefined,'bodyless cancellable session GET');return Promise.resolve(response(200,{message:'ok'}))}
  if(method==='get'&&url==='/adapter-service/public/register-status')return Promise.resolve(response(200,{siteName:'Synthetic list app'}))
  if(method==='get'&&url==='/adapter-service/system-settings')return Promise.resolve(response(200,{siteName:'Synthetic settings',maxLogSizeBytes:2*1024*1024*1024,minRechargeAmount:1,captchaProvider:'local'}))

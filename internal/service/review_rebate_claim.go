@@ -254,11 +254,11 @@ func getReviewRebateProgramByID(db *gorm.DB, id int32) (entity.ReviewRebateProgr
 //	由 controller 翻译成 HTTP 状态码与用户可读文案 —— 语义等价于规格里的状态值，
 //	但不需要为「没发生的事」写一行账。
 func CreateReviewRebateClaimWithDB(db *gorm.DB, input ReviewRebateClaimCreateInput) (entity.ReviewRebateClaim, error) {
-	if !GetReviewRebateEnabledWithDB(db) {
-		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
-	}
 	if !ReviewRebateSchemaAvailable(db) {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateSchemaUnavailable
+	}
+	if !GetReviewRebateEnabledWithDB(db) {
+		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
 	}
 	if input.UserID <= 0 {
 		return entity.ReviewRebateClaim{}, fmt.Errorf("%w: 用户无效", ErrReviewRebateInvalidInput)
@@ -531,11 +531,11 @@ func GetReviewRebateClaimWithDB(db *gorm.DB, id int32) (entity.ReviewRebateClaim
 //
 // 幂等：已批准/已拒绝的行不再打分（否则会把已经入账的金额改掉，账就更乱了）。
 func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScorer) (entity.ReviewRebateClaim, error) {
-	if !GetReviewRebateEnabledWithDB(db) {
-		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
-	}
 	if !ReviewRebateSchemaAvailable(db) {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateSchemaUnavailable
+	}
+	if !GetReviewRebateEnabledWithDB(db) {
+		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
 	}
 	if scorer == nil {
 		scorer = DefaultReviewRebateScorer
@@ -689,11 +689,11 @@ func normalizeReviewRebateContentScore(score int) (int, error) {
 //     事务回滚 → 钱包不会被加两次。这是「重复批准只留一条 award」的机械保证，
 //     不依赖调用方是否先查过状态。
 func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note string) (entity.ReviewRebateClaim, error) {
-	if !GetReviewRebateEnabledWithDB(db) {
-		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
-	}
 	if !ReviewRebateSchemaAvailable(db) {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateSchemaUnavailable
+	}
+	if !GetReviewRebateEnabledWithDB(db) {
+		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
 	}
 	if reviewer.ID <= 0 {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateReviewerInvalid
