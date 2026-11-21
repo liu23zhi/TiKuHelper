@@ -103,3 +103,50 @@ func TestStorageCapacityEvictsOldestAndRejectsInvalidEvents(t *testing.T) {
 		t.Fatalf("accepted unknown event")
 	}
 }
+
+func TestCursorIsStableAcrossWindowBoundariesAndLaterWrites(t *testing.T) {
+	st := New(t.TempDir())
+	now := time.Date(2026, 11, 21, 4, 0, 0, 0, time.UTC)
+	st.now = func() time.Time { return now }
+	const total = 1100
+	for base := 0; base < total; base += 50 {
+		batch := Batch{Version: "1.2.3"}
+		for i := base; i < base+50; i++ {
+			v := int64(i)
+			batch.Entries = append(batch.Entries, Entry{Time: now, Event: "sync.success", Level: "info", Count: &v})
+		}
+		if err := st.Append(42, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expected := total - 1
+	cursor := ""
+	for {
+		page, e := st.Read(cursor, 73, 0)
+		if e != nil {
+			t.Fatal(e)
+		}
+		for _, r := range page.Entries {
+			if r.Count == nil || int(*r.Count) != expected {
+				t.Fatalf("cursor lost sequence near %d", expected)
+			}
+			expected--
+		}
+		if cursor == "" {
+			if e = st.Append(99, Batch{Version: "1.2.3", Entries: []Entry{{Time: now, Event: "settings.saved", Level: "info"}}}); e != nil {
+				t.Fatal(e)
+			}
+		}
+		if page.Next == "" {
+			break
+		}
+		cursor = page.Next
+	}
+	if expected != -1 {
+		t.Fatalf("pagination ended early at %d", expected)
+	}
+	page, e := st.Read("", 100, 99)
+	if e != nil || len(page.Entries) != 1 || page.Entries[0].UserID != 99 {
+		t.Fatalf("owner page: %+v %v", page, e)
+	}
+}
