@@ -1,8 +1,12 @@
 package extensionlogs
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -65,7 +69,7 @@ func TestFileStoreSessionsPolicyPagingAndExpiry(t *testing.T) {
 	if e = st.Append(17, testBatch(a, now, "sync.success")); e != nil {
 		t.Fatal(e)
 	}
-	page, e = st.Read("", 10, Filter{17, a.DeviceID, a.LaunchID})
+	page, e = st.Read("", 10, Filter{UserID: 17, DeviceID: a.DeviceID, LaunchID: a.LaunchID})
 	if e != nil || len(page.Entries) != 3 || page.Entries[0].Event != "sync.success" || page.Entries[2].Event != "session.start" {
 		t.Fatalf("specific launch after restart: %+v %v", page, e)
 	}
@@ -199,5 +203,116 @@ func TestStableCursorWhenASecondLaunchAppends(t *testing.T) {
 	}
 	if expected != -1 || starts != 2 {
 		t.Fatal(expected, starts)
+	}
+}
+
+func TestModesAndBrowserInstancesSeparateLaunchFiles(t *testing.T) {
+	dir := t.TempDir()
+	st := New(dir)
+	const key = "fixture-host"
+	for _, meta := range []string{
+		"{}",
+		`{"mode":"native_browser","browser_id":"browser-1"}`,
+		`{"mode":"native_browser","browser_id":"browser-2"}`,
+		`{"mode":"native_browser","browser_id":"browser-3"}`,
+		`{"mode":"native_exam"}`,
+	} {
+		m := testSession(key, launchA)
+		if err := json.Unmarshal([]byte(meta), &m); err != nil {
+			t.Fatal(err)
+		}
+		created, err := st.Start(33, m)
+		if err != nil || !created {
+			t.Fatal("distinct mode/browser launch was merged", meta)
+		}
+		if err = st.Append(33, testBatch(m, time.Now(), "sync.success")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil || len(files) != 5 {
+		t.Fatal("each account/mode/device/browser/launch requires its own file")
+	}
+	for _, p := range files {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sample map[string]any
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		if err = dec.Decode(&sample); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := sample["mode"]; !ok {
+			t.Fatal("new rows must explicitly record the mode")
+		}
+		_, hasBrowser := sample["browser_id"]
+		if hasBrowser != (sample["mode"] == "native_browser") {
+			t.Fatal("browser_id not confined to browser logs")
+		}
+		for dec.More() {
+			var row map[string]any
+			if err = dec.Decode(&row); err != nil || row["mode"] != sample["mode"] || row["browser_id"] != sample["browser_id"] {
+				t.Fatal("mixed instance file")
+			}
+		}
+	}
+}
+func TestLegacyLogPolicyEnableDefault(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		raw     string
+		enabled bool
+	}{{`{"retention_days":8,"max_gb":2}`, true}, {`{"enabled":false,"retention_days":8,"max_gb":2}`, false}} {
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		p, err := New(dir).Policy()
+		if err != nil || p.Enabled != tc.enabled || p.RetentionDays != 8 || p.MaxGB != 2 {
+			t.Fatal("stored policy enable/default mismatch")
+		}
+	}
+}
+
+func TestPreModeFilesRemainExtensionOnlyAfterColdReopen(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	seq := now.UnixNano()
+	old := filepath.Join(dir, fmt.Sprintf("%019d_u33_dlegacy-device_s%s.jsonl", seq, launchA))
+	fixture := map[string]any{"version": "1.2.3", "device_id": "legacy-device", "launch_id": launchA, "time": now, "received_at": now, "level": "info", "event": "session.start", "seq": strconv.FormatInt(seq, 10), "user_id": 33}
+	row, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(old, append(row, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	st := New(dir)
+	plain := testSession("legacy-device", launchA)
+	browser := plain
+	browser.Mode = ModeBrowser
+	browser.BrowserID = "native:profile.1"
+	if fresh, err := st.Start(33, plain); err != nil || fresh {
+		t.Fatal("existing extension launch rotated or disappeared")
+	}
+	if err := st.Append(33, testBatch(browser, now, "sync.success")); err != ErrLaunch {
+		t.Fatal("a legacy extension launch authorized a new browser")
+	}
+	if fresh, err := st.Start(33, browser); err != nil || !fresh {
+		t.Fatal("browser namespace could not start separately")
+	}
+	st = New(dir)
+	page, err := st.Read("", 20, Filter{UserID: 33, Mode: ModeExtension})
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Mode != ModeExtension || page.Entries[0].BrowserID != "" {
+		t.Fatal("old record not readable as ordinary extension")
+	}
+	page, err = st.Read("", 20, Filter{UserID: 33, Mode: ModeBrowser, BrowserID: browser.BrowserID})
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Mode != ModeBrowser || page.Entries[0].BrowserID != browser.BrowserID {
+		t.Fatal("cold native index lost group")
+	}
+	for _, bad := range []Filter{{Mode: "typo"}, {Mode: ModeExam, BrowserID: "a"}, {BrowserID: "../bad"}} {
+		if _, err = st.Read("", 20, bad); err != ErrCursor {
+			t.Fatal("invalid group filter accepted")
+		}
 	}
 }

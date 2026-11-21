@@ -257,6 +257,20 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, 
 	return AccessTokenAuthContext{User: user, AccessToken: accessToken}, session, nil
 }
 
+// ResolveLeasedDiagnosticOwner is read-only. Accept only the active native
+// lease (not an account key, a legacy unslotted session or an activation
+// ticket). This must never call activation, heartbeat, device registration or billing.
+func ResolveLeasedDiagnosticOwner(db *gorm.DB, authorization, identity, ip string) (int32, error) {
+	auth, session, err := ResolveScriptRunSessionWithDB(db, authorization, identity, ip)
+	if err != nil {
+		return 0, err
+	}
+	if session.LeaseSlot == nil || *session.LeaseSlot != session.ScriptID || session.SourceZoneHash == "" || !validScriptLeaseIdentity(identity) {
+		return 0, invalidScriptSessionAuth("诊断回传需要有效的原生运行租约")
+	}
+	return auth.User.ID, nil
+}
+
 // ResolveSearchTokenWithScriptIdentity keeps credential selection uniform across
 // the sync, task and AI fallback routes. A supplied identity selects the
 // script-session credential explicitly; never fall back to a raw Key.

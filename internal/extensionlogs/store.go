@@ -31,7 +31,7 @@ var (
 	deviceRE     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 	launchRE     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 	fileDeviceRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-	segmentRE    = regexp.MustCompile(`^([0-9]{19})_u[0-9]{1,10}_d[A-Za-z0-9_-]{1,65}_s[0-9a-f-]{36}\.jsonl$`)
+	segmentRE    = regexp.MustCompile(`^([0-9]{19})_u[0-9]{1,10}(_m(extension|native_browser|native_exam))?_d[A-Za-z0-9_-]{1,65}(_b[A-Za-z0-9_-]{1,65})?_s[0-9a-f-]{36}\.jsonl$`)
 )
 
 const MaxBatch = 50
@@ -46,15 +46,36 @@ func (p Policy) valid() bool {
 	return p.RetentionDays >= 1 && p.RetentionDays <= 3650 && p.MaxGB >= 1 && p.MaxGB <= 1024
 }
 
+const (
+	ModeExtension = "extension"
+	ModeBrowser   = "native_browser"
+	ModeExam      = "native_exam"
+)
+
+// Missing mode on pre-upgrade traffic/files identifies only a plain extension.
+func EffectiveMode(mode string) string {
+	if mode == "" {
+		return ModeExtension
+	}
+	return mode
+}
+func KnownMode(mode string) bool {
+	return mode == ModeExtension || mode == ModeBrowser || mode == ModeExam
+}
+
 type Session struct {
-	Version  string `json:"version"`
-	DeviceID string `json:"device_id"`
-	LaunchID string `json:"launch_id"`
+	Mode      string `json:"mode"`
+	BrowserID string `json:"browser_id,omitempty"`
+	Version   string `json:"version"`
+	DeviceID  string `json:"device_id"`
+	LaunchID  string `json:"launch_id"`
 }
 
 func validDevice(s string) bool { return deviceRE.MatchString(s) && !strings.Contains(s, "..") }
 func (s Session) valid() bool {
-	return versionRE.MatchString(s.Version) && validDevice(s.DeviceID) && launchRE.MatchString(s.LaunchID)
+	mode := EffectiveMode(s.Mode)
+	return KnownMode(mode) && ((mode == ModeBrowser && validDevice(s.BrowserID)) ||
+		(mode != ModeBrowser && s.BrowserID == "")) && versionRE.MatchString(s.Version) && validDevice(s.DeviceID) && launchRE.MatchString(s.LaunchID)
 }
 
 type Entry struct {
@@ -111,19 +132,25 @@ type Page struct {
 type Filter struct {
 	UserID             int32
 	DeviceID, LaunchID string
+	Mode, BrowserID    string
 }
 
 func (f Filter) Valid() bool {
-	return f.UserID >= 0 && (f.DeviceID == "" || validDevice(f.DeviceID)) && (f.LaunchID == "" || launchRE.MatchString(f.LaunchID))
+	return (f.Mode == "" || KnownMode(f.Mode)) && (f.BrowserID == "" || (validDevice(f.BrowserID) && (f.Mode == "" || f.Mode == ModeBrowser))) && f.UserID >= 0 && (f.DeviceID == "" || validDevice(f.DeviceID)) && (f.LaunchID == "" || launchRE.MatchString(f.LaunchID))
 }
 func (f Filter) matches(k sessionKey) bool {
-	return (f.UserID == 0 || f.UserID == k.owner) && (f.DeviceID == "" || f.DeviceID == k.device) && (f.LaunchID == "" || strings.EqualFold(f.LaunchID, k.launch))
+	return (f.Mode == "" || f.Mode == k.mode) && (f.BrowserID == "" || f.BrowserID == k.browser) && (f.UserID == 0 || f.UserID == k.owner) && (f.DeviceID == "" || f.DeviceID == k.device) && (f.LaunchID == "" || strings.EqualFold(f.LaunchID, k.launch))
 }
 
 type sessionKey struct {
-	owner          int32
-	device, launch string
+	owner                         int32
+	mode, device, browser, launch string
 }
+
+func (m Session) key(owner int32) sessionKey {
+	return sessionKey{owner: owner, mode: EffectiveMode(m.Mode), device: m.DeviceID, browser: m.BrowserID, launch: strings.ToLower(m.LaunchID)}
+}
+
 type segment struct {
 	name              string
 	key               sessionKey
@@ -153,7 +180,7 @@ func (s *Store) policy() (Policy, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return Policy{true, 7, 10}, nil
 	}
-	var p Policy
+	p := Policy{Enabled: true} // settings from before the switch was introduced
 	if err != nil {
 		return p, err
 	}
@@ -232,10 +259,10 @@ func (s *Store) load() error {
 			return err
 		}
 		stamp, _ := strconv.ParseInt(m[1], 10, 64)
-		if !first.Session.valid() || first.UserID <= 0 || first.Seq != stamp || last.Seq < first.Seq || last.DeviceID != first.DeviceID || last.LaunchID != first.LaunchID || last.UserID != first.UserID {
+		if !first.Session.valid() || first.UserID <= 0 || first.Seq != stamp || last.Seq < first.Seq || !last.Session.valid() || last.Session.key(last.UserID) != first.Session.key(first.UserID) {
 			return errors.New("inconsistent diagnostic segment")
 		}
-		key := sessionKey{first.UserID, first.DeviceID, first.LaunchID}
+		key := first.Session.key(first.UserID)
 		x := &segment{it.Name(), key, first.Seq, last.Seq, fi.Size(), first.ReceivedAt, last.ReceivedAt}
 		files[x.name] = x
 		if cur := latest[key]; cur == nil || cur.last < x.last {
@@ -373,7 +400,8 @@ func (s *Store) write(owner int32, meta Session, entries []Entry, signal bool) (
 	}
 	now := s.now().UTC()
 	meta.LaunchID = strings.ToLower(meta.LaunchID)
-	key := sessionKey{owner, meta.DeviceID, meta.LaunchID}
+	meta.Mode = EffectiveMode(meta.Mode)
+	key := meta.key(owner)
 	if err = s.prune(p, now, 0, false); err != nil {
 		return false, err
 	}
@@ -406,7 +434,11 @@ func (s *Store) write(owner int32, meta Session, entries []Entry, signal bool) (
 	}
 	x := s.latest[key]
 	if x == nil || x.size+n > s.segmentBytes || now.Sub(x.began) >= time.Hour {
-		name := fmt.Sprintf("%019d_u%d_d%s_s%s.jsonl", first, owner, deviceSlug(meta.DeviceID), meta.LaunchID)
+		browser := ""
+		if meta.Mode == ModeBrowser {
+			browser = "_b" + deviceSlug(meta.BrowserID)
+		}
+		name := fmt.Sprintf("%019d_u%d_m%s_d%s%s_s%s.jsonl", first, owner, meta.Mode, deviceSlug(meta.DeviceID), browser, meta.LaunchID)
 		x = &segment{name: name, key: key, first: first, began: now}
 	}
 	if err = os.MkdirAll(s.dir, 0700); err != nil {
@@ -513,6 +545,7 @@ func recent(f *os.File, end int64, n int, cut time.Time) ([]Record, error) {
 			if r.ReceivedAt.Before(cut) {
 				return out, nil
 			}
+			r.Mode = EffectiveMode(r.Mode) // old files lacked the field
 			out = append(out, r)
 			k = j
 			end = from + int64(j)

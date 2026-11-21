@@ -12,12 +12,31 @@ import (
 	"github.com/itihey/tikuAdapter/internal/extensionlogs"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"gorm.io/gorm"
 )
 
 var extensionLogFiles = extensionlogs.Default
+var diagnosticDB = func() *gorm.DB {
+	m := manager.GetManager()
+	if m == nil {
+		return nil
+	}
+	return m.GetDB()
+}
 var extensionLogOwner = func(authorization string) (int32, error) {
-	auth, err := service.ResolveAccessTokenFromBasicAuth(manager.GetManager().GetDB(), authorization)
+	db := diagnosticDB()
+	if db == nil {
+		return 0, errors.New("diagnostic database unavailable")
+	}
+	auth, err := service.ResolveAccessTokenFromBasicAuth(db, authorization)
 	return auth.User.ID, err
+}
+var examLogOwner = func(authorization, identity, ip string) (int32, error) {
+	db := diagnosticDB()
+	if db == nil {
+		return 0, errors.New("diagnostic database unavailable")
+	}
+	return service.ResolveLeasedDiagnosticOwner(db, authorization, identity, ip)
 }
 
 func readLogJSON(c *gin.Context, v any, size int64) bool {
@@ -39,26 +58,49 @@ func readLogJSON(c *gin.Context, v any, size int64) bool {
 	c.JSON(http.StatusBadRequest, gin.H{"message": "日志数据格式不正确"})
 	return false
 }
-func diagnosticOwner(c *gin.Context) (int32, bool) {
+func diagnosticBearer(c *gin.Context) (string, bool) {
 	header := c.GetHeader("Authorization")
 	parts := strings.Fields(header)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		c.JSON(http.StatusUnauthorized, gin.H{"message": "需要有效的扩展访问令牌"})
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "需要有效的诊断回传凭据"})
+		return "", false
+	}
+	return header, true
+}
+
+func diagnosticOwner(c *gin.Context, header, mode string) (int32, bool) {
+	mode = extensionlogs.EffectiveMode(mode)
+	if !extensionlogs.KnownMode(mode) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "无效的诊断模式"})
 		return 0, false
 	}
-	id, err := extensionLogOwner(header)
+	identity := strings.TrimSpace(c.GetHeader("X-Script-Identity"))
+	var id int32
+	var err error
+	switch {
+	case mode == extensionlogs.ModeExam && identity != "":
+		id, err = examLogOwner(header, identity, c.ClientIP())
+	case mode != extensionlogs.ModeExam && identity == "":
+		id, err = extensionLogOwner(header)
+	default:
+		err = service.ErrInvalidAccessTokenAuthorization // neither cross-family fallback nor self-declared grants
+	}
 	if err != nil || id <= 0 {
 		if err != nil && !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"message": "暂时无法校验访问令牌"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"message": "暂时无法校验诊断回传凭据"})
 		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"message": "访问令牌无效"})
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "诊断回传凭据无效"})
 		}
 		return 0, false
 	}
 	return id, true
 }
 func GetExtensionIngestPolicy(c *gin.Context) {
-	if _, ok := diagnosticOwner(c); !ok {
+	header, ok := diagnosticBearer(c)
+	if !ok {
+		return
+	}
+	if _, ok := diagnosticOwner(c, header, c.Query("mode")); !ok {
 		return
 	}
 	p, err := extensionLogFiles.Policy()
@@ -82,12 +124,16 @@ func diagnosticWriteError(c *gin.Context, err error) {
 	}
 }
 func StartExtensionLogs(c *gin.Context) {
-	owner, ok := diagnosticOwner(c)
+	header, ok := diagnosticBearer(c)
 	if !ok {
 		return
 	}
 	var session extensionlogs.Session
 	if !readLogJSON(c, &session, 4096) {
+		return
+	}
+	owner, ok := diagnosticOwner(c, header, session.Mode)
+	if !ok {
 		return
 	}
 	created, err := extensionLogFiles.Start(owner, session)
@@ -102,12 +148,16 @@ func StartExtensionLogs(c *gin.Context) {
 	c.JSON(status, gin.H{"created": created})
 }
 func UploadExtensionLogs(c *gin.Context) {
-	owner, ok := diagnosticOwner(c)
+	header, ok := diagnosticBearer(c)
 	if !ok {
 		return
 	}
 	var b extensionlogs.Batch
 	if !readLogJSON(c, &b, 64<<10) {
+		return
+	}
+	owner, ok := diagnosticOwner(c, header, b.Mode)
+	if !ok {
 		return
 	}
 	if err := extensionLogFiles.Append(owner, b); err != nil {
@@ -122,7 +172,7 @@ func AdminExtensionLogs(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "条数范围为 1–100"})
 		return
 	}
-	filter := extensionlogs.Filter{DeviceID: c.Query("device_id"), LaunchID: c.Query("launch_id")}
+	filter := extensionlogs.Filter{Mode: c.Query("mode"), BrowserID: c.Query("browser_id"), DeviceID: c.Query("device_id"), LaunchID: c.Query("launch_id")}
 	if raw, exists := c.GetQuery("user_id"); exists {
 		v, e := strconv.ParseInt(raw, 10, 32)
 		if e != nil || v <= 0 {
