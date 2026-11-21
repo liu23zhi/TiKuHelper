@@ -567,7 +567,7 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	if err := util.ValidateBcryptPasswordBytes(password); err != nil {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
-	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, password)
+	passwordMatches, needsUpgrade := util.VerifyAccountLoginPassword(user.ID, user.Role, user.Password, password)
 	if !passwordMatches {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}

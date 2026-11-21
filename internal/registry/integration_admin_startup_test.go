@@ -40,10 +40,10 @@ func TestIntegrationAdminBootstrapChild(t *testing.T) {
 func TestIntegrationAdminBootstrap(t *testing.T) {
 	cases := []struct {
 		name, mode, password, seed, expected string
-		generated                            bool
+		localOnly                            bool
 	}{
-		{name: "missing_production_password_is_private", generated: true},
-		{name: "factory_placeholder_is_private", password: "123456", generated: true},
+		{name: "missing_production_password_is_local_setup", expected: "123456", localOnly: true},
+		{name: "factory_placeholder_is_local_setup", password: "123456", expected: "123456", localOnly: true},
 		{name: "operator_weak_non_placeholder_is_not_rejected", password: "mine", expected: "mine"},
 		{name: "explicit_development_compat", mode: "development", expected: "123456"},
 		{name: "strong_production_bootstrap", password: "Create#123", expected: "Create#123"},
@@ -85,17 +85,16 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 				t.Fatal(e)
 			}
 			expected := tc.expected
-			if tc.generated {
-				file, secret := generatedAdminFile(t, filepath.Dir(path))
-				if !strings.Contains(string(out), file) || strings.Contains(string(out), secret) {
-					t.Fatal("operator was not told the exact local file, or logs disclosed the secret")
+			if tc.localOnly {
+				if !strings.Contains(string(out), "--init-admin-password") || strings.Contains(string(out), tc.expected) {
+					t.Fatal("missing safe local setup directions or plaintext disclosed")
 				}
-				if factory, _ := util.VerifyPassword(row.Password, "123456"); factory {
-					t.Fatal("factory credential accepted")
+				if ok, _ := util.VerifyAccountLoginPassword(row.ID, row.Role, row.Password, expected); ok {
+					t.Fatal("public setup credential grants a web session")
 				}
-				expected = secret
-			} else if paths, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "admin-bootstrap-*.password")); len(paths) != 0 {
-				t.Fatal("explicit or existing credential published a password")
+			}
+			if paths, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "admin-bootstrap-*.password")); len(paths) != 0 {
+				t.Fatal("unexpected initial password file")
 			}
 			matched, _ := util.VerifyPassword(row.Password, expected)
 			if !matched {

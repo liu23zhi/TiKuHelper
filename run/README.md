@@ -10,7 +10,7 @@ cd run && docker compose up -d --build
 
 容器内 `/app/data` 是持久化目录：数据库须落在其中，否则重启即丢。只挂载这一个目录即可，不影响程序文件。
 
-首次登录：账号为 `admin`。未显式设置初始密码时，在部署主机执行 `docker compose logs tikuhelper | grep 初始管理员密码` 获取**文件路径**。默认配置把容器的 `/app/data/<文件名>` 映射到本目录的 `./data/<文件名>`；请在受信任的本地终端以服务账号或管理员权限读取，登录后立即改密，再删除该初始密码文件。切勿把文件或其内容发到工单或日志。
+首次登录：内置账号为 `admin`，首次建库优先使用 `TIKU_ADMIN_PASSWORD`；设置非公共密码后可直接登录。不设置则默认 `123456`，不会生成随机首密或密码文件。默认及显式 `changeme` 只能用来在本机初始化：在本目录执行 `docker compose exec tikuhelper /app/tiku-adapter --init-admin-password`，按提示输入当前初始化口令、新密码并确认（不回显），然后使用新密码网页登录。初始化不依赖代理或转发 IP；重启与升级不会重置既有密码。
 
 工单图片始终启用，图片仍会加密保存并经过内容检测。首次启动自动生成图片加密密钥并随数据库保存，无需另配开关或环境变量。备份时须完整备份数据库，勿删除或修改 `system_settings` 中的 `ticket_attachment_encryption_key`。已有部署的 `TIKU_TICKET_ATTACHMENT_KEY`（或兼容的 `TIKU_REFUND_PROOF_KEY`）会作为初始密钥保存；保存后即使取消该环境变量也能读取原图。修改环境密钥会因与已保存密钥不一致而拒绝启动，避免历史图片失效。
 

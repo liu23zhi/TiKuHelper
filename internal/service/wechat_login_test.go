@@ -697,3 +697,19 @@ func TestUnbindWechatFromUserWithDBClearsBinding(t *testing.T) {
 		t.Fatalf("expected cleared wechat binding, got %+v", updated)
 	}
 }
+
+func TestPublicBootstrapPasswordCannotBindWechatToAdministrator(t *testing.T) {
+	d := newWechatLoginTestDB(t)
+	if err := d.Create(&entity.User{ID: 1, Username: "admin", Role: "admin", Status: "enabled", Password: "123456"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	store := NewWechatBindTokenStore()
+	key := store.Create("initial-admin-fixture", time.Now().Add(time.Minute))
+	if _, err := BindWechatLoginWithDB(d, WechatBindInput{Store: store, BindToken: key, Username: "admin", Password: "123456"}); err == nil || !strings.Contains(err.Error(), "用户名或密码错误") {
+		t.Fatal("public credential could authorize WeChat binding")
+	}
+	var a entity.User
+	if err := d.First(&a, 1).Error; err != nil || a.WechatID != nil || a.LoginSessionID != "" {
+		t.Fatal("rejected setup authorized account changes")
+	}
+}

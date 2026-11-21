@@ -125,10 +125,8 @@ func TestS04ProductionAdminPlan(t *testing.T) {
 			want := plain
 			if tc.stored == "" {
 				want = strings.TrimSpace(tc.env)
-				if tc.mode == "production" && (want == "" || want == "123456") {
-					_, want = generatedAdminFile(t, "data")
-				} else if want == "" {
-					want = "123456"
+				if want == "" {
+					want = util.FactoryAdminPassword
 				}
 			}
 			matched, upgrade := util.VerifyPassword(got.Password, want)

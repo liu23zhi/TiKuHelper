@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -52,8 +53,17 @@ func loadIndexPage(fs embed.FS) []byte {
 	return page
 }
 
+var initAdminPassword = flag.Bool("init-admin-password", false, "complete local administrator setup, reading passwords from stdin; no server is started")
+
 func main() {
 	flag.Parse()
+	if *initAdminPassword {
+		if err := runLocalAdminSetup(os.Stdin, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// 时间一律固定上海（见 timezone.go）。
 	useShanghaiTime()
 	// Initialize once after timezone setup, before manager/server goroutines.

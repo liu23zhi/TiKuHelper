@@ -67,8 +67,8 @@ def check_probe(raw, operation):
     elif operation.startswith('verify-'):
         assert value.get('quickCheck') == 'ok' and value.get('bcrypt') is True
         assert value.get('expectedPasswordMatches') is True
-        assert value.get('environmentPasswordMatches') is (operation not in ('verify-legacy', 'verify-generated'))
-        if operation == 'verify-generated':
+        assert value.get('environmentPasswordMatches') is (operation not in ('verify-legacy', 'verify-local-setup'))
+        if operation == 'verify-local-setup':
             assert value.get('factoryPasswordRejected') is True
         assert value.get('unrelatedFieldsPreserved') is True and value.get('rwProbe') == [0, 1, 0]
         assert value.get('userCount') == 1 and value.get('readonlyInspection') is True
@@ -514,20 +514,15 @@ class MainFlow:
                 result['actualGinClientIP'] = actual_gin_client_ips(logs.stdout, expected_ip)
                 result['trustedAllSources'] = trusted_all
                 assert any(p.stat().st_size > 0 for p in (fixture / 'logs').glob('Tiku*.txt')), 'real log files were not written'
-                generated = not legacy and mode == 'production' and secret in (None, '123456')
-                operation = ('verify-generated' if generated else 'verify-legacy' if legacy
+                local_setup = not legacy and mode == 'production' and secret in (None, '123456')
+                operation = ('verify-local-setup' if local_setup else 'verify-legacy' if legacy
                              else 'verify-development' if mode == 'development' else 'verify-new')
                 verified = self.recorder.run(name + '-' + operation, [str(self.probe), operation, '--db', str(db)])
                 result['database'] = check_probe(verified.stdout, operation)
-                if generated:
-                    [password_file] = (fixture / 'data').glob('admin-bootstrap-*.password')
-                    password = password_file.read_bytes().strip()
-                    located = ('/fixture/data/' + password_file.name).encode()
-                    logfiles = [p for p in (fixture / 'logs').glob('Tiku*.txt') if p.is_file()]
-                    assert located in output and password not in output, 'must identify the exact operator file without leaking its contents'
-                    assert all(password not in p.read_bytes() for p in logfiles), 'generated credential leaked to a log file'
-                    password_file.unlink()  # the CI evidence bundle never needs the generated secret
-                    result['localFileVerifiedAndRemoved'] = True
+                if local_setup:
+                    assert b'--init-admin-password' in output, 'operator must be able to find the local setup command'
+                    assert not list((fixture / 'data').glob('admin-bootstrap-*.password')), 'no random password file'
+                    result['localSetupOnlyWithoutPasswordFile'] = True
                 result['workerIsolation']['databaseAfterMain'] = check_ticket_fixture_isolation(db)
                 assert result['workerIsolation']['databaseAfterMain']['settingsTablePresent'], 'main must migrate notification settings before qualification'
                 result['databaseSHA256AfterMainAndRollbackProbe'] = sha(db)
