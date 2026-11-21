@@ -21,7 +21,7 @@ const zhCN = require('ant-design-vue/lib/locale/zh_CN').default
 const user = require(path.join(root, 'src/utils/currentUser.js'))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const hash = value => crypto.createHash('sha256').update(value).digest('hex')
-const paymentPath = '/adapter-service/payment-methods'
+const paymentPath = '/api/payment-methods'
 const customSVG = '<svg viewBox="0 0 32 32" width="32" height="32" class="icon" version="1.1" t="1765858760722" p-id="2038" data-name="wechat" aria-label="支付"><path d="M2 3h17v19H2z" fill="#12ab34" stroke="#234567" stroke-width="2" p-id="2039"/></svg>'
 const legacySVG = '<svg onload="S02_INERT_LEGACY"/>'
 const admin = { id: 92001, username: 'S02_FIXTURE_ADMIN', role: 'admin', status: 1, balance: 20 }
@@ -104,7 +104,7 @@ test('S02 native Vue/Antd -> production HTTP/controller/service -> isolated SQLi
     const url = new URL(pathname, ready.url)
     assert.equal(url.origin, new URL(ready.url).origin, 'loopback fixture origin only')
     assert.match(url.hostname, /^(?:127\.0\.0\.1|localhost|\[::1\])$/, 'loopback host only')
-    assert.match(url.pathname, /^(?:\/adapter-service\/payment-methods(?:\/\d+)?|\/__fixture__\/(?:snapshot|disable-all|shutdown))$/, 'bounded fixture/payment route only')
+    assert.match(url.pathname, /^(?:\/api\/payment-methods(?:\/\d+)?|\/__fixture__\/(?:snapshot|disable-all|shutdown))$/, 'bounded fixture/payment route only')
     const body = data === undefined ? undefined : JSON.stringify(data)
     const record = { method, path: pathname, actor: identity, request: data === undefined ? null : data }
     trace.push(record)
@@ -138,10 +138,12 @@ test('S02 native Vue/Antd -> production HTTP/controller/service -> isolated SQLi
     if (verb !== 'GET') return trap('non-payment write', `${verb} ${config.url}`)
     fixtureReads.push({ method: verb, path: config.url })
     switch (config.url) {
-      case '/adapter-service/system-settings': return Promise.resolve({ status: 200, data: { minRechargeAmount: 1 } })
-      case '/adapter-service/system-metrics': return Promise.resolve({ status: 200, data: { schemaVersion: 1, startedAt: '2026-10-29T00:00:00Z', uptimeSeconds: 1, http: { total: 0, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: { hits: 0, misses: 0, shared: 0 }, fallback: { hits: 0, misses: 0, shared: 0 } }, billing: { attempts: 0, successes: 0, failures: 0 } } })
-      case '/adapter-service/user/info': return Promise.resolve({ status: 200, data: { ...(actor === 'admin' ? admin : ordinary), minRechargeAmount: 1 } })
-      case '/adapter-service/billing-records': return Promise.resolve({ status: 200, data: { data: [], total: 0, page: 1, pageSize: 10 } })
+      // Sibling panels mounted by the real SystemSettings page: fixed GETs only.
+      case '/api/refund-agreement': return Promise.resolve({ status: 200, data: { text: 'S02 fixture agreement', defaultText: 'S02 fixture agreement', isDefault: true } })
+      case '/api/system-settings': return Promise.resolve({ status: 200, data: { minRechargeAmount: 1 } })
+      case '/api/system-metrics': return Promise.resolve({ status: 200, data: { schemaVersion: 1, startedAt: '2026-10-29T00:00:00Z', uptimeSeconds: 1, http: { total: 0, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: { hits: 0, misses: 0, shared: 0 }, fallback: { hits: 0, misses: 0, shared: 0 } }, billing: { attempts: 0, successes: 0, failures: 0 } } })
+      case '/api/user/info': return Promise.resolve({ status: 200, data: { ...(actor === 'admin' ? admin : ordinary), minRechargeAmount: 1 } })
+      case '/api/billing-records': return Promise.resolve({ status: 200, data: { data: [], total: 0, page: 1, pageSize: 10 } })
       default: return trap('unlisted readonly fixture', config.url)
     }
   }
@@ -304,7 +306,7 @@ test('S02 native Vue/Antd -> production HTTP/controller/service -> isolated SQLi
       assert.deepEqual(await API.getPaymentMethods(), { status: 200, data: [] }, 'actual user empty GET wire contract')
       user.setStoredCurrentUser(ordinary)
       const usage = mountPage('src/pages/UserUsage/index.vue')
-      await eventually(() => !usage.vm.paymentMethodLoading && fixtureReads.some(row => row.path === '/adapter-service/billing-records'), 'disabled UserUsage settled')
+      await eventually(() => !usage.vm.paymentMethodLoading && fixtureReads.some(row => row.path === '/api/billing-records'), 'disabled UserUsage settled')
       assert.deepEqual([...usage.vm.paymentMethods], [])
       assert.equal(document.querySelectorAll('.payment-method-card').length, 0)
       assert.match(document.body.textContent, /暂无可用支付方式/)

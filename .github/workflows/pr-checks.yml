@@ -37,6 +37,8 @@ jobs:
         run: npm ci
       - name: CI contracts and audit parser behavior
         run: node --test ../scripts/ci/*.test.cjs
+      - name: Verify actual frontend embed helper on missing and present artifacts
+        run: node --test ../scripts/prepare-web-dist.test.mjs
       - name: Lint without modifying source
         run: npm run lint -- --no-fix
       - name: Dependency compatibility consumers

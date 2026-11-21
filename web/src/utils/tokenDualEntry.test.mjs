@@ -236,6 +236,8 @@ test('管理员进 token-admin 看到管理视图（标题「令牌管理」、�
       '管理入口默认就必须是全站视图 —— 用户诉求「令牌管理要显示所有用户数据」，' +
       '默认 false 会让管理员进来只看到自己那一条，必须再点一次按钮（用户报的就是这个）')
 
+  })
+
 test('普通用户进 my-tokens 也是用户视图（身份与入口一致，最常规路径）',
   { skip: behaviourSkip }, async () => {
     const env = prepare()
@@ -337,4 +339,3 @@ test('管理员在 token-admin 打开「显示全部」后切到 my-tokens，必
     assert.equal(afterShowAll, false,
       '切到 my-tokens 后「显示全部」必须复位，否则我的令牌页会请求全站数据')
   })
-})

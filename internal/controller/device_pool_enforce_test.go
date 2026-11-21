@@ -150,7 +150,9 @@ func TestDevicePoolLoginNeverRegistersDevice(t *testing.T) {
 // enforceAccountDeviceLimit 出现在 setAuthCookie 之前。现在要求它**完全不出现**。
 //
 // 为什么行为用例不够：行为用例只能观察「这次请求没被拦」。若将来有人把
-//   if !enforceAccountDeviceLimit(c, user.ID) { return }
+//
+//	if !enforceAccountDeviceLimit(c, user.ID) { return }
+//
 // 加回去，只有在「额度刚好满 + 开关刚好开」的特定数据下才会表现异常，
 // 常规回归跑不出来。源码断言是唯一能立刻变红的防线。
 func TestDevicePoolEnforceNotCalledFromSessionHandlers(t *testing.T) {
