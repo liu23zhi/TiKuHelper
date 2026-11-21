@@ -1,5 +1,5 @@
 /* Actual App/Layout/Sider/VueRouter/Antd Drawer + higher host Antd Modal.
- * Only leaf data/models, host foreground response and public metadata API are synthetic.
+ * Only leaf data/models, host foreground response and shell read responses are synthetic.
  * The later field is explicitly focused and really edited; no automatic-enter focus,
  * rootClass ownership marker, backdrop click or browser focus shim is required.
  * jsdom is not physical mobile hit-testing, geometry, animation or reader certification. */
@@ -8,7 +8,6 @@ const assert = require('node:assert/strict'), path = require('node:path'), fs = 
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 process.env.NODE_PATH = [path.join(web, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter); Module._initPaths()
 const helper = require(process.env.UI_TEST_HELPER || path.join(web, 'tests/helpers/vue-dom.cjs'))
-const { reviewRebateAvailabilityResponse } = require('../helpers/review-rebate-availability.cjs')
 require.extensions['.css'] = module => { module.exports = {} }
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises, DOMWrapper } = require('@vue/test-utils'), { h, ref, nextTick } = require('vue'), { createRouter, createMemoryHistory, isNavigationFailure } = require('vue-router'), Antd = require('ant-design-vue')
@@ -20,10 +19,13 @@ function deny(kind) { network.push(kind); throw new Error('FORBIDDEN_MOBILE_FOCU
 window.XMLHttpRequest.prototype.open = () => deny('XHR'); globalThis.fetch = window.fetch = () => deny('FETCH'); window.open = () => deny('WINDOW_OPEN')
 globalThis.WebSocket = window.WebSocket = class { constructor() { deny('WEBSOCKET') } }
 for (const name of ['node:http', 'node:https']) { const transport = require(name); transport.request = () => deny(name); transport.get = () => deny(name) }
-require('axios').defaults.adapter = config => reviewRebateAvailabilityResponse(config) || deny('unexpected-api')
 window.addEventListener('error', event => runtime.push(String(event.error?.name || event.message))); window.addEventListener('unhandledrejection', event => runtime.push(String(event.reason?.name || event.reason)))
-const apiPath = path.join(web, 'src/api/TikuComponentApi.js'), api = new Module(apiPath); api.loaded = true
-api.exports = { getPublicRegisterStatus: () => { apiCalls.push('synthetic-public-metadata'); return Promise.resolve({ status: 200, data: { siteName: 'SYNTHETIC_MOBILE_FOCUS' } }) }, logout: () => { apiCalls.push('synthetic-logout'); return Promise.resolve() } }; require.cache[apiPath] = api
+const axios = require('axios'), originalAdapter = axios.defaults.adapter
+assert.ok(!require.cache[path.join(web, 'src/utils/request.js')], 'install in-memory adapter before real request client')
+axios.defaults.adapter = require('../helpers/navigation-shell-api.cjs')({
+  actor: user.getStoredCurrentUser, record: call => apiCalls.push(call), deny,
+})
+require('node:test').after(() => { axios.defaults.adapter = originalAdapter })
 const Sider = require(path.join(web, 'src/components/SiderMenu/index.vue')), Layout = require(path.join(web, 'src/layout/TikuAdapterLayout.vue')), App = require(path.join(web, 'src/App.vue'))
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises(); await new Promise(resolve => setTimeout(resolve, 10)); await nextTick() }
 async function until(check, message) { const start = performance.now(); while (!check() && performance.now() - start < 1500) await settle(); assert.ok(check(), message) }
@@ -38,7 +40,7 @@ async function openMobile(state) {
   assert.ok(state.root.findAllComponents(Sider).some(s => s.props('navigationId') === 'mobile-portal-navigation')); await settle()
 }
 async function cancel(state) { assert.equal(openState(state), true); const close = button('关闭导航'); assert.ok(visible(close) && !close.disabled); close.focus(); const started = performance.now(); close.click(); await settle(); assert.equal(openState(state), false); return started }
-async function navigate(state) { const link = document.querySelector('#mobile-portal-navigation a[href="/adapter/user-usage"]'); assert.ok(link?.isConnected && visible(link)); link.focus(); const started = performance.now(); link.click(); await until(() => state.pushes.length === 1 && state.router.currentRoute.value.path === '/adapter/user-usage', 'actual native route commits'); assert.equal(state.pushes[0].failure, false); assert.ok(main().querySelector('[data-synthetic-destination]')); assert.equal(openState(state), false); return started }
+async function navigate(state) { const link = document.querySelector('#mobile-portal-navigation a[href="/user-usage"]'); assert.ok(link?.isConnected && visible(link)); link.focus(); link.click(); await until(() => state.pushes.length === 1 && state.router.currentRoute.value.path === '/user-usage', 'actual native route commits'); assert.equal(state.pushes[0].failure, false); assert.ok(main().querySelector('[data-synthetic-destination]')); assert.equal(openState(state), false); return performance.now() }
 async function throughCloseWindow(started) { await new Promise(resolve => setTimeout(resolve, Math.max(0, 350 - (performance.now() - started)))); await settle() }
 async function edit(input, value = LATER) { assert.ok(input?.isConnected && visible(input) && !input.disabled && !input.readOnly); input.focus(); assert.strictEqual(document.activeElement, input); input.value = value; await new DOMWrapper(input).trigger('input'); await settle(); assert.equal(input.value, value) }
 async function foregroundModal(state) {
@@ -51,7 +53,7 @@ async function app() {
   const state = { root: null, router: null, layout: null, pushes: [] }
   const Leaf = { setup() { const draft = ref('SYNTHETIC 初始草稿'); return () => h('section', [h('h1', 'SYNTHETIC profile'), h('input', { 'data-navigation-draft': '', 'aria-label': '合成未保存草稿', value: draft.value, onInput: event => { draft.value = event.target.value } })]) } }
   const Destination = { setup() { const value = ref(''); state.destinationText = () => value.value; return () => h('section', { 'data-synthetic-destination': '' }, [h('h1', 'SYNTHETIC destination'), h('input', { 'data-destination-input': '', 'aria-label': '合成新页面输入', value: value.value, onInput: event => { value.value = event.target.value } })]) } }
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/adapter', component: Layout, children: [{ path: 'profile', component: Leaf }, { path: 'user-usage', component: Destination }] }] }); state.router = router; router.onError(error => routerErrors.push(error)); await router.push('/adapter/profile'); await router.isReady(); histories.push(router.options.history)
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Layout, children: [{ path: 'profile', component: Leaf }, { path: 'user-usage', component: Destination }] }] }); state.router = router; router.onError(error => routerErrors.push(error)); await router.push('/profile'); await router.isReady(); histories.push(router.options.history)
   const Host = { setup() {
     const appVisible = ref(true), modalVisible = ref(false), modalValue = ref(''), updates = ref(0), hostValue = ref('')
     state.hideApp = () => { appVisible.value = false }; state.showModal = () => { modalVisible.value = true }; state.modalOpen = () => modalVisible.value; state.modalText = () => modalValue.value; state.modalUpdates = () => updates.value; state.hostText = () => hostValue.value
@@ -73,7 +75,7 @@ test('MF01 normal native mobile cancel returns focus to navigation trigger and r
   const state = await app(), started = await cancel(state); await throughCloseWindow(started); assert.strictEqual(document.activeElement, button('打开导航')); assert.equal(state.layout.vm.drawerRendered, false); assert.equal(document.querySelector('input[data-navigation-draft]').value, DRAFT); witness('normal-trigger', state)
 })
 test('MF02 native successful mobile route closes navigation and focuses rendered actual main', async () => {
-  const state = await app(), started = await navigate(state); await throughCloseWindow(started); assert.strictEqual(document.activeElement, main()); assert.equal(state.layout.vm.drawerRendered, false); witness('normal-content', state)
+  const state = await app(), started = await navigate(state); await throughCloseWindow(started); await until(() => !state.layout.vm.drawerRendered && document.activeElement === main(), 'actual completed close has transferred focus to the destination main'); assert.strictEqual(document.activeElement, main()); assert.equal(state.layout.vm.drawerRendered, false); witness('normal-content', state)
 })
 test('MF03 old native cancel completion cannot take focus from later higher Antd Modal real input/model', async () => {
   const state = await app(), started = await cancel(state), input = await foregroundModal(state), acquiredAtMs = performance.now() - started; await throughCloseWindow(started); assert.strictEqual(document.activeElement, input, 'old close cannot focus background trigger while the later usable foreground dialog owns native input'); assert.equal(state.modalText(), LATER); assert.ok(state.modalUpdates() >= 1); assert.equal(state.modalOpen(), true); assert.ok(visible(input)); assert.equal(state.layout.vm.drawerRendered, false); witness('foreground-modal', state, { acquiredAtMs })
