@@ -10,7 +10,7 @@ const { registerConsoleUI } = require('../../src/registerUI.js')
 const user = require('../../src/utils/currentUser.js')
 const admin = { id: 18, role: 'admin', status: 'enabled' }, member = { id: 28, role: 'user', status: 'enabled' }
 const base = '/api/admin/extension-logs'
-const event = (kind, more = {}) => ({ event: kind, time: '2026-11-18T21:20:00Z', received_at: '2026-11-18T21:20:01Z', level: 'info', version: '1.2.3', user_id: 9, ...more })
+const event = (kind, more = {}) => ({ event: kind, time: '2026-11-18T21:20:00Z', received_at: '2026-11-18T21:20:01Z', level: 'info', mode: 'extension', version: '1.2.3', user_id: 9, ...more })
 const status = (data, code = 200) => ({ status: code, data })
 let calls = [], respond, defaultPolicy
 const mounted = []
@@ -119,11 +119,11 @@ test('admin can locate one real launch by all three exact keys, paginate the sel
   defaultPolicy = { enabled: true, retention_days: 7, max_gb: 10 }
   respond = c => status({ entries: [e], next_cursor: c.params.cursor ? '' : 'next/opaque' })
   const w = await open()
-  assert.match(w.get('tbody').text(), /本次启动（新文件）/); assert.match(w.get('tbody').text(), /device-45/)
+  assert.match(w.get('tbody').text(), /本次启动（新文件）/); assert.match(w.get('tbody').text(), /device-45/); assert.match(w.get('tbody').text(), /普通浏览器扩展.*不适用/)
   assert.equal(w.get('#extension-log-enabled').element.checked, true)
   const queries = () => calls.filter(c => c.path === base).map(c => c.params)
   await by(w, 'locate-launch').trigger('click'); await settle()
-  const select = { user_id: 9, device_id: device, launch_id: launch }
+  const select = { user_id: 9, device_id: device, launch_id: launch, mode: 'extension' }
   assert.deepEqual(queries().at(-1), { limit: 50, ...select })
   await by(w, 'older').trigger('click'); await settle()
   assert.deepEqual(queries().at(-1), { limit: 50, ...select, cursor: 'next/opaque' })
@@ -133,4 +133,18 @@ test('admin can locate one real launch by all three exact keys, paginate the sel
   await w.get('#extension-log-user').setValue('8'); await w.get('#extension-log-device').setValue('device-88')
   await w.get('form[aria-label="日志筛选"]').trigger('submit'); await settle()
   assert.deepEqual(queries().at(-1), { limit: 50, user_id: 8, device_id: 'device-88' })
+})
+test('synthetic native-mode records distinguish browsers on one device without inventing a browser for exam mode', async () => {
+  const launch = '15017b3c-a6d6-4bec-b348-2e70fb5325d1'
+  const native = event('session.start', { mode: 'native_browser', browser_id: 'browser-2', device_id: 'same-machine', launch_id: launch })
+  defaultPolicy = { enabled: true, retention_days: 7, max_gb: 10 }
+  respond = () => status({ entries: [native, { ...native, mode: 'native_exam', browser_id: undefined }], next_cursor: '' })
+  const w = await open()
+  assert.match(w.get('tbody').text(), /原生浏览器运行.*browser-2.*原生考试运行.*不适用/)
+  const queries = () => calls.filter(c => c.path === base).map(c => c.params)
+  await w.findAll('[data-action="locate-launch"]')[0].trigger('click'); await settle()
+  assert.deepEqual(queries().at(-1), { limit: 50, user_id: 9, device_id: 'same-machine', launch_id: launch, mode: 'native_browser', browser_id: 'browser-2' })
+  await w.get('#extension-log-mode').setValue('native_exam'); assert.equal(w.find('#extension-log-browser').exists(), false)
+  await w.get('form[aria-label="日志筛选"]').trigger('submit'); await settle()
+  assert.equal(queries().at(-1).mode, 'native_exam'); assert.equal(queries().at(-1).browser_id, undefined)
 })

@@ -11,6 +11,12 @@
         <form class="extension-log-form filter-form" aria-label="日志筛选" @submit.prevent="submitFilters">
           <label for="extension-log-user">用户 ID<input id="extension-log-user" v-model.trim="draft.user" inputmode="numeric" placeholder="全部账号" /></label>
           <label for="extension-log-device">设备 ID<input id="extension-log-device" v-model.trim="draft.device" placeholder="完整设备 ID" /></label>
+          <label for="extension-log-mode">运行方式
+            <select id="extension-log-mode" v-model="draft.mode" @change="modeChanged">
+              <option value="">全部方式</option><option v-for="[key, text] in modes" :key="key" :value="key">{{ text }}</option>
+            </select>
+          </label>
+          <label v-if="!draft.mode || draft.mode === 'native_browser'" for="extension-log-browser">浏览器 ID<input id="extension-log-browser" v-model.trim="draft.browser" placeholder="完整浏览器 ID" /></label>
           <label for="extension-log-launch">启动 ID<input id="extension-log-launch" v-model.trim="draft.launch" placeholder="完整启动 UUID" /></label>
           <a-button html-type="submit" data-action="filter" :disabled="reading || !!filterError">筛选</a-button>
           <a-button data-action="clear-filter" :disabled="reading || !hasFilter" :onClick="owned(clearFilters)">清除筛选</a-button>
@@ -22,13 +28,14 @@
         <div v-if="rows.length" class="extension-log-table" tabindex="0" aria-label="扩展诊断日志表格，可横向滚动">
           <table>
             <caption class="sr-only">扩展诊断事件，最新接收的在前</caption>
-            <thead><tr><th scope="col">接收时间</th><th scope="col">发生时间</th><th scope="col">级别</th><th scope="col">事件</th><th scope="col">用户 ID</th><th scope="col">设备 ID</th><th scope="col">启动 ID</th><th scope="col">扩展版本</th><th scope="col">耗时</th><th scope="col">数量</th><th scope="col">定位</th></tr></thead>
+            <thead><tr><th scope="col">接收时间</th><th scope="col">发生时间</th><th scope="col">级别</th><th scope="col">事件</th><th scope="col">用户 ID</th><th scope="col">设备 ID</th><th scope="col">运行方式</th><th scope="col">浏览器 ID</th><th scope="col">启动 ID</th><th scope="col">扩展版本</th><th scope="col">耗时</th><th scope="col">数量</th><th scope="col">定位</th></tr></thead>
             <tbody>
               <tr v-for="(entry, index) in rows" :key="index">
                 <td><time :datetime="entry.received_at">{{ displayTime(entry.received_at) }}</time></td>
                 <td><time :datetime="entry.time">{{ displayTime(entry.time) }}</time></td>
                 <td>{{ levelLabel(entry.level) }}</td><td>{{ eventLabel(entry.event) }}</td>
-                <td>{{ entry.user_id }}</td><td><code>{{ entry.device_id || '—' }}</code></td><td><code>{{ entry.launch_id || '—' }}</code></td><td>{{ entry.version }}</td>
+                <td>{{ entry.user_id }}</td><td><code>{{ entry.device_id || '—' }}</code></td><td>{{ modeLabel(entry.mode) }}</td>
+                <td><code v-if="entry.mode === 'native_browser'">{{ entry.browser_id || '未上报' }}</code><span v-else>不适用</span></td><td><code>{{ entry.launch_id || '—' }}</code></td><td>{{ entry.version }}</td>
                 <td>{{ entry.duration_ms == null ? '—' : entry.duration_ms + ' 毫秒' }}</td><td>{{ entry.count ?? '—' }}</td>
                 <td><a-button v-if="entry.user_id && entry.device_id && entry.launch_id" type="link" data-action="locate-launch" :disabled="reading" :onClick="owned(locateLaunch, entry)">只看本次启动</a-button></td>
               </tr>
@@ -73,6 +80,8 @@ const labels = new Map(Object.entries({
   'session.start': '本次启动（新文件）', 'extension.ready': '扩展就绪', 'settings.saved': '设置已保存', 'sync.success': '同步成功', 'sync.failed': '同步失败',
   'network.timeout': '网络超时', 'network.offline': '网络离线', 'runtime.error': '运行错误',
 }))
+const modes = new Map(Object.entries({ extension: '普通浏览器扩展', native_browser: '原生浏览器运行', native_exam: '原生考试运行' }))
+const modeLabel = mode => modes.get(mode) || '未标注'
 const levels = new Map(Object.entries({ debug: '调试', info: '信息', warn: '警告', error: '错误' }))
 const eventLabel = code => labels.get(code) || '未识别事件'
 const levelLabel = code => levels.get(code) || '未知'
@@ -87,7 +96,7 @@ const authorized = computed(() => getCurrentUserLogoutEpoch() === logout && Bool
   isAdminUser(currentUser.value) && String(currentUser.value?.status || 'enabled') === 'enabled')
 const rows = shallowRef([]), cursor = ref(''), reading = ref(false), hasList = ref(false), listError = ref('')
 const saved = shallowRef(null), enabled = ref(false), days = ref(null), maxGB = ref(null), saving = ref(false), policyReading = ref(false)
-const blankFilter = () => ({ user: '', device: '', launch: '' })
+const blankFilter = () => ({ user: '', device: '', launch: '', mode: '', browser: '' })
 const draft = reactive(blankFilter()), applied = shallowRef({})
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const filterError = computed(() => {
@@ -95,7 +104,7 @@ const filterError = computed(() => {
   if (draft.launch && !uuid.test(draft.launch)) return '启动 ID 必须是完整的 UUID。'
   return ''
 })
-const hasFilter = computed(() => draft.user || draft.device || draft.launch || Object.keys(applied.value).length)
+const hasFilter = computed(() => draft.user || draft.device || draft.launch || draft.mode || draft.browser || Object.keys(applied.value).length)
 const policyError = ref(''), policyNotice = ref(''), generation = ref(0)
 const valid = (n, max) => Number.isInteger(n) && n >= 1 && n <= max
 const canSave = computed(() => authorized.value && saved.value && !saving.value && valid(days.value, 3650) && valid(maxGB.value, 1024) &&
@@ -142,14 +151,17 @@ const refresh = () => loadPage(false)
 const older = () => loadPage(true)
 function applyFilter() {
   if (!authorized.value || filterError.value || reading.value) return
-  applied.value = { ...(draft.user && { user_id: Number(draft.user) }), ...(draft.device && { device_id: draft.device }), ...(draft.launch && { launch_id: draft.launch }) }
+  applied.value = { ...(draft.user && { user_id: Number(draft.user) }), ...(draft.device && { device_id: draft.device }), ...(draft.launch && { launch_id: draft.launch }),
+    ...(draft.mode && { mode: draft.mode }), ...(draft.browser && { browser_id: draft.browser }) }
   // A cursor belongs to its exact filter. Never show an old selection as the new one on error.
   rows.value = []; cursor.value = ''; hasList.value = false; refresh()
 }
 const submitFilters = computed(() => owned(applyFilter))
+function modeChanged() { if (draft.mode && draft.mode !== 'native_browser') draft.browser = '' }
 function clearFilters() { Object.assign(draft, blankFilter()); applyFilter() }
 function locateLaunch(entry) {
-  Object.assign(draft, { user: String(entry.user_id), device: entry.device_id, launch: entry.launch_id })
+  Object.assign(draft, { user: String(entry.user_id), device: entry.device_id, launch: entry.launch_id,
+    mode: modes.has(entry.mode) ? entry.mode : '', browser: entry.mode === 'native_browser' ? entry.browser_id || '' : '' })
   applyFilter()
 }
 function setPolicy(value) {
@@ -189,7 +201,7 @@ const submitPolicy = computed(() => owned(async () => {
 .extension-log-table th, .extension-log-table td { padding: .55rem .7rem; white-space: nowrap; border-bottom: 1px solid var(--console-border, #d9d9d9); }
 .extension-log-form { display: flex; flex-wrap: wrap; align-items: end; gap: .7rem 1rem; }
 .extension-log-form label { display: grid; gap: .25rem; }
-.extension-log-form input { color: inherit; background: transparent; border: 1px solid var(--console-border, #aaa); border-radius: .4rem; padding: .4rem .55rem; }
+.extension-log-form input, .extension-log-form select { color: inherit; background: transparent; border: 1px solid var(--console-border, #aaa); border-radius: .4rem; padding: .4rem .55rem; }
 .extension-log-form .upload-toggle { display: flex; align-items: center; gap: .5rem; }
 .filter-form { margin-bottom: 1rem; }
 .hint { flex-basis: 100%; margin: 0; }
