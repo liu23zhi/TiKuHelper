@@ -61,6 +61,7 @@ Module._load = function (request, parent, main) {
   try { filename = Module._resolveFilename(request, parent, main) } catch { return originalLoad.call(this, request, parent, main) }
   if (typeof filename === 'string' && (filename.startsWith(path.join(fallbackWeb, 'src/api') + path.sep) || filename.startsWith(path.join(targetWeb, 'src/api') + path.sep))) {
     if (path.basename(filename) === 'TikuComponentApi.js') return api
+    if (path.basename(filename) === 'UserLevelApi.js') return require('../helpers/token-level-read.cjs').levelApi
     return new Proxy({}, { get(_, name) { if (name === '__esModule' || name === 'then') return undefined; return () => deny('OTHER_API_' + String(name)) } })
   }
   return originalLoad.call(this, request, parent, main)

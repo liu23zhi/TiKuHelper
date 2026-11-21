@@ -397,7 +397,8 @@ const formState = ref({
         clearListFailure()
         clearDeleteFailure()
         dataSource.value = []; tableLoading.value = false; visibleTokenIds.value = []
-        visible.value = false; showAllTokens.value = false; viewLease = {}; retireEditor(); retireCreatedTokenDialog()
+        visible.value = false; viewLease = {}; retireEditor(); retireCreatedTokenDialog()
+        showAllTokens.value = route?.meta?.viewMode === 'admin' && isAdminUser(currentUser.value)
         // 设备上限是账号私有数据，账号上下文变化必须清空回「—」。
         userLevelSummary.value = null
         formState.value = { id: undefined, name: '', originalName: '', status: 'enabled', totalQuotaLimit: 0, remark: '' }; isEditing.value = false
@@ -439,35 +440,18 @@ const formState = ref({
     })
     const isAdmin = computed(() => {
       if (routeViewMode.value === 'self') return false
-      if (routeViewMode.value === 'admin') return true
       return isAdminUser(currentUser.value)
     })
-    // 入口切换（my-tokens ↔ token-admin）必须把「显示全部」复位。
-    //
-    // 两条路由共用同一组件实例，Vue 在切换时**不会重跑 setup**（与
-    // scripts/script-admin 同一坑），所以 showAllTokens 会跨入口残留：
-    // 管理员在「令牌管理」勾了「显示全部令牌」再点「我的令牌」，若不复位就会
-    // 带着 scope='all' 去请求 ⇒「我的令牌」显示全站数据，正好违反本次诉求
-    // （「我的令牌只显示当前账号的令牌」）。
-    //
-    // isAdmin 由 viewMode 派生，所以 isAdmin 变 false 就是"切到用户入口"的信号。
-    // 只在变成非管理员视图时强制复位；管理员之间切换不受影响。
-    // routeViewMode 一变就设定「显示全部」的默认值（immediate 让首屏也用上）。
-//
-// 为什么必须 immediate：管理员从菜单点「令牌管理」进来时，绝大多数情况下
-// 他要看的是全站数据（这就是该入口的用途）。让他进来先看到自己一条、
-// 再手动点一次「显示全部令牌」，是把默认值搞反了。
-//
-// 为什么不放在 showAllTokens 初始值里：routeViewMode 在下方才定义，直接引用会 TDZ。
-//
-// 与下面 watch(isAdmin) 的分工：
-//   · 这个 watch 负责「进入某个入口时默认看什么」；
-//   · 下面的 watch 负责「切到用户入口时强制复位」——那条是防越权，不能被这里覆盖。
-watch(routeViewMode, mode => {
-  if (mode === 'admin') showAllTokens.value = true
-}, { immediate: true })
-
-watch(isAdmin, adminNow => {
+    // Changing entry on a reused page must both retire the previous read and
+    // issue a new one. Route metadata chooses a view, not the actor's privileges.
+    watch(routeViewMode, (mode, previous) => {
+      if (mode !== 'self' && mode !== 'admin') return
+      showAllTokens.value = mode === 'admin' && isAdminUser(currentUser.value)
+      if (previous !== undefined && instance.isMounted && canLoadForCurrentUser()) {
+        instance.proxy.handleLoad()
+      }
+    }, { immediate: true, flush: 'sync' })
+    watch(isAdmin, adminNow => {
       if (!adminNow && showAllTokens.value) showAllTokens.value = false
     }, { flush: 'sync' })
     const isCurrentListFailure = (failure, context) => canLoadForCurrentUser()

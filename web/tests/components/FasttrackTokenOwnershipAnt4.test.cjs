@@ -23,6 +23,7 @@ api.exports = {
  }])),
 }
 require.cache[apiPath] = api
+require('../helpers/token-level-read.cjs').install(web)
 const PAGE = require(path.join(web, 'src/pages/AccessTokenManagement/index.vue'))
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
 async function page(account = admin, realDialog = false) {
@@ -150,4 +151,18 @@ test('real pending clipboard rejection cannot fall back to copying retired plain
   rejectCopy(new Error('SYNTHETIC_CLIPBOARD_RETIRED')); await settle(); assert.equal(fallbackCalls, 0); assert.equal(Swal.getPopup(), newer); assert.equal(newer.querySelector('.swal2-deny').textContent, 'CURRENT_COPY'); assert.ok(!newer.textContent.includes('复制失败'))
   console.log('TOKEN_SWAL_CLIPBOARD_OBSERVED ' + JSON.stringify({ fallbackCalls, replacementRetained: Swal.getPopup() === newer, denyText: newer.querySelector('.swal2-deny').textContent }))
  } finally { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: oldClipboard }); document.execCommand = oldExec }
+})
+
+
+test('legacy token bookmarks resolve to the actual route for the current role', () => {
+ const mod = require(path.join(web, 'src/router/router.js')), router = mod.default || mod
+ for (const [actor, expected] of [[admin, 'token-admin'], [normal, 'my-tokens']]) {
+  user.setStoredCurrentUser(actor)
+  for (const url of ['/access-tokens', '/adapter/access-tokens']) {
+   const source = router.resolve(url), record = source.matched.at(-1)
+   assert.ok(record && typeof record.redirect === 'function', 'bookmark has a redirect: ' + url)
+   const result = router.resolve(record.redirect(source))
+   assert.equal(result.name, expected); assert.equal(result.path, '/' + expected)
+  }
+ }
 })

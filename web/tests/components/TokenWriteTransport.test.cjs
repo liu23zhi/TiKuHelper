@@ -22,10 +22,10 @@ const A = { id: 751, role: 'admin', username: 'synthetic-token-owner', balance: 
 const B = { id: 752, role: 'admin', username: 'synthetic-later-owner', balance: 2.345678 }
 const fixturePayload = { name: 'transport_token', totalQuotaLimit: 0.000062, remark: '' }
 const methods = [
-  { name: 'GET', method: 'get', url: '/adapter-service/access-tokens', invoke: () => api.getAccessTokens({}) },
-  { name: 'POST', method: 'post', url: '/adapter-service/access-tokens', invoke: () => api.createAccessToken({ ...fixturePayload }) },
-  { name: 'PUT', method: 'put', url: '/adapter-service/access-tokens/17', invoke: () => api.updateAccessToken({ id: 17, ...fixturePayload, status: 'enabled' }) },
-  { name: 'DELETE', method: 'delete', url: '/adapter-service/access-tokens/17', invoke: () => api.deleteAccessToken({ id: 17 }) },
+  { name: 'GET', method: 'get', url: '/api/access-tokens', invoke: () => api.getAccessTokens({}) },
+  { name: 'POST', method: 'post', url: '/api/access-tokens', invoke: () => api.createAccessToken({ ...fixturePayload }) },
+  { name: 'PUT', method: 'put', url: '/api/access-tokens/17', invoke: () => api.updateAccessToken({ id: 17, ...fixturePayload, status: 'enabled' }) },
+  { name: 'DELETE', method: 'delete', url: '/api/access-tokens/17', invoke: () => api.deleteAccessToken({ id: 17 }) },
 ]
 class FixtureStorage {
   values = new Map()
@@ -152,7 +152,7 @@ test('TOKEN_TRANSPORT unrelated metrics HTTP403 retains its default auth feedbac
   const body = { message: 'SYNTHETIC_DEFAULT_PERMISSION', extension: { preserved: true } }
   respond = config => result(config, 403, body)
   const value = await api.getSystemMetrics()
-  assertRequest({ method: 'get', url: '/adapter-service/system-metrics' })
+  assertRequest({ method: 'get', url: '/api/system-metrics' })
   assertPayload(value, 403, body)
   assert.equal(requests[0].errorFeedback, undefined)
   assert.deepEqual(toasts, ['SYNTHETIC_DEFAULT_PERMISSION'], 'other callers keep their existing default behavior')
