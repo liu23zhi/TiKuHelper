@@ -21,6 +21,25 @@ export function createTicket(data) {
   });
 }
 
+export function verifyTicketAppealAccount(data, signal) {
+  return ticketRequest({
+    url: "/api/tickets/appeal-verification",
+    method: "post",
+    data,
+    signal,
+    errorFeedback: "local",
+  });
+}
+
+export function submitTicketAccountAction(id, data) {
+  return ticketRequest({
+    url: `/api/tickets/${encodeURIComponent(id)}/account-action`,
+    method: "post",
+    data,
+    errorFeedback: "local",
+  });
+}
+
 export function getTicket(id, params = {}) {
   return ticketRequest({
     url: `/api/tickets/${encodeURIComponent(id)}`,

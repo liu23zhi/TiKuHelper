@@ -160,7 +160,7 @@ test('空数据：页面用空态占位而不是画图（组件层证据）', as
   // 空态文案必须来自统一常量，不能各写一份。
   assert.match(source, /PORTRAIT_EMPTY_HINT/);
   // 空数据时要销毁旧实例，否则切到空视角会看到上一个视角的残图。
-  assert.match(source, /disposeChart\(\)/, '空数据分支必须销毁旧实例');
+  assert.match(source, /watch\(host, element => \{\s*clearHost\(\)\s*if \(!element\) return/, '图表宿主消失时销毁旧实例');
 });
 
 // ---------------------------------------------------------------------------
@@ -385,11 +385,12 @@ test('接线：页面用 PortraitChart 渲染三张图，且空态由组件统�
 
 test('接线：echarts 必须动态 import，不进首屏 bundle', async () => {
   const source = await readFile(chartComponentPath, 'utf8');
-  assert.match(source, /await import\('echarts\/core'\)/, '必须动态 import，避免 echarts 打进首屏 chunk');
+  const registration = await readFile(path.join(path.dirname(chartComponentPath), 'portraitECharts.mjs'), 'utf8');
+  assert.match(source, /import\('\.\/portraitECharts\.mjs'\)/, '必须动态 import，避免 echarts 打进首屏 chunk');
   assert.doesNotMatch(source, /^import .*from 'echarts/m, '不得静态 import echarts');
   // 必须按需注册，不全量 import 'echarts'（体积差一个量级）。
-  assert.match(source, /echarts\.use\(/, '必须按需 use() 注册图表与组件');
-  assert.doesNotMatch(source, /from 'echarts'$/, '不得整包 import echarts');
+  assert.match(registration, /use\(\[[^\]]*BarChart/, '必须按需 use() 注册图表与组件');
+  assert.doesNotMatch(registration, /from 'echarts'$/m, '不得整包 import echarts');
 });
 
 test('接线：页面使用小时、账单类型和星期三种真实聚合维度', async () => {

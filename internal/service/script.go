@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -44,6 +45,7 @@ var (
 	ErrScriptVersionNotFound          = errors.New("脚本版本不存在")
 	ErrScriptNameRequired             = errors.New("脚本名称不能为空")
 	ErrScriptDomainRequired           = errors.New("脚本域名不能为空")
+	ErrScriptLauncherHTTPSRequired    = errors.New("当前站点无法生成 HTTPS 脚本地址，请通过 HTTPS 打开控制台后重试")
 	ErrScriptVersionRequired          = errors.New("脚本版本不能为空")
 	ErrScriptVersionInvalid           = errors.New("脚本版本无效")
 	ErrScriptNativeVersionRequired    = errors.New("请先发布已验证支持新版脚本租约的原生 C 客户端")
@@ -58,29 +60,31 @@ var (
 )
 
 type CreateUserScriptInput struct {
-	IdempotencyKey        string         `json:"-"`
-	Name                  string         `json:"name"`
-	Instruction           string         `json:"instruction"`
-	Command               string         `json:"command"`
-	VersionID             int32          `json:"versionId"`
-	Parameters            map[string]any `json:"parameters"`
-	Description           string         `json:"description"`
-	BaseDomain            string         `json:"baseDomain"`
-	Scheme                string         `json:"scheme"`
-	UseWildcardDomain     *bool          `json:"useWildcardDomain"`
-	Enabled               *bool          `json:"enabled"`
-	BillingEnabled        *bool          `json:"billingEnabled"`
-	UseTikuPrice          *bool          `json:"useTikuPrice"`
-	BillingUseTikuPrice   *bool          `json:"billingUseTikuPrice"`
-	PresetParams          map[string]any `json:"presetParams"`
-	PriceMultiplier       *float64       `json:"priceMultiplier"`
-	AnswerPriceMultiplier *float64       `json:"answerPriceMultiplier"`
-	AnswerPrice           float64        `json:"answerPrice"`
-	BillingMode           string         `json:"billingMode,omitempty"`
-	EntitlementID         int64          `json:"entitlementId,omitempty"`
-	AutoTopUp             bool           `json:"autoTopUp,omitempty"`
-	RunDurationMinutes    int            `json:"runDurationMinutes,omitempty"`
-	NotifyOnDenied        bool           `json:"notifyOnDenied,omitempty"`
+	IdempotencyKey        string                `json:"-"`
+	Name                  string                `json:"name"`
+	Instruction           string                `json:"instruction"`
+	Command               string                `json:"command"`
+	VersionID             int32                 `json:"versionId"`
+	Parameters            map[string]any        `json:"parameters"`
+	Description           string                `json:"description"`
+	BaseDomain            string                `json:"baseDomain"`
+	Scheme                string                `json:"scheme"`
+	UseWildcardDomain     *bool                 `json:"useWildcardDomain"`
+	DomainFormat          string                `json:"domainFormat,omitempty"`
+	LauncherOrigin        *ScriptLauncherOrigin `json:"-"`
+	Enabled               *bool                 `json:"enabled"`
+	BillingEnabled        *bool                 `json:"billingEnabled"`
+	UseTikuPrice          *bool                 `json:"useTikuPrice"`
+	BillingUseTikuPrice   *bool                 `json:"billingUseTikuPrice"`
+	PresetParams          map[string]any        `json:"presetParams"`
+	PriceMultiplier       *float64              `json:"priceMultiplier"`
+	AnswerPriceMultiplier *float64              `json:"answerPriceMultiplier"`
+	AnswerPrice           float64               `json:"answerPrice"`
+	BillingMode           string                `json:"billingMode,omitempty"`
+	EntitlementID         int64                 `json:"entitlementId,omitempty"`
+	AutoTopUp             bool                  `json:"autoTopUp,omitempty"`
+	RunDurationMinutes    int                   `json:"runDurationMinutes,omitempty"`
+	NotifyOnDenied        bool                  `json:"notifyOnDenied,omitempty"`
 	// RequestSkipBindingCheck 是**客户端可传**的「请跳过绑定门槛」意图
 	// （2026-11-17 用户需求：管理员在「我的脚本」里点按钮跳过）。
 	//
@@ -107,7 +111,7 @@ type UpdateUserScriptInput struct {
 	Command               string         `json:"command"`
 	Parameters            map[string]any `json:"parameters"`
 	PresetParams          map[string]any `json:"presetParams"`
-	Description           string         `json:"description"`
+	Description           *string        `json:"description"`
 	BaseDomain            string         `json:"baseDomain"`
 	Scheme                string         `json:"scheme"`
 	UseWildcardDomain     *bool          `json:"useWildcardDomain"`
@@ -228,7 +232,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 	if input.RunDurationMinutes < 0 || input.RunDurationMinutes > int(ScriptRunSessionTTL/time.Minute) {
 		return ScriptListItem{}, ErrScriptDurationInvalid
 	}
-	if mode != "" && normalizeScriptScheme(input.Scheme) != "https" {
+	if mode != "" && input.LauncherOrigin == nil && normalizeScriptScheme(input.Scheme) != "https" {
 		return ScriptListItem{}, ErrScriptDomainUnavailable
 	}
 	if mode == entity.ScriptBillingModeActivation && input.EntitlementID <= 0 {
@@ -239,16 +243,13 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		return ScriptListItem{}, ErrScriptNameRequired
 	}
 	baseDomain := normalizeScriptDomain(input.BaseDomain)
-	if baseDomain == "" {
-		return ScriptListItem{}, ErrScriptDomainRequired
-	}
-	// Q72-3：脚本自身的域名必须是具体主机名，`a.*.a.com` / `*.a.com` 在创建时拒绝，
-	// 而不是等匹配阶段悄悄不生效。通配符属于管理员允许的域名列表。
-	if err := validateScriptBaseDomain(baseDomain); err != nil {
-		return ScriptListItem{}, err
-	}
-	if err := ensureScriptDomainRulePrefixAvailable(db, baseDomain); err != nil {
-		return ScriptListItem{}, err
+	if input.LauncherOrigin == nil {
+		if baseDomain == "" {
+			return ScriptListItem{}, ErrScriptDomainRequired
+		}
+		if err := validateScriptBaseDomain(baseDomain); err != nil {
+			return ScriptListItem{}, err
+		}
 	}
 	if input.VersionID <= 0 {
 		return ScriptListItem{}, ErrScriptVersionNotFound
@@ -285,10 +286,15 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 	var requestFingerprint []byte
 	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
 	if idempotencyKey != "" {
+		// Serialize the bound input before replacing the legacy address fields,
+		// so a completed pre-upgrade receipt can match the same request.
 		requestFingerprint, err = json.Marshal(input)
 		if err != nil {
 			return ScriptListItem{}, err
 		}
+	}
+	if input.LauncherOrigin != nil {
+		input.Scheme, input.Description = "https", ""
 	}
 	var result ScriptListItem
 	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
@@ -342,6 +348,22 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if mode != "" && !version.NativeLeaseProtocol {
 			return ErrScriptNativeVersionRequired
 		}
+		var locator *string
+		var useWildcard bool
+		if input.LauncherOrigin != nil {
+			baseDomain, locator, useWildcard, err = generateScriptLauncherAddress(tx, input.DomainFormat, *input.LauncherOrigin)
+			if err != nil {
+				return err
+			}
+		} else {
+			if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
+				return err
+			}
+			useWildcard = defaultScriptUseWildcardWithDB(tx, baseDomain)
+			if input.UseWildcardDomain != nil {
+				useWildcard = *input.UseWildcardDomain
+			}
+		}
 		before := util.RoundMoney(user.Balance)
 		after := before
 		if mode == "" {
@@ -365,24 +387,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if err != nil {
 			return err
 		}
-		// 公开地址形态由**管理员配置的域名格式**决定，不是由调用方随便传的布尔决定。
-		//
-		// 为什么必须这样：公开 URL 是 `ScriptCommandOrigin + (useWildcard ? "" : "/"+shortCode)`。
-		//   - `*.a.com` 泛域名格式：脚本住在 `<shortCode>.<baseDomain>` 这个独立主机上，
-		//     根路径就是脚本入口 ⇒ useWildcard 必须为 true。
-		//   - `a.com/*` 路径格式：脚本住在**共享**主机 baseDomain 下，靠路径段区分
-		//     ⇒ 必须有 `/<shortCode>` 这一段，useWildcard 必须为 false。
-		//     ⚠️ 这正是本轮的实时 bug：默认恒为 true 时，按 `a.com/*` 建的脚本
-		//     公开地址是根路径 "",而 authorizeScriptPublicPath 的路径规则要求至少一段
-		//     ⇒ 该类脚本**永远解析不到**（实测 Resolve 恒 ErrScriptNotFound）。
-		useWildcard := defaultScriptUseWildcardWithDB(tx, baseDomain)
-		if input.UseWildcardDomain != nil {
-			useWildcard = *input.UseWildcardDomain
-		}
-		if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
-			return err
-		}
-		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
+		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, LauncherLocator: locator, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
 		if input.Enabled != nil {
 			script.Enabled = *input.Enabled
 		}
@@ -448,6 +453,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 			}
 		}
 		result = decorateScriptItem(ScriptListItem{UserScript: script, Username: user.Username, Version: version.Version, VersionSHA256: version.SHA256})
+		result.LauncherAuthorization = scriptLauncherAuthorizationView(script)
 		if mode == entity.ScriptBillingModeEscrow {
 			if err := attachScriptEscrowBalanceWithDB(tx, &result); err != nil {
 				return err
@@ -509,7 +515,10 @@ func loadScriptListItemWithDB(db *gorm.DB, scriptID, userID int32) (ScriptListIt
 	if err := attachScriptEscrowBalanceWithDB(db, &item); err != nil {
 		return ScriptListItem{}, err
 	}
-	return decorateScriptItem(item), nil
+	item = decorateScriptItem(item)
+	item.ShortAuthorization = scriptShortAuthorizationView(item.UserScript)
+	item.LauncherAuthorization = scriptLauncherAuthorizationView(item.UserScript)
+	return item, nil
 }
 
 func attachScriptEscrowBalanceWithDB(db *gorm.DB, item *ScriptListItem) error {
@@ -642,21 +651,15 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 		if script.EscrowClosingAt != nil {
 			return ErrScriptEscrowClosePending
 		}
-		baseDomain := normalizeScriptDomain(input.BaseDomain)
-		if baseDomain == "" {
-			return ErrScriptDomainRequired
+		updates := map[string]any{}
+		if input.Description != nil {
+			updates["description"] = strings.TrimSpace(*input.Description)
 		}
-		if err := validateScriptBaseDomain(baseDomain); err != nil {
-			return err
+		if script.LauncherLocator == nil {
+			if err := updateLegacyScriptAddress(tx, script, input, updates); err != nil {
+				return err
+			}
 		}
-		if err := ensureScriptDomainRulePrefixAvailable(tx, baseDomain); err != nil {
-			return err
-		}
-		scheme := normalizeScriptScheme(input.Scheme)
-		if script.BillingMode != "" && scheme != "https" {
-			return ErrScriptDomainUnavailable
-		}
-		updates := map[string]any{"description": strings.TrimSpace(input.Description), "base_domain": baseDomain, "scheme": scheme}
 		if value := strings.TrimSpace(input.Name); value != "" {
 			updates["name"] = value
 		}
@@ -670,9 +673,6 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 				return err
 			}
 			updates["parameters"] = string(raw)
-		}
-		if input.UseWildcardDomain != nil {
-			updates["use_wildcard_domain"] = *input.UseWildcardDomain
 		}
 		if input.Enabled != nil {
 			updates["enabled"] = *input.Enabled
@@ -718,16 +718,6 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 				updates["auto_top_up"] = *input.AutoTopUp
 			}
 		}
-		updatedScript := script
-		updatedScript.BaseDomain = baseDomain
-		updatedScript.Scheme = scheme
-		if input.UseWildcardDomain != nil {
-			updatedScript.UseWildcardDomain = *input.UseWildcardDomain
-		}
-		if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
-			return err
-		}
-		updates["instruction"] = BuildScriptCommandURL(updatedScript)
 		if err := tx.Model(&script).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -740,10 +730,48 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 		}
 		if item.UserID != operator.ID {
 			item.Command, item.Instruction = "", ""
+		} else {
+			item.ShortAuthorization = scriptShortAuthorizationView(item.UserScript)
+			item.LauncherAuthorization = scriptLauncherAuthorizationView(item.UserScript)
 		}
 		return nil
 	})
 	return item, err
+}
+
+func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input UpdateUserScriptInput, updates map[string]any) error {
+	if input.BaseDomain != "" {
+		baseDomain := normalizeScriptDomain(input.BaseDomain)
+		if baseDomain == "" {
+			return ErrScriptDomainRequired
+		}
+		if baseDomain != script.BaseDomain {
+			if err := validateScriptBaseDomain(baseDomain); err != nil {
+				return err
+			}
+			if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
+				return err
+			}
+			script.BaseDomain = baseDomain
+			updates["base_domain"] = baseDomain
+		}
+	}
+	if input.Scheme != "" {
+		scheme := normalizeScriptScheme(input.Scheme)
+		if script.BillingMode != "" && scheme != "https" {
+			return ErrScriptDomainUnavailable
+		}
+		script.Scheme = scheme
+		updates["scheme"] = scheme
+	}
+	if input.UseWildcardDomain != nil {
+		script.UseWildcardDomain = *input.UseWildcardDomain
+		updates["use_wildcard_domain"] = script.UseWildcardDomain
+	}
+	if input.BaseDomain != "" || input.Scheme != "" || input.UseWildcardDomain != nil {
+		updates["instruction"] = BuildScriptCommandURL(script)
+	}
+	return nil
 }
 
 func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) error {
@@ -870,7 +898,11 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		}
 		launchOrigin := ScriptCommandOrigin(script)
 		if grant.LaunchAddress != "" {
-			_, origin, err := validateScriptShortAddressWithDB(tx, grant.LaunchAddress)
+			address, err := url.Parse(grant.LaunchAddress)
+			if err != nil {
+				return ErrScriptTokenInvalid
+			}
+			_, origin, err := validateScriptShortAddressWithDB(tx, grant.LaunchAddress, address.Host)
 			if err != nil {
 				return ErrScriptTokenInvalid
 			}
@@ -883,7 +915,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 }
 
 func validateScriptLaunchKeyWithDB(db *gorm.DB, script entity.UserScript) error {
-	if err := ValidateScriptDomainWithDB(db, script.BaseDomain); err != nil {
+	if err := validateScriptLauncherDomainWithDB(db, script); err != nil {
 		return err
 	}
 	var key entity.AccessToken
@@ -970,9 +1002,7 @@ func normalizeScriptScheme(value string) string {
 	return value
 }
 
-// BuildScriptCommandURL returns the shortest public URL for a script.
-// Wildcard mode uses a short host; path mode keeps the host unchanged and
-// appends the short code as the only path segment.
+// BuildScriptCommandURL returns the address used by the authenticated launcher.
 func BuildScriptCommandURL(script entity.UserScript) string {
 	origin := ScriptCommandOrigin(script)
 	if origin == "" {
@@ -980,6 +1010,9 @@ func BuildScriptCommandURL(script entity.UserScript) string {
 	}
 	if script.UseWildcardDomain {
 		return origin
+	}
+	if script.LauncherLocator != nil {
+		return origin + "/" + *script.LauncherLocator
 	}
 	return origin + "/" + url.PathEscape(strings.TrimSpace(script.ShortCode))
 }
@@ -991,6 +1024,12 @@ func ScriptCommandOrigin(script entity.UserScript) string {
 	shortCode := strings.TrimSpace(script.ShortCode)
 	if domain == "" || shortCode == "" {
 		return ""
+	}
+	if script.LauncherLocator != nil {
+		if script.UseWildcardDomain {
+			domain = *script.LauncherLocator + "." + domain
+		}
+		return "https://" + domain
 	}
 	return normalizeScriptScheme(script.Scheme) + "://" + shortCode + "." + domain
 }
@@ -1089,6 +1128,24 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 	} else {
 		segments := scriptPathSegments(cleanPath)
 		shortCode = segments[len(segments)-1]
+	}
+	if isScriptLauncherLocator(shortCode) {
+		script, err := findGeneratedScriptLauncherWithDB(db, requestHost, cleanPath, shortCode)
+		if err != nil {
+			return entity.UserScript{}, err
+		}
+		if !script.Enabled || script.DeletedAt != nil {
+			return entity.UserScript{}, ErrScriptNotFound
+		}
+		if err := validateScriptLauncherDomainWithDB(db, script); err != nil {
+			if errors.Is(err, ErrScriptDomainUnavailable) {
+				return entity.UserScript{}, ErrScriptNotFound
+			}
+			return entity.UserScript{}, err
+		}
+		return script, nil
+	}
+	if !wildcard {
 		// 短码只可能是字母数字（uniqueScriptShortCode 的字母表是 a-z0-9），
 		// 这里顺手挡掉 `/a/b/`、`/a/%2e%2e` 之类的畸形末段。
 		if !isScriptShortCodeSegment(shortCode) {
@@ -1096,7 +1153,7 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 		}
 	}
 	var script entity.UserScript
-	if err := db.Session(&gorm.Session{NewDB: true}).Where("short_code = ? AND use_wildcard_domain = ? AND deleted_at IS NULL AND enabled = ?", shortCode, wildcard, true).First(&script).Error; err != nil {
+	if err := db.Session(&gorm.Session{NewDB: true}).Where("short_code = ? AND launcher_locator IS NULL AND use_wildcard_domain = ? AND deleted_at IS NULL AND enabled = ?", shortCode, wildcard, true).First(&script).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return entity.UserScript{}, ErrScriptNotFound
 		}
@@ -1112,6 +1169,25 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 		return entity.UserScript{}, err
 	}
 	if !authorizeScriptPublicPath(rules, domain, cleanPath) {
+		return entity.UserScript{}, ErrScriptNotFound
+	}
+	return script, nil
+}
+
+func isScriptLauncherLocator(value string) bool {
+	id, err := uuid.Parse(value)
+	return err == nil && id.Version() == 4 && id.String() == value
+}
+
+func findGeneratedScriptLauncherWithDB(db *gorm.DB, requestHost, cleanPath, locator string) (entity.UserScript, error) {
+	var script entity.UserScript
+	if err := db.Session(&gorm.Session{NewDB: true}).Where("launcher_locator = ?", locator).Take(&script).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return entity.UserScript{}, ErrScriptNotFound
+		}
+		return entity.UserScript{}, err
+	}
+	if "https://"+normalizeScriptLauncherHost(requestHost)+cleanPath != BuildScriptCommandURL(script) {
 		return entity.UserScript{}, ErrScriptNotFound
 	}
 	return script, nil

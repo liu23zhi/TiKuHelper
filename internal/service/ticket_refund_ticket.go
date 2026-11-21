@@ -364,6 +364,9 @@ func CreateTicketForUserWithDB(db *gorm.DB, user *entity.User, input CreateTicke
 		return TicketDetail{}, err
 	}
 	if ticketType == TicketTypeRefund {
+		if strings.TrimSpace(input.AccountIssue) != "" || strings.TrimSpace(input.AppealProof) != "" {
+			return TicketDetail{}, ErrTicketInvalidCategory
+		}
 		return createRefundTicketWithVerifier(db, user, input, verify)
 	}
 	// 非退款类型却带了退款字段：参数矛盾，明确报错（见 CreateTicketWithDB 的同类判断）。

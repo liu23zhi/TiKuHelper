@@ -36,6 +36,7 @@
         <a-descriptions-item label="充值本金">¥ {{ formatMoneyValue(portrait.base.balance) }}</a-descriptions-item>
         <a-descriptions-item label="赠送余额">¥ {{ formatMoneyValue(portrait.base.giftBalance) }}</a-descriptions-item>
         <a-descriptions-item label="注册时间">{{ displayTime(portrait.base.createdAt) }}</a-descriptions-item>
+        <a-descriptions-item label="注册来源">{{ buildRegisterSourceLabel(portrait.base.registerSource) }}</a-descriptions-item>
         <a-descriptions-item label="上次登录">{{ displayTime(portrait.base.lastLoginAt) }}</a-descriptions-item>
         <a-descriptions-item label="注册地区">{{ portrait.base.registerRegion || '未记录' }}</a-descriptions-item>
         <a-descriptions-item label="登录地区">{{ portrait.base.lastLoginRegion || '未记录' }}</a-descriptions-item>
@@ -117,6 +118,7 @@ import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import PortraitChart from './PortraitChart.vue'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
+import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
 import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { THEME_CONTROLLER_KEY } from '@/utils/themeMode.mjs'
@@ -173,9 +175,10 @@ export default defineComponent({
       if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
         return readPortraitPalette({ element: null })
       }
+      const styles = window.getComputedStyle(document.documentElement)
       return readPortraitPalette({
         element: document.documentElement,
-        readStyle: (el, prop) => window.getComputedStyle(el).getPropertyValue(prop),
+        readStyle: (_, prop) => styles.getPropertyValue(prop),
       })
     })
 
@@ -209,8 +212,8 @@ export default defineComponent({
       ...[
         ['regions', '账单来源地区', '按账单 IP 归属地统计记录数，未解析的地址归入未知地区。'],
         ['tickets', '工单处理状态', '全部工单按当前状态统计。'],
-        ['registerSources', '账号注册来源', '按未归档账号的注册来源统计用户数。'],
-        ['registerRegions', '账号注册地区', '按未归档账号的注册 IP 归属地统计用户数。'],
+        ['registerSources', '账号注册来源', props.userId ? '当前账号的注册来源。' : '按未归档账号的注册来源统计用户数。'],
+        ['registerRegions', '账号注册地区', props.userId ? '按当前账号注册 IP 的归属地展示。' : '按未归档账号的注册 IP 归属地统计用户数。'],
         ['userStatuses', '账号状态', '按未归档账号的当前状态统计用户数。'],
         ['userRoles', '账号角色', '普通用户与管理员均以实际账号记录为准。'],
       ].map(([key, title, hint]) => ({ key, title, hint, ariaLabel: `${title}分布图`, options: chartOptions.value[key] })),
@@ -298,6 +301,7 @@ export default defineComponent({
       reload,
       displayCell,
       displayTime,
+      buildRegisterSourceLabel,
       formatMoneyValue,
     }
   },

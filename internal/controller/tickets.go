@@ -20,6 +20,7 @@ var ticketControllerDB = func() *gorm.DB { return manager.GetManager().GetDB() }
 var sendTicketControllerWebhook = service.SendTicketWebhook
 
 func TicketList(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	user, ok := currentOperator(c)
 	if !ok {
 		return
@@ -71,9 +72,14 @@ func CreateTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
-	if c.GetBool("account_banned") && input.TicketType != service.TicketTypeAccount {
-		c.JSON(http.StatusForbidden, gin.H{"message": "账号封禁期间仅可提交账号申诉工单"})
-		return
+	if c.GetBool("account_banned") {
+		if strings.TrimSpace(input.TicketType) != service.TicketTypeAccount ||
+			(strings.TrimSpace(input.AccountIssue) != "" && strings.TrimSpace(input.AccountIssue) != service.TicketAccountIssueBanAppeal) {
+			c.JSON(http.StatusForbidden, gin.H{"message": "账号封禁期间仅可提交本账号的封禁申诉"})
+			return
+		}
+		// 旧版客户端仅提交账号类型。受限会话的此类提交统一按本人封禁申诉处理。
+		input.AccountIssue = service.TicketAccountIssueBanAppeal
 	}
 	// T-209：选了「退款」类型的建单必须真的走退款流程（落 ticket_refunds 行），
 	// 而退款渠道校验器只在 controller 层能拿到（它要读 EPAY 配置）。
@@ -89,10 +95,12 @@ func CreateTicket(c *gin.Context) {
 	// administrator uses it. Notification metadata belongs to ticket management.
 	detail.Notification = nil
 	detail.User = nil
+	detail.AppealTarget = nil
 	c.JSON(http.StatusOK, gin.H{"data": detail})
 }
 
 func TicketDetail(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	user, ok := currentOperator(c)
 	if !ok {
 		return
@@ -279,6 +287,7 @@ func writeTicketError(c *gin.Context, err error, fallback string) {
 	case errors.Is(err, service.ErrTicketRefundOrderUnavailable), errors.Is(err, service.ErrTicketRefundInsufficientBalance):
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrTicketSubjectRequired), errors.Is(err, service.ErrTicketBodyRequired),
+		errors.Is(err, service.ErrTicketAppealProof),
 		errors.Is(err, service.ErrTicketInvalidStatus), errors.Is(err, service.ErrTicketInvalidPriority),
 		errors.Is(err, service.ErrTicketInvalidOrigin), errors.Is(err, service.ErrTicketInvalidCategory),
 		errors.Is(err, service.ErrTicketSystemUserRequired), errors.Is(err, service.ErrTicketContextTooLarge),

@@ -17,7 +17,7 @@ const admin = { id: 89101, username: 'SYNTHETIC_VIEW_ADMIN', nickname: 'SYNTHETI
 const user = { id: 89102, username: 'SYNTHETIC_VIEW_USER', nickname: 'SYNTHETIC_USER_NICK', role: 'user', status: 'enabled' }
 const calls = [], pending = [], pages = [], unexpected = [], runtime = [], holds = new Set()
 const originalAdapter = axios.defaults.adapter
-let refundRecord = null
+let refundRecord = null, appealTarget = null
 
 function response(config, data, status = 200) { return { status, data, config, headers: {}, request: { memoryOnly: true } } }
 // Install before importing Tickets, whose request module creates an Axios instance.
@@ -35,7 +35,8 @@ axios.defaults.adapter = config => {
     kind = 'detail'
     const id = Number(url.split('/').pop())
     result = response(config, {
-      ticket: { id, subject: 'SYNTHETIC_SELF_DETAIL', status: 'open', ...(refundRecord ? { category: 'refund' } : {}), updatedAt: '2026-11-19T00:00:00Z' },
+      ticket: { id, subject: 'SYNTHETIC_SELF_DETAIL', status: 'open', ...(refundRecord ? { category: 'refund' } : appealTarget ? { category: 'blacklist_appeal' } : {}), updatedAt: '2026-11-19T00:00:00Z' },
+      ...(appealTarget ? { appealTarget } : {}),
       ...(refundRecord ? { refund: { refundId: refundRecord.id, ...refundRecord } } : {}),
       messages: [
         { id: 1, body: 'SYNTHETIC_SELF_BODY', userId: 89102, authorRole: 'user', authorName: 'SYNTHETIC_CURRENT_USER_NICK', createdAt: '2026-11-19T00:00:00Z' },
@@ -49,6 +50,8 @@ axios.defaults.adapter = config => {
     kind = 'config'; result = response(config, { enabled: false, configured: false, mentionedList: [] })
   } else if (url === '/api/tickets' && method === 'post') {
     kind = 'create'; result = response(config, { id: 73 }, 201)
+  } else if (url === '/api/tickets/appeal-verification' && method === 'post') {
+    kind = 'verify'; result = response(config, { data: { proof: 'a'.repeat(64), expiresAt: new Date(Date.now() + 300000).toISOString(), registeredAt: '2026-01-02T03:04:05Z', maskedPhone: '138****1234' } })
   } else if (url === '/api/ticket-refunds/581' && method === 'get') {
     result = response(config, { ...refundRecord })
   } else if (url === '/api/ticket-refunds/581/decision' && method === 'post') {
@@ -115,7 +118,7 @@ afterEach(async () => {
   assert.deepEqual(unexpected, [], 'HTTP never leaves the memory fixture')
   assert.deepEqual(runtime, [], 'no Vue runtime errors')
   assert.ok(pending.every(item => item.done), 'all deferred HTTP settled')
-  calls.length = pending.length = unexpected.length = runtime.length = 0; holds.clear(); refundRecord = null
+  calls.length = pending.length = unexpected.length = runtime.length = 0; holds.clear(); refundRecord = null; appealTarget = null
 })
 after(() => { axios.defaults.adapter = originalAdapter })
 
@@ -203,8 +206,65 @@ test('管理详情接收顶层退款关联，直接审核和办理，并且全�
   await click(button('提交原路退款'))
   await click(document.querySelector('[data-refund-action-confirmation] .ant-btn-primary'))
   assert.equal(document.querySelector('[data-ticket-effective-status]')?.textContent.trim(), '退款成功')
+  assert.equal(state(wrapper, 'tickets')[0].refund.status, 'succeeded', 'refund settlement must immediately refresh the visible list')
+  assert.ok(listCalls().length >= 3, 'each refund mutation revalidates the filtered list')
   assert.equal(calls.filter(call => call.url.endsWith('/decision') && call.method === 'post').length, 1)
   assert.equal(calls.filter(call => call.url.endsWith('/process') && call.method === 'post').length, 1)
+})
+
+test('封禁账号可通过申诉深链直接打开表单并提交自己的申诉', async () => {
+  const { wrapper } = await openPage({ ...user, status: 'banned', banReason: '异常请求' }, '/tickets?appeal=1')
+  assert.equal(state(wrapper, 'createVisible'), true)
+  assert.equal(state(wrapper, 'draft').issueType, 'banned')
+  const form = [...document.querySelectorAll('[data-ticket-step="form"]')].find(visible)
+  assert.ok(form)
+  await type(form.querySelector('textarea'), '请核对账号封禁情况')
+  await click(button('提交', form.closest('.ant-modal')))
+  assert.equal(createCalls().length, 1)
+  assert.equal(createCalls()[0].data.accountIssue, 'ban_appeal')
+  assert.equal(createCalls()[0].data.appealProof, undefined)
+})
+
+test('用户通过独立验证为另一个封禁账号申诉，不替换登录身份', async () => {
+  const before = { ...user }
+  await openPage(user, '/tickets?appeal=1')
+  for (let i = 0; i < 30 && !buttons('验证账号').length; i++) { await new Promise(resolve => setTimeout(resolve, 10)); await settle() }
+  const verification = document.querySelector('.ant-modal input[type=password]')?.closest('.ant-modal')
+  assert.ok(verification)
+  await type(verification.querySelector('input:not([type=password])'), 'SYNTHETIC_TARGET')
+  await type(verification.querySelector('input[type=password]'), 'synthetic-password')
+  await click(button('验证账号', verification)); await settle()
+  const form = [...document.querySelectorAll('[data-ticket-step="form"]')].find(visible)
+  assert.match(form.textContent, /138\*\*\*\*1234/)
+  assert.match(form.textContent, /2026/)
+  assert.deepEqual(currentUser.getStoredCurrentUser(), before)
+  await type(form.querySelector('textarea'), '为已验证账号提交封禁申诉')
+  await click(button('提交', form.closest('.ant-modal')))
+  assert.equal(createCalls()[0].data.accountIssue, 'ban_appeal')
+  assert.equal(createCalls()[0].data.appealProof, 'a'.repeat(64))
+  assert.equal(calls.filter(call => /login|logout/.test(call.url)).length, 0)
+})
+
+test('申诉返回类型选择后销毁验证结果，迟到的验证不能带回旧目标', async () => {
+  const { wrapper } = await openPage(user, '/tickets?appeal=1')
+  state(wrapper, 'onAppealVerified')({ proof: 'a'.repeat(64), expiresAt: new Date(Date.now()+300000).toISOString() })
+  await settle(); assert.ok(state(wrapper, 'appealVerification'))
+  await click(button('上一步'))
+  assert.equal(state(wrapper, 'appealVerification'), null)
+  state(wrapper, 'onAppealVerified')({ proof: 'b'.repeat(64) }); await settle()
+  assert.equal(state(wrapper, 'appealVerification'), null)
+  assert.equal(createCalls().length, 0)
+})
+
+test('管理员申诉详情展示目标状态和完整业务资料，处理面板指向该目标', async () => {
+  appealTarget = { id: 992, username: 'SYNTHETIC_TARGET', role: 'user', status: 'banned', banned: true, banReason: '异常请求', phone: '13800131234', createdAt: '2026-01-02T03:04:05Z', balance: 5, giftBalance: 2 }
+  await openPage(admin, '/ticket-admin'); await click(button('查看详情')); await settle()
+  for (let i = 0; i < 30 && !document.querySelector('[data-ticket-appeal-target] .ant-descriptions'); i++) { await new Promise(resolve => setTimeout(resolve, 10)); await settle() }
+  const target = document.querySelector('[data-ticket-appeal-target]')
+  assert.match(target.textContent, /已封禁.*异常请求/)
+  assert.match(target.textContent, /13800131234/)
+  assert.match(target.textContent, /充值本金/)
+  assert.match(document.querySelector('.ticket-account-actions').textContent, /992/)
 })
 
 test('账号问题默认选中登录异常，且可以选择其它问题', async () => {

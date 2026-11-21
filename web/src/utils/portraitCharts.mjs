@@ -22,6 +22,12 @@
 // 本文件必须保持**零依赖**（不 import vue / echarts / ant-design），
 // 这样 `node --test` 能在没有任何 node_modules 的环境里跑。
 
+import { buildRegisterSourceLabel } from './userPortalHelpers.mjs'
+
+function portraitRegisterSourceLabel(item) {
+  return buildRegisterSourceLabel(item.source, item.label || item.source || '未知来源')
+}
+
 /** 画像的两个视角。与后端 JSON 的 scope 字段同值。 */
 export const PORTRAIT_SCOPE_OVERALL = 'overall'
 export const PORTRAIT_SCOPE_USER = 'user'
@@ -113,7 +119,7 @@ export function buildPortraitCharts(portrait) {
     billingTypes: { ...billingTypes, title: '消费类型分布' },
     daily: buildPortraitSeries(data.daily, { labelKey: 'date' }),
     tickets: buildPortraitSeries(data.tickets),
-    registerSources: buildPortraitSeries(data.registerSources),
+    registerSources: buildPortraitSeries(data.registerSources, { label: portraitRegisterSourceLabel }),
     registerRegions: buildPortraitSeries(data.registerRegions),
     userStatuses: buildPortraitSeries(data.userStatuses),
     userRoles: buildPortraitSeries(data.userRoles),
@@ -203,7 +209,7 @@ export function buildPortraitBreakdownTables(portrait) {
     ], item => ({ label: item.label || item.status || '未知状态', count: item.count })),
     table('registerSources', '注册来源', data.registerSources, [
       { key: 'label', title: '来源' }, { key: 'count', title: '用户数', align: 'right' },
-    ], item => ({ label: item.label || item.source || '未知来源', count: item.count })),
+    ], item => ({ label: portraitRegisterSourceLabel(item), count: item.count })),
     table('registerRegions', '注册地区', data.registerRegions, [
       { key: 'label', title: '地区' }, { key: 'count', title: '用户数', align: 'right' },
       { key: 'ipCount', title: 'IP 数', align: 'right' },

@@ -106,7 +106,8 @@ type TicketDetail struct {
 	// User is returned only to the administrator management view. Keeping this
 	// separate from Ticket.UserName lets the management page show current
 	// account metadata without exposing it through the feedback view.
-	User *TicketUserSummary `json:"user,omitempty"`
+	User         *TicketUserSummary  `json:"user,omitempty"`
+	AppealTarget *TicketAppealTarget `json:"appealTarget,omitempty"`
 	// Attachments 是工单的全部图片（含「未通过检测」的条目，后者只有占位信息）。
 	// 敏感图**永远**只以占位条目出现，字节必须走单独的下载接口。
 	Attachments []TicketAttachmentInfo `json:"attachments"`
@@ -122,14 +123,17 @@ type TicketDetail struct {
 }
 
 type TicketUserSummary struct {
-	ID          int32      `json:"id"`
-	Username    string     `json:"username"`
-	Nickname    string     `json:"nickname"`
-	Role        string     `json:"role"`
-	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
-	LastLoginIP string     `json:"lastLoginIp,omitempty"`
+	ID           int32      `json:"id"`
+	Username     string     `json:"username"`
+	Nickname     string     `json:"nickname"`
+	Role         string     `json:"role"`
+	Status       string     `json:"status"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	LastLoginAt  *time.Time `json:"lastLoginAt,omitempty"`
+	LastLoginIP  string     `json:"lastLoginIp,omitempty"`
+	Banned       bool       `json:"banned"`
+	BanReason    string     `json:"banReason,omitempty"`
+	BanExpiresAt *time.Time `json:"banExpiresAt,omitempty"`
 }
 
 type TicketNotificationInfo struct {
@@ -160,7 +164,9 @@ type CreateTicketInput struct {
 	// 归因类（registration_bonus / blacklist_appeal / account_*）仍然只能由
 	// 服务端按来源强制赋值，客户端传了也不认 —— 那条安全用例
 	// （TestTicketCategoryCannotBeChosenByUser）因此依旧成立。
-	TicketType string `json:"ticketType,omitempty"`
+	TicketType   string `json:"ticketType,omitempty"`
+	AccountIssue string `json:"accountIssue,omitempty"`
+	AppealProof  string `json:"appealProof,omitempty"`
 	// 以下三个字段只在 TicketType=refund 时有意义，其余类型必须留空。
 	//
 	// 它们是**退款流程的入参**，不是工单字段：选了退款就走
@@ -362,6 +368,12 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 	if err != nil {
 		return TicketDetail{}, err
 	}
+	accountIssue := strings.TrimSpace(input.AccountIssue)
+	appealProof := strings.TrimSpace(input.AppealProof)
+	if (accountIssue != "" && ticketType != TicketTypeAccount) ||
+		(appealProof != "" && accountIssue != TicketAccountIssueBanAppeal) {
+		return TicketDetail{}, ErrTicketInvalidCategory
+	}
 	if ticketType == TicketTypeRefund {
 		// 选了「退款」就必须真的走退款流程：落 ticket_refunds 行、进 7 态状态机，
 		// 而不是只把工单的 category 改成 refund。
@@ -395,6 +407,16 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 			Category:      ticketType,
 			Priority:      entity.TicketPriorityNormal,
 			LastMessageAt: now,
+		}
+		if accountIssue == TicketAccountIssueBanAppeal {
+			targetUserID, err := resolveTicketAppealTarget(tx, user, appealProof, now)
+			if err != nil {
+				return err
+			}
+			ticket.Origin = entity.TicketOriginAppeal
+			ticket.Category = entity.TicketCategoryBlacklistAppeal
+			ticket.Priority = defaultTicketPriorityForCategory(ticket.Category)
+			ticket.AppealTargetUserID = &targetUserID
 		}
 		if err := tx.Create(&ticket).Error; err != nil {
 			return err
@@ -1098,8 +1120,21 @@ func getTicketWithDBScope(db *gorm.DB, user *entity.User, id int64, selfView boo
 			Role: ticketUser.Role, Status: ticketUser.Status, CreatedAt: ticketUser.CreatedAt,
 			LastLoginAt: ticketUser.LastLoginAt, LastLoginIP: ticketUser.LastLoginIP,
 		}
+		state, err := ticketUserBanState(db, ticketUser.ID, ticketUser.Status)
+		if err != nil {
+			return TicketDetail{}, err
+		}
+		detail.User.Status, detail.User.Banned = state.Status, state.Banned
+		detail.User.BanReason, detail.User.BanExpiresAt = state.BanReason, state.BanExpiresAt
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return TicketDetail{}, err
+	}
+	if ticket.Category == entity.TicketCategoryBlacklistAppeal && ticket.AppealTargetUserID != nil {
+		target, err := loadTicketAppealTarget(db, *ticket.AppealTargetUserID)
+		if err != nil {
+			return TicketDetail{}, err
+		}
+		detail.AppealTarget = target
 	}
 	var notification entity.TicketNotification
 	if err := db.Where("ticket_id = ?", ticket.ID).Order("id DESC").First(&notification).Error; err == nil {

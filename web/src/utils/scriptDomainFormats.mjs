@@ -55,8 +55,8 @@ export function parseScriptDomainFormat(raw) {
 
   const stars = (lowered.match(/\*/g) || []).length
   if (stars !== 1) return null
-  if (!lowered.startsWith('*.')) return null
-  const host = lowered.slice(2)
+  if (!lowered.startsWith('*')) return null
+  const host = lowered.slice(lowered.startsWith('*.') ? 2 : 1)
   if (!isValidHost(host)) return null
   return { raw: `*.${host}`, host, kind: FORMAT_WILDCARD, slot: 'prefix' }
 }
@@ -132,16 +132,17 @@ export function buildScriptDomainFromFormat(format, slot) {
 export function splitScriptDomainForFormat(format, domain) {
   const parsed = typeof format === 'string' ? parseScriptDomainFormat(format) : format
   if (!parsed) return null
-  const value = String(domain ?? '').trim().toLowerCase()
+  const value = String(domain ?? '').trim()
   if (!value) return null
   if (parsed.slot === 'prefix') {
     const suffix = `.${parsed.host}`
-    if (value.length <= suffix.length || !value.endsWith(suffix)) return null
-    const slot = value.slice(0, value.length - suffix.length)
+    const hostname = value.toLowerCase()
+    if (hostname.length <= suffix.length || !hostname.endsWith(suffix)) return null
+    const slot = hostname.slice(0, hostname.length - suffix.length)
     return validateScriptDomainSlot(parsed.kind, slot) ? null : slot
   }
   const prefix = `${parsed.host}/`
-  if (!value.startsWith(prefix)) return null
+  if (!value.toLowerCase().startsWith(prefix)) return null
   const slot = value.slice(prefix.length)
   return validateScriptDomainSlot(parsed.kind, slot) ? null : slot
 }

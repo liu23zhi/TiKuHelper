@@ -145,7 +145,7 @@ func TestBannedAdministratorCanCreateActualAppealButCannotReadForeignTicket(t *t
 		t.Fatalf("actual appeal failed: %d %s", appeal.Code, appeal.Body.String())
 	}
 	var count int64
-	if err := db.Model(&entity.Ticket{}).Where("user_id = ? AND category = ?", actor.ID, "account").Count(&count).Error; err != nil || count != 1 {
+	if err := db.Model(&entity.Ticket{}).Where("user_id = ? AND category = ? AND appeal_target_user_id = ?", actor.ID, entity.TicketCategoryBlacklistAppeal, actor.ID).Count(&count).Error; err != nil || count != 1 {
 		t.Fatalf("appeal not committed: %d %v", count, err)
 	}
 	denied := request("GET", fmt.Sprintf("/api/tickets/%d", foreign.ID), "")

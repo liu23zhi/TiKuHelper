@@ -372,26 +372,15 @@ export default {
 
     // ───────────── 关闭态文案与入口禁用 ─────────────
     //
-    // 关闭态有两种**完全不同的原因**，必须分开说（用户看到的下一步动作相反）：
-    //   ① 「未开始」：系统设置里的总开关关着 —— 后端在 `GetReviewRebateEnabledWithDB`
-    //      就早退，连活动行都不读，用户端拿到 400「评价返现未启用」。这不是配置错，
-    //      是「本站还没上线这个功能」，用户该等运营开放。
-    //   ② 「已结束」：活动行存在但 `enabled=false` —— 后端能读出活动（含名称与商店条目），
-    //      只是行被禁用。这类是「办过，现在停了」，用户该知道不是自己没资格。
-    //
-    // 判据：拿到过活动对象（program.name / program.storeUrl 有值）⇒ 已结束；
-    // 活动完全读不到（关闭态下后端不返回任何活动字段）⇒ 未开始。
-    //
-    // ⚠️ 后端目前**没有**活动起止时间字段（review_rebate_programs 无 start_at/end_at，
-    // 见 internal/entity/review_rebate.go），所以「已结束」只能按「活动行是否可读」
-    // 推断，不能编一个时间出来。将来加了时间字段，这里改读时间即可。
+    // The API has no schedule fields. A disabled switch cannot establish that
+    // an activity has not started or has ended; describe only the actual state.
     const programReadable = computed(() => Boolean(
       String(program.value?.name || '').trim() || String(program.value?.storeUrl || '').trim(),
     ))
     const closedReason = computed(() => (programReadable.value
-      ? '当前站点已停止评价返现活动（活动已结束）。下方入口为下次开放时的提交位置，现在无法提交。'
-      : '当前站点未开放评价返现（活动尚未开始）。开放后可在下方直接提交，无需重新进入本页。'))
-    const closedTitle = computed(() => (programReadable.value ? '评价返现活动已结束' : '评价返现尚未开放'))
+      ? '当前评价返现活动已暂停，暂时无法提交。管理员重新开放后，点击刷新即可继续。'
+      : '当前站点未开放评价返现。管理员保存开启活动后，点击刷新即可在下方提交。'))
+    const closedTitle = computed(() => (programReadable.value ? '评价返现活动已暂停' : '评价返现尚未开放'))
 
     // entryDisabled：关闭态、「提交中」、「达上限」三者之一即禁用。
     // 关闭态**优先**：它是最根本的原因，不该被「已上限」之类的文案盖住。

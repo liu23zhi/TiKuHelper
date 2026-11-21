@@ -74,7 +74,7 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 				return err
 			}
 		}
-		if err := ValidateScriptDomainWithDB(tx, script.BaseDomain); err != nil {
+		if err := validateScriptLauncherDomainWithDB(tx, script); err != nil {
 			return err
 		}
 		if script.AccessTokenID <= 0 {
@@ -237,7 +237,7 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, 
 	if err := freshDB.Where("id = ? AND user_id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL", session.ScriptID, session.UserID, session.AccessTokenID, true).First(&script).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本已停用或删除")
 	}
-	if err := ValidateScriptDomainWithDB(freshDB, script.BaseDomain); err != nil {
+	if err := validateScriptLauncherDomainWithDB(freshDB, script); err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本域名不可用")
 	}
 	var accessToken entity.AccessToken

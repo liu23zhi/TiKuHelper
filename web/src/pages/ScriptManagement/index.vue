@@ -50,12 +50,11 @@
     <!-- 诉求 ④：域名语法重写为 `*.a.com`（泛域名）/ `a.com/*`（路径通配），旧格式全部舍弃。
          `AllowWildcard` 开关被删除：泛域名是否可用由「列表里有没有 *.a.com」直接表达，
          两个开关表达同一件事必然出现互相矛盾的状态。 -->
-    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="用户只能从这里的格式中选择并填写占位内容。每行一条，只支持两种写法：*.a.com（泛域名，匹配任意子域）或 a.com/*（路径通配，匹配任意非空路径）。留空表示不限制域名。">
+    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="每行一条。长命令地址由服务端按配置生成。留空时使用当前站点。">
       <a-textarea :id="fieldId('domains')" :value="domainText" :onUpdate:value="pageEntry.bind(setDomainText)" aria-label="脚本允许域名格式" :rows="4" placeholder="每行一条，例如：&#10;*.a.com&#10;a.com/*" :disabled="domainSaving || !domainReady" />
       <p class="hint">
-        <strong>*.a.com</strong> 匹配 a.com 的任意子域（x.a.com、x.y.a.com），<strong>不含 a.com 本身</strong>；
-        <strong>a.com/*</strong> 匹配 a.com 下的任意非空路径（a.com/p、a.com/p/q），<strong>不含根路径</strong>。
-        旧写法（裸域名 a.com、a.com/a/*、a.com/**）已不再支持，保存时会直接报错。
+        <strong>*.a.com</strong> 生成 <code>UUID.a.com</code>，<code>*a.com</code> 保存为 <code>*.a.com</code>。
+        <strong>a.com/*</strong> 生成 <code>a.com/UUID</code>。
       </p>
       <a-alert v-if="domainError" type="error" show-icon :message="domainError" class="page-alert" role="alert" />
       <a-space wrap class="domain-settings-actions">
@@ -116,11 +115,12 @@
             </template>
             <span v-else-if="column.key === 'owner'">{{ record.ownerName || '-' }}</span>
             <div v-else-if="column.key === 'command'" class="command-cell">
-              <code>{{ buildScriptDownloadURL(record) || '尚未配置短地址' }}</code>
+              <span class="table-hint">长命令地址</span>
+              <code>{{ buildScriptDownloadURL(record) || '暂无地址' }}</code>
               <span v-if="record.scheme === 'http'" class="table-hint">授权指令仅支持 HTTPS</span>
-              <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制授权指令</a-button>
+              <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制长命令</a-button>
               <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'full')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">长命令授权设置</a-button>
-              <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'short')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">短命令授权</a-button>
+              <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'short')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">{{ record.shortAuthorization ? '短命令授权设置' : '生成短命令' }}</a-button>
               <span v-if="record.launcherAuthorization" class="table-hint">长命令{{ shortAuthorizationStatus(record.launcherAuthorization.status) }} · {{ authorizationUsesText(record.launcherAuthorization) }}<template v-if="record.launcherAuthorization.expiresAt"> · 有效至 {{ formatDateTime(record.launcherAuthorization.expiresAt) }}</template></span>
               <span v-if="record.shortAuthorization" class="table-hint">短命令{{ shortAuthorizationStatus(record.shortAuthorization.status) }} · {{ authorizationUsesText(record.shortAuthorization) }}<template v-if="record.shortAuthorization.expiresAt"> · 有效至 {{ formatDateTime(record.shortAuthorization.expiresAt) }}</template></span>
             </div>
@@ -150,37 +150,10 @@
           <a-form-item label="脚本名称" :html-for="fieldId('name')" required>
             <a-input :id="fieldId('name')" :value="form.name" :onUpdate:value="editorEntry.bind(setFormField, 'name')" :maxlength="80" placeholder="例如：超星答题助手" />
           </a-form-item>
-          <!-- 诉求 ⑤：删除了「泛域名模式 / 优先使用尽可能短的 a.example.com」开关。
-               域名格式由管理员在「脚本可用域名」里配置，用户只能选择并在占位框里填写。
-               一个脚本可以有多个域名格式 ⇒ 这里是一组可增删的行。 -->
-          <a-form-item label="脚本域名" required>
-            <div v-if="!domainFormatOptions.length" class="hint">
-              管理员尚未配置任何域名格式，暂时无法创建脚本。请联系管理员在「脚本可用域名」中设置。
-            </div>
-            <div v-else class="domain-rows">
-              <div v-for="(row, index) in form.domainRows" :key="index" class="domain-row">
-                <a-select :value="row.format" :onUpdate:value="editorEntry.bind(setDomainRowFormat, index)" :disabled="saving" style="width: 200px" :aria-label="`第 ${index + 1} 个域名格式`">
-                  <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
-                </a-select>
-                <!-- 占位输入框的位置由格式决定：*.a.com → [输入框].a.com；a.com/* → a.com/[输入框]。
-                     两侧的字面量都直接渲染出来，用户看到的就是最终域名形状。 -->
-                <template v-if="domainRowMeta(row).slot === 'prefix'">
-                  <a-input :value="row.slot" :onUpdate:value="editorEntry.bind(setDomainRowSlot, index)" :disabled="saving" :maxlength="63" placeholder="子域" :aria-label="`第 ${index + 1} 个子域`" style="width: 160px" />
-                  <code class="domain-suffix">.{{ domainRowMeta(row).host }}</code>
-                </template>
-                <template v-else>
-                  <code class="domain-suffix">{{ domainRowMeta(row).host }}/</code>
-                  <a-input :value="row.slot" :onUpdate:value="editorEntry.bind(setDomainRowSlot, index)" :disabled="saving" :maxlength="200" placeholder="路径，例如 p/q" :aria-label="`第 ${index + 1} 个路径`" style="width: 220px" />
-                </template>
-                <a-button type="link" danger :disabled="saving || form.domainRows.length <= 1" :onClick="editorEntry.bind(removeDomainRow, index)">删除</a-button>
-              </div>
-              <a-button type="dashed" :disabled="saving || form.domainRows.length >= domainFormatOptions.length" :onClick="editorEntry.bind(addDomainRow)">添加域名</a-button>
-            </div>
-            <p v-if="domainRowError" class="hint domain-error" role="alert">{{ domainRowError }}</p>
-            <div class="hint">域名格式由管理员统一配置，你只能选择并填写占位内容。生成的域名：<code>{{ previewDomainText || '尚未填写' }}</code></div>
-          </a-form-item>
-          <a-form-item label="协议" :html-for="fieldId('scheme')">
-            <a-select :id="fieldId('scheme')" :value="form.scheme" :disabled="form.billingMode !== 'legacy'" :onUpdate:value="editorEntry.bind(setFormField, 'scheme')"><a-select-option value="https">HTTPS</a-select-option><a-select-option v-if="form.billingMode === 'legacy'" value="http">HTTP（仅兼容旧环境）</a-select-option></a-select>
+          <a-form-item v-if="!editing && domainFormatOptions.length > 1" label="长命令地址格式" :html-for="fieldId('domainFormat')">
+            <a-select :id="fieldId('domainFormat')" :value="form.domainFormat || domainFormatOptions[0].raw" :onUpdate:value="editorEntry.bind(setFormField, 'domainFormat')">
+              <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
+            </a-select>
           </a-form-item>
         </div>
         <a-form-item label="EXE 版本" :html-for="fieldId('versionId')" required>
@@ -191,7 +164,6 @@
           </a-select>
           <div class="hint">此版本由服务端维护。新建脚本使用当前发布版本，管理员上传新 EXE 后会自动切换所有未删除脚本。</div>
         </a-form-item>
-        <a-form-item label="说明" :html-for="fieldId('description')"><a-textarea :id="fieldId('description')" :value="form.description" :onUpdate:value="editorEntry.bind(setFormField, 'description')" :rows="2" placeholder="可选，说明用途或适用客户端" /></a-form-item>
         <a-form-item label="预置参数" :html-for="fieldId('presetText')">
           <a-textarea :id="fieldId('presetText')" :value="form.presetText" :onUpdate:value="editorEntry.bind(setFormField, 'presetText')" :rows="4" placeholder="每行一个 KEY=VALUE，例如\nkey=your-api-key\ncourseId=123" />
           <div class="hint">参数由服务端在脚本执行入口注入；此处只保存键和值，不会写进 PowerShell 命令文本。</div>
@@ -266,9 +238,8 @@
             <p class="hint">开启后本次创建不校验该账号是否绑定手机号和微信。普通用户看不到此开关，服务端也会按角色拒绝非管理员传入的跳过请求。</p>
           </a-form-item>
         </ConsolePanel>
-        <ConsolePanel title="指令预览" description="PowerShell + .NET WebClient 可覆盖 Windows 7 至 Windows 11。" class="preview-panel">
-          <div class="command-preview"><code>{{ buildScriptDownloadURL(previewRecord) || '设置合法域名后生成' }}</code></div>
-          <p class="hint">此处仅预览地址，不分配短标识。保存后可从列表复制实际授权指令；请勿分享指令。</p>
+        <ConsolePanel title="长命令地址" description="PowerShell + .NET WebClient 可覆盖 Windows 7 至 Windows 11。" class="preview-panel">
+          <div class="command-preview"><code>{{ editingAddress || '保存后自动生成 HTTPS 地址' }}</code></div>
         </ConsolePanel>
       </a-form>
       </div>
@@ -277,13 +248,13 @@
       <div ref="shortAuthorizationSurface" :onInputCapture="pageEntry.guardNative" :onChangeCapture="pageEntry.guardNative" :onClickCapture="pageEntry.guardNative" :onKeydownCapture="pageEntry.guardNative">
         <a-alert :type="shortAuthorizationMode === 'short' ? 'warning' : 'info'" show-icon :message="shortAuthorizationMode === 'short' ? '短命令按时间与次数授权' : '长命令保留完整凭据鉴权'" :description="shortAuthorizationMode === 'short' ? '知道入口地址的人可消耗授权次数，请妥善保管。到期、次数用完或主动撤销后失效；长命令独立生效。' : '更新设置会生成新的授权凭据，旧长命令立即失效。默认不限制时间和次数；可按需要收紧。'" />
         <a-form layout="vertical" class="short-authorization-form" :disabled="shortAuthorizationBusy">
-          <a-form-item v-if="shortAuthorizationMode === 'short'" label="入口格式" :html-for="fieldId('shortFormat')">
+          <a-form-item v-if="shortAuthorizationMode === 'short' && domainFormatOptions.length" label="入口格式" :html-for="fieldId('shortFormat')">
             <a-select :id="fieldId('shortFormat')" :value="shortAuthorizationForm.format" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'format')" placeholder="选择管理员允许的格式">
               <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
             </a-select>
           </a-form-item>
           <a-form-item v-if="shortAuthorizationMode === 'short'" :label="shortAuthorizationMeta.slot === 'prefix' ? '子域' : '路径'" :html-for="fieldId('shortSlot')">
-            <a-input :id="fieldId('shortSlot')" :value="shortAuthorizationForm.slot" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'slot')" :maxlength="200" :addon-before="shortAuthorizationMeta.slot === 'prefix' ? undefined : shortAuthorizationMeta.host + '/'" :addon-after="shortAuthorizationMeta.slot === 'prefix' ? '.' + shortAuthorizationMeta.host : undefined" placeholder="填写入口名称" />
+            <a-input :id="fieldId('shortSlot')" :value="shortAuthorizationForm.slot" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'slot')" :maxlength="200" :addon-before="shortAuthorizationMeta.slot === 'prefix' ? undefined : (shortAuthorizationMeta.host || shortAuthorizationHost) + '/'" :addon-after="shortAuthorizationMeta.slot === 'prefix' ? '.' + shortAuthorizationMeta.host : undefined" placeholder="填写入口名称" />
           </a-form-item>
           <a-form-item label="生效时间" :html-for="fieldId('authorizationStartsAt')">
             <a-input :id="fieldId('authorizationStartsAt')" type="datetime-local" :value="shortAuthorizationForm.startsAt" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'startsAt')" />
@@ -302,12 +273,12 @@
           <a-tag :color="selectedAuthorization.status === 'active' ? 'green' : 'default'">{{ shortAuthorizationStatus(selectedAuthorization.status) }}</a-tag>
           <p class="hint">{{ authorizationUsesText(selectedAuthorization) }}<template v-if="selectedAuthorization.startsAt"> · 生效于 {{ formatDateTime(selectedAuthorization.startsAt) }}</template><template v-if="selectedAuthorization.expiresAt"> · 有效至 {{ formatDateTime(selectedAuthorization.expiresAt) }}</template></p>
           <code v-if="shortAuthorizationMode === 'short' && buildScriptShortCommand(shortAuthorizationRecord)" class="short-command">{{ buildScriptShortCommand(shortAuthorizationRecord) }}</code>
-          <a-button v-if="selectedAuthorization.command" :onClick="pageEntry.bind(copyShortCommand)">{{ shortAuthorizationMode === 'short' ? '复制短命令' : '复制完整授权指令' }}</a-button>
+          <a-button v-if="selectedAuthorization.command" :onClick="pageEntry.bind(copyShortCommand)">{{ shortAuthorizationMode === 'short' ? '复制短命令' : '复制长命令' }}</a-button>
         </div>
         <a-space wrap class="short-authorization-actions">
           <a-button :disabled="shortAuthorizationBusy" :onClick="pageEntry.bind(closeShortAuthorization)">关闭</a-button>
           <a-button v-if="['active', 'scheduled'].includes(selectedAuthorization?.status)" danger :loading="shortAuthorizationBusy" :onClick="pageEntry.bind(saveShortAuthorization, false)">撤销授权</a-button>
-          <a-button type="primary" :loading="shortAuthorizationBusy" :disabled="shortAuthorizationMode === 'short' && !shortAuthorizationAddress" :onClick="pageEntry.bind(saveShortAuthorization, true)">{{ ['active', 'scheduled'].includes(selectedAuthorization?.status) ? '更新授权' : '启用授权' }}</a-button>
+          <a-button type="primary" :loading="shortAuthorizationBusy" :disabled="shortAuthorizationMode === 'short' && !shortAuthorizationAddress" :onClick="pageEntry.bind(saveShortAuthorization, true)">{{ ['active', 'scheduled'].includes(selectedAuthorization?.status) ? '更新授权' : shortAuthorizationMode === 'short' ? '生成短命令' : '启用授权' }}</a-button>
         </a-space>
       </div>
     </a-modal>
@@ -326,10 +297,10 @@ import { UploadOutlined } from '@ant-design/icons-vue'
 import { getCurrentUserLogoutEpoch, getStoredCurrentUser, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode, configureScriptShortAuthorization, configureScriptLauncherAuthorization } from '@/api/TikuComponentApi'
-import { isRedeemableScriptCode, buildScriptBillingText, buildScriptCommand, buildScriptShortCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
+import { isRedeemableScriptCode, buildScriptBillingText, buildScriptCommand, buildScriptShortCommand, buildScriptDownloadURL, buildScriptListParams, parsePresetParams, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
 import { collectScriptRevokeNotices, scriptNoticeAlertType } from '@/utils/scriptRevokeNotice.mjs'
 import { shouldShowSkipBindingButton, buildCreateScriptPayload, isBindingsRequiredError, buildSkipBindingConfirmText } from '@/utils/scriptSkipBinding.mjs'
-import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
+import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat, validateScriptDomainSlot } from '@/utils/scriptDomainFormats.mjs'
 import { describeScriptAdminAction, describeScriptUploadGate } from '@/utils/scriptUploadGate.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
@@ -376,7 +347,12 @@ const shortAuthorizationMode = ref('short')
 const selectedAuthorization = computed(() => shortAuthorizationRecord.value?.[shortAuthorizationMode.value === 'full' ? 'launcherAuthorization' : 'shortAuthorization'])
 const shortAuthorizationForm = reactive({ format: '', slot: '', durationMinutes: 5, startsAt: '', maxUses: 1 })
 const shortAuthorizationMeta = computed(() => domainRowMeta(shortAuthorizationForm))
+const shortAuthorizationHost = window.location.host
 const shortAuthorizationAddress = computed(() => {
+  if (!domainFormatOptions.value.length) {
+    const slot = shortAuthorizationForm.slot.trim().replace(/^\/+|\/+$/g, '')
+    return shortAuthorizationHost && !validateScriptDomainSlot('path', slot) ? `https://${shortAuthorizationHost}/${slot}` : ''
+  }
   const result = buildScriptDomainForms([shortAuthorizationForm])
   return result.errors.length ? '' : (result.domains[0] ? 'https://' + result.domains[0] : '')
 })
@@ -471,7 +447,6 @@ const domainSavedText = ref('')
 const domainDirty = computed(() => domainText.value.trim() !== domainSavedText.value.trim())
 // 诉求 ⑤：用户可选的域名格式模板（管理员配置），以及编辑中的域名行。
 const domainFormats = ref([])
-const domainRowError = ref('')
 const scriptAdminAction = describeScriptAdminAction()
 const escrowPolicy = ref(null), activationPrice = ref(null), policyError = ref('')
 const policyForm = reactive({ target: '', minimum: '', multiplier: '' }), priceForm = ref('')
@@ -489,39 +464,20 @@ const domainFormatOptions = computed(() => domainFormats.value.filter(Boolean))
 function domainRowMeta(row) {
   return parseScriptDomainFormat(row?.format) || { slot: '', host: '' }
 }
-// 表单里的域名行 → 最终域名列表（多格式并存，诉求 ⑤ 最后一句）。
-// ⚠️ 这两个 computed 只依赖 form，但 form 在下面才声明；它们本身是惰性的（不被求值就不读 form），
-// 所以可以放在前面。真正**不能**放在前面的是下面那个 immediate watch —— 它会在 setup 期间
-// 立即求值 domainFormsResult，从而在 form 初始化前访问它（TDZ：Cannot access 'form' before initialization）。
-const domainFormsResult = computed(() => buildScriptDomainForms(form.domainRows))
-const previewDomainText = computed(() => domainFormsResult.value.domains.join('  '))
-// 「域名格式」现在是脚本的**唯一**域名来源：baseDomain 由第一行生成，
-// 供既有的下载 URL 拼装继续工作（它仍按 <shortCode>.<baseDomain> 生成）。
 let purchaseIntentKey = '', purchaseIntentQuote = ''
 const canBuyActivationCode = computed(() => modalOpen.value && !editing.value && form.billingMode === 'activation_code'
   && !saving.value && !activationBusy.value && !purchasedCode.value && !form.entitlementId
   && (purchaseUncertain.value || activationPrice.value?.enabled === true))
 
-const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false, domainRows: [{ format: '', slot: '' }] })
+const emptyForm = () => ({ id: undefined, name: '', versionId: undefined, enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false, domainFormat: '' })
 const form = reactive(emptyForm())
-// 域名行 → baseDomain 的同步。必须放在 `form` 声明**之后**：
-// 配了 immediate:true 的 watch 会在 setup 期间立即求值 domainFormsResult，
-// 进而读取 form.domainRows；放在 form 之前会抛 TDZ
-// （Cannot access 'form' before initialization，实测于本轮）。
-watch(domainFormsResult, (result) => {
-  domainRowError.value = result.errors.length ? result.errors[0].message : ''
-  const first = result.domains[0] || ''
-  // 只取主机部分：`x.a.com` → `a.com`，`a.com/p` → `a.com`。
-  const host = first.includes('/') ? first.slice(0, first.indexOf('/')) : first
-  if (host) form.baseDomain = host
-}, { immediate: true })
 const draft = useUnsavedDraft(form, { focusTriggerAfterClose: false })
-const previewRecord = computed(() => normalizeScriptRecord({ ...form, presetParams: form.presetText }))
+const editingAddress = ref('')
 const scopeDescription = computed(() => isAdmin.value ? '当前显示全部用户的脚本；删除和编辑仍由服务端校验权限。' : '当前只显示自己的脚本。')
 const columns = computed(() => [
   { title: '脚本', key: 'name', dataIndex: 'name', width: 220 },
   ...(isAdmin.value ? [{ title: '用户', key: 'owner', dataIndex: 'ownerName', width: 150 }] : []),
-  { title: '授权指令', key: 'command', dataIndex: 'command', width: 430 },
+  { title: '命令与授权', key: 'command', dataIndex: 'command', width: 430 },
   { title: '预置参数', key: 'preset', dataIndex: 'preset', width: 100 },
   { title: '答题计费', key: 'billing', dataIndex: 'billing', width: 180 },
   { title: '更新时间', key: 'updatedAt', dataIndex: 'updatedAt', width: 150 },
@@ -531,78 +487,39 @@ const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
 
 function resetForm(record) {
   const fields = emptyForm()
+  editingAddress.value = record ? buildScriptDownloadURL(record) : ''
   if (record) {
     const normalized = normalizeScriptRecord(record)
     for (const name of Object.keys(fields)) if (Object.hasOwn(normalized, name)) fields[name] = normalized[name]
     fields.presetText = formatPresetParams(normalized.presetParams)
     fields.billingMode = ['escrow', 'activation_code'].includes(normalized.billingMode) ? normalized.billingMode : 'legacy'
     if (!fields.runDurationMinutes) fields.runDurationMinutes = 150
-    // 编辑态回填：把库里的具体域名反解成「格式 + 占位内容」（诉求 ⑤ 的逆运算）。
-    fields.domainRows = restoreDomainRows(normalized.baseDomain)
-  } else {
-    fields.domainRows = defaultDomainRows()
   }
   Object.assign(form, fields)
   draft.savedConfigSnapshot.value = draft.currentConfigSnapshot.value
 }
 
-// 新建时的默认行：取第一个可用格式（管理员一般先配 `*.a.com`）。
-function defaultDomainRows() {
-  const first = domainFormatOptions.value[0]
-  return [{ format: first?.raw || '', slot: '' }]
-}
-
-// 把一条具体域名反解成能匹配的「格式 + 槽位」。多条格式时优先取能解析的。
-function restoreDomainRows(domain) {
+function restoreShortAddress(domain) {
   const value = String(domain ?? '').trim()
-  if (!value) return defaultDomainRows()
+  if (!domainFormatOptions.value.length && value.startsWith(`${shortAuthorizationHost}/`)) {
+    return { format: '', slot: value.slice(shortAuthorizationHost.length + 1) }
+  }
   for (const option of domainFormatOptions.value) {
     const slot = splitScriptDomainForFormat(option, value)
-    if (slot) return [{ format: option.raw, slot }]
+    if (slot) return { format: option.raw, slot }
   }
-  // 反解不出来（存量域名不符合当前格式）时退回默认行，让用户重新选择 ——
-  // 不能把不匹配的值硬塞进某个槽位，那会生成一个没人预期的域名。
-  return defaultDomainRows()
+  return { format: domainFormatOptions.value[0]?.raw || '', slot: '' }
 }
 
 function setFormField(name, value) {
   if (!editorEntry.value.isCurrent() || saving.value || !Object.hasOwn(form, name) || name === 'entitlementId') return
   if (name === 'billingMode') {
     if (editing.value || activationBusy.value || !['escrow', 'activation_code'].includes(value)) return
-    form.scheme = 'https'
   }
-  if (name === 'scheme' && form.billingMode !== 'legacy') return
   form[name] = value
 }
 function setUploadVersion(value) { if (isAdmin.value && !uploading.value) uploadVersion.value = value }
 function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainText.value = value } }
-// 诉求 ⑤：域名行的增删改。一个脚本可以有多个域名格式，所以这里是列表操作。
-function setDomainRowFormat(index, format) {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  const row = form.domainRows[index]
-  if (!row) return
-  row.format = format
-  // 换格式后旧槽位可能不再合法（子域 vs 路径），清空让用户重填，
-  // 而不是把 `p/q` 留在子域槽里再默默生成非法域名。
-  row.slot = ''
-}
-function setDomainRowSlot(index, value) {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  const row = form.domainRows[index]
-  if (row) row.slot = value
-}
-function addDomainRow() {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  if (form.domainRows.length >= domainFormatOptions.value.length) return
-  const used = new Set(form.domainRows.map((row) => row.format))
-  const next = domainFormatOptions.value.find((option) => !used.has(option.raw))
-  form.domainRows.push({ format: next?.raw || '', slot: '' })
-}
-function removeDomainRow(index) {
-  if (!editorEntry.value.isCurrent() || saving.value) return
-  if (form.domainRows.length <= 1) return
-  form.domainRows.splice(index, 1)
-}
 
 function startEditor(record) {
   if (!canAct() || modalOpen.value || saving.value || deleting.value || activeCloseConfirmation.value || isEscrowClosing(record)) return
@@ -815,29 +732,14 @@ async function handleSubmit() {  const owns = editorEntry.value.isCurrent
   const requestSkipBinding = !editing.value && skipBindingCheck.value && showSkipBindingButton.value
   // buildCreateScriptPayload 负责「只有显式 true 才写字段」，
   // 并清掉可能残留的脏值（上一次勾过、这次取消）。
-  const payload = buildCreateScriptPayload(buildScriptSavePayload({ ...form, presetParams: form.presetText }), requestSkipBinding)
-  // Managed pricing is server-owned. Do not send legacy multiplier defaults
-  // (also preserves historical pricing on edits to existing legacy scripts).
-  for (const field of ['billingEnabled', 'billingUseTikuPrice', 'useTikuPrice', 'priceMultiplier', 'answerPriceMultiplier']) delete payload[field]
+  const payload = buildCreateScriptPayload({
+    name: form.name.trim(),
+    enabled: form.enabled,
+    parameters: parsePresetParams(form.presetText),
+  }, requestSkipBinding)
   if (!payload.name) return message.warning('请输入脚本名称')
-  // 诉求 ⑤：域名只能由「管理员格式 + 用户占位内容」生成。
-  // 逐行校验，错误要指出**是哪一行缺什么**，不能只说「请输入有效域名」。
-  const domainForms = buildScriptDomainForms(form.domainRows)
-  if (domainForms.errors.length) {
-    const first = domainForms.errors[0]
-    return message.warning(`第 ${first.index + 1} 个域名：${first.message}`)
-  }
-  if (!domainForms.domains.length) return message.warning('请至少填写一个脚本域名')
-  // baseDomain 仍按「主机」提交（后端按主机校验管理员格式），
-  // 完整域名列表另存为 domains 供展示与后续扩展。
-  const primaryHost = domainForms.domains[0].includes('/')
-    ? domainForms.domains[0].slice(0, domainForms.domains[0].indexOf('/'))
-    : domainForms.domains[0]
-  payload.baseDomain = primaryHost
-  payload.domains = domainForms.domains
-  if (!payload.baseDomain || !buildScriptDownloadURL(payload)) return message.warning('请填写有效的脚本域名')
-  if (!payload.versionId) return message.warning('请选择 EXE 版本')
   const isEditing = editing.value, sentSnapshot = draft.currentConfigSnapshot.value
+  if (isEditing) payload.id = form.id
   if (form.billingMode !== 'legacy') {
     const minutes = Number(form.runDurationMinutes)
     if (form.runDurationMinutes === null || !Number.isSafeInteger(minutes) || minutes < 1 || minutes > 150) return message.warning('令牌有效期须为 1 至 150 分钟的整数')
@@ -849,6 +751,9 @@ async function handleSubmit() {  const owns = editorEntry.value.isCurrent
     }
   }
   if (!isEditing) {
+    if (!form.versionId) return message.warning('请选择 EXE 版本')
+    payload.versionId = form.versionId
+    if (form.domainFormat) payload.domainFormat = form.domainFormat
     payload.billingMode = form.billingMode
     if (form.billingMode === 'activation_code') {
       if (!form.entitlementId) return message.warning('请先兑换一次性脚本创建资格。')
@@ -867,7 +772,9 @@ async function handleSubmit() {  const owns = editorEntry.value.isCurrent
         ? (showSkipBindingButton.value
           ? '创建脚本前请绑定手机号和微信（管理员可在弹窗内「管理员选项」中跳过本次校验）。'
           : '创建脚本前请绑定手机号和微信。')
-        : '保存脚本未完成，请刷新列表核对后重试。')
+        : response?.data?.code === 'SCRIPT_LAUNCHER_HTTPS_REQUIRED'
+          ? response.data.message
+          : '保存脚本未完成，请刷新列表核对后重试。')
       return
     }
     if (!isEditing) retry = null
@@ -878,7 +785,10 @@ async function handleSubmit() {  const owns = editorEntry.value.isCurrent
     await loadScripts()
   } catch (error) {
     if (owns()) message.error(isBindingsRequiredError(error)
-      ? '创建脚本前请绑定手机号和微信。' : '保存结果未确认，请刷新核对；如重试，请保留原表单。')
+      ? '创建脚本前请绑定手机号和微信。'
+      : error?.response?.data?.code === 'SCRIPT_LAUNCHER_HTTPS_REQUIRED'
+        ? error.response.data.message
+        : '保存结果未确认，请刷新核对；如重试，请保留原表单。')
   } finally { if (owns()) saving.value = false }
 }
 
@@ -990,7 +900,7 @@ function openShortAuthorization(record, mode = 'short') {
   shortAuthorizationMode.value = mode === 'full' ? 'full' : 'short'
   const grant = record[shortAuthorizationMode.value === 'full' ? 'launcherAuthorization' : 'shortAuthorization']
   const address = String(record.shortAuthorization?.address || '').replace(/^https:\/\//, '')
-  const restored = address ? restoreDomainRows(address)[0] : defaultDomainRows()[0]
+  const restored = restoreShortAddress(address)
   const durationMinutes = grant?.expiresAt ? Math.max(1, Math.ceil((Date.parse(grant.expiresAt) - Math.max(Date.now(), Date.parse(grant.startsAt) || 0)) / 60000)) : (shortAuthorizationMode.value === 'full' ? 0 : 5)
   Object.assign(shortAuthorizationForm, { format: restored?.format || '', slot: restored?.slot || '', durationMinutes, startsAt: localDateTimeInput(grant?.startsAt), maxUses: grant?.maxUses ?? (shortAuthorizationMode.value === 'full' ? 0 : 1) })
   shortAuthorizationRecord.value = record
@@ -1222,7 +1132,7 @@ function retireScope() {
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
   domainText.value = ''; domainReady.value = false; domainSaving.value = false; domainError.value = ''
-  domainFormats.value = []; domainRowError.value = ''
+  domainFormats.value = []
   lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
   escrowPolicy.value = null; activationPrice.value = null; policyError.value = ''; priceForm.value = ''
   Object.assign(policyForm, { target: '', minimum: '', multiplier: '' }); savingPolicy.value = false; savingPrice.value = false

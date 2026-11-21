@@ -577,6 +577,13 @@ func Unban(db *gorm.DB, req UserUnbanRequest) error {
 //
 // 多条同时未过期时取最新一行（banned_at 倒序 + id 倒序），保证连续封禁的
 // upsert 目标确定 —— 没有 ORDER BY 时 GORM 返回哪一行是未定义的。
+func ActiveUserBanWithDB(db *gorm.DB, userID int32, now time.Time) (*entity.UserBan, error) {
+	if !db.Migrator().HasTable(entity.TableNameUserBan) {
+		return nil, nil
+	}
+	return userBanUnexpiredRow(db, userID, now)
+}
+
 func userBanUnexpiredRow(tx *gorm.DB, userID int32, now time.Time) (*entity.UserBan, error) {
 	var rows []entity.UserBan
 	if err := tx.Session(&gorm.Session{NewDB: true}).

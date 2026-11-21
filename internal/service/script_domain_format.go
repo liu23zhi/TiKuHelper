@@ -111,14 +111,14 @@ func parseScriptDomainFormat(raw string) (ScriptDomainFormat, bool, error) {
 		// 完全没有 `*` ⇒ 旧格式的裸域名。
 		return ScriptDomainFormat{}, true, ErrScriptDomainFormatLegacy
 	}
-	if strings.HasPrefix(lowered, "*.") {
-		host := strings.TrimPrefix(lowered, "*.")
+	if strings.HasPrefix(lowered, "*") {
+		host := strings.TrimPrefix(strings.TrimPrefix(lowered, "*"), ".")
 		if !validScriptDomainHost(host) {
 			return ScriptDomainFormat{}, true, ErrScriptDomainFormatInvalid
 		}
 		return ScriptDomainFormat{Raw: "*." + host, Host: host, Kind: ScriptDomainFormatWildcard}, true, nil
 	}
-	// 有 `*` 但既不是 `*.` 前缀也不是 `/*` 后缀：`a.*.a.com`、`*a.com`。
+	// 只接受最左通配；`*a.com` 归一为 `*.a.com`。
 	return ScriptDomainFormat{}, true, ErrScriptDomainFormatInvalid
 }
 

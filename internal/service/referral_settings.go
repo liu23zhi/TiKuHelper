@@ -54,11 +54,28 @@ func ListReferralInvitesWithDB(db *gorm.DB, keyword string, page, pageSize int) 
 	out := ReferralInviteAdminResult{Data: []ReferralInviteAdminItem{}, Page: page, PageSize: pageSize}
 	query := referralSession(db).Table(entity.TableNameUser + " AS users").Joins("LEFT JOIN referral_invites AS invite ON users.id=invite.user_id")
 	if keyword != "" {
-		query = query.Where("invite.code LIKE ? OR users.username LIKE ? OR users.nickname LIKE ?", "%"+keyword+"%", "%"+keyword+"%", "%"+keyword+"%")
+		pattern := "%" + keyword + "%"
+		query = query.Where("invite.code LIKE ? OR users.username LIKE ? OR users.nickname LIKE ? OR users.phone LIKE ?", pattern, pattern, pattern, pattern)
 	}
 	if err := query.Count(&out.Total).Error; err != nil {
 		return out, err
 	}
 	err := query.Select("users.id AS user_id, users.username, users.nickname, COALESCE(invite.code,'') AS code, invite.created_at, (SELECT COUNT(*) FROM users referred WHERE referred.invited_by_user_id=users.id) AS invited_count").Order("users.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&out.Data).Error
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	// 补码范围与当前查询页一致，新老账号复用同一套唯一键和冲突处理。
+	for index := range out.Data {
+		item := &out.Data[index]
+		if item.Code != "" {
+			continue
+		}
+		invite, err := EnsureReferralInviteWithDB(db, item.UserID)
+		if err != nil {
+			return out, err
+		}
+		item.Code = invite.Code
+		item.CreatedAt = &invite.CreatedAt
+	}
+	return out, nil
 }

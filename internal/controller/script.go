@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,37 @@ var scriptDB = func() *gorm.DB {
 		return nil
 	}
 	return currentManager.GetDB()
+}
+
+const scriptProxyHTTPSKey = "script_proxy_https"
+
+// ScriptProxyHTTPS recognizes the scheme only from explicitly trusted peers.
+func ScriptProxyHTTPS(proxies []string) gin.HandlerFunc {
+	var trusted []netip.Prefix
+	for _, proxy := range proxies {
+		if ip, err := netip.ParseAddr(proxy); err == nil {
+			ip = ip.Unmap()
+			trusted = append(trusted, netip.PrefixFrom(ip, ip.BitLen()))
+		} else if network, err := netip.ParsePrefix(proxy); err == nil && network.Bits() > 0 {
+			trusted = append(trusted, network)
+		}
+	}
+	return func(c *gin.Context) {
+		if strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https") {
+			host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+			if err == nil {
+				if peer, err := netip.ParseAddr(host); err == nil {
+					for _, network := range trusted {
+						if network.Contains(peer.Unmap()) {
+							c.Set(scriptProxyHTTPSKey, true)
+							break
+						}
+					}
+				}
+			}
+		}
+		c.Next()
+	}
 }
 
 func ScriptVersionList(c *gin.Context) {
@@ -182,6 +215,7 @@ func CreateScript(c *gin.Context) {
 		return
 	}
 	input.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	input.LauncherOrigin = &service.ScriptLauncherOrigin{Host: c.Request.Host, HTTPS: c.Request.TLS != nil || c.GetBool(scriptProxyHTTPSKey)}
 	if input.BillingMode == "" {
 		input.BillingMode = entity.ScriptBillingModeEscrow
 	}
@@ -334,6 +368,7 @@ func configureScriptAuthorization(c *gin.Context, full bool) {
 	if full {
 		result, err = service.ConfigureScriptLauncherAuthorizationWithDB(scriptDB(), operator, int32(id), input)
 	} else {
+		input.RequestHost = c.Request.Host
 		result, err = service.ConfigureScriptShortAuthorizationWithDB(scriptDB(), operator, int32(id), input)
 	}
 	if err != nil {
@@ -700,6 +735,9 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		return
 	case errors.Is(err, service.ErrScriptForbidden):
 		status, message = http.StatusForbidden, err.Error()
+	case errors.Is(err, service.ErrScriptLauncherHTTPSRequired):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "SCRIPT_LAUNCHER_HTTPS_REQUIRED", "message": err.Error()})
+		return
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):
 		status, message = http.StatusNotFound, err.Error()
 	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable), errors.Is(err, service.ErrScriptDomainFormatLegacy), errors.Is(err, service.ErrScriptDomainFormatInvalid), errors.Is(err, service.ErrScriptDomainSlotInvalid):

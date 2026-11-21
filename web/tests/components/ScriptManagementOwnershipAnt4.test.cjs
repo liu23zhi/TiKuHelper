@@ -96,6 +96,30 @@ test('administrator using the ordinary script view still reads only own scripts'
   await settle()
 })
 
+test('both script views create a launcher without user-supplied address, scheme or description', async () => {
+  holdWrites = true
+  for (const view of ['self', 'admin']) {
+    const { state, wrapper, router } = await open(admin, view)
+    state.openCreate()
+    await settle()
+    const modal = document.querySelector('.ant-modal')
+    assert.doesNotMatch(modal.textContent, /添加域名|协议|说明/)
+    assert.equal(modal.querySelector('input[placeholder="子域"]'), null)
+    state.setFormField('name', '随机地址')
+    const operation = state.handleSubmit()
+    const write = writes.at(-1)
+    assert.ok(write)
+    for (const key of ['baseDomain', 'scheme', 'useWildcardDomain', 'description', 'domains']) {
+      assert.equal(Object.hasOwn(write.payload, key), false, key)
+    }
+    write.resolve(okay({}))
+    await operation
+    await router.push('/other')
+    await settle()
+    assert.ok(wrapper.exists())
+  }
+})
+
 test('short entry authorization keeps complete command and supports expiry plus revocation', async () => {
   const { state } = await open()
   assert.equal(state.rows[0].command, ownerCommand)
@@ -262,7 +286,6 @@ test('script save deduplicates clicks and retains the idempotency key only for a
   state.openCreate()
   await settle()
   state.setFormField('name', '合成脚本')
-  state.setDomainRowSlot(0, 'fixture')
   const editor = page.findComponent(Antd.Modal)
   assert.ok(editor.exists())
   editor.vm.$emit('ok')
@@ -372,7 +395,6 @@ test('redeeming sends code only to redemption; creation uses entitlement and edi
   state.openCreate()
   state.setFormField('billingMode', 'activation_code')
   state.setFormField('name', '一次合成脚本')
-  state.setDomainRowSlot(0, 'fixture')
   state.setFormField('runDurationMinutes', 35)
   state.setFormField('notifyOnDenied', true)
   await settle()

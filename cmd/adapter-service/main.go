@@ -86,6 +86,7 @@ func main() {
 		logger.FatalLog(err)
 	}
 	logTrustedProxies(trustedProxies)
+	server.Use(controller.ScriptProxyHTTPS(trustedProxies.List[:trustedProxies.ConfiguredCount]))
 	api.SetAPIRouter(server)
 	healthDB, err := mg.GetDB().DB()
 	if err != nil {

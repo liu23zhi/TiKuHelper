@@ -763,6 +763,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		// 归属地查询结果的持久化缓存（节省按积分计费的 UAPI 调用）。
 		&entity.LocationCache{},
 		&entity.Ticket{},
+		&entity.TicketAppealProof{},
 		&entity.TicketMessage{},
 		&entity.TicketNotification{},
 		&entity.TicketRefund{},

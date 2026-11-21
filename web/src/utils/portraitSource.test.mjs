@@ -107,6 +107,18 @@ test('画像指标卡：0 值不被当成缺失', () => {
   }
 });
 
+test('画像图表和明细都按已知注册来源转换中文，保留后端提供的新来源名称', () => {
+  const portrait = { registerSources: [
+    { source: 'system', label: 'system', count: 1 },
+    { source: 'wechat', count: 2 },
+    { source: 'new_provider', label: '新增渠道', count: 3 },
+    { source: 'unmapped', count: 4 },
+  ] }
+  const expected = ['系统初始化创建', '微信注册', '新增渠道', 'unmapped']
+  assert.deepEqual(buildPortraitCharts(portrait).registerSources.labels, expected)
+  assert.deepEqual(buildPortraitBreakdownTables(portrait).find(table => table.key === 'registerSources').rows.map(row => row.label), expected)
+});
+
 test('全站画像：指标文案必须与 overview 的账单聚合口径一致', () => {
   const tiles = buildOverallPortraitTiles({
     totals: { userCount: 12, recordCount: 8, amount: 24.5, consumptionCount: 6, ticketCount: 2, activeUserCount: 4 },

@@ -106,6 +106,7 @@ export function buildScriptListParams(isAdmin) {
 }
 
 export function buildScriptDownloadURL(record = {}) {
+  if (typeof record.downloadUrl === 'string') return record.downloadUrl
   const normalized = normalizeScriptRecord(record)
   const domain = normalized.baseDomain
   if (!domain || domain.length > 253 || !domain.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return ''
@@ -128,7 +129,7 @@ export function buildScriptShortCommand(record = {}, now = Date.now()) {
   if (!['active', 'scheduled'].includes(grant?.status) || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now) return ''
   if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
   const address = String(grant.address || '')
-  if (!/^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''
+  if (!/^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''
   const command = `powershell -c "iex(irm ${address})"`
   return grant.command === command ? command : ''
 }

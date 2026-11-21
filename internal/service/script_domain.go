@@ -3,9 +3,13 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"net"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 )
@@ -28,6 +32,119 @@ type ScriptDomainSettings struct {
 var (
 	ErrScriptDomainUnavailable = errors.New("脚本域名不在管理员允许的列表中")
 )
+
+type ScriptLauncherOrigin struct {
+	Host  string
+	HTTPS bool
+}
+
+// generateScriptLauncherAddress uses an administrator-controlled template, or
+// the console host when the template list is empty.
+func generateScriptLauncherAddress(db *gorm.DB, requestedFormat string, origin ScriptLauncherOrigin) (string, *string, bool, error) {
+	formats, err := ScriptDomainFormatsWithDB(db)
+	if err != nil {
+		return "", nil, false, err
+	}
+	format, specified, err := parseScriptDomainFormat(requestedFormat)
+	if err != nil {
+		return "", nil, false, err
+	}
+	var domain string
+	var wildcard bool
+	if len(formats) == 0 && !specified {
+		if !origin.HTTPS {
+			return "", nil, false, ErrScriptLauncherHTTPSRequired
+		}
+		domain = normalizeScriptLauncherHost(origin.Host)
+	}
+	for _, allowed := range formats {
+		if !specified || allowed.Raw == format.Raw {
+			domain = allowed.Host
+			wildcard = allowed.SlotIsPrefix()
+			break
+		}
+	}
+	if domain == "" || (wildcard && len(domain)+37 > 253) {
+		return "", nil, false, ErrScriptDomainUnavailable
+	}
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "", nil, false, err
+	}
+	locator := id.String()
+	return domain, &locator, wildcard, nil
+}
+
+func normalizeScriptLauncherHost(raw string) string {
+	if raw == "" || strings.ContainsAny(raw, "'\"\\%/?# \t\r\n") {
+		return ""
+	}
+	parsed, err := url.Parse("https://" + raw)
+	if err != nil || parsed.User != nil || parsed.Host == "" || strings.HasSuffix(parsed.Host, ":") {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	} else if !validScriptLauncherDNSName(host) {
+		return ""
+	}
+	if port := parsed.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return ""
+		}
+		if n != 443 {
+			return net.JoinHostPort(host, strconv.Itoa(n))
+		}
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func validScriptLauncherDNSName(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, ch := range label {
+			if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func scriptDomainEntryCovers(format ScriptDomainFormat, host, path string) bool {
+	return (path == "" && scriptDomainWildcardCovers(format, host)) ||
+		(path != "" && scriptDomainPathCovers(format, host))
+}
+
+func validateScriptLauncherDomainWithDB(db *gorm.DB, script entity.UserScript) error {
+	if script.LauncherLocator == nil {
+		return ValidateScriptDomainWithDB(db, script.BaseDomain)
+	}
+	formats, err := ScriptDomainFormatsWithDB(db)
+	if err != nil || len(formats) == 0 {
+		return err
+	}
+	address, err := url.Parse(BuildScriptCommandURL(script))
+	if err != nil {
+		return ErrScriptDomainUnavailable
+	}
+	for _, format := range formats {
+		if scriptDomainEntryCovers(format, address.Host, address.Path) {
+			return nil
+		}
+	}
+	return ErrScriptDomainUnavailable
+}
 
 // GetScriptDomainSettingsWithDB 读取配置。
 //

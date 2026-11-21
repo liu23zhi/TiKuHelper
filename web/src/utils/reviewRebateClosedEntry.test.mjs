@@ -313,7 +313,7 @@ test('③-b 开启且达上限时：「提交审核」禁用，但「清空」�
 // ══════════════════════════════════════════════════════════════════════════
 // ④ 「未开始」与「已结束」的文案必须区分
 // ══════════════════════════════════════════════════════════════════════════
-test('④ 「尚未开始」与「已结束」两种关闭原因文案不同，且都渲染到页面', { skip: behaviourSkip }, async () => {
+test('④ 关闭态说明未开放或已暂停，不虚构活动起止时间', { skip: behaviourSkip }, async () => {
   const environment = prepare()
 
   const notStarted = await mountPage(environment, RESPONSE_NOT_STARTED)
@@ -332,7 +332,8 @@ test('④ 「尚未开始」与「已结束」两种关闭原因文案不同，�
   assert.notEqual(notStartedReason, endedReason,
     '「未开始」与「已结束」必须给出不同文案 —— 用户下一步动作相反（等开放 vs 问是不是被停权）')
   assert.match(notStartedReason, /未开放|尚未开始/, '未开始的原因文案必须说明「还没开始」')
-  assert.match(endedReason, /已结束|已停止/, '已结束的原因文案必须说明「结束了」')
+  assert.match(endedReason, /已暂停/, '禁用活动只能说明暂停，不能推断已结束')
+  assert.doesNotMatch(notStartedReason + endedReason, /尚未开始|已结束/)
 
   // 修复不能在两种关闭态之一失效。
   assert.equal(notStartedHasEntry, true, '未开始态下入口必须存在')
@@ -340,5 +341,5 @@ test('④ 「尚未开始」与「已结束」两种关闭原因文案不同，�
 
   // 文案必须真的渲染到页面，不能只存在于 setup 状态里。
   assert.match(notStartedText, /未开放|尚未开始/, '未开始的文案必须渲染到页面上')
-  assert.match(endedText, /已结束|已停止/, '已结束的文案必须渲染到页面上')
+  assert.match(endedText, /已暂停/, '暂停文案必须渲染到页面上')
 })

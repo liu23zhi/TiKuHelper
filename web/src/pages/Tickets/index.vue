@@ -539,6 +539,14 @@
               placeholder="请选择问题类型"
               :onUpdate:value="createEntry.bind(setDraft, 'issueType')" /><template #help><span v-if="createValidationMessage('issueType')" role="alert">{{ createValidationMessage('issueType') }}</span><span v-else>选择后标题会自动带上该类型，便于管理员分诊。</span></template></a-form-item
           >
+          <section v-if="draft.issueType === 'banned'" class="detail-user-summary" data-ticket-appeal-account>
+            <template v-if="bannedApplicant"><div><span>申诉账号</span><strong>{{ currentUser.nickname || currentUser.username }}（#{{ currentUser.id }}）</strong></div><div><span>封禁原因</span><strong>{{ currentUser.banReason || '未填写，请联系管理员核对' }}</strong></div></template>
+            <template v-else>
+              <div><span>为其他账号申诉</span><strong>{{ appealVerification ? '账号已验证' : '请登录验证需要申诉的账号，当前登录保持不变。' }}</strong></div>
+              <template v-if="appealVerification"><div><span>申诉账号</span><strong>{{ appealVerification.username || '已验证账号' }}</strong></div><div><span>注册时间</span><strong>{{ formatTicketTime(appealVerification.registeredAt) }}</strong></div><div><span>绑定手机号</span><strong>{{ appealVerification.maskedPhone || '未绑定' }}</strong></div></template>
+              <a-button :disabled="createLoading" @click="appealVerificationOpen = true">{{ appealVerification ? '更换申诉账号' : '登录验证申诉账号' }}</a-button>
+            </template>
+          </section>
           <a-form-item label="问题说明" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
             ><a-textarea
               :id="createFieldId('body')"
@@ -648,6 +656,7 @@
         >
       </div>
     </a-modal>
+    <AccountAppealVerification v-if="appealVerificationOpen && createVisible && createNeedsAccountFields && draft.issueType === 'banned' && createStep === TICKET_WIZARD_STEP_FORM && !bannedApplicant" :open="appealVerificationOpen" @update:open="appealVerificationOpen = $event" @verified="onAppealVerified" />
     <a-modal
       :key="pageEpoch + ':' + detailRequestVersion" :open="detailVisible" :onUpdate:open="detailEntry.bind(setDetailVisible)"
       :wrap-props="{ 'aria-modal': true }"
@@ -676,9 +685,15 @@
           <section v-if="isAdmin && detailUser" class="detail-user-summary" data-ticket-user-summary>
             <div><span>反馈用户</span><strong>{{ detailUser.nickname || detailUser.username || detailTicket.userName || `用户 #${detailUser.id}` }}</strong></div>
             <div><span>用户 ID</span><strong>{{ detailUser.id }}</strong></div>
+            <div><span>账号状态</span><strong>{{ accountStatusLabel(detailUser.status) }}</strong></div>
             <div><span>注册时间</span><strong>{{ formatTicketTime(detailUser.createdAt) }}</strong></div>
             <div><span>上次登录</span><strong>{{ formatTicketTime(detailUser.lastLoginAt) }}</strong></div>
             <div v-if="detailUser.lastLoginIp"><span>上次登录 IP</span><strong>{{ detailUser.lastLoginIp }}</strong></div>
+          </section>
+          <section v-if="isAdmin && detailAppealTarget" data-ticket-appeal-target>
+            <h3>已验证的申诉账号</h3>
+            <p>账号状态：{{ accountStatusLabel(detailAppealTarget.status) }} · 封禁原因：{{ detailAppealTarget.banReason || '无' }} · 到期：{{ detailAppealTarget.banExpiresAt ? formatTicketTime(detailAppealTarget.banExpiresAt) : detailAppealTarget.banned ? '永久' : '—' }}</p>
+            <UserAccountSummary :user="detailAppealTarget" />
           </section>
           <!-- 退款工单的金额/状态/审核动作。
                数据来自 detail.refund（后端 TicketDetail.Refund，2026-11-18 新增）——
@@ -688,9 +703,9 @@
             :refund="detailTicket.refund"
             :is-admin="isAdmin"
             :show-status="false"
-            :on-changed="detailEntry.bind(reloadDetail)"
+            :on-changed="detailEntry.bind(onRefundChanged)"
           />
-          <TicketAccountActions v-if="isAdmin" :ticket="detailTicket" :active="detailVisible" @updated="reloadDetail" />
+          <TicketAccountActions v-if="isAdmin" :ticket="detailTicket" :appeal-target="detailAppealTarget" :active="detailVisible" @updated="reloadDetail" />
           <a-alert
             v-if="isAdmin && notificationText"
             :type="notification?.status === 'failed' ? 'warning' : 'info'"
@@ -932,6 +947,8 @@ const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款操作区（详情内）。原名 TicketRefundPanel 是「整套退款工作台」，
 // 2026-11-18 重构后只保留「单张工单的退款动作」，故改名以示职责收窄。
 const TicketRefundActions = defineAsyncComponent(() => import("./TicketRefundActions.vue"));
+const AccountAppealVerification = defineAsyncComponent(() => import("./AccountAppealVerification.vue"));
+const UserAccountSummary = defineAsyncComponent(() => import("../../components/UserAccountSummary.vue"));
 const TicketAccountActions = defineAsyncComponent(() => import("./TicketAccountActions.vue"));
 // 注销引导 / 自助注销：与工单向导的「注销申请」分支、个人中心入口共用同一组件。
 const ClosureGuide = defineAsyncComponent(() => import("./ClosureGuide.vue"));
@@ -1078,7 +1095,13 @@ const createNeedsAccountFields = computed(() => draft.ticketType === TICKET_CREA
 const createNeedsClosureFields = computed(() => isAccountClosureTicketType(draft.ticketType));
 const bannedApplicant = computed(() => currentUser.value?.status === 'banned');
 const createTypeOptions = computed(() => TICKET_CREATE_TYPE_OPTIONS.filter(item => !bannedApplicant.value || item.value === TICKET_CREATE_TYPE_ACCOUNT).map(({ value, label, hint }) => ({ value, label, hint })));
-const createIssueOptions = TICKET_ACCOUNT_ISSUE_OPTIONS.map(({ value, label }) => ({ value, label }));
+const createIssueOptions = computed(() => TICKET_ACCOUNT_ISSUE_OPTIONS.filter(item => !bannedApplicant.value || item.value === 'banned').map(({ value, label }) => ({ value, label })));
+const appealVerificationOpen = ref(false), appealVerification = shallowRef(null);
+function resetAppealVerification() { appealVerificationOpen.value = false; appealVerification.value = null; }
+function onAppealVerified(value) {
+  if (!appealVerificationOpen.value || !createVisible.value || !createNeedsAccountFields.value || createStep.value !== TICKET_WIZARD_STEP_FORM || draft.issueType !== 'banned' || bannedApplicant.value || !value?.proof) return;
+  appealVerification.value = value; appealVerificationOpen.value = false;
+}
 // 第一步「下一步」是否可用：必须选了一个**白名单内**的类型。
 const createTypeChosen = computed(() => ticketWizardCanAdvanceFromType(draft.ticketType));
 // 弹窗标题随步骤变化：让用户始终知道自己在哪一步。
@@ -1208,6 +1231,8 @@ const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailTicket = ref(null);
 const detailUser = ref(null);
+const detailAppealTarget = shallowRef(null);
+const accountStatusLabel = value => ({ enabled: '启用', disabled: '停用', banned: '已封禁', archived: '已归档', missing: '账号不存在', closure_pending: '注销等待期' })[value] || '未记录';
 const messages = ref([]);
 const attachments = ref([]);
 const notification = ref(null);
@@ -1294,7 +1319,8 @@ function closePageReadFailure(error, context) { if (actionFailures.pageRead.clos
 function canUseTickets() {
   const id = Number(currentUser.value?.id);
   return active && Number.isInteger(id) && id > 0 && id <= 2147483647
-    && String(currentUser.value?.status || "enabled") === "enabled";
+    && ['enabled', 'banned'].includes(String(currentUser.value?.status || "enabled"))
+    && (!bannedApplicant.value || routeViewMode.value === 'self');
 }
 function canManage() { return canUseTickets() && isAdmin.value; }
 function canCreateTickets() { return canUseTickets() && !isAdmin.value; }
@@ -1403,6 +1429,7 @@ function resetRefundDraft() {
   refundOrdersVersion += 1; refundOrdersLoading.value = false; refundOrdersError.value = '';
 }
 function clearOwned() {
+  resetAppealVerification(); detailAppealTarget.value = null;
   resetRefundDraft();
   draft.refundPayoutQrAttachmentId = null;
   payoutQrBusy.value = false;
@@ -1514,7 +1541,14 @@ function toggleRefundOrder(id) {
   retireCreateValidation()
 }
 
-function setDraft(key, value) { if (createVisible.value) draft[key] = value; }
+function setDraft(key, value) {
+  if (!createVisible.value) return;
+  draft[key] = value;
+  if (key === 'issueType') {
+    resetAppealVerification();
+    if (value === 'banned' && !bannedApplicant.value) appealVerificationOpen.value = true;
+  }
+}
 function setCreateVisible(value) { createVisible.value = value; }
 function setDetailVisible(value) { if (!value) closeDetail(); }
 function setReply(value) { replyBody.value = value; }
@@ -1531,6 +1565,7 @@ watch([replyBody, () => detailTicket.value?.id, () => isAdmin.value && statusWas
 watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason, () => draft.issueType], retireStaleCreateValidation, { flush: "sync" });
 watch(createNeedsRefundFields, needs => { if (needs) void loadRefundSummary(); }, { flush: "sync" });
 watch(createVisible, next => { if (!next) { resetRefundDraft(); payoutQrBusy.value = false; retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
+watch(createVisible, next => { if (!next) resetAppealVerification(); }, { flush: 'sync' });
 watch(isAdmin, () => { createVisible.value = false; clearOwned(); reloadOwned(); }, { flush: "sync" });
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
@@ -1664,6 +1699,7 @@ function handleMobilePageChange(page) {
 // 替他预先选中某一个模板等于替他做了决定，而他要的正是「先选类型」。
 function openCreate() {
   if (!canCreateTickets()) return;
+  resetAppealVerification();
   retireCreateValidation();
   actionFailures.create.clear(); createFailureDraft = {};
   createVersion += 1; createLoading.value = false; createSaved.value = false;
@@ -1682,7 +1718,7 @@ function openCreate() {
   // 收款码记忆由后端和本机设备密钥恢复。
   // 用户下次发起退款会自动带出上次那张，避免每次重传。
   // 真正的清除入口是图片左上角的删除按钮。
-  draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE;
+  draft.issueType = bannedApplicant.value ? 'banned' : DEFAULT_TICKET_ACCOUNT_ISSUE;
   if (bannedApplicant.value) draft.subject = '【封禁申诉】账号问题';
   createStep.value = ticketWizardInitialStep();
   // 选择人工退款时，收款码组件查询后端并尝试本机设备验证。
@@ -1695,6 +1731,7 @@ function openCreate() {
 // （选错类型要能改回来，自动跳步会让他被迫回退）。
 function selectCreateType(value) {
   if (bannedApplicant.value && value !== TICKET_CREATE_TYPE_ACCOUNT) return;
+  if (draft.ticketType !== String(value ?? '').trim().toLowerCase()) resetAppealVerification();
   draft.ticketType = String(value ?? "").trim().toLowerCase();
   retireCreateValidation();
 }
@@ -1707,6 +1744,7 @@ function advanceFromTypeStep() {
   if (!createVisible.value || !createTypeChosen.value) return;
   retireCreateValidation();
   createStep.value = ticketWizardNextStep(draft.ticketType);
+  if (createNeedsAccountFields.value && draft.issueType === 'banned' && !bannedApplicant.value) appealVerificationOpen.value = true;
 }
 // goCreateForm 是引导页**次按钮**（仍然提交工单）的回调：
 // 用户已明确拒绝自助注销，这一步才允许进入注销工单表单。
@@ -1723,6 +1761,7 @@ function goCreateForm() {
 // 必然漏掉，而漏掉的表现就是「这一页只有取消」（正是本次要修的）。
 const createAtFirstStep = computed(() => createStep.value === TICKET_WIZARD_STEP_TYPE);function backToTypeStep() {
   if (!createVisible.value || createLoading.value) return;
+  resetAppealVerification();
   retireCreateValidation();
   createStep.value = TICKET_WIZARD_STEP_TYPE;
 }
@@ -1744,6 +1783,10 @@ async function submitTicket() {
   const refundMode = ticketCreateTypeNeedsRefundFields(draft.ticketType);
   const validation = currentDraftValidation();
   if (validation.message) { createValidation.value = validation; message.warning(validation.message); return; }
+  const isBanAppeal = createNeedsAccountFields.value && draft.issueType === 'banned';
+  if (isBanAppeal && !bannedApplicant.value && (!appealVerification.value?.proof || !Number.isFinite(Date.parse(appealVerification.value.expiresAt)) || Date.parse(appealVerification.value.expiresAt) <= Date.now())) {
+    resetAppealVerification(); appealVerificationOpen.value = true; message.warning('请先登录验证需要申诉的账号'); return;
+  }
   retireCreateValidation();
   const owns = captureCreate(), subject = draft.subject, body = draft.body;
   const failureDraft = createFailureDraft, ownsFailure = () => owns() && failureDraft === createFailureDraft;
@@ -1780,6 +1823,10 @@ async function submitTicket() {
       attachmentIds,
     });
     const payload = { ...built.payload };
+    if (isBanAppeal) {
+      payload.accountIssue = 'ban_appeal';
+      if (!bannedApplicant.value) payload.appealProof = appealVerification.value.proof;
+    }
     // 2026-11-18：**所有类型**都要支持上传图片（用户明确要求）。
     //
     // 原来退款类型会在这里 delete payload.attachmentIds，理由是「退款证据走退款
@@ -1891,6 +1938,21 @@ function openDetail(id, event) {
 // 不直接改本地 detailTicket.refund：审核会改 approvedCents、打款会改 status，
 // 本地拼状态容易与后端漂移（例如并发的另一次审核）。重拉一次最省心，
 // 代价只是一次 GET。
+function mergeTicketIntoList(ticket) {
+  if (!ticket?.id) return;
+  tickets.value = tickets.value.map(item => Number(item.id) === Number(ticket.id) ? { ...item, ...ticket } : item);
+}
+function onRefundChanged(refund) {
+  if (!detailTicket.value?.refund || !refund) return reloadDetail();
+  const expected = detailTicket.value.refund.refundId ?? detailTicket.value.refund.id;
+  if (String(expected) !== String(refund.refundId ?? refund.id)) return;
+  const ticket = { ...detailTicket.value, refund: { ...detailTicket.value.refund, ...refund } };
+  detailTicket.value = ticket;
+  mergeTicketIntoList(ticket);
+  // Invalidate pending list reads and reconcile current filters/counts with the server.
+  void loadTickets();
+  reloadDetail();
+}
 function reloadDetail() {
   const id = detailTicket.value?.id;
   if (id) loadDetail(id);
@@ -1908,6 +1970,7 @@ async function loadDetail(id) {
   detailLoading.value = true;
   detailTicket.value = null;
   detailUser.value = null;
+  detailAppealTarget.value = null;
   messages.value = [];
   attachments.value = [];
   notification.value = null;
@@ -1919,7 +1982,9 @@ async function loadDetail(id) {
     const result = normalizeTicketDetailResponse(await getTicket(id, detailParams));
     if (!owns() || version !== detailRequestVersion) return;
     detailTicket.value = result.ticket;
+    mergeTicketIntoList(result.ticket);
     detailUser.value = result.user;
+    detailAppealTarget.value = isAdmin.value ? result.appealTarget : null;
     messages.value = result.messages;
     attachments.value = result.attachments;
     notification.value = isAdmin.value ? result.notification : null;
@@ -1946,6 +2011,7 @@ function closeDetail() {
   detailVisible.value = false;
   detailTicket.value = null;
   detailUser.value = null;
+  detailAppealTarget.value = null;
   // The original key/version retirement unmounts the old Modal before afterClose.
   // Use one owned continuation after navigation/disposal, not the dead vendor callback.
   const listPath = routeViewMode.value === "admin" ? "/ticket-admin" : "/tickets";
@@ -2178,6 +2244,11 @@ async function testNotification() {
   }
 }
 onMounted(() => { loadTickets(); if (canManage()) loadNotificationConfig(); });
+watch(() => [route.query?.appeal, route.query?.appealRequest], ([value]) => {
+  if (String(value) !== '1' || !canCreateTickets()) return;
+  openCreate(); draft.ticketType = TICKET_CREATE_TYPE_ACCOUNT; draft.issueType = 'banned'; createStep.value = TICKET_WIZARD_STEP_FORM;
+  if (!bannedApplicant.value) appealVerificationOpen.value = true;
+}, { immediate: true });
 onBeforeUnmount(() => {
   ++listRequestVersion;
   ++detailRequestVersion;

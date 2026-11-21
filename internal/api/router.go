@@ -379,6 +379,7 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter.GET("/tickets", controller.Auth, controller.TicketList)
 	apiRouter.POST("/tickets", controller.Auth, controller.CreateTicket)
+	apiRouter.POST("/tickets/appeal-verification", middleware.BodyLimit(8192), controller.Auth, controller.VerifyTicketAppealAccount)
 	apiRouter.GET("/tickets/config", controller.Auth, middleware.RequireAdmin, controller.TicketWecomSettings)
 	apiRouter.PUT("/tickets/config", controller.Auth, middleware.RequireAdmin, controller.UpdateTicketWecomSettings)
 	apiRouter.POST("/tickets/config/test", controller.Auth, middleware.RequireAdmin, controller.TestTicketWecomWebhook)

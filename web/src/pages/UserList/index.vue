@@ -317,12 +317,14 @@
             </div>
           </a-form-item>
           <a-form-item label="封禁原因" required :html-for="fieldId('editor-ban-reason')" :validate-status="banReasonError ? 'error' : undefined">
-            <a-input
+            <a-auto-complete
               :id="fieldId('editor-ban-reason')"
               v-model:value="formState.banReason"
+              :options="banReasonOptions"
+              style="width:100%"
               :disabled="submittingBan"
-              placeholder="必填，会写入审计与封禁记录"
-              @input="banReasonError = ''"
+              placeholder="选择常用原因或自行输入，会向用户展示"
+              @change="banReasonError = ''"
             />
             <template #help><span v-if="banReasonError" role="alert">{{ banReasonError }}</span></template>
           </a-form-item>
@@ -1388,9 +1390,9 @@ export default defineComponent({
     }
     const userListContext = markRaw(createUserListState())
     const { dataSource, pagination, isEditing, formState, resetPasswordForm, visible, resetPasswordVisible, phoneLocations, ipLocations, formatValueWithLocation, tabLoading, filters, keywordInput, submitLoading, submittingBan, banReasonError, banFeedback, currentBanActive, balanceVisible, balanceSubmitting, balanceForm, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, userTableColumnWidths,
-      deviceVisible, deviceLoading, deviceRows, deviceTitle, deviceFailure, deviceFailureContext, isCurrentDeviceFailure,
+      deviceVisible, deviceLoading, deviceRows, deviceTarget, deviceTitle, deviceFailure, deviceFailureContext, isCurrentDeviceFailure,
       deviceColumns,
-      userPortraitVisible, userPortraitLoading, userPortrait, userPortraitTitle, userPortraitFailure, userPortraitFailureContext, isCurrentUserPortraitFailure, userPortraitTiles, userPortraitBreakdowns,
+      userPortraitVisible, userPortraitLoading, userPortrait, userPortraitTarget, userPortraitTitle, userPortraitFailure, userPortraitFailureContext, isCurrentUserPortraitFailure, userPortraitTiles, userPortraitBreakdowns,
       portraitBreakdownColumns, userTasks, userTasksLoading, userTransferLoading, userTemplateLoading, userTransferNotice, userTransferError, userTaskColumns,
     } = userListContext
 
@@ -1853,6 +1855,7 @@ export default defineComponent({
       deviceVisible,
       deviceLoading,
       deviceRows,
+      deviceTarget,
       deviceTitle,
       deviceFailure,
       deviceFailureContext,
@@ -1861,6 +1864,7 @@ export default defineComponent({
       userPortraitVisible,
       userPortraitLoading,
       userPortrait,
+      userPortraitTarget,
       userPortraitTitle,
       userPortraitFailure,
       userPortraitFailureContext,
@@ -1959,6 +1963,7 @@ export default defineComponent({
       modalTitle,
       // 封禁控件（t203）
       banModeOptions,
+      banReasonOptions: ['异常请求或接口滥用', '账号共享或转售', '违反服务使用规则', '异常注册或批量账号', '恶意提交内容', '支付或退款存在异常', '账号安全风险，暂时保护'].map(value => ({ value })),
       banDurationPresetOptions,
       banDurationUnitOptions,
       banExpiryPreview,

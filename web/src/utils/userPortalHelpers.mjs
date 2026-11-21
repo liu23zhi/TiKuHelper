@@ -59,26 +59,18 @@ export function buildPortalMenuKeys(user) {
       ]
 }
 
-export function buildRegisterSourceLabel(value) {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'public') {
-    return '公开注册'
-  }
-  if (normalized === 'admin') {
-    return '后台创建'
-  }
-  if (normalized === 'system') {
-    return '系统初始化创建'
-  }
-  if (normalized === 'legacy') {
-    return '历史数据'
-  }
-  // import：service/import_data.go:1172 在「导入数据」建账号时写入。
-  // 之前没映射，这类账号在用户管理/画像里显示成英文 import。
-  if (normalized === 'import') {
-    return '导入创建'
-  }
-  return String(value || '-').trim() || '-'
+const registerSourceLabels = new Map([
+  ['public', '公开注册'],
+  ['admin', '后台创建'],
+  ['system', '系统初始化创建'],
+  ['legacy', '历史数据'],
+  ['import', '导入创建'],
+  ['wechat', '微信注册'],
+])
+
+export function buildRegisterSourceLabel(value, fallback) {
+  const source = String(value ?? '').trim()
+  return registerSourceLabels.get(source.toLowerCase()) || String(fallback ?? source).trim() || '-'
 }
 
 export const ADMIN_MANAGED_PASSWORD_MAX_BYTES = 72

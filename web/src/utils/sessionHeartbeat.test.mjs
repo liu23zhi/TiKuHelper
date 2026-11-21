@@ -35,6 +35,7 @@ async function mountLayout({ visible = true, user = { id: 1 }, checkSession = as
   document.querySelectorAll = () => []; document.activeElement = null
   const requests = []
   const routes = []
+  const accountWrites = []
   const scope = {
     computed, ref, watch, nextTick,
     useCurrentUserDisplay: () => ({ currentUser: ref(user) }),
@@ -46,6 +47,7 @@ async function mountLayout({ visible = true, user = { id: 1 }, checkSession = as
     useRouter: () => ({ currentRoute: { value: { path: '/profile' } }, push: (path) => routes.push(path) }),
     getStoredCurrentUser: () => user,
     getCurrentSessionRevision: sessionRevision,
+    setStoredCurrentUser: value => accountWrites.push(value),
     isAdminUser: () => true,
     checkUserSession: (signal) => { requests.push(signal); return checkSession(signal) },
     window: browser,
@@ -55,8 +57,16 @@ async function mountLayout({ visible = true, user = { id: 1 }, checkSession = as
   const vueScope = effectScope()
   vueScope.run(() => vm.runInNewContext(`({${descriptor.script.content.slice(setup.start, setup.end)}})`, scope).setup())
   mounted.forEach((callback) => callback())
-  return { browser, document, requests, routes, timers, unmount: () => { unmounted.forEach((callback) => callback()); vueScope.stop() } }
+  return { browser, document, requests, routes, timers, accountWrites, unmount: () => { unmounted.forEach((callback) => callback()); vueScope.stop() } }
 }
+
+test('ordinary session heartbeats without ban metadata do not rewrite an unchanged account', async () => {
+  const state = await mountLayout({ user: { id: 1, status: 'enabled', banReason: '', banExpiresAt: null }, checkSession: async () => ({ status: 200, data: { status: 'enabled' } }) })
+  await flush()
+  await [...state.timers.values()][0].callback()
+  assert.equal(state.accountWrites.length, 0)
+  state.unmount()
+})
 
 test('protected layout checks immediately, checks every 30 seconds, and stops after unmount', async () => {
   const state = await mountLayout()

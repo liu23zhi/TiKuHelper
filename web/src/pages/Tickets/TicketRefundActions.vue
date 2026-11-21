@@ -44,7 +44,7 @@
     <template v-if="canReconcile">
       <p v-if="!manualEvidenceReady">请先核验收款码、签名及承诺书，或受限凭证。</p>
       <p v-if="manualOrdersChanged">本次核销将标记 {{ manualOrderIDs.filter(orderId => orderId !== row.orderId).length }} 笔额外充值订单为已退款。</p>
-      <a-form layout="vertical" class="refund-review-form"><a-form-item label="人工打款凭据编号" :html-for="fieldId('reference')"><a-input :id="fieldId('reference')" v-model:value="reference" :maxlength="96" :disabled="busy || uncertain" placeholder="填写实际打款凭据编号" /></a-form-item></a-form>
+      <a-form layout="vertical" class="refund-review-form"><a-form-item label="人工打款凭据编号（可选）" :html-for="fieldId('reference')"><a-input :id="fieldId('reference')" v-model:value="reference" :maxlength="96" :disabled="busy || uncertain" placeholder="可留空；填写时请输入实际凭据编号" /></a-form-item></a-form>
       <a-space>
         <a-button type="primary" :disabled="busy || uncertain || !manualEvidenceReady" @click="requestConfirmation('reconcile', 'succeeded')">确认人工退款成功</a-button>
         <a-button danger :disabled="busy || uncertain" @click="requestConfirmation('reconcile', 'failed')">确认未完成并解冻</a-button>
@@ -226,7 +226,7 @@ async function load() {
   catch { if (owns()) failure.value = '退款详情读取失败，请刷新重试。' }
   finally { if (owns()) loading.value = false }
 }
-function reload() { if (!owned() || busy.value) return; void load(); props.onChanged() }
+function reload() { if (!owned() || busy.value) return; void load(); props.onChanged(row.value) }
 function closeOrders() { if (!busy.value && !evidenceBusy.value) orderMode.value = '' }
 function rechargeStatusLabel(status) { return ({ paid: '已支付', refunded: '已退款', pending: '待支付' }[status] || status) }
 function allocationFor(orderId) { return allocations.value.find(line => line.orderId === orderId) }
@@ -385,7 +385,7 @@ async function saveRevision() {
     receive(response)
     orderMode.value = ''
     notice.value = '退款申请已修改。'
-    props.onChanged()
+    props.onChanged(row.value)
   } catch (error) {
     if (owns()) {
       const message = refundFailureMessage(error)
@@ -411,7 +411,7 @@ async function review(action) {
   try {
     const response = await reviewTicketRefund(id(), payload)
     if (!owns()) return
-    receive(response); notice.value = action === 'approve' ? '已审核通过，余额已冻结。' : '已驳回。'; props.onChanged()
+    receive(response); notice.value = action === 'approve' ? '已审核通过，余额已冻结。' : '已驳回。'; props.onChanged(row.value)
   } catch (error) {
     if (owns()) {
       const message = refundFailureMessage(error)
@@ -436,7 +436,7 @@ async function process(action, orderId) {
     receive(response)
     if (response.status === 202 && !line) detail.value = { ...detail.value, status: 'unknown' }
     notice.value = response.status === 202 ? '操作结果未确认，请查询渠道结果。' : action === 'cancel_unsent' && !line ? '退款未完成，冻结已解除。' : '退款状态已更新。'
-    props.onChanged()
+    props.onChanged(row.value)
   } catch (error) {
     if (!owns()) return
     const message = refundFailureMessage(error)
@@ -449,14 +449,14 @@ async function reconcile(outcome) {
   if (!canReconcile.value || busy.value || uncertain.value || !['succeeded', 'failed'].includes(outcome)) return
   if (outcome === 'succeeded' && !manualEvidenceReady.value) return
   const value = reference.value.trim()
-  if (!/^[A-Za-z0-9._-]{1,96}$/.test(value)) { failure.value = '请填写有效的人工打款凭据编号'; return }
+  if (value && !/^[A-Za-z0-9._-]{1,96}$/.test(value)) { failure.value = '请填写有效的人工打款凭据编号，或留空'; return }
   const owns = capture(); busy.value = true; failure.value = ''
   try {
     const payload = { outcome, reference: value }
     if (outcome === 'succeeded' && manualOrdersChanged.value) payload.orderIds = manualOrderIDs.value.filter(orderId => orderId !== row.value.orderId)
     const response = await reconcileTicketRefund(id(), payload)
     if (!owns()) return
-    receive(response); notice.value = outcome === 'succeeded' ? '人工退款已核销成功。' : '退款未完成，冻结已解除。'; props.onChanged()
+    receive(response); notice.value = outcome === 'succeeded' ? '人工退款已核销成功。' : '退款未完成，冻结已解除。'; props.onChanged(row.value)
   } catch (error) {
     if (owns()) {
       const message = refundFailureMessage(error)
@@ -475,7 +475,7 @@ async function uploadProof(event) {
   try {
     const response = await uploadTicketRefundProof(id(), file)
     if (!owns()) return
-    refundResponseData(response); detail.value = { ...row.value, hasProof: true }; props.onChanged()
+    refundResponseData(response); detail.value = { ...row.value, hasProof: true }; props.onChanged(row.value)
   } catch { if (owns()) { uncertain.value = true; failure.value = '凭证提交结果未确认，请刷新核对。' } }
   finally { if (owns()) busy.value = false }
 }

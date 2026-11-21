@@ -58,9 +58,12 @@ test('resolveAdapterHomePath sends admins to component and users to usage page',
   assert.equal(resolveAdapterHomePath(null), '/user-usage');
 });
 
-test('buildRegisterSourceLabel maps system registrations to initialization wording', () => {
-  assert.equal(buildRegisterSourceLabel('system'), '系统初始化创建');
-  assert.equal(buildRegisterSourceLabel('public'), '公开注册');
+test('buildRegisterSourceLabel supports all known sources and preserves unknown codes', () => {
+  const labels = Object.fromEntries(['public', 'admin', 'SYSTEM', 'legacy', 'import', 'wechat', 'future-provider', ''].map(source => [source, buildRegisterSourceLabel(source)]));
+  assert.deepEqual(labels, {
+    public: '公开注册', admin: '后台创建', SYSTEM: '系统初始化创建', legacy: '历史数据',
+    import: '导入创建', wechat: '微信注册', 'future-provider': 'future-provider', '': '-',
+  });
 });
 
 test('buildPortalMenuKeys includes personal usage for admin users', () => {

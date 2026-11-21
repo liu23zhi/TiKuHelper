@@ -180,3 +180,37 @@ func TestScriptDomainEndToEndRejectsUnlistedDomainOnCreate(t *testing.T) {
 		t.Fatalf("被 *.a.com 覆盖的子域应当可以创建：%v", err)
 	}
 }
+
+func TestScriptEditPreservesLegacyLocatorAndAuthorizations(t *testing.T) {
+	db := newScriptTestDB(t)
+	owner, admin, version := seedDomainCreationFixture(t, db, "edit")
+	if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{"*.a.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := CreateUserScriptWithDB(db, owner, CreateUserScriptInput{Name: "old", BaseDomain: "owner.a.com", VersionID: version.ID, Description: "保留说明"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long, err := ConfigureScriptLauncherAuthorizationWithDB(db, owner, item.ID, ConfigureScriptShortAuthorizationInput{Enabled: true, DurationMinutes: 60, MaxUses: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	short, err := ConfigureScriptShortAuthorizationWithDB(db, owner, item.ID, ConfigureScriptShortAuthorizationInput{Enabled: true, Address: "https://quick.a.com", DurationMinutes: 10, MaxUses: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{"new.test/*"}}); err != nil {
+		t.Fatal(err)
+	}
+	if edited, err := UpdateUserScriptWithDB(db, admin, item.ID, UpdateUserScriptInput{Name: "new"}); err != nil || edited.Name != "new" || edited.Description != item.Description || edited.DownloadURL != item.DownloadURL || edited.Command != "" {
+		t.Fatalf("admin edit did not preserve old metadata or hide credentials: %v", err)
+	}
+	rows, err := ListUserScriptsWithDB(db, owner, false)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("read updated script: %v, count=%d", err, len(rows))
+	}
+	edited := rows[0]
+	if edited.Command != long.Command || edited.LauncherAuthorization.MaxUses != long.MaxUses || edited.ShortAuthorization.Address != short.Address || edited.ShortAuthorization.MaxUses != short.MaxUses {
+		t.Fatal("metadata edit changed long or short authorization")
+	}
+}

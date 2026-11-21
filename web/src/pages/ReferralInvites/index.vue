@@ -2,7 +2,7 @@
  <div class="console-page">
   <ConsolePageHeading title="邀请码管理" description="查看全站账户的邀请码与邀请人数。邀请码公开可分享，不能作为登录或接口凭据。" />
   <ConsolePanel title="邀请码列表">
-   <a-input-search v-model:value="keyword" placeholder="邀请码 / 用户名 / 昵称" @search="search" style="max-width:400px;margin-bottom:16px" />
+   <a-input-search v-model:value="keyword" placeholder="邀请码 / 用户名 / 昵称 / 手机号" @search="search" style="max-width:400px;margin-bottom:16px" />
    <a-alert v-if="error" :message="error" type="error" show-icon />
    <a-table :columns="columns" :data-source="rows" :loading="loading" row-key="userId" :pagination="pagination" @change="changePage" :scroll="{x:800}">
     <template #bodyCell="{column,record}"><span v-if="column.key==='createdAt'">{{ record.createdAt ? new Date(record.createdAt).toLocaleString() : '—' }}</span></template>

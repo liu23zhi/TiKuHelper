@@ -420,6 +420,11 @@ func UpdateReviewRebateProgramWithDB(db *gorm.DB, id int32, update ReviewRebateP
 			Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
+		if update.Enabled != nil && *update.Enabled {
+			if err := openReviewRebateSiteInTx(tx); err != nil {
+				return err
+			}
+		}
 		return reviewRebateSession(tx).Model(&entity.ReviewRebateProgram{}).Where("id = ?", id).Take(&program).Error
 	})
 	if err != nil {
@@ -445,10 +450,25 @@ func CreateReviewRebateProgramWithDB(db *gorm.DB, program entity.ReviewRebatePro
 	}
 	program.MaxAmountPerUser = util.RoundMoney(program.MaxAmountPerUser)
 	program.MinAgentConfidence = util.RoundMoney(program.MinAgentConfidence)
-	if err := reviewRebateSession(db).Create(&program).Error; err != nil {
+	if err := reviewRebateSession(db).Transaction(func(tx *gorm.DB) error {
+		if err := reviewRebateSession(tx).Create(&program).Error; err != nil {
+			return err
+		}
+		if program.Enabled {
+			return openReviewRebateSiteInTx(tx)
+		}
+		return nil
+	}); err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
 	return program, nil
+}
+
+// Enabling an activity is the administrator's explicit request to open it.
+// Keep the legacy site switch in the same transaction so the UI and submission
+// guard cannot disagree. Editing unrelated fields preserves a global shutdown.
+func openReviewRebateSiteInTx(tx *gorm.DB) error {
+	return saveSystemSettingValue(tx.Session(&gorm.Session{NewDB: true}), ReviewRebateEnabledSettingKey, "true", "启用评价返现")
 }
 
 // ListReviewRebateRulesWithDB 返回规则表。

@@ -24,8 +24,9 @@
                    @navigation-settled="settleDesktopNavigation" />
       </aside>
       <main ref="contentRoot" id="portal-main-content" class="layout-content" tabindex="-1" aria-label="主要内容">
-        <a-alert v-if="accountBanned" type="error" show-icon message="账号已被封禁" description="当前账号仅可查看封禁提示和提交工单申诉。若有异议，请在工单反馈中提交账号申诉。" style="margin-bottom: 16px">
-          <template #action><a-button @click="router.push('/tickets')">提交工单申诉</a-button></template>
+        <a-alert v-if="accountBanned" type="error" show-icon message="账号已被封禁" style="margin-bottom: 16px">
+          <template #description><p>当前账号仅可查看封禁提示和提交工单申诉。</p><p data-account-ban-reason>封禁原因：{{ currentUser.banReason || '未填写，请联系管理员核对' }}</p><p>封禁到期：{{ banExpiresText }}</p></template>
+          <template #action><a-button @click="openBanAppeal">提交工单申诉</a-button></template>
         </a-alert>
         <router-view v-if="canAccessRoute"></router-view>
       </main>
@@ -85,6 +86,9 @@ export default {
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
     const accountBanned = computed(() => String(currentUser.value?.status || '').toLowerCase() === 'banned')
+    const banExpiresText = computed(() => currentUser.value?.banExpiresAt ? new Date(currentUser.value.banExpiresAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '永久')
+    let appealRequest = 0
+    const openBanAppeal = () => router.push({ path: '/tickets', query: { appeal: '1', appealRequest: String(++appealRequest) } })
 
     // ── SQLite 悬浮警告（task_doc/108:297、109:474/486）──
     //
@@ -342,8 +346,8 @@ export default {
         const response = await checkUserSession(controller.signal)
         if (response?.status === 200 && typeof response.data?.status === 'string'
           && revision === getCurrentSessionRevision() && owner.every((value, index) => value === desktopFocusOwner()[index])
-          && currentUser.value?.status !== response.data.status) {
-          setStoredCurrentUser({ ...currentUser.value, status: response.data.status })
+          && (currentUser.value?.status !== response.data.status || (currentUser.value?.banReason || '') !== (response.data.banReason || '') || (currentUser.value?.banExpiresAt || null) !== (response.data.banExpiresAt || null))) {
+          setStoredCurrentUser({ ...currentUser.value, status: response.data.status, banReason: response.data.banReason || '', banExpiresAt: response.data.banExpiresAt || null })
         }
         if ((response?.status === 401 || response?.status === 403) && revision === getCurrentSessionRevision()
           && owner.every((value, index) => value === desktopFocusOwner()[index])) stopSessionChecks()
@@ -414,7 +418,7 @@ export default {
     if (!currentUser.value) router.push('/login')
     else if (!isAdmin.value && isAdminOnlyCurrentRoute.value) router.replace(resolveHomePath(currentUser.value))
     return {
-      currentUser, isAdmin, accountBanned, router, canAccessRoute, isMobile, siderCollapsed, toggleSider,
+      currentUser, isAdmin, accountBanned, banExpiresText, openBanAppeal, router, canAccessRoute, isMobile, siderCollapsed, toggleSider,
       drawerVisible, drawerRendered, mobileMenuButton, contentRoot, navigationDialog,
       mobileDrawerEntry, mobileDrawerAfterChange,
       openMobileMenu, closeMobileMenu, handleMobileNavigate, handleNavigationKeydown,

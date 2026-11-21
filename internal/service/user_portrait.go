@@ -263,10 +263,11 @@ var portraitTicketStatusOrder = []string{
 // 注册来源文案。未知取值**原样回显**，不猜。
 var portraitRegisterSourceLabels = map[string]string{
 	"public": "公开注册",
-	"admin":  "管理员创建",
+	"admin":  "后台创建",
+	"system": "系统初始化创建",
 	"wechat": "微信注册",
-	"import": "批量导入",
-	"legacy": "历史账号",
+	"import": "导入创建",
+	"legacy": "历史数据",
 }
 
 // portraitDialect 返回规范化后的方言名（默认 sqlite）。
@@ -426,7 +427,7 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 	return portrait, nil
 }
 
-// loadPortraitUser 读目标用户。已归档（软删除）视为不存在。
+// loadPortraitUser 读目标用户，包含管理员指定的已归档账号。
 func loadPortraitUser(db *gorm.DB, userID int32) (entity.User, error) {
 	var user entity.User
 	if err := db.Session(&gorm.Session{NewDB: true}).Unscoped().Where("id = ?", userID).Take(&user).Error; err != nil {
@@ -727,7 +728,7 @@ func fillPortraitTickets(db *gorm.DB, scope PortraitScope, portrait *UserPortrai
 func fillPortraitRegisterSources(db *gorm.DB, scope PortraitScope, portrait *UserPortrait) error {
 	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{})
 	if scope.UserID > 0 {
-		query = query.Where("id = ?", scope.UserID)
+		query = query.Unscoped().Where("id = ?", scope.UserID)
 	}
 	type sourceRow struct {
 		Source string
@@ -739,7 +740,7 @@ func fillPortraitRegisterSources(db *gorm.DB, scope PortraitScope, portrait *Use
 		return err
 	}
 	for _, row := range rows {
-		label := portraitRegisterSourceLabels[row.Source]
+		label := portraitRegisterSourceLabels[strings.ToLower(strings.TrimSpace(row.Source))]
 		if label == "" {
 			label = row.Source
 		}
@@ -757,7 +758,7 @@ func fillPortraitRegisterRegions(db *gorm.DB, scope PortraitScope, portrait *Use
 	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{}).
 		Where("register_ip IS NOT NULL AND register_ip <> ''")
 	if scope.UserID > 0 {
-		query = query.Where("id = ?", scope.UserID)
+		query = query.Unscoped().Where("id = ?", scope.UserID)
 	}
 	type ipRow struct {
 		RegisterIP string

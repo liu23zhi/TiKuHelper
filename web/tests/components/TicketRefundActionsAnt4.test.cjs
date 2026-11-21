@@ -200,10 +200,17 @@ test('仅可撤销尚未提交的原路退款，成功后不能再次撤销', as
   assert.match(wrapper.text(), /冻结已解除/); assert.equal(findButton(wrapper.element, '撤销未提交退款并解冻'), undefined)
 });
 
-test('人工核销必须填写真实凭据编号，并使用reconcile接口', async () => {
+test('人工核销凭据编号可留空，并使用reconcile接口', async () => {
   const wrapper = await open({ ...manual, status: 'frozen', approvedCents: 1500, hasProof: true })
   await confirm(wrapper, '确认人工退款成功')
-  assert.equal(writes().length, 0)
+  assert.deepEqual(writes().map(({ url, data }) => ({ url, data })), [{ url: '/api/ticket-refunds/2/reconcile', data: { outcome: 'succeeded', reference: '' } }])
+  assert.match(wrapper.text(), /退款成功/)
+});
+
+test('人工核销可选凭据有填写时仍需有效，真实编号原样提交', async () => {
+  const wrapper = await open({ ...manual, status: 'frozen', approvedCents: 1500, hasProof: true })
+  await wrapper.find('input:not([type=file])').setValue('错误<编号>')
+  await confirm(wrapper, '确认人工退款成功'); assert.equal(writes().length, 0)
   await wrapper.find('input').setValue('FIXTURE-RECON-1')
   await confirm(wrapper, '确认人工退款成功')
   assert.deepEqual(writes().map(({ url, data }) => ({ url, data })), [{ url: '/api/ticket-refunds/2/reconcile', data: { outcome: 'succeeded', reference: 'FIXTURE-RECON-1' } }])

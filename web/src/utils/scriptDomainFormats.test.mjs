@@ -40,7 +40,8 @@ test('新语法只有两种形态，且 slot 位置由种类决定', () => {
   // 归一化：大小写与前后空白
   assert.equal(parseScriptDomainFormat('  *.A.COM  ').raw, '*.a.com')
   // 畸形形态
-  for (const raw of ['a.*.a.com', '**.a.com', '*a.com', '*.com', '*.a', '*.a.1', '*.-a.com', '*.a..com', '*.a.com.', '', '   ']) {
+  assert.equal(parseScriptDomainFormat('*a.com')?.raw, '*.a.com')
+  for (const raw of ['a.*.a.com', '**.a.com', '*.com', '*.a', '*.a.1', '*.-a.com', '*.a..com', '*.a.com.', '', '   ']) {
     assert.equal(parseScriptDomainFormat(raw), null, `${raw} 必须被拒绝`)
   }
 })

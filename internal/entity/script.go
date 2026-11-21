@@ -63,11 +63,13 @@ type UserScript struct {
 	AnswerPriceMultiplier float64 `gorm:"column:answer_price_multiplier;type:decimal(18,6);not null;default:0" json:"answerPriceMultiplier"`
 	// AnswerPrice is retained for backwards-compatible reads of pre-multiplier
 	// rows. New scripts use AnswerPriceMultiplier against the current tiku price.
-	AnswerPrice   float64 `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`
-	ShortCode     string  `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
-	AccessTokenID int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
-	AccessKey     string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
-	ReservedFee   float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
+	AnswerPrice float64 `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`
+	ShortCode   string  `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
+	// Legacy scripts have no locator and continue using their original address.
+	LauncherLocator *string `gorm:"column:launcher_locator;type:char(36);uniqueIndex:ux_user_scripts_launcher_locator" json:"-"`
+	AccessTokenID   int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
+	AccessKey       string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
+	ReservedFee     float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
 	// Full and short entry budgets are independent; legacy full commands remain
 	// enabled with no time/count limit until the owner explicitly configures them.
 	LauncherDisabled   bool       `gorm:"column:launcher_disabled;not null;default:false" json:"-"`
