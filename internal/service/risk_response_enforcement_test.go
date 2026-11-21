@@ -185,3 +185,61 @@ func TestRiskResponseEnforcementClockAfterRuleInsert(t *testing.T) {
 		t.Fatal("lease consumed lock-wait time")
 	}
 }
+
+// An equally narrow conflicting standard segment is not evidence for a strict
+// regional ban. It must neither change the legacy winner nor outrank an exact IP.
+func TestRiskResponseEnforcementAmbiguousSegmentTie(t *testing.T) {
+	db := responseTestDB(t)
+	setBlacklistEnabled(t, db, "true")
+	ip := "192.0.2.37"
+	w := responseTestWarning(t, db, "device_register_burst", ip, "registration_browser", "single")
+	start, _ := ipv4ToUint32("192.0.2.32")
+	north := entity.IPSegment{BeginIP: start, EndIP: start + 15, Source: "standard", Region: "Country North Springfield", LLC: "Carrier", FetchedAt: time.Now()}
+	if err := db.Create(&north).Error; err != nil {
+		t.Fatal(err)
+	}
+	first, err := GetRiskAlertResponse(db, w.ID)
+	if err != nil || first.CityISP == "" {
+		t.Fatal("unambiguous source must permit confirmation")
+	}
+	request := RiskResponseInput{Action: "city_isp", ExpectedTarget: first.CityISP, Confirmed: true, DurationMinutes: 15, Reason: "review"}
+	if _, err = ApplyRiskAlertResponse(db, w.ID, 15, request); err != nil {
+		t.Fatal(err)
+	}
+	// North remains the most recent row; simply trusting that row still hits.
+	south := entity.IPSegment{BeginIP: start + 3, EndIP: start + 18, Source: "standard", Region: "Country South Springfield", LLC: "Carrier", FetchedAt: north.FetchedAt.Add(-time.Hour)}
+	if err = db.Create(&south).Error; err != nil {
+		t.Fatal(err)
+	}
+	view, err := GetRiskAlertResponse(db, w.ID)
+	if err != nil || view.CityISP != "" {
+		t.Fatal("conflicting equally narrow regions must not be offered")
+	}
+	if _, err = ApplyRiskAlertResponse(db, w.ID, 15, request); !errors.Is(err, ErrRiskResponseInvalid) {
+		t.Fatal("prior confirmation accepted after evidence became ambiguous")
+	}
+	looker := NewBlacklistRegionCacheLooker(db)
+	cache := NewBlacklistCache()
+	if err = cache.Reload(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, hit := EvaluateBlacklistRegion(cache, looker, ip); hit == BlacklistRegionHit {
+		t.Fatal("ambiguous evidence enforced an already-stored precise rule")
+	}
+	if _, err = CreateBlacklistEntryWithDB(db, CreateBlacklistEntryInput{Kind: BlacklistKindRegion, Pattern: "North Springfield Carrier", MatchType: BlacklistMatchPrefix, Reason: "manual", Enabled: true, CreatedBy: 16}); err != nil {
+		t.Fatal(err)
+	}
+	if err = cache.Reload(db); err != nil {
+		t.Fatal(err)
+	}
+	if m, hit := EvaluateBlacklistRegion(cache, looker, ip); hit != BlacklistRegionHit || m.Reason != "manual" {
+		t.Fatal("legacy prefix selection changed")
+	}
+	if err = db.Create(&entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: ip, Address: "Country North Springfield Carrier", RawJSON: `{"region":"Country North Springfield","llc":"Carrier"}`}).Error; err != nil {
+		t.Fatal(err)
+	}
+	view, err = GetRiskAlertResponse(db, w.ID)
+	if err != nil || view.CityISP != first.CityISP {
+		t.Fatal("complete exact-IP evidence must outrank conflicting segments")
+	}
+}

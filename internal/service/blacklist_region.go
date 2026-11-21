@@ -460,8 +460,7 @@ func NewBlacklistRegionCacheLooker(db *gorm.DB) BlacklistRegionLooker {
 			}
 		}
 		if (loc.City == "" || loc.Operator == "") && db.Migrator().HasTable(entity.TableNameIPSegment) {
-			if seg, err := findIPSegmentWithSource(db, key, true); err == nil && seg != nil {
-				other := offlineBlacklistLocation(seg.Region, seg.LLC, seg.ISP)
+			if other, ok := narrowestStandardRegion(db, key); ok {
 				agrees := func(a, b string) bool { return a == "" || b == "" || strings.EqualFold(a, b) }
 				if loc.IsZero() || (other.City != "" && other.Operator != "" && agrees(loc.Country, other.Country) && agrees(loc.Province, other.Province) && agrees(loc.City, other.City) && agrees(loc.Operator, other.Operator)) {
 					loc = other
@@ -470,6 +469,39 @@ func NewBlacklistRegionCacheLooker(db *gorm.DB) BlacklistRegionLooker {
 		}
 		return loc, !loc.IsZero()
 	}
+}
+
+// A direct IP cache record has higher precedence; this fallback is standard
+// segments only. Preserve the existing newest-row winner for legacy manual
+// rules. A precise ban additionally requires consensus among complete rows at
+// the same narrowest width. Older/wider or commercial rows do not arbitrate it.
+func narrowestStandardRegion(db *gorm.DB, ip string) (BlacklistRegionLocation, bool) {
+	value, ok := ipv4ToUint32(ip)
+	if !ok {
+		return BlacklistRegionLocation{}, false
+	}
+	// Clone the scoped query so the MIN and projection share the same filters
+	// and the database observes the entire tie in a single read.
+	candidates := db.Session(&gorm.Session{NewDB: true}).Model(&entity.IPSegment{}).
+		Where("begin_ip <= ? AND end_ip >= ? AND source IN ?", value, value, []string{"", "standard"}).
+		Session(&gorm.Session{})
+	var rows []struct{ Region, LLC, ISP string }
+	if err := candidates.Select("region,llc,isp").
+		Where("(end_ip - begin_ip) = (?)", candidates.Select("MIN(end_ip - begin_ip)")).
+		Order("fetched_at DESC, id DESC").Find(&rows).Error; err != nil || len(rows) == 0 {
+		return BlacklistRegionLocation{}, false
+	}
+	winner := offlineBlacklistLocation(rows[0].Region, rows[0].LLC, rows[0].ISP)
+	if expected := winner.exactScope(); expected != "" {
+		for _, row := range rows[1:] {
+			scope := offlineBlacklistLocation(row.Region, row.LLC, row.ISP).exactScope()
+			if scope != "" && !strings.EqualFold(expected, scope) {
+				winner.ambiguous = true
+				break
+			}
+		}
+	}
+	return winner, true
 }
 
 // Read the geographic positions without compressing an unknown city into its province.
