@@ -27,7 +27,7 @@ const ADMIN_HREFS = [
   '/profile', '/my-devices', '/user-usage', '/tickets', '/my-referral',
   '/review-rebate', '/my-tokens', '/scripts', '/service-status', '/component',
   '/import', '/userlist', '/user-portrait', '/risk-admin', '/archived-users',
-  '/loglist', '/recharge-orders', '/billing-admin', '/ip-location-cache', '/ip-segments',
+  '/loglist', '/extension-logs', '/recharge-orders', '/billing-admin', '/ip-location-cache', '/ip-segments',
   '/phone-location-cache', '/wechat-bindings', '/phone-bindings', '/search-account-config', '/ai-search-config',
   '/ocr-cache', '/sensitive-word', '/user-exam-tool', '/referral-rebates', '/review-rebate-admin',
   '/referral-invites', '/blacklist', '/whitelist', '/user-bans', '/device-admin',
