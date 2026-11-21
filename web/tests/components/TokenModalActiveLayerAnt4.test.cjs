@@ -21,6 +21,7 @@ axios.defaults.adapter=config=>{
  if(method!=='get')return Promise.reject(deny('nonGET'))
  let data
  if(url==='/api/public/register-status')data={siteName:'Synthetic Token App'}
+ else if(url==='/api/user/level' && !paramsKeys.length)data={data:{deviceLimit:3}}
  else if(url==='/api/access-tokens'){if(paramsKeys.length)return Promise.reject(deny('unexpected-token-params'));data=[{...ROW}]}
  else return Promise.reject(deny('unknownGET'))
  return Promise.resolve({status:200,data,headers:{},config,request:{memoryOnly:true}})

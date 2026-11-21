@@ -284,7 +284,8 @@ const routes = [
         // 按角色分流到对应的新入口 —— 普通用户去 my-tokens，管理员去 token-admin。
         path: 'access-tokens',
         name: 'access-tokens',
-        redirect: () => (isAdminUser(getStoredCurrentUser()) ? '/adapter/token-admin' : '/adapter/my-tokens'),
+        alias: '/adapter/access-tokens',
+        redirect: () => ({ name: isAdminUser(getStoredCurrentUser()) ? 'token-admin' : 'my-tokens' }),
       },
       {
         // 我的脚本（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口

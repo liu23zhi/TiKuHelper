@@ -47,6 +47,7 @@ api.exports = {
   ...Object.fromEntries(['create', 'update', 'delete'].map(name => [name + 'AccessToken', payload => deferred(name, payload)])),
 }
 require.cache[apiPath] = api
+require('../helpers/token-level-read.cjs').install(web)
 for (const kind of ['success', 'warning', 'error']) {
   const native = Antd.message[kind].bind(Antd.message)
   Antd.message[kind] = (...args) => { notices.push({ kind, text: String(args[0]?.content || args[0] || '') }); return native(...args) }
@@ -73,10 +74,21 @@ async function waitFor(check, label) {
     popconfirmCount: document.querySelectorAll('.ant-popconfirm').length,
   }))
 }
-async function page(account = ACTOR) {
+async function page(account = ACTOR, withRoutes = false) {
   user.setStoredCurrentUser(account)
-  const w = mount(Page, { attachTo: document.body, global: { plugins: [Antd], config: { errorHandler: error => runtimeErrors.push(String(error?.stack || error)) } } })
-  wrappers.push(w); await settle(); return w
+  const plugins = [Antd]
+  let router
+  if (withRoutes) {
+    const { createRouter, createMemoryHistory } = require('vue-router')
+    router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/my-tokens', component: Page, meta: { viewMode: 'self' } },
+      { path: '/token-admin', component: Page, meta: { viewMode: 'admin' } },
+    ] })
+    await router.push('/my-tokens'); await router.isReady()
+    plugins.push(router)
+  }
+  const w = mount(Page, { attachTo: document.body, global: { plugins, config: { errorHandler: error => runtimeErrors.push(String(error?.stack || error)) } } })
+  w.fixtureRouter = router; wrappers.push(w); await settle(); return w
 }
 const readCount = () => calls.filter(call => call.name === 'get').length
 const writeCount = () => calls.filter(call => call.name !== 'get').length
@@ -153,12 +165,12 @@ function retire(w, operation, retirement) {
   else if (retirement === 'account') user.setStoredCurrentUser(OTHER)
   else if (retirement === 'role') user.setStoredCurrentUser({ ...ACTOR, role: 'user' })
   else if (retirement === 'logout') user.clearStoredCurrentUser()
-  else if (retirement === 'view') button(w.element, '显示全部令牌').click()
+  else if (retirement === 'view') return w.fixtureRouter.push('/token-admin')
   else if (retirement === 'dismiss') region(operation).querySelector('[data-action="dismiss-token-delete-failure"]').click()
   else w.unmount()
 }
 afterEach(async () => {
-  for (const w of wrappers) if (w.exists()) w.unmount()
+  for (const w of wrappers) { if (w.exists()) w.unmount(); w.fixtureRouter?.options.history.destroy() }
   for (const call of calls) if (!call.completed && call.resolve) call.resolve(ok(call.name === 'get' ? [] : {}))
   Swal.close(); Antd.message.destroy(); Antd.Modal.destroyAll(); await settle()
   user.clearStoredCurrentUser(); localStorage.clear(); window.sessionStorage.clear(); document.body.replaceChildren()
@@ -250,12 +262,12 @@ for (const operation of ['create', 'update']) test(operation + ': draft typed du
 })
 
 for (const operation of ['create', 'update', 'delete']) for (const outcome of ['success', 'failure']) test(operation + ': late old ' + outcome + ' cannot overwrite the newer native attempt diagnostic', async () => {
-  const w = await page(); await prepare(w, operation); const old = await issue(w, operation)
+  const w = await page(ACTOR, operation === 'delete'); await prepare(w, operation); const old = await issue(w, operation)
   if (operation !== 'delete') { await cancel(w); await prepare(w, operation, 'new_editor') }
   else {
     // A native pending Popconfirm correctly blocks a second confirmation. Retire
     // its real view before confirming a new action; never bypass that busy guard.
-    button(w.element, '显示全部令牌').click(); await settle()
+    await w.fixtureRouter.push('/token-admin'); await settle()
   }
   const current = await issue(w, operation), failure = httpFailure(503, 'rejected')
   current.reject(failure); await settle(); fixedSafe(w, operation, failure, 'upstream')
@@ -267,7 +279,7 @@ for (const operation of ['create', 'update', 'delete']) for (const outcome of ['
 })
 
 for (const operation of ['create', 'delete']) for (const retirement of ['account', 'role', 'logout', 'view', 'unmount', ...(operation === 'create' ? ['draft', 'cancel-reopen'] : ['dismiss'])]) test(operation + ': ' + retirement + ' retires stale native diagnostic copy and read-only reconciliation callbacks', async () => {
-  const w = await page(); await prepare(w, operation); const call = await issue(w, operation), error = httpFailure(503, 'rejected')
+  const w = await page(ACTOR, retirement === 'view'); await prepare(w, operation); const call = await issue(w, operation), error = httpFailure(503, 'rejected')
   call.reject(error); await settle(); fixedSafe(w, operation, error, 'upstream')
   const oldRegion = region(operation), oldRead = oldRegion.querySelector('[data-action="reconcile-token-write"]'), oldCopy = oldRegion.querySelector('[data-action="copy-request-diagnostic"]')
   const oldCallback = operation === 'delete' ? w.vm.reconcileDeletedToken : w.vm.reconcileEditorToken
@@ -276,7 +288,7 @@ for (const operation of ['create', 'delete']) for (const retirement of ['account
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: value => { copied.push(value); return new Promise(resolve => { finishCopy = resolve }) } } })
   try {
     oldCopy.click(); await settle(); assert.deepEqual(copied, [ID])
-    retire(w, operation, retirement)
+    await retire(w, operation, retirement)
     const readsBefore = readCount(), writesBefore = writeCount()
     oldRead.click(); oldCopy.click(); oldCallback()
     assert.equal(readCount(), readsBefore, 'same-tick retired native/captured callback cannot issue GET')
@@ -291,11 +303,11 @@ for (const operation of ['create', 'delete']) for (const retirement of ['account
 })
 
 for (const operation of ['create', 'update', 'delete']) for (const outcome of ['success', 'failure']) test(operation + ': retired reconciliation ' + outcome + ' cannot publish rows, diagnostics or clear a newer GET busy state', async () => {
-  const w = await page(); await prepare(w, operation); const call = await issue(w, operation), error = unknown(operation)
+  const w = await page(ACTOR, true); await prepare(w, operation); const call = await issue(w, operation), error = unknown(operation)
   call.reject(error); await settle(); fixedSafe(w, operation, error, 'unknown-outcome')
   holdReads = true; button(region(operation), '刷新令牌核对').click(); await settle(); const old = calls.at(-1); assert.equal(old.name, 'get')
   retire(w, operation, operation === 'delete' ? 'dismiss' : 'draft'); await settle()
-  button(w.element, '显示全部令牌').click(); await settle(); const current = calls.at(-1); assert.notEqual(current, old)
+  await w.fixtureRouter.push('/token-admin'); await settle(); const current = calls.at(-1); assert.notEqual(current, old)
   if (outcome === 'success') old.resolve(ok([row(999, 'RETIRED_READ_ONLY')]))
   else old.reject(httpFailure(503, 'rejected', OLD_ID))
   await settle()

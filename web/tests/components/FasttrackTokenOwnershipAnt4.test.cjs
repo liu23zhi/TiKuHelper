@@ -23,11 +23,24 @@ api.exports = {
  }])),
 }
 require.cache[apiPath] = api
+require('../helpers/token-level-read.cjs').install(web)
 const PAGE = require(path.join(web, 'src/pages/AccessTokenManagement/index.vue'))
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
-async function page(account = admin, realDialog = false) {
+async function page(account = admin, realDialog = false, withRoutes = false) {
  user.setStoredCurrentUser(account)
- const w = mount(PAGE, { attachTo: document.body, global: { plugins: [Antd] } }); wrappers.push(w)
+ const plugins = [Antd]
+ let router
+ if (withRoutes) {
+  const { createRouter, createMemoryHistory } = require('vue-router')
+  router = createRouter({ history: createMemoryHistory(), routes: [
+   { path: '/my-tokens', component: PAGE, meta: { viewMode: 'self' } },
+   { path: '/token-admin', component: PAGE, meta: { viewMode: 'admin' } },
+  ] })
+  await router.push('/my-tokens'); await router.isReady()
+  plugins.push(router)
+ }
+ const w = mount(PAGE, { attachTo: document.body, global: { plugins } }); wrappers.push(w)
+ w.fixtureRouter = router
  if (!realDialog) w.vm.showCreatedTokenDialog = token => { dialogs.push(token); return Promise.resolve() }
  await settle(); return w
 }
@@ -35,7 +48,7 @@ function edit(w, id = 17) { w.vm.openEditModal(row(id)) }
 function create(w, name = 'fixture_created') { w.vm.openCreateModal(); w.vm.formState.name = name; w.vm.formState.totalQuotaLimit = 0.000062 }
 function notices() { return [...document.querySelectorAll('.ant-message-notice')].map(x => x.textContent).join('|') }
 afterEach(async () => {
- for (const w of wrappers) if (w.exists()) w.unmount()
+ for (const w of wrappers) { if (w.exists()) w.unmount(); w.fixtureRouter?.options.history.destroy() }
  wrappers.length = 0; Swal.close(); await settle(); Antd.message.destroy(); Antd.Modal.destroyAll(); document.body.replaceChildren(); user.clearStoredCurrentUser()
  console.log('TOKEN_CASE_LEDGER ' + JSON.stringify({ calls, dialogs }))
  reads.length = mutations.length = calls.length = dialogs.length = 0; deferredReads = false; mutationMode = 'hold'
@@ -49,11 +62,11 @@ test('two mounted token pages own independent rows, drafts, busy flags and visib
  b.vm.openCreateModal(); b.vm.formState.name = 'OWNER_B'; assert.equal(a.vm.formState.remark, 'OWNER_A_DRAFT')
 })
 test('scope switch clears exposed rows immediately and refuses a late all-token GET and finally', async () => {
- const w = await page(); w.vm.toggleTokenVisibility(17); deferredReads = true
- w.vm.toggleAllTokens(); const all = reads.shift(); assert.deepEqual(all.payload, { scope: 'all' })
+ const w = await page(admin, false, true); w.vm.toggleTokenVisibility(17); deferredReads = true
+ await w.fixtureRouter.push('/token-admin'); await settle(); const all = reads.shift(); assert.ok(all, 'admin route starts its own read'); assert.deepEqual(all.payload, { scope: 'all' })
  console.log('TOKEN_SCOPE_CLEAR_OBSERVED ' + JSON.stringify({ rows: w.vm.dataSource.length, revealed: w.vm.isTokenVisible(17) }))
  assert.equal(w.vm.dataSource.length, 0); assert.equal(w.vm.isTokenVisible(17), false)
- w.vm.toggleAllTokens(); const mine = reads.shift(); all.resolve(ok([{ ...row(901), username: 'OTHER_OWNER_PRIVATE' }]))
+ await w.fixtureRouter.push('/my-tokens'); await settle(); const mine = reads.shift(); assert.ok(mine, 'self route reloads'); all.resolve(ok([{ ...row(901), username: 'OTHER_OWNER_PRIVATE' }]))
  await settle(); assert.equal(w.vm.tableLoading, true, 'old scope finally cannot release current read')
  assert.equal(w.vm.dataSource.length, 0, 'old all-token rows cannot publish into mine')
  mine.resolve(ok([row(902)])); await settle(); assert.equal(w.vm.dataSource[0].id, 902); assert.equal(w.vm.tableLoading, false); assert.equal(w.vm.isTokenVisible(17), false)
@@ -78,10 +91,10 @@ for (const operation of ['create', 'update', 'delete']) for (const outcome of ['
  await settle(); assert.equal(JSON.stringify({ form: w.vm.formState, open: w.vm.visible, rows: w.vm.dataSource, busy: w.vm.submitLoading }), before); assert.equal(calls.length, count); assert.equal(dialogs.length, 0); assert.equal(notices(), '')
 })
 test('role downgrade clears all-token view and rejects old administrator response without ordinary-user scope escalation', async () => {
- const w = await page(); deferredReads = true; w.vm.toggleAllTokens(); const old = reads.shift(); user.setStoredCurrentUser({ ...admin, role: 'user' }); await settle()
+ const w = await page(admin, false, true); deferredReads = true; await w.fixtureRouter.push('/token-admin'); await settle(); const old = reads.shift(); assert.ok(old); user.setStoredCurrentUser({ ...admin, role: 'user' }); await settle()
  assert.equal(w.vm.isAdmin, false); assert.equal(w.vm.showAllTokens, false); assert.equal(reads.length, 1)
  old.resolve(ok([{ ...row(903), username: 'OLD_ADMIN_ONLY' }])); await settle(); assert.equal(w.vm.dataSource.length, 0); assert.equal(w.vm.tableLoading, true)
- reads.shift().resolve(ok([row(904)])); await settle(); const count = calls.length; w.vm.toggleAllTokens(); await settle(); assert.equal(calls.length, count); assert.equal(w.vm.showAllTokens, false); assert.equal(w.vm.dataSource[0].id, 904)
+ reads.shift().resolve(ok([row(904)])); await settle(); assert.ok(!w.findAll('button').some(button => button.text().includes('显示全部令牌'))); assert.ok(!calls.filter(c => c.name === 'get').slice(-1)[0].payload?.scope); assert.equal(w.vm.showAllTokens, false); assert.equal(w.vm.dataSource[0].id, 904)
 })
 test('live create/update keep six-digit quota, whitelist, legacy name and confirmed delete behavior', async () => {
  const w = await page(normal); mutationMode = 'immediate'; create(w); w.vm.handleSubmit(); await settle()
@@ -150,4 +163,18 @@ test('real pending clipboard rejection cannot fall back to copying retired plain
   rejectCopy(new Error('SYNTHETIC_CLIPBOARD_RETIRED')); await settle(); assert.equal(fallbackCalls, 0); assert.equal(Swal.getPopup(), newer); assert.equal(newer.querySelector('.swal2-deny').textContent, 'CURRENT_COPY'); assert.ok(!newer.textContent.includes('复制失败'))
   console.log('TOKEN_SWAL_CLIPBOARD_OBSERVED ' + JSON.stringify({ fallbackCalls, replacementRetained: Swal.getPopup() === newer, denyText: newer.querySelector('.swal2-deny').textContent }))
  } finally { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: oldClipboard }); document.execCommand = oldExec }
+})
+
+
+test('legacy token bookmarks resolve to the actual route for the current role', () => {
+ const mod = require(path.join(web, 'src/router/router.js')), router = mod.default || mod
+ for (const [actor, expected] of [[admin, 'token-admin'], [normal, 'my-tokens']]) {
+  user.setStoredCurrentUser(actor)
+  for (const url of ['/access-tokens', '/adapter/access-tokens']) {
+   const source = router.resolve(url), record = source.matched.at(-1)
+   assert.ok(record && typeof record.redirect === 'function', 'bookmark has a redirect: ' + url)
+   const result = router.resolve(record.redirect(source))
+   assert.equal(result.name, expected); assert.equal(result.path, '/' + expected)
+  }
+ }
 })

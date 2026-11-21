@@ -37,6 +37,7 @@ api.exports = {
     writes.push({ method: 'updateAccessToken', payload: clone(payload), syntheticOnly: true }); return Promise.resolve({ status: 200, data: clone(ROW) })
   },
 }; require.cache[apiPath] = api
+require('../helpers/token-level-read.cjs').install(web)
 window.XMLHttpRequest.prototype.open = function () { return denyIO('XHR') }; globalThis.fetch = window.fetch = () => denyIO('FETCH')
 globalThis.WebSocket = window.WebSocket = class { constructor() { denyIO('WEBSOCKET') } }
 for (const name of ['node:http','node:https']) { const transport = require(name); transport.request = () => denyIO(name+'.request'); transport.get = () => denyIO(name+'.get') }
