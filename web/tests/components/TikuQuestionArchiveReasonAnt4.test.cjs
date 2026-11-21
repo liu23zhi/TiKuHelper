@@ -72,7 +72,7 @@ test('delQuestions 把 reason 放进 axios config 的 params（而不是丢在�
   assert.equal(calls.length, 1, '应当发出恰好一次请求')
   const config = calls[0]
   assert.equal(config.method, 'delete')
-  assert.equal(config.url, '/adapter-service/questions/7')
+  assert.equal(config.url, '/api/questions/7')
 
   // 核心断言：reason 必须在 params 里。
   // 若实现写成 `{ reason }`（顶层），axios 会把它当成未知 config 键静默丢弃，

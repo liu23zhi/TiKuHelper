@@ -37,8 +37,8 @@
         <a-form-item label="来源" :html-for="fieldId('filter-source')">
           <a-select :id="fieldId('filter-source')" :disabled="!canUseQuestions()" :value="searchValue.source" v-on="{ 'update:value': questionEntry.bind(value => searchValue.source = value) }" allow-clear placeholder="全部来源" :options="sourceOptions" :onChange="questionEntry.bind(onFilterChange)" />
         </a-form-item>
-        <a-form-item label="答案状态" :html-for="fieldId('filter-empty-answer')">
-          <a-checkbox :id="fieldId('filter-empty-answer')" :disabled="!canUseQuestions()" :checked="searchValue.onlyShowEmptyAnswer" v-on="{ 'update:checked': questionEntry.bind(value => searchValue.onlyShowEmptyAnswer = value) }">仅看无答案</a-checkbox>
+        <a-form-item label="答案状态：仅看无答案" :html-for="fieldId('filter-empty-answer')">
+          <a-checkbox :id="fieldId('filter-empty-answer')" :disabled="!canUseQuestions()" :checked="searchValue.onlyShowEmptyAnswer" v-on="{ 'update:checked': questionEntry.bind(value => searchValue.onlyShowEmptyAnswer = value) }" />
         </a-form-item>
         <a-form-item>
           <a-space><a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(onSearch)" :onKeyup="questionEntry.bind(event => event.key === 'Enter' && onSearch())"><SearchOutlined />搜索</a-button>

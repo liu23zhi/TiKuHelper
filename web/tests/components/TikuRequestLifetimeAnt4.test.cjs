@@ -5,6 +5,7 @@ const path = require('node:path')
 const Module = require('node:module')
 const web = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname, '../..')
 require(path.join(web, 'tests/helpers/vue-dom.cjs'))
+require('../helpers/question-transfer-read.cjs')(web)
 // Match the existing helper's pseudo-free jsdom adapter on the global entry point too.
 globalThis.getComputedStyle = window.getComputedStyle
 const { mount, flushPromises } = require('@vue/test-utils')
