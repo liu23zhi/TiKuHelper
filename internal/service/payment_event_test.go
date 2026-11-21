@@ -116,6 +116,132 @@ func TestPaymentEventFirstSuccessCallbackCreditsOnce(t *testing.T) {
 	}
 }
 
+// A legacy admin client still sends "paid". Its review must neither settle nor
+// consume the gateway's idempotency key; the first signed notification does both.
+func TestPaymentEventDelayedAfterAdminReviewCreditsOnce(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	admin, user := seedStatusTestActors(t, db)
+	order, values := seedPaymentEventOrder(t, db, user.ID, paymentEventTestOrderNo, 12.35)
+	reviewed, err := UpdateRechargeOrderStatusWithDB(db, admin, order.ID, "paid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []any{&entity.PaymentEvent{}, &entity.BillingRecord{}} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("operator must not create a financial record (%T): count=%d err=%v", model, count, err)
+		}
+	}
+	wallet := entity.User{}
+	if err := db.First(&wallet, user.ID).Error; err != nil || wallet.Balance != user.Balance {
+		t.Fatalf("operator moved funds: balance=%v err=%v", wallet.Balance, err)
+	}
+	t.Logf("after review: status=%s paid_at=%v balance=%.2f bills=0 events=0", reviewed.Status, reviewed.PaidAt, wallet.Balance)
+	for i := 1; i <= 2; i++ {
+		ack, err := HandleRechargePaymentNotifyWithDB(db, values)
+		if err != nil || !ack {
+			t.Fatalf("notify #%d: ack=%v err=%v", i, ack, err)
+		}
+		requirePaymentEventSettledOnce(t, db, user.ID, order.ID, 24.69)
+		t.Logf("notify #%d: ack=%t balance=24.69 bills=1 events=1", i, ack)
+	}
+}
+
+func TestPaymentEventAmbiguousLegacyOrderRequiresReconciliation(t *testing.T) {
+	for _, source := range []string{"", "backfill", "notify"} {
+		t.Run("prior-event-"+source, func(t *testing.T) {
+			db := newRechargeOrderTestDB(t)
+			_, user := seedStatusTestActors(t, db)
+			order, values := seedPaymentEventOrder(t, db, user.ID, paymentEventTestOrderNo, 12.35)
+			paidAt := time.Now().Add(-time.Hour)
+			if err := db.Model(&order).Updates(map[string]any{"status": "paid", "paid_at": paidAt}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if source != "" {
+				e := entity.PaymentEvent{OrderNo: order.OrderNo, RechargeOrderID: order.ID, UserID: user.ID, Amount: order.Amount, Source: source}
+				if err := db.Create(&e).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			ack, err := HandleRechargePaymentNotifyWithDB(db, values)
+			if ack || err == nil {
+				t.Errorf("missing matching recharge bill must not ACK as settled: ack=%v err=%v", ack, err)
+			}
+			var balance float64
+			if err := db.Model(&user).Select("balance").Where("id = ?", user.ID).Scan(&balance).Error; err != nil || balance != user.Balance {
+				t.Fatalf("ambiguous record moved money: balance=%v err=%v", balance, err)
+			}
+			for _, model := range []any{&entity.BillingRecord{}, &entity.PaymentEvent{}} {
+				var count, want int64
+				if _, isEvent := model.(*entity.PaymentEvent); isEvent && source != "" {
+					want = 1
+				}
+				if err := db.Model(model).Count(&count).Error; err != nil || count != want {
+					t.Errorf("old records must be preserved (%T): got %d want %d err=%v", model, count, want, err)
+				}
+			}
+		})
+	}
+}
+
+// Status and paid_at are mutable in older databases. Financial evidence must
+// still prevent a second credit, and a lone historical event cannot prove one.
+func TestPaymentEventLegacyEvidenceOutlivesOrderLabels(t *testing.T) {
+	for _, tt := range []struct {
+		name                 string
+		bill, event, wantACK bool
+	}{
+		{"recharge bill without event or timestamp", true, false, true},
+		{"orphan event without matching bill or timestamp", false, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newRechargeOrderTestDB(t)
+			_, user := seedStatusTestActors(t, db)
+			order, values := seedPaymentEventOrder(t, db, user.ID, paymentEventTestOrderNo, 12.35)
+			if tt.bill {
+				bill := entity.BillingRecord{UserID: user.ID, Type: rechargeBillingRecordType, Amount: order.Amount,
+					RelatedOrderID: order.ID, RequestID: order.OrderNo, BalanceBefore: 0, BalanceAfter: order.Amount}
+				if err := db.Create(&bill).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.event {
+				e := entity.PaymentEvent{OrderNo: order.OrderNo, RechargeOrderID: order.ID, UserID: user.ID, Amount: order.Amount, Source: "backfill"}
+				if err := db.Create(&e).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			ack, err := HandleRechargePaymentNotifyWithDB(db, values)
+			if ack != tt.wantACK || (tt.wantACK && err != nil) || (!tt.wantACK && !errors.Is(err, ErrRechargeSettlementReviewRequired)) {
+				t.Errorf("legacy evidence: ack=%v error=%v", ack, err)
+			}
+			var wallet entity.User
+			if err := db.First(&wallet, user.ID).Error; err != nil || wallet.Balance != user.Balance {
+				t.Errorf("historical record moved money: before=%v after=%v err=%v", user.Balance, wallet.Balance, err)
+			}
+		})
+	}
+}
+
+func TestPaymentEventReviewedOrderRejectsOtherMerchant(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	admin, user := seedStatusTestActors(t, db)
+	order, values := seedPaymentEventOrder(t, db, user.ID, paymentEventTestOrderNo, 12.35)
+	if _, err := UpdateRechargeOrderStatusWithDB(db, admin, order.ID, "paid"); err != nil {
+		t.Fatal(err)
+	}
+	wrongMerchant := clonePaymentEventValues(values)
+	wrongMerchant.Set("pid", "other-fixture-merchant")
+	resignPaymentEventValues(t, db, wrongMerchant)
+	if ack, err := HandleRechargePaymentNotifyWithDB(db, wrongMerchant); ack || !errors.Is(err, ErrRechargeNotifyMerchantMismatch) {
+		t.Fatalf("signed notification for another merchant must not settle review: ack=%v err=%v", ack, err)
+	}
+	if ack, err := HandleRechargePaymentNotifyWithDB(db, values); !ack || err != nil {
+		t.Fatal(ack, err)
+	}
+	requirePaymentEventSettledOnce(t, db, user.ID, order.ID, 24.69)
+}
+
 // TestPaymentEventDuplicateSuccessCallbackDoesNotCreditAgain 是本 PR 的核心断言：
 // 同一条成功回调重投 → 订单已 paid，直接 ACK，不再加款、不再写账单、不再写审计。
 func TestPaymentEventDuplicateSuccessCallbackDoesNotCreditAgain(t *testing.T) {

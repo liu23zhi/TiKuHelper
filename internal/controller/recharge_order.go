@@ -189,11 +189,7 @@ var updateRechargeOrderStatus = func(actor entity.User, orderID int32, status st
 
 // UpdateRechargeOrderStatus 由管理员手工修正充值订单状态（2026-11-19）。
 //
-// 权限：仅管理员。这个动作能让一笔 pending 订单变成 paid，从而让它可以被退款，
-// 所以它等价于「确认钱已收到」——普通用户绝不能调。
-//
-// 请求体：{"status": "paid"}，取值限 pending/paid/refunded。
-// 响应：更新后的订单行（复用列表的响应结构，前端无需另写解析）。
+// 仅管理员；旧输入 paid 在待支付订单上只记录人工核对，不入账、不开放退款。
 func UpdateRechargeOrderStatus(c *gin.Context) {
 	actor, ok := currentOperator(c)
 	if !ok {
@@ -222,6 +218,9 @@ func UpdateRechargeOrderStatus(c *gin.Context) {
 			// 管理员重复点一次不该看到红字。
 			c.JSON(http.StatusOK, gin.H{"message": "状态未变化", "unchanged": true})
 			return
+		case errors.Is(err, service.ErrRechargeSettlementReviewRequired):
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
 		case errors.Is(err, service.ErrRechargeOrderStatusForbidden):
 			c.JSON(http.StatusForbidden, gin.H{"message": "无权修改该充值订单"})
 			return
@@ -233,5 +232,6 @@ func UpdateRechargeOrderStatus(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "状态已更新", "data": row})
+	row.CallbackPayload = "" // 状态修正响应不回传支付通知及签名。
+	c.JSON(http.StatusOK, gin.H{"message": "运营标记已更新，不会入账或执行退款", "data": row})
 }

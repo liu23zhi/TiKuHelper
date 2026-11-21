@@ -28,7 +28,7 @@
         type="info"
         show-icon
         class="page-alert"
-        :message="isAdmin ? '管理员可查看全部充值记录，包含用户、订单号、支付方式、金额和支付状态。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
+        :message="isAdmin ? '人工核对不会入账或执行退款。历史入账待核对的订单，请按订单号核对支付渠道与账单流水；不要重复加款。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
       />
 
       <RequestFailureAlert v-if="loadFailure" :failure="loadFailure" :message="loadFailureMessage"
@@ -110,12 +110,15 @@
           <span v-if="column.key === 'username'">{{ record.username || `用户 #${record.userId || '-'}` }}</span>
           <span v-else-if="column.key === 'amount'" class="money-cell">¥ {{ formatAmount(record.amount) }}</span>
           <div v-else-if="column.key === 'status'">
-            <a-tag :color="buildStatusColor(record.status)">{{ buildStatusLabel(record.status) }}</a-tag>
+            <a-tag :color="record.settlementNeedsReview ? 'orange' : buildStatusColor(record.status)">{{ record.settlementNeedsReview ? '历史入账待核对' : buildStatusLabel(record.status) }}</a-tag>
             <div v-if="record.refundMarked">退款工单已核销</div>
             <div v-else-if="record.refundReserved">已有退款申请</div>
             <div v-else-if="record.refundOrderCapCents > 0">订单退款上限 ¥{{ formatAmount(record.refundOrderCapCents / 100) }}</div>
           </div>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
+          <a-button v-else-if="column.key === 'review' && canEditStatus" type="link" size="small"
+            :disabled="record.settlementNeedsReview || record.refundReserved || record.refundMarked"
+            @click="renderHandlers.openStatusModal(record)">核对状态</a-button>
         </template>
         <template #emptyText>
           <a-empty v-if="hasLoaded && !tableLoading && !loadFailure" description="当前还没有充值记录。" />
@@ -123,25 +126,19 @@
         </template>
       </a-table></ConsoleTableShell>
 
-    <!--
-        状态修改弹窗（2026-11-19）。
-
-        只做一件事：把订单的状态字段改成另一个合法值，用于修正支付回调丢失
-        导致的错误状态。**不涉及任何金额或钱包操作** —— 入账只由支付回调或
-        退款流程完成，这里顺手加款会让同一笔充值被记两次（后端有测试钉住这点）。
-      -->
       <a-modal
-        v-model:visible="statusModalVisible"
-        title="修改充值订单状态"
+        v-model:open="statusModalVisible"
+        :get-container="false"
+        title="核对充值订单状态"
         :confirm-loading="statusSubmitting"
         ok-text="保存"
         cancel-text="取消"
         data-testid="recharge-status-modal"
-        @ok="submitStatusChange"
+        @ok="renderHandlers.submitStatusChange"
       >
         <a-form layout="vertical">
           <a-form-item label="订单号">
-            <span class="refund-order-no">{{ statusTarget.orderNo }}</span>
+            <span class="refund-order-no" data-recharge-private>{{ statusTarget.orderNo }}</span>
           </a-form-item>
           <a-form-item label="当前状态">
             <a-tag :color="buildStatusColor(statusTarget.current)">
@@ -151,16 +148,15 @@
           <a-form-item label="改为">
             <a-select
               :value="statusTarget.next"
-              :options="STATUS_OPTIONS"
+              :options="reviewOptions"
               data-testid="recharge-status-select"
               @update:value="value => (statusTarget.next = value)"
             />
           </a-form-item>
-          <!-- 改状态会让订单进入/离开可退范围，提醒一句，避免运营误以为只是标签变化。 -->
           <a-alert
             type="info"
             show-icon
-            message="改成「已支付」会让该订单出现在用户的可退订单列表里；改成「已退款」则会移出。"
+            message="人工核对不会入账，也不会触发退款。只有支付渠道的有效回调会写入钱包和充值流水；请勿另行加款。"
             data-testid="recharge-status-hint"
           />
           <a-alert v-if="statusError" type="error" show-icon :message="statusError" />
@@ -191,7 +187,7 @@ function readNonnegativeNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) && number >= 0 ? number : null
 }
-const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'refundMarked', 'refundReserved', 'refundOrderCapCents', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
+const orderFields = ['id', 'userId', 'username', 'orderNo', 'paymentProvider', 'paymentMethodNameSnapshot', 'amount', 'status', 'settlementNeedsReview', 'refundMarked', 'refundReserved', 'refundOrderCapCents', 'thirdPartyOrderNo', 'paidAt', 'createdAt', 'updatedAt']
 
 export default defineComponent({
   name: 'RechargeOrderList',
@@ -221,66 +217,51 @@ export default defineComponent({
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
 
-// ── 状态修改（2026-11-19 用户要求）──
-//
-// ⚠️ 本页是**管理员专属**的运营视图（路由已登记进 ADMIN_ONLY_ROUTE_NAMES）。
-// 这里**不再提供「发起退款」** —— 退款申请走「工单反馈 → 退款申请」，
-// 那里有完整的可退性校验、收款码上传与审核链路。
-// 运营在这一页只做一件事：修正订单状态（如回调丢失导致长期 pending）。
-//
-// 为什么前端不自己算「哪些状态可选」：
-// 合法迁移由后端 allowedRechargeStatusTransition 决定（例如 refunded→paid 被拒）。
-// 前端复刻一份必然漂移，漂移方向是「按钮能点但请求 400」。所以这里只把
-// 白名单全列出来，点错了由后端拒绝并给出可读文案。
-const STATUS_OPTIONS = [
-  { label: '待支付', value: 'pending' },
-  { label: '已支付', value: 'paid' },
-  { label: '已退款', value: 'refunded' },
-]
-const statusModalVisible = ref(false)
-const statusSubmitting = ref(false)
-const statusError = ref('')
-const statusTarget = reactive({ orderId: 0, orderNo: '', current: '', next: '' })
-const canEditStatus = computed(() => isAdmin.value)
-// openStatusModal 打开改状态弹窗，默认选中当前状态（避免误改）。
-const openStatusModal = (record) => {
-  if (record?.refundReserved || record?.refundMarked) return
-  statusTarget.orderId = Number(record?.id) || 0
-  statusTarget.orderNo = String(record?.orderNo || '')
-  statusTarget.current = String(record?.status || '')
-  statusTarget.next = String(record?.status || '')
-  statusError.value = ''
-  statusModalVisible.value = true
-}
-const submitStatusChange = async () => {
-  if (statusSubmitting.value) return
-  if (!statusTarget.orderId) {
-    statusError.value = '订单信息缺失，请刷新后重试'
-    return
-  }
-  // 同状态不发请求：后端会返回 unchanged，但那是给幂等重试用的，
-  // 用户主动选回原值只是「没改」，弹窗直接关掉更符合预期。
-  if (statusTarget.next === statusTarget.current) {
-    statusModalVisible.value = false
-    return
-  }
-  statusSubmitting.value = true
-  statusError.value = ''
-  try {
-    const response = await updateRechargeOrderStatus(statusTarget.orderId, statusTarget.next)
-    if (response?.status === 200) {
-      statusModalVisible.value = false
-      message.success(response?.data?.message === '状态未变化' ? '状态未变化' : '状态已更新')
-      await handleLoad()
-      return
+    const STATUS_OPTIONS = [
+      { label: '待支付', value: 'pending' },
+      { label: '已核对，待回调', value: 'awaiting_callback' },
+      { label: '已支付', value: 'paid' },
+      { label: '已退款', value: 'refunded' },
+    ]
+    // 已支付可筛选，但只有支付回调才能写入，不是管理员可选的目标。
+    const reviewOptions = STATUS_OPTIONS.filter(option => option.value !== 'paid')
+    const statusModalVisible = ref(false), statusSubmitting = ref(false), statusError = ref('')
+    const statusTarget = reactive({ orderId: 0, orderNo: '', current: '', next: undefined })
+    const canEditStatus = computed(() => isAdmin.value)
+    let statusRequest = 0
+    const resetStatusReview = () => {
+      ++statusRequest
+      statusModalVisible.value = false; statusSubmitting.value = false; statusError.value = ''
+      Object.assign(statusTarget, { orderId: 0, orderNo: '', current: '', next: undefined })
     }
-    statusError.value = response?.data?.message || '状态更新失败，请稍后重试'
-  } catch (error) {
-    statusError.value = error?.response?.data?.message || error?.message || '状态更新失败'
-  } finally {
-    statusSubmitting.value = false
-  }
-}
+    const openStatusModal = (record) => {
+      if (!canEditStatus.value || record?.settlementNeedsReview || record?.refundReserved || record?.refundMarked) return
+      resetStatusReview()
+      Object.assign(statusTarget, { orderId: record.id, orderNo: record.orderNo, current: record.status })
+      statusModalVisible.value = true
+    }
+    const submitStatusChange = async () => {
+      if (!canEditStatus.value || !statusModalVisible.value || statusSubmitting.value) return
+      if (!statusTarget.next) { statusError.value = '请选择运营标记'; return }
+      if (statusTarget.next === statusTarget.current) { statusModalVisible.value = false; return }
+      const request = ++statusRequest
+      statusSubmitting.value = true; statusError.value = ''
+      try {
+        const response = await updateRechargeOrderStatus(statusTarget.orderId, statusTarget.next)
+        if (request !== statusRequest) return
+        if (response?.status !== 200) {
+          statusError.value = response?.data?.message || '状态更新失败，请稍后重试'
+          return
+        }
+        statusModalVisible.value = false
+        message.success(response?.data?.message || '运营标记已保存，不会入账或执行退款')
+        await handleLoad()
+      } catch (error) {
+        if (request === statusRequest) statusError.value = error?.response?.data?.message || '状态更新失败，请刷新后重试'
+      } finally {
+        if (request === statusRequest) statusSubmitting.value = false
+      }
+    }
     const instance = getCurrentInstance()
     const router = useRouter()
     const route = () => router?.currentRoute?.value || instance?.proxy?.$route || {}
@@ -317,7 +298,7 @@ const submitStatusChange = async () => {
     const retireView = () => {
       const epoch = ++renderEpoch
       queryEpoch.value += 1; tableLoading.value = false; loadFailure.value = null
-      clearData(); resetInputs(); scrubPrivateDom()
+      clearData(); resetInputs(); resetStatusReview(); scrubPrivateDom()
       // Drain Antd's accepted controlled input work before disposing its refs.
       nextTick().then(() => nextTick()).then(() => {
         if (!alive || epoch !== renderEpoch) return
@@ -382,6 +363,7 @@ const submitStatusChange = async () => {
         guardEvent(event) { if (!current()) { event.preventDefault(); event.stopImmediatePropagation() } },
         load: run(handleLoad), applyKeyword: run(applyKeyword), onFilterChange: run(onFilterChange),
         resetFilters: run(resetFilters), handleTableChange: run(handleTableChange),
+        openStatusModal: run(openStatusModal), submitStatusChange: run(submitStatusChange),
         setKeyword: run(value => { keywordInput.value = value }), setStatus: run(value => { filters.status = value }),
         setProvider: run(value => { filters.paymentProvider = value }),
         setUserId: run(value => { filters.userId = value }),
@@ -426,24 +408,11 @@ const submitStatusChange = async () => {
       tableLoading,
       pagination,
       summary,
-      isAdmin,
-        filters,
-    keywordInput,
-    sumTableColumnWidths,
-    canEditStatus,
-    statusModalVisible,
-    statusSubmitting,
-    statusTarget,
-    statusError,
-    STATUS_OPTIONS,
-    openStatusModal,
-    submitStatusChange,
+      isAdmin, filters, keywordInput, sumTableColumnWidths, canEditStatus, statusModalVisible,
+      statusSubmitting, statusTarget, statusError, reviewOptions,
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, status: filters.status, paymentProvider: filters.paymentProvider, userId: filters.userId, createdFrom: filters.createdFrom, createdTo: filters.createdTo, paidFrom: filters.paidFrom, paidTo: filters.paidTo, amountMin: filters.amountMin, amountMax: filters.amountMax })),
-    // 筛选下拉与改状态弹窗**共用同一份**状态清单。
-    // 之前是两份：筛选只有 pending/paid，弹窗需要 refunded —— 两份必然漂移，
-    // 漂移的直接后果是「已退款的订单筛不出来」。
-    statusOptions: STATUS_OPTIONS,
-      columns: [
+      statusOptions: STATUS_OPTIONS,
+      columns: computed(() => [
         {
           title: '订单号',
           dataIndex: 'orderNo',
@@ -487,12 +456,13 @@ const submitStatusChange = async () => {
           width: 122,
         },
         {
-      title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
-      width: 122,
-    },
-  ],
+          title: '创建时间',
+          dataIndex: 'createdAt',
+          key: 'createdAt',
+          width: 122,
+        },
+        ...(canEditStatus.value ? [{ title: '运营核对', key: 'review', width: 120 }] : []),
+      ]),
     }
   },
   methods: {
@@ -518,6 +488,8 @@ const submitStatusChange = async () => {
       const normalized = String(value || '').trim().toLowerCase()
       if (normalized === 'paid') return '已支付'
       if (normalized === 'pending') return '待支付'
+      if (normalized === 'awaiting_callback') return '已核对，待回调'
+      if (normalized === 'refunded') return '已退款'
       if (normalized === 'closed') return '已关闭'
       return value || '-'
     },

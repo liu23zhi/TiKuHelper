@@ -40,8 +40,8 @@ func seedStatusTestActors(t *testing.T, db *gorm.DB) (entity.User, entity.User) 
 	return admin, normal
 }
 
-// pending → paid 必须成功，且**补 paid_at**（否则该订单永远进不了可退列表）。
-func TestUpdateRechargeStatusPendingToPaidSetsPaidAt(t *testing.T) {
+// 旧版客户端仍可请求 paid，但在签名回调之前只能留下运营核对标记。
+func TestUpdateRechargeStatusPendingToPaidOnlyMarksReview(t *testing.T) {
 	db := newRechargeOrderTestDB(t)
 	admin, _ := seedStatusTestActors(t, db)
 	order := seedStatusTestOrder(t, db, 1, rechargeOrderStatusPending, nil)
@@ -50,11 +50,8 @@ func TestUpdateRechargeStatusPendingToPaidSetsPaidAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pending→paid 应成功: %v", err)
 	}
-	if got.Status != rechargeOrderStatusPaid {
-		t.Fatalf("状态应为 paid，实际 %q", got.Status)
-	}
-	if got.PaidAt == nil {
-		t.Fatal("改成 paid 时必须补 paid_at，否则该订单永远进不了可退列表")
+	if got.Status != "awaiting_callback" || got.PaidAt != nil {
+		t.Fatalf("人工核对不等于到账：status=%s paid_at=%v", got.Status, got.PaidAt)
 	}
 }
 
@@ -65,12 +62,13 @@ func TestUpdateRechargeStatusKeepsExistingPaidAt(t *testing.T) {
 	original := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
 	order := seedStatusTestOrder(t, db, 1, rechargeOrderStatusPending, &original)
 
-	got, err := UpdateRechargeOrderStatusWithDB(db, admin, order.ID, "paid")
-	if err != nil {
-		t.Fatalf("应成功: %v", err)
+	_, err := UpdateRechargeOrderStatusWithDB(db, admin, order.ID, "paid")
+	if !errors.Is(err, ErrRechargeSettlementReviewRequired) {
+		t.Fatalf("unproven old timestamp must go to reconciliation: %v", err)
 	}
-	if got.PaidAt == nil || !got.PaidAt.Equal(original) {
-		t.Fatalf("不得覆盖已有 paid_at（那是渠道写的真实支付时刻），实际 %v", got.PaidAt)
+	var got entity.RechargeOrder
+	if err := db.First(&got, order.ID).Error; err != nil || got.Status != order.Status || got.PaidAt == nil || !got.PaidAt.Equal(original) {
+		t.Fatalf("must preserve the historical row for reconciliation: %+v err=%v", got, err)
 	}
 }
 

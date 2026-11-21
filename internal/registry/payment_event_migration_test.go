@@ -27,10 +27,25 @@ func newPaymentEventMigrationTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// Old manual corrections also populated paid_at. The matched recharge bill,
+// not a mutable label, is evidence that money was actually credited.
+func seedBackfillBill(t *testing.T, db *gorm.DB, orderNo string) {
+	t.Helper()
+	var order entity.RechargeOrder
+	if err := db.Where("order_no = ?", orderNo).Take(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	row := entity.BillingRecord{UserID: order.UserID, Type: "recharge", Amount: order.Amount, RelatedOrderID: order.ID, RequestID: order.OrderNo,
+		BalanceBefore: 0, BalanceAfter: order.Amount}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 老库（有 users / recharge_orders，但没有事件表）必须被补齐，并写迁移标记。
 func TestEnsurePaymentEventSchemaCreatesTableWithUniqueOrderNo(t *testing.T) {
 	db := newPaymentEventMigrationTestDB(t)
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}, &entity.BillingRecord{}); err != nil {
 		t.Fatalf("migrate base schema: %v", err)
 	}
 	if db.Migrator().HasTable(entity.TableNamePaymentEvent) {
@@ -63,10 +78,10 @@ func TestEnsurePaymentEventSchemaCreatesTableWithUniqueOrderNo(t *testing.T) {
 	}
 }
 
-// 回填必须以 paid_at 为判据（而不是 status='paid'），覆盖「已退款」的历史订单。
+// 只回填有充值流水的历史订单，包括已退款的；不把运营填写的 paid_at 当成钱到账。
 func TestEnsurePaymentEventSchemaBackfillsPaidAtOrdersIncludingRefunded(t *testing.T) {
 	db := newPaymentEventMigrationTestDB(t)
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}, &entity.BillingRecord{}); err != nil {
 		t.Fatalf("migrate base schema: %v", err)
 	}
 	paidAt := time.Now().Add(-time.Hour)
@@ -75,12 +90,16 @@ func TestEnsurePaymentEventSchemaBackfillsPaidAtOrdersIncludingRefunded(t *testi
 			Status: paymentEventStatusPaidFixture, PaidAt: &paidAt, ThirdPartyOrderNo: "trade_pe_paid"},
 		{UserID: 2, OrderNo: "rcg_pe_refunded", PaymentProvider: "epay", Amount: 28,
 			Status: paymentEventStatusRefundedFixture, PaidAt: &paidAt, ThirdPartyOrderNo: "trade_pe_refunded"},
+		{UserID: 4, OrderNo: "rcg_pe_manual", PaymentProvider: "epay", Amount: 8, Status: "paid", PaidAt: &paidAt},
 		// 从未入账：没有 paid_at，不该产生事件。
 		{UserID: 3, OrderNo: "rcg_pe_pending", PaymentProvider: "epay", Amount: 8, Status: "pending"},
 	}
 	if err := db.Create(&orders).Error; err != nil {
 		t.Fatalf("seed recharge orders: %v", err)
 	}
+
+	seedBackfillBill(t, db, "rcg_pe_paid")
+	seedBackfillBill(t, db, "rcg_pe_refunded")
 
 	if err := ensurePaymentEventSchema(db); err != nil {
 		t.Fatalf("ensure payment event schema: %v", err)
@@ -99,7 +118,7 @@ func TestEnsurePaymentEventSchemaBackfillsPaidAtOrdersIncludingRefunded(t *testi
 	}
 	refunded, ok := byOrderNo["rcg_pe_refunded"]
 	if !ok {
-		t.Fatalf("refunded order must still get an event (paid_at proves it was credited): %+v", events)
+		t.Fatalf("refunded order must still get an event (matched recharge bill proves it was credited): %+v", events)
 	}
 	if refunded.Amount != 28 || refunded.TradeNo != "trade_pe_refunded" || refunded.UserID != 2 ||
 		refunded.Source != paymentEventBackfillSource {
@@ -116,7 +135,7 @@ func TestEnsurePaymentEventSchemaBackfillsPaidAtOrdersIncludingRefunded(t *testi
 // 迁移必须幂等：标记已在时再来一次不报错、不重建、不丢数据、不重复回填。
 func TestEnsurePaymentEventSchemaIsIdempotent(t *testing.T) {
 	db := newPaymentEventMigrationTestDB(t)
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}, &entity.BillingRecord{}); err != nil {
 		t.Fatalf("migrate base schema: %v", err)
 	}
 	paidAt := time.Now().Add(-time.Hour)
@@ -124,6 +143,7 @@ func TestEnsurePaymentEventSchemaIsIdempotent(t *testing.T) {
 		Amount: 88, Status: paymentEventStatusPaidFixture, PaidAt: &paidAt}).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
+	seedBackfillBill(t, db, "rcg_pe_idem")
 	if err := ensurePaymentEventSchema(db); err != nil {
 		t.Fatalf("first ensure: %v", err)
 	}
@@ -172,7 +192,7 @@ func TestEnsurePaymentEventSchemaSkipsWhenOrderTableMissing(t *testing.T) {
 // 回填失败只记日志、不阻断启动、且不写标记（下次启动自动重试）。
 func TestEnsurePaymentEventSchemaKeepsMarkerOffWhenBackfillFails(t *testing.T) {
 	db := newPaymentEventMigrationTestDB(t)
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}, &entity.BillingRecord{}); err != nil {
 		t.Fatalf("migrate base schema: %v", err)
 	}
 	paidAt := time.Now().Add(-time.Hour)
@@ -180,6 +200,7 @@ func TestEnsurePaymentEventSchemaKeepsMarkerOffWhenBackfillFails(t *testing.T) {
 		Amount: 12, Status: paymentEventStatusPaidFixture, PaidAt: &paidAt}).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
+	seedBackfillBill(t, db, "rcg_pe_backfill_fail")
 	// 让回填阶段的批量 Create 失败：只拦 payment_events，建表阶段不受影响。
 	const callbackName = "test:payment_event_backfill_failure"
 	if err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
