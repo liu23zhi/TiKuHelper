@@ -56,9 +56,9 @@ func TestExtensionConfigurationRequiresAdminAndPersistsLiveSettings(t *testing.T
 		for _, test := range []struct {
 			token  string
 			status int
-		// 2026-11-18 口径翻转：原先 `{"Bearer " + admin, 401}` 断言 Bearer 形式
-		// 不被接受。Auth 现在会剥离 Bearer 前缀，故该形态等同裸 JWT → 放行。
-		// 同时保留 Basic 反例，钉住「只放宽 scheme 白名单」这条边界。
+			// 2026-11-18 口径翻转：原先 `{"Bearer " + admin, 401}` 断言 Bearer 形式
+			// 不被接受。Auth 现在会剥离 Bearer 前缀，故该形态等同裸 JWT → 放行。
+			// 同时保留 Basic 反例，钉住「只放宽 scheme 白名单」这条边界。
 		}{{"", 401}, {user, 403}, {"Bearer " + admin, 200}, {"Basic " + admin, 401}} {
 			if got := request(method, test.token, body); got.Code != test.status {
 				t.Fatalf("%s unauthorized code=%d body=%s", method, got.Code, got.Body.String())

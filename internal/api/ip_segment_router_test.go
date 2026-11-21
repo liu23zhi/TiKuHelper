@@ -74,11 +74,12 @@ func TestSetAPIRouterRegistersIPSegmentAdminRoutes(t *testing.T) {
 // 它必须调用 service.PersistMissingIPSegmentsFromCacheRows，与缓存命中路径同一个函数。
 //
 // ⇒ 因此本用例的判据从「任何含 import 的端点都不许有」收窄为：
-//    **不许存在绕过自动沉淀的独立导入逻辑**。
-//    判据落点改成两条：
-//      ① ip-segments 族下不得出现 import 字样（仍防止按旧口径加回 import 端点）；
-//      ② 「立即同步」端点必须存在，且其 handler 必须调用同一个沉淀函数
-//         （见 TestIPSegmentSyncEndpointReusesAutoSediment）。
+//
+//	**不许存在绕过自动沉淀的独立导入逻辑**。
+//	判据落点改成两条：
+//	  ① ip-segments 族下不得出现 import 字样（仍防止按旧口径加回 import 端点）；
+//	  ② 「立即同步」端点必须存在，且其 handler 必须调用同一个沉淀函数
+//	     （见 TestIPSegmentSyncEndpointReusesAutoSediment）。
 //
 // 为什么仍要保留 import 禁令：sync 与 import 的语义差别不是命名游戏 ——
 // import 意味着「从外部灌一份数据进来」，而 sync 只做「把已缓存的行补写成段」。

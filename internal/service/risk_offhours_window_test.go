@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/glebarez/sqlite"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

@@ -60,7 +60,7 @@ var (
 	//
 	//	pruneTicketImageCacheByAge  = service.PruneTicketAttachmentsByAge
 	//	pruneTicketImageCacheBySize = service.PruneTicketAttachmentsBySize
-	pruneTicketImageCacheByAge = service.PruneTicketAttachmentsByAge
+	pruneTicketImageCacheByAge  = service.PruneTicketAttachmentsByAge
 	pruneTicketImageCacheBySize = service.PruneTicketAttachmentsBySize
 )
 

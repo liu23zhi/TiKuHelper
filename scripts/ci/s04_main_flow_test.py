@@ -98,6 +98,13 @@ class S04MainFlowContracts(unittest.TestCase):
             self.assertEqual([row['clientIP'] for row in observed['observations']], [address, address])
             with self.assertRaises(AssertionError):
                 flow.actual_gin_client_ips(raw, '198.51.100.9')
+        # This branch's service access logger uses [HTTP]; an arbitrary logger,
+        # a non-200 result, a different verb or mismatched observed IP is not evidence.
+        http = (line.format(ip='127.0.0.1', path='/healthz') + line.format(ip='127.0.0.1', path='/readyz')).replace('[GIN]', '[HTTP]').encode()
+        self.assertTrue(flow.actual_gin_client_ips(http, '127.0.0.1')['bothEndpointsVerified'])
+        for bad in [http.replace(b'[HTTP]', b'[INFO]'), http.replace(b'200', b'404'), http.replace(b'GET', b'POST'), http.replace(b'127.0.0.1', b'192.0.2.1')]:
+            with self.assertRaises(AssertionError):
+                flow.actual_gin_client_ips(bad, '127.0.0.1')
         for raw in [b'{"clientIP":"203.0.113.7","status":200}\n',
                     b'PROBE healthz200 readyz200 ClientIP203.0.113.7\n',
                     line.format(ip='127.0.0.1', path='/healthz').encode()]:

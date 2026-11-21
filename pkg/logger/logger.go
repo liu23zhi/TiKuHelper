@@ -360,6 +360,7 @@ func (w *outputWriter) Write(p []byte) (int, error) {
 // 清理的目的只是「别让磁盘被撑爆」，它不是精确的容量控制：
 //   - 5 秒内的日志增量对 256 MB 量级的 maxTotalBytes 完全可以忽略；
 //   - 而 5 秒已足够把「一次请求打几十条日志」压缩成一次扫描。
+//
 // 取 1 秒会更频繁（收益有限），取 30 秒会让单次超限后多写几十 MB 才收敛。
 const pruneLogFilesThrottle = 5 * time.Second
 

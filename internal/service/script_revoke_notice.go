@@ -49,11 +49,11 @@ type ScriptRevokeNotice struct {
 //
 // # 判定顺序（顺序本身就是需求）
 //
-//	1. 没有 revoked_at      → none（在跑或到寿，都正常）
-//	2. reason == heartbeat  → warning + 指向客户端的文案
-//	3. reason == user_closed→ none（用户自己关的，不该再提醒他）
-//	4. reason == admin      → info（不是你自己关的，需要知道）
-//	5. 其它（空/未知）      → info，且**原样保留 reason**
+//  1. 没有 revoked_at      → none（在跑或到寿，都正常）
+//  2. reason == heartbeat  → warning + 指向客户端的文案
+//  3. reason == user_closed→ none（用户自己关的，不该再提醒他）
+//  4. reason == admin      → info（不是你自己关的，需要知道）
+//  5. 其它（空/未知）      → info，且**原样保留 reason**
 //
 // # 第 5 条为什么不猜
 //
