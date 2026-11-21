@@ -64,6 +64,7 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
     }).setup());
 
     state.dataSource.value = [{ id: 17, remark: '长备注'.repeat(80) }];
+    state.showAllTokens.value = false; // Exercise both supported scopes; the actual admin entry defaults to all.
     const widths = () => state.columns.value.map(column => column.width);
     assert.ok(widths().every(width => Number.isFinite(width) && width > 0));
     assert.equal(state.tableScrollX.value, widths().reduce((sum, width) => sum + width, 0));
