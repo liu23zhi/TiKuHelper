@@ -44,7 +44,7 @@ func TestScriptShortAuthorizationIsExplicitExpiringAndSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Address != "https://a.muioi.com" || view.Command != `powershell -c "iex(irm https://a.muioi.com)"` || view.Status != "active" || view.ExpiresAt.Before(time.Now().Add(4*time.Minute)) {
+	if view.Address != "https://a.muioi.com" || view.Command != `powershell -c "iex(irm https://a.muioi.com -MaximumRedirection 0 -TimeoutSec 15)"` || view.Status != "active" || view.ExpiresAt.Before(time.Now().Add(4*time.Minute)) {
 		t.Fatalf("wrong short authorization: %+v", view)
 	}
 	resolved, grant, err := ConsumeScriptShortAuthorizationWithDB(db, "a.muioi.com", "/")
@@ -91,6 +91,7 @@ func TestScriptShortAuthorizationEnforcesOwnerDomainExpiryAndRevocation(t *testi
 	if _, _, err := ConsumeScriptShortAuthorizationWithDB(db, "muioi.com", "/a"); !errors.Is(err, ErrScriptNotFound) {
 		t.Fatalf("expired entry accepted: %v", err)
 	}
+	input.Address = "muioi.com/new-entry"
 	if _, err := ConfigureScriptShortAuthorizationWithDB(db, owner, script.ID, input); err != nil {
 		t.Fatal(err)
 	}

@@ -392,7 +392,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if err != nil {
 			return err
 		}
-		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, LauncherLocator: locator, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
+		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, LauncherLocator: locator, LauncherBearerEnabled: locator != nil, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
 		if !*authorizationSettings.AllowFullNeverExpire {
 			expires := time.Now().Add(24 * time.Hour)
 			script.LauncherExpiresAt = &expires
@@ -586,6 +586,7 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 		}
 		if result[i].UserID != operator.ID {
 			result[i].Command, result[i].Instruction, result[i].CompatibilityCommand = "", "", ""
+			result[i].DownloadURL = ""
 		} else {
 			result[i].ShortAuthorization = scriptShortAuthorizationView(result[i].UserScript)
 			result[i].LauncherAuthorization = scriptLauncherAuthorizationView(result[i].UserScript)
@@ -745,6 +746,7 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 		}
 		if item.UserID != operator.ID {
 			item.Command, item.Instruction, item.CompatibilityCommand = "", "", ""
+			item.DownloadURL = ""
 		} else {
 			item.ShortAuthorization = scriptShortAuthorizationView(item.UserScript)
 			item.LauncherAuthorization = scriptLauncherAuthorizationView(item.UserScript)
@@ -854,13 +856,15 @@ func IssueScriptExchangeTokenWithDB(db *gorm.DB, operator entity.User, scriptID 
 		if err := deleteExpiredScriptExchangeTokens(tx, script.ID); err != nil {
 			return err
 		}
-		var active int64
-		if err := tx.Model(&entity.ScriptExchangeToken{}).
+		var active []entity.ScriptExchangeToken
+		// Use a current locking read even when this transaction already has a
+		// MySQL REPEATABLE READ snapshot from resolving a public entry.
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
 			Where("script_id = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?", script.ID, "exchange", time.Now()).
-			Count(&active).Error; err != nil {
+			Limit(1).Find(&active).Error; err != nil {
 			return err
 		}
-		if active > 0 {
+		if len(active) > 0 {
 			return ErrScriptExchangeAlreadyIssued
 		}
 		return tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: script.VersionID, Purpose: "exchange", TokenHash: hashScriptSecret(token), ExpiresAt: expires}).Error
@@ -927,6 +931,18 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 			return err
 		}
 		launchOrigin := ScriptCommandOrigin(script)
+		commandURL := BuildScriptCommandURL(script)
+		if script.LauncherBearerEnabled && grant.AuthorizationKind == "" {
+			// A one-time owner ticket must not reveal a reusable launcher. For
+			// wildcard deployments use the existing non-capability API host;
+			// the public entry resolver does not launch generated scripts there.
+			apiScript := script
+			apiScript.LauncherLocator = nil
+			if script.UseWildcardDomain {
+				launchOrigin = ScriptCommandOrigin(apiScript)
+			}
+			commandURL = ""
+		}
 		if grant.LaunchAddress != "" {
 			address, err := url.Parse(grant.LaunchAddress)
 			if err != nil {
@@ -937,8 +953,9 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 				return ErrScriptTokenInvalid
 			}
 			launchOrigin = origin
+			commandURL = grant.LaunchAddress
 		}
-		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/api/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/api/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: launchOrigin, ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
+		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: commandURL, Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/api/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: commandURL, BootstrapURL: "/api/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: launchOrigin, ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
 		return nil
 	})
 	return result, err
@@ -1078,9 +1095,8 @@ func scriptLauncherCapability(script entity.UserScript) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// BuildScriptCommand keeps historic header launchers compatible. Generated
-// locators use a compact header with a purpose-separated, generation-bound
-// capability. No shell variables are present for the parent shell to expand.
+// Generated UUID addresses are high-entropy launcher capabilities. Legacy
+// short-code addresses retain their header check and compatibility command.
 func BuildScriptCommand(script entity.UserScript) string {
 	commandURL := BuildScriptCommandURL(script)
 	capability := scriptLauncherCapability(script)
@@ -1090,7 +1106,14 @@ func BuildScriptCommand(script entity.UserScript) string {
 	if script.LauncherDisabled || strings.ContainsAny(commandURL, "'\";`$\\\r\n") {
 		return ""
 	}
-	return `powershell -c "iex(irm ` + commandURL + ` -Headers @{'X-Script-Launcher'='` + capability + `'} -MaximumRedirection 0 -TimeoutSec 15)"`
+	if script.LauncherLocator == nil || !script.LauncherBearerEnabled {
+		return BuildScriptCompatibilityCommand(script)
+	}
+	return buildScriptAddressCommand(commandURL)
+}
+
+func buildScriptAddressCommand(address string) string {
+	return `powershell -c "iex(irm ` + address + ` -MaximumRedirection 0 -TimeoutSec 15)"`
 }
 
 // BuildScriptCompatibilityCommand retains PowerShell 2 support, including

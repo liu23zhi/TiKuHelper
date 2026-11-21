@@ -23,6 +23,20 @@ function successful(result) {
   assert.equal(result.status, 0, `${result.stdout || ''}${result.stderr || ''}`);
 }
 
+test('Nginx access log only keeps paths under reserved API prefixes', async () => {
+  const config = await readFile(join(run, 'nginx/conf.d/tiku-adapter.conf'), 'utf8');
+  const map = /map \$uri \$tiku_log_path \{([^}]+)\}/.exec(config)?.[1];
+  assert.ok(map);
+  assert.match(map, /default\s+"\[public-entry\]";/);
+  const loggedPatterns = [...map.matchAll(/^\s*~(\S+)\s+\$uri;/gm)].map((match) => new RegExp(match[1]));
+  const logsPath = (path) => loggedPatterns.some((pattern) => pattern.test(path));
+  for (const prefix of ['css', 'js', 'img', 'fonts', 'adapter', 'custom']) {
+    assert.equal(logsPath(`/${prefix}/private-entry`), false, prefix);
+  }
+  assert.ok(logsPath('/api/scripts'));
+  assert.ok(logsPath('/adapter-service/scripts'));
+});
+
 test('Compose keeps cache persistence and limits the backend to loopback', (t) => {
   const result = execute('docker', ['compose', '-f', join(run, 'docker-compose.yml'), 'config', '--format', 'json'], { env: { ...process.env, TRUSTED_PROXIES: 'none', TRUSTED_PROXIES_FILE: '' } });
   if (result.error?.code === 'ENOENT') return t.skip('Docker Compose CLI is unavailable');
@@ -61,10 +75,10 @@ async function freePort() {
   return port;
 }
 
-async function request(port, encrypted, headers) {
+async function request(port, encrypted, headers, path = '/deployment-probe') {
   return new Promise((resolveRequest, reject) => {
     const req = (encrypted ? https : http).get({
-      hostname: '127.0.0.1', port, path: '/deployment-probe', headers,
+      hostname: '127.0.0.1', port, path, headers,
       rejectUnauthorized: false, timeout: 2000, agent: false,
     }, (res) => {
       let body = '';
@@ -175,10 +189,12 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
       assert.equal(received.forwarded, undefined);
       assert.equal(received['x-forwarded-proto'], encrypted ? 'https' : 'http');
       assert.equal(received['x-forwarded-port'], String(encrypted ? tlsPort : nginxPort));
+      await request(encrypted ? tlsPort : nginxPort, encrypted, {}, '/css/private-entry-probe');
     }
     await stop();
     const access = await readFile(join(directory, 'logs/access.log'), 'utf8');
     assert.match(access, /GET \[public-entry\] HTTP\//, 'requests were logged using tiku_safe');
     assert.ok(!access.includes('/deployment-probe'), 'public route paths stay out of both listeners’ access logs');
+    assert.ok(!access.includes('/css/private-entry-probe'), 'custom entries under asset-like paths must be redacted');
   }
 });

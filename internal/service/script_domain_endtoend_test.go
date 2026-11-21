@@ -202,7 +202,7 @@ func TestScriptEditPreservesLegacyLocatorAndAuthorizations(t *testing.T) {
 	if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{"new.test/*"}}); err != nil {
 		t.Fatal(err)
 	}
-	if edited, err := UpdateUserScriptWithDB(db, admin, item.ID, UpdateUserScriptInput{Name: "new"}); err != nil || edited.Name != "new" || edited.Description != item.Description || edited.DownloadURL != item.DownloadURL || edited.Command != "" {
+	if edited, err := UpdateUserScriptWithDB(db, admin, item.ID, UpdateUserScriptInput{Name: "new"}); err != nil || edited.Name != "new" || edited.Description != item.Description || edited.DownloadURL != "" || edited.Command != "" {
 		t.Fatalf("admin edit did not preserve old metadata or hide credentials: %v", err)
 	}
 	rows, err := ListUserScriptsWithDB(db, owner, false)

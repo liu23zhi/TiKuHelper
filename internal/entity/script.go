@@ -67,9 +67,12 @@ type UserScript struct {
 	ShortCode   string  `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
 	// Legacy scripts have no locator and continue using their original address.
 	LauncherLocator *string `gorm:"column:launcher_locator;type:char(36);uniqueIndex:ux_user_scripts_launcher_locator" json:"-"`
-	AccessTokenID   int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
-	AccessKey       string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
-	ReservedFee     float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
+	// Old locators were public identifiers. Only newly issued/rotated locators
+	// may authorize a launch without the legacy header capability.
+	LauncherBearerEnabled bool    `gorm:"column:launcher_bearer_enabled;not null;default:false" json:"-"`
+	AccessTokenID         int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
+	AccessKey             string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
+	ReservedFee           float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
 	// Full and short entry budgets are independent; legacy full commands remain
 	// enabled with no time/count limit until the owner explicitly configures them.
 	LauncherDisabled   bool       `gorm:"column:launcher_disabled;not null;default:false" json:"-"`

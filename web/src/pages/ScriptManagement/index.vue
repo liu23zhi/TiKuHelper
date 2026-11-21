@@ -5,7 +5,7 @@
     <!-- 标题按角色切换：普通用户菜单里这个入口叫「我的脚本」（123 号侧边栏分区），
          页面却写「脚本管理」会让用户以为进错了地方。与 Tickets（工单管理/工单反馈）、
          BillingRecordList（账单明细/我的账单）保持同一口径。 -->
-    <ConsolePageHeading :title="isAdmin ? '脚本管理' : '我的脚本'" description="默认生成完整授权指令，可按需启用短命令；管理员负责上传 EXE，用户可维护自己的脚本参数。">
+    <ConsolePageHeading :title="isAdmin ? '脚本管理' : '我的脚本'" description="默认生成随机长命令，可自行设置短命令；每条脚本同时只允许一个客户端在线。">
       <template #actions>
         <a-space wrap class="section-actions">
           <a-button data-script-activation-purchases :onClick="pageEntry.bind(openPurchases)">购买激活码 / 购买记录</a-button>
@@ -130,20 +130,26 @@
             </template>
             <span v-else-if="column.key === 'owner'">{{ record.ownerName || '-' }}</span>
             <div v-else-if="column.key === 'command'" class="command-cell">
+              <template v-if="isOwnScript(record)">
               <span class="table-hint">长命令</span>
               <code>{{ mayCopyCommand(record) ? buildScriptCommand(record) : buildScriptDownloadURL(record) || '暂无地址' }}</code>
               <span v-if="record.scheme === 'http'" class="table-hint">授权指令仅支持 HTTPS</span>
-              <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制长命令</a-button>
-              <a-button v-if="mayCopyCommand(record) && buildScriptCommand({ command: record.compatibilityCommand })" size="small" :onClick="pageEntry.bind(copyText, buildScriptCommand({ command: record.compatibilityCommand }))">复制兼容指令</a-button>
-              <template v-if="isOwnScript(record) && buildScriptShortCommand(record)">
+              <a-space wrap class="command-actions">
+                <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制长命令</a-button>
+                <a-button size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'full')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">长命令授权设置</a-button>
+              </a-space>
+              <template v-if="record.shortAuthorization?.address && buildScriptShortCommand(record)">
                 <span class="table-hint">短命令</span>
                 <code>{{ buildScriptShortCommand(record) }}</code>
-                <a-button size="small" :onClick="pageEntry.bind(copyText, buildScriptShortCommand(record))">复制短命令</a-button>
               </template>
-              <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'full')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">长命令授权设置</a-button>
-              <a-button v-if="isOwnScript(record)" size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'short')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">{{ record.shortAuthorization ? '短命令授权设置' : '生成短命令' }}</a-button>
+              <a-space wrap class="command-actions">
+                <a-button size="small" :onClick="pageEntry.bind(openShortAuthorization, record, 'short')" :disabled="isEscrowClosing(record) || record.scheme !== 'https'">{{ record.shortAuthorization?.address ? '短命令授权设置' : '生成短命令' }}</a-button>
+                <a-button v-if="record.shortAuthorization?.address" size="small" :disabled="isEscrowClosing(record) || !buildScriptShortCommand(record)" :onClick="pageEntry.bind(copyText, buildScriptShortCommand(record))">复制短命令</a-button>
+              </a-space>
               <span v-if="record.launcherAuthorization" class="table-hint">长命令{{ shortAuthorizationStatus(record.launcherAuthorization.status) }} · {{ authorizationUsesText(record.launcherAuthorization) }}<template v-if="record.launcherAuthorization.expiresAt"> · 有效至 {{ formatDateTime(record.launcherAuthorization.expiresAt) }}</template></span>
               <span v-if="record.shortAuthorization" class="table-hint">短命令{{ shortAuthorizationStatus(record.shortAuthorization.status) }} · {{ authorizationUsesText(record.shortAuthorization) }}<template v-if="record.shortAuthorization.expiresAt"> · 有效至 {{ formatDateTime(record.shortAuthorization.expiresAt) }}</template></span>
+              </template>
+              <span v-else class="table-hint">命令与授权仅脚本所有者可查看</span>
             </div>
             <div v-else-if="column.key === 'billing'">
               <span>{{ scriptBillingText(record) }}</span>
@@ -260,7 +266,7 @@
             <p class="hint">开启后本次创建不校验该账号是否绑定手机号和微信。普通用户看不到此开关，服务端也会按角色拒绝非管理员传入的跳过请求。</p>
           </a-form-item>
         </ConsolePanel>
-        <ConsolePanel title="长命令地址" description="默认提供紧凑指令；PowerShell 2 等旧环境可在列表复制兼容指令。" class="preview-panel">
+        <ConsolePanel title="长命令地址" description="保存后生成随机 HTTPS 长地址，可在列表复制长命令。" class="preview-panel">
           <div class="command-preview"><code>{{ editingAddress || '保存后自动生成 HTTPS 地址' }}</code></div>
         </ConsolePanel>
       </a-form>
@@ -268,21 +274,40 @@
     </a-modal>
     <a-modal v-if="shortAuthorizationRecord" :open="true" :title="shortAuthorizationMode === 'full' ? '长命令授权设置' : '短命令授权设置'" width="660px" :footer="null" :closable="!shortAuthorizationBusy" :mask-closable="!shortAuthorizationBusy" :keyboard="!shortAuthorizationBusy" :onCancel="pageEntry.bind(closeShortAuthorization)" :wrap-props="{ 'aria-modal': true }">
       <div ref="shortAuthorizationSurface" :onInputCapture="pageEntry.guardNative" :onChangeCapture="pageEntry.guardNative" :onClickCapture="pageEntry.guardNative" :onKeydownCapture="pageEntry.guardNative">
-        <a-alert :type="shortAuthorizationMode === 'short' ? 'warning' : 'info'" show-icon :message="shortAuthorizationMode === 'short' ? '短命令按时间与次数授权' : '长命令保留完整凭据鉴权'" :description="shortAuthorizationMode === 'short' ? '知道入口地址的人可消耗授权次数，请妥善保管。到期、次数用完或主动撤销后失效；长命令独立生效。' : '更新设置会生成新的授权凭据，旧长命令立即失效。默认不限制时间和次数；可按需要收紧。'" />
+        <a-alert type="info" show-icon message="同一脚本同时只允许一个客户端在线" description="长短命令共用在线名额。已有客户端在线时拒绝新接入，请先退出原客户端。命令地址即授权，请妥善保管。" />
+        <p v-if="shortAuthorizationMode === 'full'" class="hint">更新授权会重新生成长命令，旧命令随即失效。更新后请重新复制。</p>
         <a-form layout="vertical" class="short-authorization-form" :disabled="shortAuthorizationBusy">
-          <a-form-item v-if="shortAuthorizationMode === 'short' && domainFormatOptions.length" label="入口格式" :html-for="fieldId('shortFormat')">
-            <a-select :id="fieldId('shortFormat')" :value="shortAuthorizationForm.format" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'format')" placeholder="选择管理员允许的格式">
-              <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
-            </a-select>
+          <a-form-item v-if="shortAuthorizationMode === 'short'" label="自定义短地址" :html-for="fieldId('shortAddress')" required :validate-status="authorizationError ? 'error' : undefined">
+            <a-input :id="fieldId('shortAddress')" :value="shortAuthorizationForm.address" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'address')" autocomplete="off" :maxlength="512" placeholder="例如 a.zelly.cn 或 zelly.cn/a" data-script-short-address />
+            <p class="hint">{{ domainFormatOptions.length ? '允许的格式：' + domainFormatOptions.map(option => option.raw).join('、') : '使用当前站点下的自定义路径' }}。省略协议时使用 HTTPS。</p>
+            <p v-if="authorizationAddress" class="hint">完整地址：<code>{{ authorizationAddress }}</code></p>
+            <p v-if="authorizationError" class="form-error" role="alert">{{ authorizationError }}</p>
           </a-form-item>
-          <p v-if="shortAuthorizationMode === 'short'" class="hint">入口由服务器随机生成，每次更新会更换地址，旧地址不会分配给其他脚本。</p>
-          <a-form-item label="生效时间" :html-for="fieldId('authorizationStartsAt')">
+          <a-form-item label="生效方式" :html-for="fieldId('authorizationStartMode')">
+            <a-radio-group :id="fieldId('authorizationStartMode')" :value="shortAuthorizationForm.startMode" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'startMode')" button-style="solid">
+              <a-radio-button value="immediate">立即生效</a-radio-button>
+              <a-radio-button value="scheduled">指定时间</a-radio-button>
+            </a-radio-group>
+          </a-form-item>
+          <a-form-item v-if="shortAuthorizationForm.startMode === 'scheduled'" label="生效时间" :html-for="fieldId('authorizationStartsAt')" required>
             <a-input :id="fieldId('authorizationStartsAt')" type="datetime-local" :value="shortAuthorizationForm.startsAt" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'startsAt')" />
-            <p class="hint">留空立即生效，使用本机时区。</p>
+            <p class="hint">使用本机时区。</p>
           </a-form-item>
-          <a-form-item label="有效期（分钟）" :html-for="fieldId('shortDuration')">
-            <a-input-number :id="fieldId('shortDuration')" :value="shortAuthorizationForm.durationMinutes" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'durationMinutes')" :min="authorizationAllowsForever ? 0 : 1" :max="shortAuthorizationMode === 'short' ? 1440 : 525600" :precision="0" />
-            <p class="hint">从生效时开始计时。{{ authorizationAllowsForever ? '0 表示永不过期。' : '管理员要求设置有效期。' }}{{ shortAuthorizationMode === 'short' ? '有限期最长 24 小时。' : '有限期最长 365 天。' }}</p>
+          <a-form-item label="有效期" :html-for="fieldId('authorizationDurationMode')">
+            <a-radio-group :id="fieldId('authorizationDurationMode')" :value="shortAuthorizationForm.durationMode" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'durationMode')" button-style="solid">
+              <a-radio-button value="limited">限时</a-radio-button>
+              <a-radio-button value="permanent" :disabled="!authorizationAllowsForever">永久有效</a-radio-button>
+            </a-radio-group>
+            <p v-if="!authorizationAllowsForever" class="hint">管理员未允许此类命令永久有效，请设置时长。</p>
+          </a-form-item>
+          <a-form-item v-if="shortAuthorizationForm.durationMode === 'limited'" label="持续时长（分钟）" :html-for="fieldId('shortDuration')" required>
+            <a-space wrap>
+              <a-input-number :id="fieldId('shortDuration')" :value="shortAuthorizationForm.durationMinutes" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'durationMinutes')" :min="1" :max="shortAuthorizationMode === 'short' ? 1440 : 525600" :precision="0" />
+              <a-button size="small" :onClick="pageEntry.bind(setShortAuthorizationField, 'durationMinutes', 15)">15 分钟</a-button>
+              <a-button size="small" :onClick="pageEntry.bind(setShortAuthorizationField, 'durationMinutes', 60)">1 小时</a-button>
+              <a-button size="small" :onClick="pageEntry.bind(setShortAuthorizationField, 'durationMinutes', 1440)">1 天</a-button>
+            </a-space>
+            <p class="hint">从生效时开始计时，{{ shortAuthorizationMode === 'short' ? '最长 24 小时。' : '最长 365 天。' }}</p>
           </a-form-item>
           <a-form-item label="可使用次数" :html-for="fieldId('authorizationMaxUses')">
             <a-input-number :id="fieldId('authorizationMaxUses')" :value="shortAuthorizationForm.maxUses" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'maxUses')" :min="0" :max="1000000" :precision="0" />
@@ -291,7 +316,7 @@
         </a-form>
         <div v-if="selectedAuthorization" class="short-authorization-result">
           <a-tag :color="selectedAuthorization.status === 'active' ? 'green' : 'default'">{{ shortAuthorizationStatus(selectedAuthorization.status) }}</a-tag>
-          <p class="hint">{{ authorizationUsesText(selectedAuthorization) }}<template v-if="selectedAuthorization.startsAt"> · 生效于 {{ formatDateTime(selectedAuthorization.startsAt) }}</template><template v-if="selectedAuthorization.expiresAt"> · 有效至 {{ formatDateTime(selectedAuthorization.expiresAt) }}</template></p>
+          <p class="hint">{{ authorizationUsesText(selectedAuthorization) }}<template v-if="selectedAuthorization.startsAt"> · 生效于 {{ formatDateTime(selectedAuthorization.startsAt) }}</template><template v-if="selectedAuthorization.expiresAt"> · 有效至 {{ formatDateTime(selectedAuthorization.expiresAt) }}</template><template v-else> · 永久有效</template></p>
           <code v-if="shortAuthorizationMode === 'short' && buildScriptShortCommand(shortAuthorizationRecord)" class="short-command">{{ buildScriptShortCommand(shortAuthorizationRecord) }}</code>
           <a-button v-if="selectedAuthorization.command" :onClick="pageEntry.bind(copyShortCommand)">{{ shortAuthorizationMode === 'short' ? '复制短命令' : '复制长命令' }}</a-button>
         </div>
@@ -368,7 +393,10 @@ const activeCloseConfirmation = shallowRef(null)
 const shortAuthorizationRecord = ref(null), shortAuthorizationBusy = ref(false), shortAuthorizationSurface = ref(null)
 const shortAuthorizationMode = ref('short')
 const selectedAuthorization = computed(() => shortAuthorizationRecord.value?.[shortAuthorizationMode.value === 'full' ? 'launcherAuthorization' : 'shortAuthorization'])
-const shortAuthorizationForm = reactive({ format: '', slot: '', durationMinutes: 5, startsAt: '', maxUses: 1 })
+const emptyAuthorizationForm = () => ({ address: '', durationMode: 'limited', durationMinutes: 5, startMode: 'immediate', startsAt: '', maxUses: 1 })
+const shortAuthorizationForm = reactive(emptyAuthorizationForm())
+const authorizationError = ref('')
+const authorizationAddress = computed(() => normalizeShortAuthorizationAddress(shortAuthorizationForm.address))
 const allowFullNeverExpire = ref(true), allowShortNeverExpire = ref(false)
 const savedExpiryPolicy = ref('true:false')
 const authorizationAllowsForever = computed(() => shortAuthorizationMode.value === 'full' ? allowFullNeverExpire.value : allowShortNeverExpire.value)
@@ -917,33 +945,58 @@ function localDateTimeInput(value) {
   if (Number.isNaN(date.getTime())) return ''
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
+function normalizeShortAuthorizationAddress(raw) {
+  const value = String(raw ?? '').trim()
+  if (!value) return ''
+  const address = value.includes('://') ? value : `https://${value}`
+  if (!/^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)*\/?$/i.test(address)) return ''
+  if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(address)) return ''
+  try {
+    const url = new URL(address)
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || /(?:^|\/)\.{1,2}(?:\/|$)/.test(url.pathname)) return ''
+    return url.origin + (url.pathname === '/' ? '' : url.pathname.replace(/\/$/, ''))
+  } catch { return '' }
+}
 function openShortAuthorization(record, mode = 'short') {
   if (!canAct() || shortAuthorizationBusy.value || !rows.value.includes(record) || !isOwnScript(record) || isEscrowClosing(record) || record.scheme !== 'https') return
   shortAuthorizationMode.value = mode === 'full' ? 'full' : 'short'
   const grant = record[shortAuthorizationMode.value === 'full' ? 'launcherAuthorization' : 'shortAuthorization']
-  const durationMinutes = grant?.expiresAt ? Math.max(1, Math.ceil((Date.parse(grant.expiresAt) - Math.max(Date.now(), Date.parse(grant.startsAt) || 0)) / 60000)) : (authorizationAllowsForever.value ? 0 : 5)
-  Object.assign(shortAuthorizationForm, { format: domainFormatOptions.value[0]?.raw || '', slot: '', durationMinutes, startsAt: localDateTimeInput(grant?.startsAt), maxUses: grant?.maxUses ?? (shortAuthorizationMode.value === 'full' ? 0 : 1) })
+  const permanent = !grant?.expiresAt && authorizationAllowsForever.value && (Boolean(grant) || shortAuthorizationMode.value === 'full')
+  const durationMinutes = grant?.expiresAt ? Math.min(shortAuthorizationMode.value === 'full' ? 525600 : 1440, Math.max(1, Math.ceil((Date.parse(grant.expiresAt) - Math.max(Date.now(), Date.parse(grant.startsAt) || 0)) / 60000))) : (permanent ? 0 : 5)
+  Object.assign(shortAuthorizationForm, { address: record.shortAuthorization?.address || '', durationMode: permanent ? 'permanent' : 'limited', durationMinutes, startMode: grant?.startsAt ? 'scheduled' : 'immediate', startsAt: localDateTimeInput(grant?.startsAt), maxUses: grant?.maxUses ?? (shortAuthorizationMode.value === 'full' ? 0 : 1) })
+  authorizationError.value = ''
   shortAuthorizationRecord.value = record
 }
 function closeShortAuthorization(force = false) {
   if (shortAuthorizationBusy.value && force !== true) return
   hidePrivate(shortAuthorizationSurface.value)
   shortAuthorizationRecord.value = null; shortAuthorizationBusy.value = false
-  Object.assign(shortAuthorizationForm, { format: '', slot: '', durationMinutes: 5, startsAt: '', maxUses: 1 })
+  Object.assign(shortAuthorizationForm, emptyAuthorizationForm())
+  authorizationError.value = ''
 }
 function setShortAuthorizationField(field, value) {
   if (!canAct() || !shortAuthorizationRecord.value || shortAuthorizationBusy.value || !Object.hasOwn(shortAuthorizationForm, field)) return
+  if (field === 'durationMode') {
+    if (!['limited', 'permanent'].includes(value) || (value === 'permanent' && !authorizationAllowsForever.value)) return
+    if (value === 'limited' && !(Number(shortAuthorizationForm.durationMinutes) > 0)) shortAuthorizationForm.durationMinutes = 5
+  }
+  if (field === 'startMode' && !['immediate', 'scheduled'].includes(value)) return
   shortAuthorizationForm[field] = value
-  if (field === 'format') shortAuthorizationForm.slot = ''
+  if (field === 'durationMinutes') shortAuthorizationForm.durationMode = Number(value) === 0 && authorizationAllowsForever.value ? 'permanent' : 'limited'
+  if (field === 'startsAt') shortAuthorizationForm.startMode = value ? 'scheduled' : 'immediate'
+  authorizationError.value = ''
 }
 async function saveShortAuthorization(enabled) {
   const record = shortAuthorizationRecord.value
   if (!canAct() || shortAuthorizationBusy.value || !rows.value.includes(record) || !isOwnScript(record)) return
-  const durationMinutes = Number(shortAuthorizationForm.durationMinutes)
+  const permanent = shortAuthorizationForm.durationMode === 'permanent'
+  const durationMinutes = permanent ? 0 : Number(shortAuthorizationForm.durationMinutes)
   const maxUses = Number(shortAuthorizationForm.maxUses), full = shortAuthorizationMode.value === 'full'
-  const startsAt = shortAuthorizationForm.startsAt ? new Date(shortAuthorizationForm.startsAt) : null
-  if (enabled && (!Number.isSafeInteger(durationMinutes) || durationMinutes < (authorizationAllowsForever.value ? 0 : 1) || durationMinutes > (full ? 525600 : 1440) || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > 1000000 || (startsAt && Number.isNaN(startsAt.getTime())))) return message.warning('请填写有效的授权时间与使用次数。')
-  const payload = enabled ? { enabled: true, ...(!full ? { domainFormat: shortAuthorizationForm.format } : {}), durationMinutes, maxUses, startsAt: startsAt?.toISOString() || null } : { enabled: false }
+  const scheduled = shortAuthorizationForm.startMode === 'scheduled'
+  const startsAt = scheduled && shortAuthorizationForm.startsAt ? new Date(shortAuthorizationForm.startsAt) : null
+  if (enabled && !full && !authorizationAddress.value) { authorizationError.value = '请填写有效的 HTTPS 短地址，例如 a.zelly.cn。'; return }
+  if (enabled && ((!permanent && (!Number.isSafeInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > (full ? 525600 : 1440))) || (permanent && !authorizationAllowsForever.value) || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > 1000000 || (scheduled && !startsAt) || (startsAt && Number.isNaN(startsAt.getTime())))) return message.warning('请填写有效的授权时间与使用次数。')
+  const payload = enabled ? { enabled: true, ...(!full ? { address: authorizationAddress.value } : {}), durationMinutes, maxUses, startsAt: startsAt?.toISOString() || null } : { enabled: false }
   const owns = captureOwner(), current = () => owns() && shortAuthorizationRecord.value === record
   shortAuthorizationBusy.value = true
   try {
@@ -951,17 +1004,20 @@ async function saveShortAuthorization(enabled) {
     if (!current()) return
     if (response?.status !== 200 || !response.data?.status) { message.error(response?.data?.message || '命令授权结果未确认，请刷新核对。'); return }
     record[full ? 'launcherAuthorization' : 'shortAuthorization'] = response.data
-    if (full) { record.command = response.data.command || ''; record.instruction = record.command }
+    if (full) {
+      record.command = response.data.command || ''; record.instruction = record.command
+      if (response.data.address) record.downloadUrl = response.data.address
+    } else shortAuthorizationForm.address = response.data.address || shortAuthorizationForm.address
     message.success(enabled ? '命令授权已更新，请使用新的指令。' : '命令授权已撤销')
   } catch (error) {
-    if (current()) message.error(error?.response?.data?.message || '命令授权结果未确认，请刷新核对。')
+    if (current()) { authorizationError.value = error?.response?.data?.message || '命令授权结果未确认，请刷新核对。'; message.error(authorizationError.value) }
   } finally { if (current()) shortAuthorizationBusy.value = false }
 }
 function copyShortCommand() {
   const record = shortAuthorizationRecord.value
   if (!canAct() || !isOwnScript(record)) return
   const command = shortAuthorizationMode.value === 'full' ? buildScriptCommand(record) : buildScriptShortCommand(record)
-  if (!command) return message.warning('短命令已失效，请刷新或重新授权。')
+  if (!command) return message.warning('当前命令已失效，请刷新或重新授权。')
   return copyText(command)
 }
 function formatDateTime(value) {

@@ -601,9 +601,8 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 	if db == nil {
 		return false
 	}
-	// Header-bearing full launchers always retain their original authorization
-	// path. A header-free request may consume only a separately enabled, exact
-	// host/path short authorization, never a guessed legacy locator.
+	// Header-bearing requests retain legacy authentication. Header-free long
+	// launchers require the exact high-entropy UUID, never the legacy short code.
 	capability := strings.TrimSpace(c.GetHeader(service.ScriptLauncherHeader))
 	if capability == "" {
 		script, grant, err := service.ConsumeScriptShortAuthorizationWithDB(db, c.Request.Host, c.Request.URL.Path)
@@ -628,7 +627,12 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 		return true
 	}
 	c.Set(logger.ScriptEntryLogKey, true)
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, capability, service.ScriptExchangeTokenTTL)
+	var grant service.ScriptExchangeGrant
+	if capability == "" {
+		grant, err = service.IssuePublicScriptExchangeTokenByLocatorWithDB(db, c.Request.Host, c.Request.URL.Path, service.ScriptExchangeTokenTTL)
+	} else {
+		grant, err = service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, capability, service.ScriptExchangeTokenTTL)
+	}
 	c.Header("Cache-Control", "no-store")
 	c.Header("Referrer-Policy", "no-referrer")
 	if err != nil {

@@ -58,7 +58,7 @@ func scriptShortAuthorizationView(script entity.UserScript) *ScriptShortAuthoriz
 		view.Status = "exhausted"
 	}
 	if view.Status == "active" || view.Status == "scheduled" {
-		view.Command = `powershell -c "iex(irm ` + script.ShortEntryAddress + `)"`
+		view.Command = buildScriptAddressCommand(script.ShortEntryAddress)
 	}
 	return view
 }
@@ -185,6 +185,21 @@ func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, 
 			}
 			if err := preservePreviousScriptAddress(tx, script.ShortEntryAddress, scriptAddressShort, script.ID); err != nil {
 				return err
+			}
+			if strings.TrimSpace(input.Address) != "" {
+				normalized, _, err := validateScriptShortAddressWithDB(tx, input.Address, input.RequestHost)
+				if err != nil {
+					return err
+				}
+				_, _, key := parseScriptReservedAddress(normalized)
+				var prior int64
+				if err := tx.Model(&entity.ScriptAddressReservation{}).Where("address_key = ?", key).Count(&prior).Error; err != nil {
+					return err
+				}
+				live := script.ShortEntryAddress == normalized && script.ShortEntryAddressKey != nil && *script.ShortEntryAddressKey == key && (script.ShortEntryExpiresAt == nil || time.Now().Before(*script.ShortEntryExpiresAt)) && (script.ShortEntryMaxUses == 0 || script.ShortEntryUsedCount < script.ShortEntryMaxUses)
+				if prior > 0 && !live {
+					return ErrScriptShortAddressInUse
+				}
 			}
 			address, key, err := allocateScriptShortAddress(tx, script.ID, input)
 			if err != nil {

@@ -123,6 +123,7 @@ export function buildScriptCommand(record = {}) {
   const command = typeof record.command === 'string' ? record.command : ''
   if (command.length > 16384) return ''
   if (/^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command)) return command
+  if (/^powershell -c "iex\(irm https:\/\/(?:[a-z0-9][a-z0-9.-]*|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)* -MaximumRedirection 0 -TimeoutSec 15\)"$/.test(command)) return command
   return /^powershell -c "iex\(irm https:\/\/(?:[a-z0-9][a-z0-9.-]*|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)* -Headers @\{'X-Script-Launcher'='[A-Za-z0-9_-]{43}'\} -MaximumRedirection 0 -TimeoutSec 15\)"$/.test(command) ? command : ''
 }
 
@@ -133,8 +134,9 @@ export function buildScriptShortCommand(record = {}, now = Date.now()) {
   if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
   const address = String(grant.address || '')
   if (!/^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''
-  const command = `powershell -c "iex(irm ${address})"`
-  return grant.command === command ? command : ''
+  const command = `powershell -c "iex(irm ${address} -MaximumRedirection 0 -TimeoutSec 15)"`
+  const legacy = `powershell -c "iex(irm ${address})"`
+  return grant.command === command || grant.command === legacy ? grant.command : ''
 }
 
 export function buildScriptSavePayload(form = {}) {

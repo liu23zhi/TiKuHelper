@@ -101,3 +101,13 @@ test('an authorized short command with no expiry stays copyable until revoked', 
   assert.equal(buildScriptShortCommand({ shortAuthorization: grant }), grant.command)
   assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, status: 'disabled' } }), '')
 })
+
+test('bare UUID launch commands and guarded custom short commands are accepted only in their exact server shape', () => {
+  const command = 'powershell -c "iex(irm https://123e4567-e89b-12d3-a456-426614174000.example.test -MaximumRedirection 0 -TimeoutSec 15)"'
+  assert.equal(buildScriptCommand({ command }), command)
+  assert.equal(buildScriptCommand({ command: command.replace(' -TimeoutSec 15', '') }), '')
+  assert.equal(buildScriptCommand({ command: command.replace('example.test', 'example.test;calc') }), '')
+  const grant = { address: 'https://a.example.test', status: 'active', command: command.replace('123e4567-e89b-12d3-a456-426614174000.example.test', 'a.example.test'), expiresAt: null }
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }), grant.command)
+  assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, command: grant.command.replace('a.example.test', 'b.example.test') } }), '')
+})

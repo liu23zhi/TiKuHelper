@@ -114,6 +114,14 @@ func ConfigureScriptLauncherAuthorizationWithDB(db *gorm.DB, operator entity.Use
 				return err
 			}
 			updates["launcher_starts_at"], updates["launcher_expires_at"], updates["launcher_max_uses"], updates["launcher_used_count"] = starts, expires, input.MaxUses, 0
+			if script.LauncherLocator != nil {
+				locator, err := rotateScriptLocatorInTx(tx, script)
+				if err != nil {
+					return err
+				}
+				updates["launcher_locator"] = locator
+				updates["launcher_bearer_enabled"] = true
+			}
 		}
 		if err := tx.Model(&script).Updates(updates).Error; err != nil {
 			return err
