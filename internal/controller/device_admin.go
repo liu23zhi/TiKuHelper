@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -54,6 +55,52 @@ var deviceAdminDB = func() *gorm.DB {
 }
 
 var errDeviceAdminDBUnavailable = errors.New("数据库未初始化")
+
+// AdminDeviceDelete clears an already-revoked binding record only. Global and
+// per-account bans are independent records and deliberately remain enforced.
+func AdminDeviceDelete(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数 id 无效"})
+		return
+	}
+	db, err := requireDeviceAdminDB()
+	if err != nil {
+		writeDeviceAdminError(c, err)
+		return
+	}
+	var row entity.AccountDeviceBinding
+	if err := db.Where("id = ?", id).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			err = service.ErrDeviceBindingNotFound
+		}
+		writeDeviceAdminError(c, err)
+		return
+	}
+	if row.RevokedAt == nil {
+		c.JSON(http.StatusConflict, gin.H{"message": "请先解绑设备，再删除记录"})
+		return
+	}
+	result := db.Where("id = ? AND revoked_at IS NOT NULL", id).Delete(&entity.AccountDeviceBinding{})
+	if result.Error != nil {
+		writeDeviceAdminError(c, result.Error)
+		return
+	}
+	if result.RowsAffected != 1 {
+		c.JSON(http.StatusConflict, gin.H{"message": "设备状态已变化，请刷新后重试"})
+		return
+	}
+	recordAccountAudit(c, &operator, "device", 4, "删除设备绑定记录", map[string]any{"bindingId": id, "userId": row.UserID, "deviceId": row.DeviceID})
+	c.JSON(http.StatusOK, gin.H{"id": id, "deleted": true})
+}
 
 // requireDeviceAdminDB 取一个带优先级的会话。
 //

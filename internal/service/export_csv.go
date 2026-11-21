@@ -73,15 +73,20 @@ const QuestionExportMaxRows = 10_000
 // access_tokens 不在 111 §4.4 的清单里，但任务书 ⑧ 要求脱敏覆盖 token ——
 // 既然要脱敏就要有导出的对象，因此这里补一个最小列集（不含 token_hash）。
 const (
-	ExportResourceQuestions     = "questions"
-	ExportResourceUsers         = "users"
-	ExportResourceBilling       = "billing"
-	ExportResourceGifts         = "gifts"
-	ExportResourceLogs          = "logs"
-	ExportResourceTickets       = "tickets"
-	ExportResourceBlacklist     = "blacklist"
-	ExportResourceArchivedUsers = "archived_users"
-	ExportResourceAccessTokens  = "access_tokens"
+	ExportResourceQuestions      = "questions"
+	ExportResourceUsers          = "users"
+	ExportResourceBilling        = "billing"
+	ExportResourceGifts          = "gifts"
+	ExportResourceLogs           = "logs"
+	ExportResourceTickets        = "tickets"
+	ExportResourceBlacklist      = "blacklist"
+	ExportResourceWhitelist      = "whitelist"
+	ExportResourceArchivedUsers  = "archived_users"
+	ExportResourceAccessTokens   = "access_tokens"
+	ExportResourceIPLocations    = "ip_locations"
+	ExportResourcePhoneLocations = "phone_locations"
+	ExportResourceWechatBindings = "wechat_bindings"
+	ExportResourcePhoneBindings  = "phone_bindings"
 )
 
 const (
@@ -380,6 +385,12 @@ func serializeExportRows(columns []ExportColumn, rows [][]string, format string)
 				if err != nil {
 					return nil, err
 				}
+				if column < len(columns) && columns[column].Header == "image_base64" {
+					if err := addSpreadsheetImage(file, sheet, axis, value, rowIndex+2); err != nil {
+						return nil, fmt.Errorf("写入图片失败：%w", err)
+					}
+					continue
+				}
 				if err := file.SetCellValue(sheet, axis, value); err != nil {
 					return nil, err
 				}
@@ -567,6 +578,11 @@ func formatExportBool(value bool) string {
 //
 // 8 个页面对应 111 §4.4 的清单，access_tokens 见上方 ExportResourceAccessTokens 的说明。
 var exportResourceSpecs = map[string]exportResourceSpec{
+	ExportResourceWhitelist:      managementWhitelistExportSpec(),
+	ExportResourceIPLocations:    managementLocationExportSpec(entity.LocationKindIP),
+	ExportResourcePhoneLocations: managementLocationExportSpec(entity.LocationKindPhone),
+	ExportResourceWechatBindings: managementBindingExportSpec(entity.BindingKindWechat),
+	ExportResourcePhoneBindings:  managementBindingExportSpec(entity.BindingKindPhone),
 	ExportResourceQuestions: {
 		resource: ExportResourceQuestions,
 		// 题库导出上限 1 万行（不是通用 10 万）：见 QuestionExportMaxRows 的说明。
@@ -684,6 +700,22 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 			maskedColumn("client_ip", MaskExportIP),
 			exportColumn("remark"),
 			exportColumn("created_at"),
+			exportColumn("access_token_id"),
+			exportColumn("provider"),
+			exportColumn("model_name"),
+			exportColumn("input_tokens"),
+			exportColumn("cached_input_tokens"),
+			exportColumn("output_tokens"),
+			exportColumn("total_tokens"),
+			exportColumn("unit_price_snapshot"),
+			exportColumn("question_text"),
+			exportColumn("request_id"),
+			exportColumn("search_mode"),
+			exportColumn("related_order_id"),
+			exportColumn("operator_id"),
+			exportColumn("operator_username"),
+			exportColumn("adjustment_mode"),
+			exportColumn("hidden_from_statement"),
 		},
 		load: func(db *gorm.DB, limit int) ([][]string, error) {
 			rows := make([]entity.BillingRecord, 0, 128)
@@ -696,14 +728,30 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 					strconv.FormatInt(int64(row.ID), 10),
 					strconv.FormatInt(int64(row.UserID), 10),
 					row.Type,
-					formatExportFloat(row.Amount),
+					strconv.FormatFloat(row.Amount, 'f', 8, 64),
 					formatExportFloat(row.BalanceBefore),
 					formatExportFloat(row.BalanceAfter),
-					formatExportFloat(row.GiftCharged),
-					formatExportFloat(row.PrincipalCharged),
+					strconv.FormatFloat(row.GiftCharged, 'f', 8, 64),
+					strconv.FormatFloat(row.PrincipalCharged, 'f', 8, 64),
 					row.ClientIP,
 					row.Remark,
 					formatExportTime(row.CreatedAt),
+					strconv.FormatInt(int64(row.AccessTokenID), 10),
+					row.Provider,
+					row.ModelName,
+					strconv.FormatInt(row.InputTokens, 10),
+					strconv.FormatInt(row.CachedInputTokens, 10),
+					strconv.FormatInt(row.OutputTokens, 10),
+					strconv.FormatInt(row.TotalTokens, 10),
+					row.UnitPriceSnapshot,
+					row.QuestionText,
+					row.RequestID,
+					row.SearchMode,
+					strconv.FormatInt(int64(row.RelatedOrderID), 10),
+					strconv.FormatInt(int64(row.OperatorID), 10),
+					row.OperatorUsername,
+					row.AdjustmentMode,
+					formatExportBool(row.HiddenFromStatement),
 				})
 			}
 			return out, nil

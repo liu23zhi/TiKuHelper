@@ -32,6 +32,31 @@ func ueFixture(t *testing.T, name string) []byte {
 	return content
 }
 
+func TestUserExamRealClientSample(t *testing.T) {
+	path := os.Getenv("TIKU_USEREXAM_SAMPLE")
+	if path == "" {
+		t.Skip("set TIKU_USEREXAM_SAMPLE to validate a local client database without committing personal data")
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := UserExamDecryptDatabase(content, UserExamDecryptParams{Password: UserExamDefaultDecryptKey})
+	if err != nil {
+		t.Fatalf("client sample: %v", err)
+	}
+	if !IsPlaintextUserExamDatabase(plain) {
+		t.Fatal("decryption did not return SQLite")
+	}
+	output := filepath.Join(t.TempDir(), "client.db")
+	if err := os.WriteFile(output, plain, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectUserExamDatabase(output); err != nil {
+		t.Fatalf("inspect decrypted sample: %v", err)
+	}
+}
+
 // ─────────────────────────── 算法正确性 ───────────────────────────
 
 // 加密库 → 解密 → 与同源明文库逐字节比对。

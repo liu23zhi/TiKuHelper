@@ -21,13 +21,13 @@ function safeText(value){let text=String(value);for(const v of sensitive)if(v)te
 const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=c=>{
  const method=String(c.method||'get').toLowerCase(),url=String(c.url),actor=user.getStoredCurrentUser(),synthetic=config(actor),params=c.params||{},call={method,path:url,actor:actor?.id||null,paramFields:Object.keys(params).sort(),hasUrl:!!params.url,hasKey:!!params.key};calls.push(call)
- if(method!=='get'||!['/adapter-service/ai-search-config','/adapter-service/ai-model-prices','/adapter-service/ai-search-config/models','/adapter-service/ai-search-config/ocr-cache'].includes(url)){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
- if(url==='/adapter-service/ai-search-config/models'){
+ if(method!=='get'||!['/api/ai-search-config','/api/ai-model-prices','/api/ai-search-config/models','/api/ai-search-config/ocr-cache'].includes(url)){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
+ if(url==='/api/ai-search-config/models'){
   call.urlMatchesInitialSynthetic=effectiveUrl(synthetic.baseUrl)===params.url;call.keyMatchesInitialSynthetic=synthetic.apiKey.trim()===params.key
   let finish;const promise=new Promise(resolve=>{finish=resolve}),item={call,promise,settled:false,finish:models=>{assert.ok(!item.settled,'held actual HTTP response resolves once');item.settled=true;finish({status:200,data:{models},headers:{'x-request-id':calls.length.toString(16).padStart(32,'0')},config:c,request:{memoryOnly:true}})}};pending.push(item);return promise
  }
- if(url==='/adapter-service/ai-search-config/ocr-cache') assert.ok(c.errorFeedback==='local'&&Object.keys(params).length===0&&!c.data,'exact readonly OCR GET: local feedback, no payload')
- const body=url==='/adapter-service/ai-search-config/ocr-cache'?{configured:false,entries:0}:url==='/adapter-service/ai-search-config'?synthetic:[{id:50,modelName:synthetic.model,displayName:'Synthetic price',inputPrice:0,outputPrice:0,multiplier:1}]
+ if(url==='/api/ai-search-config/ocr-cache') assert.ok(c.errorFeedback==='local'&&Object.keys(params).length===0&&!c.data,'exact readonly OCR GET: local feedback, no payload')
+ const body=url==='/api/ai-search-config/ocr-cache'?{configured:false,entries:0}:url==='/api/ai-search-config'?synthetic:[{id:50,modelName:synthetic.model,displayName:'Synthetic price',inputPrice:0,outputPrice:0,multiplier:1}]
  return Promise.resolve({status:200,data:body,headers:{'x-request-id':calls.length.toString(16).padStart(32,'0')},config:c,request:{memoryOnly:true}})
 }
 function deny(kind){realIO.push(kind);throw new Error('FORBIDDEN_REAL_IO_'+kind)}
@@ -47,16 +47,16 @@ function button(root,label){const a=[...root.querySelectorAll('button')].filter(
 function field(w,name,section=Connection){const child=w.findComponent(section);assert.ok(child.exists(),'actual controlled section');const n=document.getElementById(child.props('sectionId')+'-'+name);assert.ok(n&&w.element.contains(n),'actual native field '+name);return n}
 async function type(w,name,value,section=Connection){const n=field(w,name,section);assert.ok(!n.disabled&&!n.readOnly,'current native '+name+' remains editable during fetch');if(['baseUrl','apiKey'].includes(name))remember(value);n.focus();n.value=value;n.dispatchEvent(new Event('input',{bubbles:true}));n.dispatchEvent(new Event('change',{bubbles:true}));await settle()}
 function modelSuccessCount(){return notices.filter(n=>n.modelFetchSuccess).length}
-function modelsCount(){return calls.filter(c=>c.path==='/adapter-service/ai-search-config/models').length}
+function modelsCount(){return calls.filter(c=>c.path==='/api/ai-search-config/models').length}
 function safeState(w){return{manualModelsText:w.vm.formState.manualModelsText,fetchingModels:w.vm.fetchingModels,configLoading:w.vm.tabLoading,pageNeedsRead:w.vm.pageNeedsConfigRead,dirty:w.vm.hasUnsavedChanges,connectionPresent:!!w.vm.formState.baseUrl,keyPresent:!!w.vm.formState.apiKey,model:w.vm.formState.model,modelSuccessNoticeCount:modelSuccessCount()}}
 async function open(actor=A){
- const ocrReadStart=calls.filter(c=>c.path==='/adapter-service/ai-search-config/ocr-cache').length
+ const ocrReadStart=calls.filter(c=>c.path==='/api/ai-search-config/ocr-cache').length
  user.setStoredCurrentUser(actor);const router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/ai-search-config',component:Page}]});await router.push('/adapter/ai-search-config');await router.isReady()
  const Host={render:()=>h(Antd.ConfigProvider,{locale:zhCN},{default:()=>h(RouterView)})},app=mount(Host,{attachTo:document.body,global:{plugins:[Antd,router],config:{errorHandler:e=>runtime.push(safeText(e?.stack||e))}}});roots.push({app,router});await settle();const w=app.findComponent(Page);assert.ok(w.exists(),'actual AI parent and controlled children')
  await until(()=>!w.vm.tabLoading&&!w.vm.priceLoading&&w.vm.canUseConfigActions()&&w.vm.formState.manualModelsText==='MODEL-'+(actor.id===B.id?'B':'A'),'valid config and pricing read')
  check(app.findComponent(Antd.ConfigProvider).props('locale')?.locale==='zh-cn','actual zhCN provider')
  check(modelsCount()===0||pending.every(p=>p.settled),'initial config/price entry does not automatically fetch models')
- assert.equal(calls.filter(c=>c.path==='/adapter-service/ai-search-config/ocr-cache').length,ocrReadStart+1,'one initial readonly OCR status GET per parent')
+ assert.equal(calls.filter(c=>c.path==='/api/ai-search-config/ocr-cache').length,ocrReadStart+1,'one initial readonly OCR status GET per parent')
  return w
 }
 async function begin(w){const n=modelsCount();await click(button(w.findComponent(Connection).element,'获取远程模型列表'));await until(()=>modelsCount()===n+1&&pending.some(p=>!p.settled),'one actual pending model GET');const item=pending.at(-1);check(item.promise instanceof Promise&&!item.settled&&w.vm.fetchingModels,'actual model GET stays genuinely pending and original busy is true');return item}

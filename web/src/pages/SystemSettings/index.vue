@@ -25,7 +25,7 @@
       <a-alert v-if="hasUnsavedChanges" type="warning" show-icon message="有未保存的更改，离开或刷新前请先保存。" />
 
       <a-form v-if="settingsFormMounted" :key="settingsFormKey" ref="settingsForm" :disabled="!canManageSettings() || settingsDraining || !settingsLoaded || saving" :label-col="labelCol" :wrapper-col="wrapperCol" class="settings-form">
-        <ConsolePanel title="站点与日志" description="配置站点名称和日志存储上限。" class="settings-section">
+        <ConsolePanel title="站点与日志" description="配置站点名称、日志存储上限；图片缓存策略在下方独立保存。" class="settings-section">
         <a-form-item label="网站名称" :html-for="fieldId('siteName')">
           <a-input :id="fieldId('siteName')" :value="formState.siteName" v-on="{ 'update:value': settingsEntry.bind(updateSetting, 'siteName') }" placeholder="例如 题库" />
           <div class="hint">用于浏览器标题、页头品牌和登录页名称，留空时恢复为“题库”。</div>
@@ -84,6 +84,9 @@
           <div class="hint">限制用户每次充值的最低金额，默认 1 元，最多支持两位小数。</div>
         </a-form-item>
 
+        </ConsolePanel>
+
+        <ConsolePanel title="设备策略" description="设备准入始终启用；数量上限由用户等级和个人上限共同决定。" class="settings-section">
         <a-form-item label="闲置设备自动移除" :html-for="fieldId('deviceIdleRevokeAfterDays')">
           <a-input-number :id="fieldId('deviceIdleRevokeAfterDays')" :value="formState.deviceIdleRevokeAfterDays" v-on="{ 'update:value': settingsEntry.bind(updateSetting, 'deviceIdleRevokeAfterDays') }" :min="0" :max="3650" :precision="0" style="width: 220px" />
           <div class="hint">设备连续未活跃达到此天数后自动移除绑定，0 表示关闭。用户自定义天数不能超过此值；管理员调低后自动按新上限生效。</div>
@@ -92,6 +95,12 @@
           <a-switch :id="fieldId('deviceIdleRevokeAllowUserDisable')" :checked="formState.deviceIdleRevokeAllowUserDisable" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'deviceIdleRevokeAllowUserDisable') }" />
           <div class="hint">开启后，普通用户可以在「我的设备」将自动移除设为 0 天；关闭时用户最小可设 1 天。</div>
         </a-form-item>
+        <a-form-item label="设备管理入口">
+          <div class="hint">在「设备管理」中解绑、封禁或清理设备记录，在「等级管理」中配置设备数量上限。解绑释放名额，封禁保留拦截，仅已解绑的历史记录允许删除。</div>
+        </a-form-item>
+        </ConsolePanel>
+
+        <ConsolePanel title="登录方式" description="控制可用的账号登录方式。" class="settings-section">
 
         <a-form-item label="开启短信登录" :html-for="fieldId('smsLoginEnabled')">
           <a-switch :id="fieldId('smsLoginEnabled')" :checked="formState.smsLoginEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'smsLoginEnabled') }" />
@@ -284,6 +293,9 @@
     <!-- 退款承诺书（2026-11-19）：用户申请人工退款时必须签署的协议全文。
          放在系统设置而不是写死在代码里 —— 条款措辞会随合规要求变化，
          每次改代码发版不合理。 -->
+    <TicketNotificationSettingsPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
+    <CacheRetentionSettings :key="'cache-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
+    <LogRetentionSettingsPanel :key="'logs-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <RefundAgreementPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
 
     <PaymentMethodPanel
@@ -357,6 +369,9 @@ import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import PaymentMethodPanel from './PaymentMethodPanel.vue';
 import RefundAgreementPanel from './RefundAgreementPanel.vue';
+import TicketNotificationSettingsPanel from '@/components/TicketNotificationSettingsPanel.vue';
+import CacheRetentionSettings from '@/components/CacheRetentionSettings.vue';
+import LogRetentionSettingsPanel from '@/components/LogRetentionSettingsPanel.vue';
 import {
   createPaymentMethod,
   deletePaymentMethod,
@@ -488,7 +503,7 @@ const projectSettingsSaveFailure = source => {
 
 export default defineComponent({
   name: 'SystemSettings',
-  components: { PaymentMethodPanel, RefundAgreementPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
+  components: { PaymentMethodPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
   setup() {
     const settingsFormId = `system-settings-${useId()}`
     const fieldId = field => `${settingsFormId}-${field}`

@@ -21,7 +21,7 @@ func newSystemSettingTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.SystemSetting{}, &entity.SearchAccountConfig{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 

@@ -138,7 +138,7 @@ function fixedSafe(w, operation, original, expectedKind) {
 }
 function unknown(operation) {
   const original = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK', config: { url: PRIVATE }, privatePayload: PRIVATE })
-  const error = toUserRequestError({ method: operation === 'delete' ? 'delete' : operation === 'update' ? 'put' : 'post', url: '/adapter-service/access-tokens' }, original)
+  const error = toUserRequestError({ method: operation === 'delete' ? 'delete' : operation === 'update' ? 'put' : 'post', url: '/api/access-tokens' }, original)
   assert.equal(error.code, 'UNKNOWN_OUTCOME', 'actual write helper creates uncertain outcome')
   assert.equal(error.cause, original)
   return error

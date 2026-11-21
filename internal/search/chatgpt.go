@@ -1291,6 +1291,10 @@ func downloadAISearchAttachmentDetailed(httpClient *http.Client, attachmentURL s
 	diagnostic.DownloadedBytes = len(body)
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
+		if dimensions, _, decodeErr := image.DecodeConfig(bytes.NewReader(body)); decodeErr == nil && (dimensions.Width <= 0 || dimensions.Height <= 0 || int64(dimensions.Width)*int64(dimensions.Height) > 40_000_000) {
+			diagnostic.FailureCode = "image_dimensions"
+			return downloadedAISearchAttachment{}, diagnostic, false
+		}
 		preparedBody, preparedContentType, preprocessing := prepareAISearchImageAttachmentDetailed(body, contentType)
 		diagnostic.PreparedContentType = preparedContentType
 		diagnostic.PreparedBytes = len(preparedBody)

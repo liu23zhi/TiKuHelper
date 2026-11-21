@@ -5,6 +5,7 @@
       description="按 IP / CIDR 放行请求来源：命中的 IP **直接放行且完全不查黑名单**（优先级 白名单 > 黑名单），也不会在黑名单命中记录里留痕。"
     >
       <template #actions>
+        <AdminDataTransfer v-if="canManage()" resource="whitelist" title="白名单规则" importable import-description="支持 IP / CIDR 规则的 CSV / JSON，每次最多 5000 条；相同规则跳过，保留文件中的启停状态。" @imported="loadEntries" />
         <a-button :loading="loadingEntries" :disabled="!canManage() || loadingEntries || writing" @click="loadEntries">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -256,6 +257,7 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import {
   createWhitelistEntry,
   deleteWhitelistEntry,
@@ -282,7 +284,7 @@ function readNonnegativeInt(value) {
 
 export default {
   name: 'WhitelistPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, AdminDataTransfer },
   setup() {
     const route = useRoute()
     const prefix = 'whitelist-' + useId()

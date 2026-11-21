@@ -864,6 +864,20 @@ export function updateScript(data) {
   })
 }
 
+export function configureScriptShortAuthorization(id, data) {
+  return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    url: `/api/scripts/${id}/short-authorization`,
+    method: 'put',
+    data,
+  })
+}
+
+export function configureScriptLauncherAuthorization(id, data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/api/scripts/${id}/launcher-authorization`, method: 'put', data })
+}
+
 export function deleteScript(data) {
   const sessionId = data.confirmActiveSessionId
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(sessionId))) {

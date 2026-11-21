@@ -1,5 +1,5 @@
 /* Actual Vue/Antd/currentUser and product zhCN provider. Only the existing
- * readonly POST /adapter-service/questions/search and courses GET are synthetic.
+ * readonly POST /api/questions/search and courses GET are synthetic.
  * Sparse B/M/R target SFCs resolve unchanged dependencies from the checkout.
  * No source rewriting, VM state assignment, real network/DB/provider, CRUD,
  * import/export or clipboard. jsdom is not browser layout or reader acceptance.
@@ -44,16 +44,16 @@ function denyIO(kind) { network.push(kind); throw new Error('FORBIDDEN_REAL_TIKU
 function getQuestions(payload) {
   let yes, no
   const promise = new Promise((resolve, reject) => { yes = resolve; no = reject })
-  const call = { name: 'getQuestions', method: 'POST', path: '/adapter-service/questions/search', semantics: 'readonly list', payload: clone(payload), actor: user.getStoredCurrentUser()?.id ?? null, synthetic: true, completed: false }
+  const call = { name: 'getQuestions', method: 'POST', path: '/api/questions/search', semantics: 'readonly list', payload: clone(payload), actor: user.getStoredCurrentUser()?.id ?? null, synthetic: true, completed: false }
   call.resolve = value => { call.completed = true; call.outcome = value?.status === 200 ? 'HTTP200' : 'HTTP' + String(value?.status); yes(value) }
   call.reject = value => { call.completed = true; call.outcome = 'REJECT'; no(value) }
   calls.push(call); return promise
 }
 const apiSource = fs.readFileSync(path.join(fallbackWeb, 'src/api/TikuComponentApi.js'), 'utf8')
 const actualAPI = apiSource.match(/export function getQuestions\(data\) \{([\s\S]*?)\n\}/)?.[1]
-assert.match(actualAPI, /url: `\/adapter-service\/questions\/search`/)
+assert.match(actualAPI, /url: `\/api\/questions\/search`/)
 assert.match(actualAPI, /method: 'post'/)
-const api = new Proxy({ getQuestions, getCourses: () => { courseCalls.push({ name: 'getCourses', method: 'GET', path: '/adapter-service/courses', synthetic: true }); return Promise.resolve({ status: 200, data: [] }) } }, { get(value, name) { if (name === '__esModule' || name === 'then') return undefined; return name in value ? value[name] : () => deny('API_' + String(name)) } })
+const api = new Proxy({ getQuestions, getCourses: () => { courseCalls.push({ name: 'getCourses', method: 'GET', path: '/api/courses', synthetic: true }); return Promise.resolve({ status: 200, data: [] }) } }, { get(value, name) { if (name === '__esModule' || name === 'then') return undefined; return name in value ? value[name] : () => deny('API_' + String(name)) } })
 const originalLoad = Module._load
 Module._load = function (request, parent, main) {
   // The only relative page imports are its existing OptionBox/AnswerBox; load

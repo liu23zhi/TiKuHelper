@@ -908,22 +908,21 @@ func SetImageOCRPricePerCallWithDB(db *gorm.DB, requested float64) error {
 }
 
 func GetTikuSearchPricePerCallWithDB(db *gorm.DB) float64 {
-	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+	if db == nil || !db.Migrator().HasTable(&entity.SearchAccountConfig{}) {
 		return DefaultTikuSearchPricePerCall
 	}
-	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, TikuSearchPricePerCallSettingKey, "0"))
-	price, err := strconv.ParseFloat(raw, 64)
-	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+	var config entity.SearchAccountConfig
+	if err := db.Where("provider = ?", "local").First(&config).Error; err != nil {
 		return DefaultTikuSearchPricePerCall
 	}
-	return util.RoundMoney(price)
+	return util.RoundMoney(NormalizeSearchAccountFlatPrice(config.FlatPrice))
 }
 
 func SetTikuSearchPricePerCallWithDB(db *gorm.DB, requested float64) error {
-	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested < 0 {
+	if validateSearchAccountFlatPrice(requested) != nil {
 		return errors.New("本地题库检索单价必须是大于或等于 0 的有效金额")
 	}
-	return saveSystemSettingValue(db, TikuSearchPricePerCallSettingKey, strconv.FormatFloat(util.RoundMoney(requested), 'f', -1, 64), "本地题库检索单价（元/次）")
+	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}}, DoUpdates: clause.Assignments(map[string]any{"flat_price": requested})}).Create(&entity.SearchAccountConfig{Provider: "local", FlatPrice: requested}).Error
 }
 
 type AIStagedTokenBillingSettings struct {

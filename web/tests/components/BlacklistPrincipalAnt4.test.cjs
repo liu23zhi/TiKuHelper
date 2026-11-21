@@ -334,7 +334,7 @@ test('BL_CREATE surfaces the server 400 message instead of a generic failure', a
 
 test('BL_TOGGLE disables through the enabled endpoint and reloads the list', async () => {
   const { w } = await page()
-  const toggle = w.findAllComponents(Antd.Switch)[0]
+	const toggle = w.findAllComponents(Antd.Switch).find(control => control.props('checked') === w.vm.entries[0].enabled && !control.attributes('id'))
   assert.ok(toggle, 'NATIVE_SWITCH')
   assert.equal(toggle.props('checked'), true)
   w.vm.toggleEnabled(w.vm.entries[0], false)

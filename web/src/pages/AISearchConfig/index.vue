@@ -423,7 +423,6 @@ export default defineComponent({
       maxAISearches: DEFAULT_MAX_AI_SEARCHES,
       maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES,
       searchPricePerCall: 0,
-      tikuSearchPricePerCall: 0,
       maxAIWebReads: DEFAULT_MAX_AI_WEB_READS,
       webReadPricePerCall: 0,
       imageOCRPricePerCall: 0,
@@ -705,7 +704,6 @@ export default defineComponent({
           nextForm.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
           nextForm.maxAISearchRetries = normalizeAISearchRetries(data.maxAISearchRetries, DEFAULT_MAX_AI_SEARCH_RETRIES)
           nextForm.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
-          nextForm.tikuSearchPricePerCall = Number(data.tiku_search_price_per_call ?? 0)
           nextForm.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
           nextForm.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
           nextForm.imageOCRPricePerCall = Number(data.imageOCRPricePerCall ?? 0)
@@ -1017,7 +1015,6 @@ export default defineComponent({
       const maxAISearches = Number(this.formState.maxAISearches)
       const maxAISearchRetries = Number(this.formState.maxAISearchRetries)
       const searchPricePerCall = Number(this.formState.searchPricePerCall)
-      const tikuSearchPricePerCall = Number(this.formState.tikuSearchPricePerCall)
       const maxAIWebReads = Number(this.formState.maxAIWebReads)
       const webReadPricePerCall = Number(this.formState.webReadPricePerCall)
       const imageOCRPricePerCall = Number(this.formState.imageOCRPricePerCall)
@@ -1035,10 +1032,6 @@ export default defineComponent({
       }
       if (!Number.isFinite(searchPricePerCall) || searchPricePerCall < 0) {
         message.error('联网搜索单价必须是大于或等于 0 的有效金额')
-        return
-      }
-      if (!Number.isFinite(tikuSearchPricePerCall) || tikuSearchPricePerCall < 0) {
-        message.error('本地题库检索单价必须是大于或等于 0 的有效金额')
         return
       }
       if (!Number.isSafeInteger(maxAIWebReads) || maxAIWebReads < MIN_AI_WEB_READS || maxAIWebReads > MAX_AI_WEB_READS) {

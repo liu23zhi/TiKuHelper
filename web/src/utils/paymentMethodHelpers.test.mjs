@@ -249,7 +249,7 @@ test('buildSearchAccountConfigSummary keeps backward-compatible merged text for 
   );
 });
 
-test('buildSearchAccountConfigSavePayloads skips ai provider and normalizes editable rows', () => {
+test('buildSearchAccountConfigSavePayloads sends AI call permission without overwriting its separate configuration', () => {
   const result = buildSearchAccountConfigSavePayloads([
     {
       provider: 'baidu',
@@ -278,15 +278,18 @@ test('buildSearchAccountConfigSavePayloads skips ai provider and normalizes edit
     {
       provider: 'baidu',
       payload: {
+        callEnabled: true,
         tokenValue: 'abc123',
         enabled: true,
         remark: '默认账号',
         flatPrice: 0.125,
       },
     },
+    { provider: 'ai', payload: { callEnabled: true } },
     {
       provider: 'icodef',
       payload: {
+        callEnabled: true,
         tokenValue: 'system-token',
         enabled: false,
         remark: '',

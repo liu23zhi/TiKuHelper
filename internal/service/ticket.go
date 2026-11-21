@@ -847,14 +847,23 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 		// 别人的系统单靠 user_id 天然看不到。
 		base = base.Where("tickets.user_id = ?", user.ID)
 	}
-	status := strings.TrimSpace(query.Status)
+	status := strings.ToLower(strings.TrimSpace(query.Status))
 	if status != "" {
-		var err error
-		status, err = normalizeTicketStatus(status)
-		if err != nil {
-			return TicketListResult{}, err
+		switch status {
+		case entity.TicketRefundStatusPendingReview, entity.TicketRefundStatusRejected, entity.TicketRefundStatusFrozen,
+			entity.TicketRefundStatusProcessing, entity.TicketRefundStatusUnknown, entity.TicketRefundStatusSucceeded, entity.TicketRefundStatusFailed:
+			base = base.Where("tickets.category = ? AND EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.ticket_id = tickets.id AND ticket_refunds.status = ?)", entity.TicketCategoryRefund, status)
+		default:
+			var err error
+			status, err = normalizeTicketStatus(status)
+			if err != nil {
+				return TicketListResult{}, err
+			}
+			base = base.Where("tickets.status = ?", status)
+			if db.Migrator().HasTable(&entity.TicketRefund{}) {
+				base = base.Where("(tickets.category <> ? OR NOT EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.ticket_id = tickets.id))", entity.TicketCategoryRefund)
+			}
 		}
-		base = base.Where("tickets.status = ?", status)
 	}
 	category, err := normalizeTicketCategory(query.Category)
 	if err != nil {
@@ -1019,6 +1028,31 @@ func getTicketWithDBScope(db *gorm.DB, user *entity.User, id int64, selfView boo
 	if err := db.Where("ticket_id = ?", ticket.ID).Order("created_at ASC, id ASC").Find(&messages).Error; err != nil {
 		return TicketDetail{}, err
 	}
+	// 署名快照保留审计用途；详情展示始终读取用户当前的昵称。
+	authorIDs := []int32{ticket.UserID}
+	for _, message := range messages {
+		if message.AuthorRole == entity.TicketAuthorRoleUser || message.AuthorRole == entity.TicketAuthorRoleAdmin {
+			authorIDs = append(authorIDs, message.UserID)
+		}
+	}
+	var authors []entity.User
+	if err := db.Select("id", "username", "nickname").Where("id IN ?", authorIDs).Find(&authors).Error; err != nil {
+		return TicketDetail{}, err
+	}
+	names := make(map[int32]string, len(authors))
+	for _, author := range authors {
+		names[author.ID] = ticketUserName(&author)
+	}
+	if name := names[ticket.UserID]; name != "" {
+		ticket.UserName = name
+	}
+	for i := range messages {
+		if messages[i].AuthorRole == entity.TicketAuthorRoleUser || messages[i].AuthorRole == entity.TicketAuthorRoleAdmin {
+			if name := names[messages[i].UserID]; name != "" {
+				messages[i].AuthorName = name
+			}
+		}
+	}
 	detail := TicketDetail{Ticket: ticket, Messages: messages}
 	attachments, err := ListTicketAttachmentsWithDB(db, ticket.ID)
 	if err != nil {
@@ -1035,6 +1069,12 @@ func getTicketWithDBScope(db *gorm.DB, user *entity.User, id int64, selfView boo
 			Where("ticket_id = ?", ticket.ID).
 			Order("id DESC").First(&refundRow).Error; err == nil {
 			detail.Refund = refundSummaryOf(refundRow)
+			// 历史自动消息保留入库原文，只替换已经失效的操作指引。
+			for i := range detail.Messages {
+				if detail.Messages[i].AuthorRole == entity.TicketAuthorRoleSystem {
+					detail.Messages[i].Body = strings.ReplaceAll(detail.Messages[i].Body, "审核、打款与对账请在「退款」详情中操作，不要在本工单里回复金额。", "管理员可在本工单详情的退款信息中审核、办理退款与核对结果。")
+				}
+			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return TicketDetail{}, err
 		}

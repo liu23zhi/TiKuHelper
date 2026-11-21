@@ -60,8 +60,8 @@ var (
 	//
 	//	pruneTicketImageCacheByAge  = service.PruneTicketAttachmentsByAge
 	//	pruneTicketImageCacheBySize = service.PruneTicketAttachmentsBySize
-	pruneTicketImageCacheByAge  func(db *gorm.DB, now time.Time, maxAgeDays int) (int64, error)
-	pruneTicketImageCacheBySize func(db *gorm.DB, now time.Time, maxTotalBytes int64) (int64, error)
+	pruneTicketImageCacheByAge = service.PruneTicketAttachmentsByAge
+	pruneTicketImageCacheBySize = service.PruneTicketAttachmentsBySize
 )
 
 // ticketImageCacheDB 返回管理面使用的数据库句柄（低优先级会话）。
@@ -280,8 +280,9 @@ func TicketImageCacheCleanNow(c *gin.Context) {
 	}
 	response.Available = true
 	now := time.Now()
+	config := service.ResolveTicketAttachmentRetentionConfigWithDB(db)
 	// 先按时间：陈年数据本来就该走，先清掉它能让按大小的压力最小。
-	agePurged, err := pruneTicketImageCacheByAge(db, now, retention.MaxAgeDays)
+	agePurged, err := pruneTicketImageCacheByAge(db, now, config.MaxAgeDays)
 	response.AgePurged = agePurged
 	if err != nil {
 		// 「按时间」失败时**仍然下发已拿到的数字**：AgePurged 可能 >0（部分成功），
@@ -291,7 +292,7 @@ func TicketImageCacheCleanNow(c *gin.Context) {
 		return
 	}
 	// 再按大小：判据读的是上面那步之后的存留总量。
-	sizePurged, err := pruneTicketImageCacheBySize(db, now, retention.MaxTotalBytes)
+	sizePurged, err := pruneTicketImageCacheBySize(db, now, config.MaxTotalBytes)
 	response.SizePurged = sizePurged
 	if err != nil {
 		response.Message = "按大小清理失败：" + err.Error()

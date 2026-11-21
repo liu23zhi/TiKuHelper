@@ -145,6 +145,41 @@ func TestTicketManagementDetailIncludesFeedbackUserSummary(t *testing.T) {
 	}
 }
 
+func TestTicketDetailReadsCurrentNicknamesWithoutChangingAuditSnapshots(t *testing.T) {
+	db := newTicketTestDB(t)
+	owner := &entity.User{ID: 41, Username: "nickname-owner", Nickname: "旧用户昵称", Role: "user"}
+	admin := &entity.User{ID: 42, Username: "nickname-admin", Nickname: "旧管理员昵称", Role: "admin"}
+	for _, actor := range []*entity.User{owner, admin} {
+		if err := db.Create(actor).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err := CreateTicketWithDB(db, owner, CreateTicketInput{Subject: "昵称回归", Body: "首条"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddTicketMessageWithDB(db, admin, detail.Ticket.ID, ReplyTicketInput{Body: "回复"}); err != nil {
+		t.Fatal(err)
+	}
+	for id, name := range map[int32]string{owner.ID: "现用户昵称", admin.ID: "现管理员昵称"} {
+		if err := db.Model(&entity.User{}).Where("id = ?", id).Update("nickname", name).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	management, err := GetTicketWithDB(db, admin, detail.Ticket.ID)
+	if err != nil || management.Ticket.UserName != "现用户昵称" || management.Messages[0].AuthorName != "现用户昵称" || management.Messages[1].AuthorName != "现管理员昵称" {
+		t.Fatalf("detail must read current names: %+v %v", management, err)
+	}
+	feedback, err := GetTicketWithDBForView(db, owner, detail.Ticket.ID, true)
+	if err != nil || feedback.Messages[0].AuthorName != "现用户昵称" || feedback.Messages[1].AuthorName != "管理员" || feedback.Messages[1].UserID != 0 {
+		t.Fatalf("feedback current nickname/privacy: %+v %v", feedback.Messages, err)
+	}
+	var stored entity.TicketMessage
+	if err := db.First(&stored, management.Messages[0].ID).Error; err != nil || stored.AuthorName != "旧用户昵称" {
+		t.Fatalf("audit snapshot changed: %+v %v", stored, err)
+	}
+}
+
 func TestTicketFeedbackViewHidesAdministratorIdentityAndUsesUserReplies(t *testing.T) {
 	db := newTicketTestDB(t)
 	owner := &entity.User{ID: 21, Username: "feedback-owner", Nickname: "反馈昵称", Role: "admin"}

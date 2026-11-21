@@ -903,6 +903,7 @@ const (
 
 // TicketImageCacheRetention 是页面显示的「当前生效的三个保留策略值」。
 type TicketImageCacheRetention struct {
+	Mode string `json:"mode"`
 	// MaxAgeDays 是按时间清理的天数。
 	MaxAgeDays int `json:"maxAgeDays"`
 	// MaxTotalGiB 是总量上限，单位 GiB。
@@ -1024,7 +1025,9 @@ func ticketImageCacheReady(db *gorm.DB) bool {
 
 // resolveTicketImageCacheRetention 读取三个保留策略值（缺记录/越界回落默认值）。
 func resolveTicketImageCacheRetention(db *gorm.DB) TicketImageCacheRetention {
+	policy := GetTicketAttachmentRetentionSettingsWithDB(db)
 	settings := TicketImageCacheRetention{
+		Mode:                   policy.Mode,
 		MaxAgeDays:             int(defaultTicketImageCacheRetentionMaxAgeDays),
 		MaxTotalGiB:            defaultTicketImageCacheRetentionMaxTotalGiB,
 		CleanupIntervalMinutes: int(defaultTicketImageCacheRetentionCleanupIntervalMinutes),

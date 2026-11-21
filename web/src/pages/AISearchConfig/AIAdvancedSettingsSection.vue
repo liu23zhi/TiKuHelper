@@ -63,14 +63,7 @@
         <div class="hint">默认 0 元。每次成功完成联网搜索 API 调用都会单独记一条账单，单价为 0 时也会保留 0 元明细；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
       </a-form-item>
 
-      <a-form-item label="本地题库检索单价（元/次）" :html-for="`${sectionId}-tikuSearchPricePerCall`">
-        <a-input-number :id="`${sectionId}-tikuSearchPricePerCall`"
-          :value="formValue.tikuSearchPricePerCall" @update:value="updateField('tikuSearchPricePerCall', $event)"
-          :min="0" :precision="6" :step="0.01" style="width: 180px"
-        />
-        <span class="unit-label">元 / 次</span>
-        <div class="hint">默认 0 元。深度思考模式下成功完成本地题库检索按此单价计费，账单详情显示检索词与候选数。</div>
-      </a-form-item>
+      <a-alert type="info" show-icon class="full-width" message="本地题库的调用权限与单价统一在「默认账号配置」维护，普通搜题、AI 本地检索和脚本基价使用同一配置。" />
 
       <a-divider orientation="left" class="full-width">网页读取</a-divider>
 

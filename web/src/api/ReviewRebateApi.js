@@ -64,6 +64,10 @@ export function updateReviewRebateProgram(id, data) {
   })
 }
 
+export function createReviewRebateProgram(data) {
+  return request({ errorFeedback: 'local', url: `${adminBase}/programs`, method: 'post', data })
+}
+
 export function getReviewRebateRules() {
   return request({ errorFeedback: 'local', url: `${adminBase}/rules`, method: 'get' })
 }

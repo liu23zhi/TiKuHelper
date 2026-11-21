@@ -1,6 +1,6 @@
 <template>
   <section class="refund-actions" data-testid="ticket-refund-actions">
-    <header class="refund-actions-head"><h3>退款信息</h3><a-tag :color="statusTone">{{ refundStatusLabel(row.status) }}</a-tag></header>
+    <header class="refund-actions-head"><h3>退款信息</h3><a-tag v-if="showStatus" :color="statusTone">{{ refundStatusLabel(row.status) }}</a-tag></header>
     <dl class="refund-meta">
       <div><dt>方式</dt><dd>{{ row.kind === 'manual' ? '人工退回' : '原路退回' }}</dd></div>
       <div><dt>申请金额</dt><dd>{{ formatRefundCents(row.requestedCents) }}</dd></div>
@@ -14,9 +14,10 @@
       <a-form layout="vertical" class="refund-review-form"><a-form-item label="审核金额（元）" :html-for="fieldId('amount')">
         <a-input :id="fieldId('amount')" v-model:value="approveYuan" placeholder="留空表示按申请金额" :disabled="busy || uncertain" />
       </a-form-item></a-form>
-      <p v-if="row.kind === 'manual' && !row.hasProof">请等待申请人上传退款核验凭证，核验后再通过审核。</p>
+      <p v-if="row.kind === 'manual' && !manualEvidenceReady">请等待申请人上传退款核验凭证，核验后再通过审核。</p>
+      <p v-else-if="row.kind === 'manual'">请核验本次收款码、本人签名及承诺书后，再通过审核。</p>
       <a-space>
-        <a-button type="primary" :loading="busy" :disabled="busy || uncertain || (row.kind === 'manual' && !row.hasProof)" @click="requestConfirmation('review', 'approve')">审核通过</a-button>
+        <a-button type="primary" :loading="busy" :disabled="busy || uncertain || (row.kind === 'manual' && !manualEvidenceReady)" @click="requestConfirmation('review', 'approve')">审核通过</a-button>
         <a-button danger :disabled="busy || uncertain" @click="requestConfirmation('review', 'reject')">驳回</a-button>
       </a-space>
     </template>
@@ -41,7 +42,13 @@
       <a-button v-if="isAdmin && row.signatureAttachmentId" :disabled="proofBusy" @click="viewAttachment(row.signatureAttachmentId, '签名')">查看签名</a-button>
       <a-button :disabled="busy || loading" @click="reload">刷新</a-button>
     </a-space>
-    <details v-if="isAdmin && row.agreementText"><summary>本次签署的承诺书</summary><pre class="refund-agreement-snapshot">{{ row.agreementText }}</pre></details>
+    <details v-if="row.agreementText" @toggle="loadSignedAgreement"><summary>本次签署的承诺书</summary><pre class="refund-agreement-snapshot">{{ refundAgreementBody(row.agreementText) }}</pre>
+      <div class="refund-signed-evidence" data-refund-signed-evidence>
+        <div>申请人（以电子签名方式确认）：<img v-if="signatureUrl" :src="signatureUrl" alt="本次退款申请的签名" /><span v-else>{{ signatureLoading ? '正在读取签名图片…' : '签名图片暂不可用' }}</span></div>
+        <p>签署日期：{{ formatTicketTime(row.agreementSignedAt || row.createdAt) }}</p>
+        <p>申请时间：{{ formatTicketTime(row.createdAt) }}</p>
+      </div>
+    </details>
     <a-modal :open="!!proofUrl" :title="proofTitle" :footer="null" @cancel="closeProof"><img :src="proofUrl" :alt="proofTitle" class="refund-proof-image" /></a-modal>
     <a-modal :open="!!confirmation" title="确认退款操作" :footer="null" :mask-closable="false" @cancel="confirmation = null">
       <div data-refund-action-confirmation><p>{{ confirmationText }}</p><a-space><a-button @click="confirmation = null">取消</a-button><a-button type="primary" @click="confirmAction">确认</a-button></a-space></div>
@@ -52,12 +59,14 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { getTicketRefundDetail, getTicketRefundProof, processTicketRefund, reconcileTicketRefund, reviewTicketRefund, uploadTicketRefundProof } from '@/api/TikuComponentApi'
-import { getTicketAttachmentAsAdmin } from '@/api/TicketApi'
+import { getTicketAttachment, getTicketAttachmentAsAdmin } from '@/api/TicketApi'
+import { refundAgreementBody } from '@/utils/refundAgreementDisplay.mjs'
+import { formatTicketTime } from '@/utils/ticketHelpers.mjs'
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { formatRefundCents, parseRefundYuanCents, refundProofAllowed, refundResponseData, refundStatusLabel, validRefundID } from './refundTicketHelpers.mjs'
 
-const props = defineProps({ refund: { type: Object, required: true }, isAdmin: Boolean, onChanged: { type: Function, default: () => {} } })
+const props = defineProps({ refund: { type: Object, required: true }, isAdmin: Boolean, showStatus: { type: Boolean, default: true }, onChanged: { type: Function, default: () => {} } })
 const uniqueId = useId(), fieldId = name => `ticket-refund-${uniqueId}-${name}`
 const { currentUser } = useCurrentUserDisplay()
 const actor = currentUserIdentity(currentUser.value), actorRole = currentUser.value?.role, logout = getCurrentUserLogoutEpoch()
@@ -75,11 +84,24 @@ const ready = computed(() => owned() && !!detail.value && !loading.value)
 const canReview = computed(() => ready.value && props.isAdmin && row.value.status === 'pending_review')
 const canProcessOriginal = computed(() => ready.value && props.isAdmin && row.value.kind === 'original' && ['frozen', 'processing', 'unknown'].includes(row.value.status))
 const canReconcile = computed(() => ready.value && props.isAdmin && row.value.kind === 'manual' && ['frozen', 'processing', 'unknown'].includes(row.value.status))
-const canUploadProof = computed(() => ready.value && !props.isAdmin && row.value.kind === 'manual' && row.value.status === 'pending_review' && !row.value.hasProof)
+const manualEvidenceReady = computed(() => row.value.hasProof || row.value.hasSignedPayoutEvidence)
+const canUploadProof = computed(() => ready.value && !props.isAdmin && row.value.kind === 'manual' && row.value.status === 'pending_review' && !manualEvidenceReady.value)
 const statusTone = computed(() => ({ pending_review: 'gold', frozen: 'blue', processing: 'blue', unknown: 'orange', succeeded: 'green', rejected: 'red', failed: 'red' }[row.value.status] || 'default'))
+const signatureUrl = ref(''), signatureLoading = ref(false)
+async function loadSignedAgreement(event) {
+  if (!event?.target?.open || !owned() || !row.value.signatureAttachmentId || signatureUrl.value || signatureLoading.value) return
+  const owns = capture(); signatureLoading.value = true
+  try {
+    const response = await (props.isAdmin ? getTicketAttachmentAsAdmin : getTicketAttachment)(row.value.signatureAttachmentId)
+    if (!owns()) return
+    const blob = response?.data
+    if (blob instanceof Blob && refundProofAllowed(blob)) signatureUrl.value = URL.createObjectURL(blob)
+  } catch { if (owns()) failure.value = '签名图片读取失败，请刷新后重试。' }
+  finally { if (owns()) signatureLoading.value = false }
+}
 
 function closeProof() { if (proofUrl.value) URL.revokeObjectURL(proofUrl.value); proofUrl.value = '' }
-function reset() { version++; confirmation.value = null; detail.value = null; loading.value = busy.value = proofBusy.value = uncertain.value = false; failure.value = notice.value = approveYuan.value = reference.value = ''; closeProof() }
+function reset() { version++; confirmation.value = null; detail.value = null; loading.value = busy.value = proofBusy.value = uncertain.value = signatureLoading.value = false; failure.value = notice.value = approveYuan.value = reference.value = ''; if (signatureUrl.value) URL.revokeObjectURL(signatureUrl.value); signatureUrl.value = ''; closeProof() }
 function requestConfirmation(kind, action) { if (owned() && !busy.value && !uncertain.value) confirmation.value = { kind, action } }
 function confirmAction() {
   const selected = confirmation.value
@@ -107,7 +129,7 @@ async function review(action) {
   if (!canReview.value || busy.value || uncertain.value || !['approve', 'reject'].includes(action)) return
   const payload = { action }, amount = approveYuan.value.trim()
   if (action === 'approve') {
-    if (row.value.kind === 'manual' && !row.value.hasProof) { failure.value = '人工退款审核前须核验受限凭证'; return }
+    if (row.value.kind === 'manual' && !manualEvidenceReady.value) { failure.value = '人工退款审核前须核验收款码、签名和协议，或受限凭证'; return }
     if (amount) {
       const cents = parseRefundYuanCents(amount)
       if (cents === null || cents > row.value.requestedCents) { failure.value = '审核金额必须大于 0，且不能超过申请金额'; return }
@@ -199,4 +221,7 @@ onBeforeUnmount(() => { alive = false; reset() })
 .refund-secondary-actions { margin-top: 12px; }
 .refund-proof-image { width: 100%; height: auto; }
 .refund-agreement-snapshot { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.refund-signed-evidence { padding-top: 12px; border-top: 1px solid var(--console-border); }
+.refund-signed-evidence > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.refund-signed-evidence img { height: 80px; max-width: 100%; background: #fff; border: 1px solid var(--console-border); border-radius: 6px; }
 </style>

@@ -464,8 +464,9 @@ test("列表页接上两步向导、注销引导与自助注销入口", async ()
   // 注销引导必须被渲染（而不是只 import）。
   assert.match(page, /<ClosureGuide/, "注销类型必须先渲染引导组件");
   // 列表要能显示退款真实状态。
-  assert.match(page, /ticketRowRefundStatus/, "列表行必须显示退款真实状态");
-  assert.match(page, /isRefundTicketRow/, "列表必须能区分退款行");
+  assert.match(page, /effectiveStatusLabel\(record\)/, "列表必须渲染统一的有效状态");
+  assert.match(page, /return ticket\?\.refund \? refundStatusLabel\(ticket\.refund\.status\) : ticketStatusLabel\(ticket\?\.status\)/, "退款行须使用退款真实状态，普通工单须使用工单状态");
+  assert.doesNotMatch(page, /key:\s*["']refundStatus["']/, "退款行不能再有第二列退款状态");
 
   // 个人中心必须挂自助注销入口（B2-5）。
   //
@@ -692,6 +693,7 @@ test("新建表单与列表都接上了类型选择与退款展示", async () =>
   assert.match(page, /ticketCreateTypeNeedsRefundFields/, "必须按类型切换字段");
   assert.match(page, /buildTicketCreatePayload/, "提交必须走统一的 payload 构造");
   // 列表要能显示退款真实状态。
-  assert.match(page, /ticketRowRefundStatus/, "列表行必须显示退款真实状态");
-  assert.match(page, /isRefundTicketRow/, "列表必须能区分退款行");
+  assert.match(page, /effectiveStatusLabel\(record\)/, "列表必须渲染统一的有效状态");
+  assert.match(page, /return ticket\?\.refund \? refundStatusLabel\(ticket\.refund\.status\) : ticketStatusLabel\(ticket\?\.status\)/, "退款行须使用退款真实状态，普通工单须使用工单状态");
+  assert.doesNotMatch(page, /key:\s*["']refundStatus["']/, "退款行不能再有第二列退款状态");
 });

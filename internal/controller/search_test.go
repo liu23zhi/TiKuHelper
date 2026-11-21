@@ -1991,6 +1991,10 @@ func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	token := seedControllerAccessToken(t, db, "disabled-local-token")
+	blocked := false
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "local", service.UpdateSearchAccountConfigInput{CallEnabled: &blocked}); err != nil {
+		t.Fatal(err)
+	}
 
 	originalResolver := resolveSearchRequestContext
 	originalClientBindings := buildSearchClientBindings
@@ -2024,7 +2028,7 @@ func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
 	}
-	if !strings.Contains(got.Detail, "本地题库") || !strings.Contains(got.Detail, "未启用") {
+	if !strings.Contains(got.Detail, "本地题库") || !strings.Contains(got.Detail, "禁止调用") {
 		t.Fatalf("expected unauthorized detail to mention disabled local provider, got %q", got.Detail)
 	}
 	if token.ID == 0 {

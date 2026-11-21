@@ -21,7 +21,7 @@ const B = { id: 76702, role: 'user', status: 'enabled', username: 'SYNTHETIC_PRO
 const PW = 'SyntheticPrivate!Register01', OTP = '123456', TOKEN = 'SYNTHETIC_PRIVATE_CAPTCHA_TOKEN', FLOW = 'SYNTHETIC_PRIVATE_REGISTRATION_FLOW'
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8xQAAAAASUVORK5CYII='
 const defaults = { siteName: 'SYNTHETIC AUTH', registerEnabled: true, smsLoginEnabled: true, wechatLoginEnabled: true, wechatScanLoginEnabled: true, wechatCodeLoginEnabled: true, wechatDefaultLoginMode: 'code', wechatCodeStaticQrcodeUrl: PNG, captchaProvider: 'local' }
-const names = ['settings', 'me', 'locations', 'challenge', 'verify', 'remote', 'register', 'registerSMS', 'phoneSMS', 'profile', 'phone', 'flow', 'flowQR', 'flowStatus', 'stage', 'release', 'qr', 'status', 'codeBind', 'bind', 'unbind']
+const names = ['settings', 'me', 'locations', 'level', 'challenge', 'verify', 'remote', 'register', 'registerSMS', 'phoneSMS', 'profile', 'phone', 'flow', 'flowQR', 'flowStatus', 'stage', 'release', 'qr', 'status', 'codeBind', 'bind', 'unbind']
 const calls = Object.fromEntries(names.map(key => [key, []]))
 const wrappers = [], notices = [], routes = [], errors = [], network = [], sockets = [], logs = [], channels = [], routeLeaves = []
 let settings = { ...defaults }, meReply = A, locationsReply = {}, activeRoute, challengeSequence = 0
@@ -45,6 +45,9 @@ mock(path.join(web, 'src/api/TikuComponentApi.js'), {
   sendUserPhoneChangeSMSCode: payload => transport('phoneSMS', payload), updateCurrentUserProfile: payload => transport('profile', payload), updateCurrentUserPhone: payload => transport('phone', payload),
   createWechatRegisterSession: payload => transport('flow', payload), createWechatRegisterQRCode: payload => transport('flowQR', payload), getWechatRegisterStatus: payload => transport('flowStatus', payload), stageWechatRegisterCode: payload => transport('stage', payload), releaseWechatRegisterFlow: payload => transport('release', payload),
   createWechatLoginQRCode: payload => transport('qr', payload), getWechatLoginStatus: payload => transport('status', payload), bindCurrentUserWechatByCode: payload => transport('codeBind', payload), bindCurrentUserWechat: payload => transport('bind', payload), unbindCurrentUserWechat: payload => transport('unbind', payload),
+})
+mock(path.join(web, 'src/api/UserLevelApi.js'), {
+  getMyUserLevel: () => immediate('level', undefined, { status: 200, data: { data: { deviceLimit: 0 } } }),
 })
 mock(require.resolve('vue-router'), { useRoute: () => activeRoute, useRouter: () => ({ currentRoute: { get value() { return activeRoute } }, push: value => { routes.push(clone(value)); return Promise.resolve() } }), onBeforeRouteLeave: fn => routeLeaves.push(fn) })
 for (const kind of ['success', 'warning', 'error']) { const native = Antd.message[kind].bind(Antd.message); Antd.message[kind] = (...args) => { notices.push({ kind, text: String(args[0]?.content || args[0] || '') }); return native(...args) } }

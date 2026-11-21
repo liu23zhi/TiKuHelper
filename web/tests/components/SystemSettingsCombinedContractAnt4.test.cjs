@@ -10,7 +10,7 @@ for(const key of ['DOMParser','Document','HTMLInputElement','HTMLButtonElement',
 const {mount,flushPromises}=require('@vue/test-utils'),{nextTick,h}=require('vue'),{createRouter,createMemoryHistory,RouterView}=require('vue-router'),Antd=require('ant-design-vue'),axios=require('axios')
 const zhCN=require('ant-design-vue/lib/locale/zh_CN').default,user=require(path.join(web,'src/utils/currentUser.js'))
 const A={id:64001,username:'SYNTHETIC_SETTINGS_ADMIN_A',role:'admin',status:'enabled'},B={id:64002,username:'SYNTHETIC_SETTINGS_ADMIN_B',role:'admin',status:'enabled'},ordinary={id:64003,username:'SYNTHETIC_SETTINGS_USER',role:'user',status:'enabled'}
-const groups=['站点与日志','认证与充值','黑名单','敏感词检测','微信登录与验证码','归属地查询','支付回调','短信验证码配置'],secretFields=['epayPlatformPublicKey','epayMerchantPrivateKey','smsbaoSecret','wechatApiBearerToken','captchaApiKey','uapiApiKey'],privateFields=new Set(secretFields)
+const groups=['站点与日志','认证与充值','设备策略','登录方式','黑名单','敏感词检测','微信登录与验证码','归属地查询','支付回调','短信验证码配置'],secretFields=['epayPlatformPublicKey','epayMerchantPrivateKey','smsbaoSecret','wechatApiBearerToken','captchaApiKey','uapiApiKey'],privateFields=new Set(secretFields)
 const cases=[],calls=[],roots=[],realIO=[],runtime=[],consoleErrors=[],consoleWarnings=[],secrets=new Set();let cur=null,expectedPayload=null,savedNotices=0,restoreRemove=null
 const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'),compact=v=>String(v??'').replace(/\s+/g,' ').trim()
 const inputNames=['src/pages/SystemSettings/index.vue','src/pages/SystemSettings/RefundAgreementPanel.vue','src/pages/SystemSettings/PaymentMethodPanel.vue','src/pages/SystemSettings/components/PaymentMethodIconPicker.vue','src/api/TikuComponentApi.js','src/utils/request.js','src/utils/requestHelpers.mjs','src/utils/requestRetry.mjs','src/utils/currentUser.js','src/utils/currentUserScope.js','src/utils/useUnsavedDraft.js','src/utils/paymentMethodHelpers.mjs','src/utils/safePaymentIcon.mjs','src/components/SafePaymentIcon.js','src/components/RequestFailureAlert.vue','tests/helpers/vue-dom.cjs']
@@ -24,7 +24,7 @@ function sameObject(a,b){const x=Object.keys(a).sort(),y=Object.keys(b).sort();r
 const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),actor=user.getStoredCurrentUser(),call={method,url,actor:actor?.id||null,role:actor?.role||null};calls.push(call)
- const allowed=method==='get'&&['/api/system-settings','/api/payment-methods','/api/refund-agreement'].includes(url)||method==='put'&&url==='/api/system-settings'
+ const allowed=method==='get'&&['/api/system-settings','/api/payment-methods','/api/refund-agreement','/api/tickets/config','/api/admin/ticket-image-cache/settings','/api/admin/log-settings'].includes(url)||method==='put'&&url==='/api/system-settings'
  if(!allowed){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  let body
  if(method==='put'){
@@ -33,6 +33,9 @@ axios.defaults.adapter=config=>{
   call.emptyClearPreserved=payload.uapiApiKey==='';call.literalClearPreserved=payload.smsbaoSecret==='__CLEAR__';body={}
  }else if(url==='/api/system-settings')body=detail(actor?.id===B.id?'B':'A')
  else if(url==='/api/payment-methods')body=[]
+ else if(url==='/api/tickets/config')body={enabled:false,configured:false,mentionedList:[]}
+ else if(url==='/api/admin/ticket-image-cache/settings')body={mode:'both',maxAgeDays:180,maxTotalGiB:20,cleanupIntervalMinutes:60}
+ else if(url==='/api/admin/log-settings')body={settings:{enabled:true,maxAgeDays:30,cleanupIntervalMinutes:60}}
  else body={text:'SYNTHETIC_AGREEMENT',defaultText:'SYNTHETIC_AGREEMENT',isDefault:true}
  return Promise.resolve({status:200,data:body,headers:{'x-request-id':calls.length.toString(16).padStart(32,'0')},config,request:{memoryOnly:true}})
 }

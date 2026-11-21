@@ -1,0 +1,230 @@
+package service
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/itihey/tikuAdapter/internal/entity"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+const ScriptShortAuthorizationMaxMinutes = 24 * 60
+
+var (
+	ErrScriptShortDurationInvalid       = errors.New("短命令有效期须为 1 至 1440 分钟的整数")
+	ErrScriptShortAddressInvalid        = errors.New("请选择管理员允许的 HTTPS 子域或路径作为短命令入口")
+	ErrScriptShortAddressInUse          = errors.New("此短命令入口已被使用，请更换子域或路径")
+	ErrScriptShortAuthorizationInactive = fmt.Errorf("%w：短命令尚未生效、已过期、次数已用完或已撤销", ErrScriptNotFound)
+	ErrScriptAuthorizationLimitInvalid  = errors.New("使用次数须为 0 至 1000000 的整数，0 表示不限次数")
+	ErrScriptAuthorizationWindowInvalid = errors.New("授权时间无效：结束时间须晚于生效时间；长命令最长 365 天，短命令最长 24 小时")
+)
+
+type ConfigureScriptShortAuthorizationInput struct {
+	Enabled         bool       `json:"enabled"`
+	Address         string     `json:"address"`
+	DurationMinutes int        `json:"durationMinutes"`
+	StartsAt        *time.Time `json:"startsAt"`
+	ExpiresAt       *time.Time `json:"expiresAt"`
+	MaxUses         int64      `json:"maxUses"`
+}
+
+type ScriptShortAuthorizationView struct {
+	Address   string     `json:"address"`
+	Command   string     `json:"command"`
+	Status    string     `json:"status"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	UsedAt    *time.Time `json:"usedAt,omitempty"`
+	StartsAt  *time.Time `json:"startsAt,omitempty"`
+	MaxUses   int64      `json:"maxUses"`
+	UsedCount int64      `json:"usedCount"`
+}
+
+func scriptShortAuthorizationView(script entity.UserScript) *ScriptShortAuthorizationView {
+	if script.ShortEntryAddress == "" {
+		return nil
+	}
+	view := &ScriptShortAuthorizationView{Address: script.ShortEntryAddress, ExpiresAt: script.ShortEntryExpiresAt, StartsAt: script.ShortEntryStartsAt, UsedAt: script.ShortEntryUsedAt, MaxUses: script.ShortEntryMaxUses, UsedCount: script.ShortEntryUsedCount}
+	view.Status = scriptAuthorizationStatus(script.ShortEntryAddressKey != nil && script.Enabled && script.DeletedAt == nil && script.EscrowClosingAt == nil, view.StartsAt, view.ExpiresAt, view.MaxUses, view.UsedCount, time.Now())
+	if script.ShortEntryMaxUses > 0 && script.ShortEntryUsedCount >= script.ShortEntryMaxUses {
+		view.Status = "exhausted"
+	}
+	if view.Status == "active" || view.Status == "scheduled" {
+		view.Command = `powershell -c "iex(irm ` + script.ShortEntryAddress + `)"`
+	}
+	return view
+}
+
+// validateScriptShortAddressWithDB checks the complete public entry against the
+// configured templates. Unlike the legacy locator it never adds a short-code
+// prefix to the host selected by the owner.
+func validateScriptShortAddressWithDB(db *gorm.DB, address string) (string, string, error) {
+	address = strings.TrimSpace(address)
+	if !strings.Contains(address, "://") {
+		address = "https://" + address
+	}
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Host == "" || parsed.Port() != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawPath != "" || strings.Contains(address, "%") {
+		return "", "", ErrScriptShortAddressInvalid
+	}
+	host := strings.ToLower(parsed.Host)
+	if validateScriptBaseDomain(host) != nil || strings.Contains(host, "*") || strings.ContainsAny(host, ":'\"()$;` \t\r\n") {
+		return "", "", ErrScriptShortAddressInvalid
+	}
+	path, err := cleanScriptRequestPath(parsed.Path)
+	if err != nil || (path != "" && path != parsed.Path) || scriptReservedPrefix(scriptFirstPathSegment(path)) {
+		return "", "", ErrScriptShortAddressInvalid
+	}
+	if path != "" {
+		normalized, err := normalizeScriptDomainSlot(ScriptDomainFormatPath, strings.TrimPrefix(path, "/"))
+		if err != nil || "/"+normalized != path {
+			return "", "", ErrScriptShortAddressInvalid
+		}
+	}
+	formats, err := ScriptDomainFormatsWithDB(db)
+	if err != nil {
+		return "", "", err
+	}
+	for _, format := range formats {
+		if (path == "" && scriptDomainWildcardCovers(format, host)) || (path != "" && scriptDomainPathCovers(format, host)) {
+			return "https://" + host + path, "https://" + host, nil
+		}
+	}
+	return "", "", ErrScriptShortAddressInvalid
+}
+
+func shortEntryAddressKey(host, path string) string { return hashScriptSecret(host + "\x00" + path) }
+
+// Only the owner may make a script publicly launchable. Administrators may
+// still manage scripts through the normal endpoints, which never grant them
+// another owner's launcher capability.
+func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, scriptID int32, input ConfigureScriptShortAuthorizationInput) (ScriptShortAuthorizationView, error) {
+	var result ScriptShortAuthorizationView
+	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var script entity.UserScript
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ? AND deleted_at IS NULL", scriptID, operator.ID).First(&script).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrScriptNotFound
+			}
+			return err
+		}
+		updates := map[string]any{"short_entry_address_key": nil, "short_entry_generation": gorm.Expr("short_entry_generation + 1")}
+		if input.Enabled {
+			starts, expires, err := scriptAuthorizationWindow(input, true)
+			if err != nil {
+				return err
+			}
+			if !script.Enabled || script.EscrowClosingAt != nil || normalizeScriptScheme(script.Scheme) != "https" {
+				return ErrScriptNotFound
+			}
+			if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
+				return err
+			}
+			address, _, err := validateScriptShortAddressWithDB(tx, input.Address)
+			if err != nil {
+				return err
+			}
+			parsed, _ := url.Parse(address)
+			key := shortEntryAddressKey(parsed.Host, parsed.Path)
+			now := time.Now()
+			// Expired or closed entries no longer reserve their public address.
+			if err := tx.Model(&entity.UserScript{}).Where("short_entry_address_key = ? AND (short_entry_expires_at <= ? OR deleted_at IS NOT NULL OR enabled = ?)", key, now, false).Update("short_entry_address_key", nil).Error; err != nil {
+				return err
+			}
+			var occupied int64
+			if err := tx.Model(&entity.UserScript{}).Where("id <> ? AND short_entry_address_key = ?", script.ID, key).Count(&occupied).Error; err != nil {
+				return err
+			}
+			if occupied > 0 {
+				return ErrScriptShortAddressInUse
+			}
+			updates["short_entry_address"], updates["short_entry_address_key"], updates["short_entry_expires_at"] = address, key, expires
+			updates["short_entry_starts_at"], updates["short_entry_max_uses"], updates["short_entry_used_count"], updates["short_entry_used_at"] = starts, input.MaxUses, 0, nil
+		}
+		if err := tx.Model(&script).Updates(updates).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return ErrScriptShortAddressInUse
+			}
+			return err
+		}
+		if err := tx.First(&script, script.ID).Error; err != nil {
+			return err
+		}
+		if view := scriptShortAuthorizationView(script); view != nil {
+			result = *view
+		} else {
+			result.Status = "disabled"
+		}
+		return nil
+	})
+	return result, err
+}
+
+// The compact URL is itself the explicitly enabled, limited capability. This
+// separate flow does not bypass or relax the full launcher's header check.
+func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath string) (entity.UserScript, ScriptExchangeGrant, error) {
+	var script entity.UserScript
+	var grant ScriptExchangeGrant
+	host := normalizePublicScriptHost(requestHost)
+	path, err := cleanScriptRequestPath(requestPath)
+	if err != nil || scriptReservedPrefix(scriptFirstPathSegment(path)) {
+		return script, grant, ErrScriptNotFound
+	}
+	key := shortEntryAddressKey(host, path)
+	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("short_entry_address_key = ? AND deleted_at IS NULL AND enabled = ?", key, true).First(&script).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				var known int64
+				if lookupErr := tx.Model(&entity.UserScript{}).Where("short_entry_address = ?", "https://"+host+path).Count(&known).Error; lookupErr != nil {
+					return lookupErr
+				}
+				if known > 0 {
+					return ErrScriptShortAuthorizationInactive
+				}
+				return ErrScriptNotFound
+			}
+			return err
+		}
+		now := time.Now()
+		if script.ShortEntryExpiresAt == nil || scriptAuthorizationStatus(true, script.ShortEntryStartsAt, script.ShortEntryExpiresAt, script.ShortEntryMaxUses, script.ShortEntryUsedCount, now) != "active" || script.EscrowClosingAt != nil {
+			return ErrScriptShortAuthorizationInactive
+		}
+		address, origin, err := validateScriptShortAddressWithDB(tx, script.ShortEntryAddress)
+		if err != nil {
+			return ErrScriptShortAuthorizationInactive
+		}
+		parsed, _ := url.Parse(address)
+		if parsed.Host != host || parsed.Path != path {
+			return ErrScriptNotFound
+		}
+		var owner entity.User
+		if err := tx.First(&owner, script.UserID).Error; err != nil {
+			return err
+		}
+		// Conditional counters protect the same budget on SQLite and MySQL.
+		updates := map[string]any{"short_entry_used_at": now, "short_entry_used_count": gorm.Expr("short_entry_used_count + 1")}
+		if script.ShortEntryMaxUses > 0 && script.ShortEntryUsedCount+1 >= script.ShortEntryMaxUses {
+			updates["short_entry_address_key"] = nil
+		}
+		claimed := tx.Model(&entity.UserScript{}).Where("id = ? AND short_entry_address_key = ? AND short_entry_used_count = ? AND short_entry_expires_at > ?", script.ID, key, script.ShortEntryUsedCount, now).Updates(updates)
+		if claimed.Error != nil {
+			return claimed.Error
+		}
+		if claimed.RowsAffected != 1 {
+			return ErrScriptNotFound
+		}
+		grant, err = IssueScriptExchangeTokenWithDB(tx, owner, script.ID, ScriptExchangeTokenTTL)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&entity.ScriptExchangeToken{}).Where("token_hash = ?", hashScriptSecret(grant.Token)).Updates(map[string]any{"launch_address": address, "authorization_kind": "short", "authorization_generation": script.ShortEntryGeneration}).Error; err != nil {
+			return err
+		}
+		grant.LaunchOrigin = origin
+		return nil
+	})
+	return script, grant, err
+}

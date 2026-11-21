@@ -8,20 +8,34 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { LOG_MODULE_OPTIONS, buildLogModuleLabel } from './logListHelpers.mjs';
 import { buildRegisterSourceLabel } from './userPortalHelpers.mjs';
 
 
 // 后端生产代码里实际出现过的 module 值（逐个 git grep 核实过来源）。
-// 新增后端 module 时这里必须同步 —— 不写就看不到「又漏一个」。
-const BACKEND_MODULES = [
+// 保留变量传入的历史值，并读取生产 Go 代码的直接写入值，新增模块会自动参与回归。
+const backendModules = new Set([
   'auth', 'question', 'search', 'ai_fallback', 'captcha', 'user',
   'billing', 'sms', 'recharge', 'access_token', 'export', 'import',
   'account',   // account_log.go:39 accountLogModule + username_release.go:81
   'binding',   // user_bindings.go:38 bindingLogModule
-  'ai', 'review_rebate', 'tiku', 'userexam_tool', 'unknown_module',
-];
+  'ai', 'review_rebate', 'tiku', 'userexam_tool', 'unknown_module', 'ticket',
+]);
+const backendRoot = fileURLToPath(new URL('../../../internal/', import.meta.url));
+for (const directory of ['controller', 'service']) {
+  for (const filename of fs.readdirSync(path.join(backendRoot, directory))) {
+    if (!filename.endsWith('.go') || filename.endsWith('_test.go')) continue;
+    const source = fs.readFileSync(path.join(backendRoot, directory, filename), 'utf8');
+    for (const pattern of [/recordAccountAudit\(\s*[^,]+,\s*[^,]+,\s*"([^"]+)"/g, /Module\s*:\s*"([^"]+)"/g]) {
+      for (const match of source.matchAll(pattern)) backendModules.add(match[1]);
+    }
+  }
+}
+const BACKEND_MODULES = [...backendModules];
 
 test('后端每个 module 值都有中文标签（不能原样显示英文）', () => {
   const missing = BACKEND_MODULES.filter(

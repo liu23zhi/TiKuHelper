@@ -9,6 +9,7 @@ const STATUS_LABELS = Object.freeze({
   succeeded: '退款成功',
   failed: '退款未完成，冻结已解除',
 })
+export const REFUND_STATUS_OPTIONS = Object.freeze(Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label })))
 
 export function refundStatusLabel(status) {
   return Object.hasOwn(STATUS_LABELS, status) ? STATUS_LABELS[status] : '状态待确认'

@@ -67,8 +67,7 @@ func truncateRunes(value string, max int) string {
 
 // ticketRefundShellBody 是壳工单的首条消息正文。
 //
-// 刻意写清「这里不是操作入口」：壳工单存在的意义是让退款出现在列表里，
-// 真正的审核/打款/对账必须在退款详情做（金额与钱包 hold 都在那边）。
+// 详情内复用退款审核、打款与对账组件，资金操作仍走原退款接口。
 func ticketRefundShellBody(refund entity.TicketRefund) string {
 	var lines []string
 	lines = append(lines, "本工单由退款申请自动创建，用于在工单列表中展示退款进度。")
@@ -79,7 +78,7 @@ func ticketRefundShellBody(refund entity.TicketRefund) string {
 	if reason := strings.TrimSpace(refund.Reason); reason != "" {
 		lines = append(lines, "申请理由："+reason)
 	}
-	lines = append(lines, "审核、打款与对账请在「退款」详情中操作，不要在本工单里回复金额。")
+	lines = append(lines, "管理员可在本工单详情的退款信息中审核、办理退款与核对结果。")
 	return strings.Join(lines, "\n")
 }
 

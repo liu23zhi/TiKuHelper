@@ -13,7 +13,7 @@ const zhCN = require('ant-design-vue/lib/locale/zh_CN').default
 const user = require(path.join(web, 'src/utils/currentUser.js'))
 const ADMIN_A = { id: 3701, username: 'SYNTHETIC_ADMIN_A', role: 'admin', status: 'enabled', balance: 1 }
 const ADMIN_B = { id: 3702, username: 'SYNTHETIC_ADMIN_B', role: 'admin', status: 'enabled', balance: 2 }
-const CONFIG = { enabled: true, baseUrl: 'https://fixture.invalid/v1', apiKey: 'SYNTHETIC_KEY_ONLY', model: 'MODEL-A', backupModel: '', manualModels: ['MODEL-A'], prompt: 'SYNTHETIC_PROMPT', remark: '', temperature: 0, topP: 0, maxAISearchModelCalls: 4, maxAISearches: 3, maxAISearchRetries: 3, searchPricePerCall: 0.000062, tiku_search_price_per_call: 0.000061, maxAIWebReads: 5, webReadPricePerCall: 1.234567, imageOCRPricePerCall: 0, enableAIStagedTokenBilling: true, smoothAIStagedTokenMultiplier: true, stagedTokenMultiplierPoints: [{ tokens: '0', multiplier: 2 }, { tokens: '1000', multiplier: 1 }] }
+const CONFIG = { enabled: true, baseUrl: 'https://fixture.invalid/v1', apiKey: 'SYNTHETIC_KEY_ONLY', model: 'MODEL-A', backupModel: '', manualModels: ['MODEL-A'], prompt: 'SYNTHETIC_PROMPT', remark: '', temperature: 0, topP: 0, maxAISearchModelCalls: 4, maxAISearches: 3, maxAISearchRetries: 3, searchPricePerCall: 0.000062, maxAIWebReads: 5, webReadPricePerCall: 1.234567, imageOCRPricePerCall: 0, enableAIStagedTokenBilling: true, smoothAIStagedTokenMultiplier: true, stagedTokenMultiplierPoints: [{ tokens: '0', multiplier: 2 }, { tokens: '1000', multiplier: 1 }] }
 const ok = data => ({ status: 200, data })
 const pending = { config: [], save: [], models: [], engines: [], usage: [], test: [] }
 const calls = [], notices = [], confirms = [], traps = [], wrappers = []

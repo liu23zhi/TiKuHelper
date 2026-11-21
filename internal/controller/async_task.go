@@ -265,8 +265,8 @@ func ExportTaskCreate(c *gin.Context) {
 		})
 		return
 	}
-	if resource != service.ExportResourceQuestions && format != service.ExportFormatCSV {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "当前只有题库支持 JSON / XLSX / XML / HTML 导出"})
+	if resource != service.ExportResourceQuestions && format != service.ExportFormatCSV && format != service.ExportFormatJSON && format != service.ExportFormatXlsx {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "管理数据支持 CSV / JSON / XLSX；XML / HTML 导出仅支持题库"})
 		return
 	}
 	if resource != service.ExportResourceQuestions && len(input.QuestionIDs) > 0 {
@@ -350,9 +350,14 @@ func ImportTaskCreate(c *gin.Context) {
 	if resource == "" {
 		resource = strings.ToLower(strings.TrimSpace(c.Query("resource")))
 	}
-	switch resource {
-	case service.ImportResourceQuestions, service.ImportResourceBlacklist, service.ImportResourceUsers:
-	default:
+	supported := false
+	for _, candidate := range service.ImportResourceList() {
+		if resource == candidate {
+			supported = true
+			break
+		}
+	}
+	if !supported {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": fmt.Sprintf("不支持的导入资源；可选：%s", strings.Join(service.ImportResourceList(), " / ")),
 		})

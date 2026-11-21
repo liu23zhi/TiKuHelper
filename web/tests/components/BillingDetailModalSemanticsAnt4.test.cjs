@@ -20,8 +20,8 @@ axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),paramsKeys=Object.keys(config.params||{}).sort();calls.push({method,url,paramsKeys})
  if(method!=='get')return Promise.reject(deny('nonGET'))
  let data
- if(url==='/adapter-service/public/register-status')data={siteName:'Synthetic Billing App'}
- else if(url==='/adapter-service/billing-records'){if(JSON.stringify(config.params)!==JSON.stringify({page:1,pageSize:10}))return Promise.reject(deny('unexpected-billing-params'));data={data:[{...ROW}],total:1,page:1,pageSize:10,summary:{totalAmount:0.000062,currentPageAmount:0.000062,currentPageCacheHitRate:null,totalCacheHitRate:null}}}
+ if(url==='/api/public/register-status')data={siteName:'Synthetic Billing App'}
+ else if(url==='/api/billing-records'){if(JSON.stringify(config.params)!==JSON.stringify({page:1,pageSize:10}))return Promise.reject(deny('unexpected-billing-params'));data={data:[{...ROW}],total:1,page:1,pageSize:10,summary:{totalAmount:0.000062,currentPageAmount:0.000062,currentPageCacheHitRate:null,totalCacheHitRate:null}}}
  else return Promise.reject(deny('unknownGET'))
  return Promise.resolve({status:200,data,headers:{},config,request:{memoryOnly:true}})
 }
@@ -82,7 +82,7 @@ test('BD01 actual App shared BillingDetailDialog modal declaration preserves cus
  try{
   const w=await appPage(),initial=calls.length,first=await open(w);await close(first);const second=await open(w);cur.observations.push({label:'destroy-on-close reopened panel identity',sameNode:first.dialog===second.dialog});cur.checks.push({label:'reopening creates the original fresh destroyed panel',category:'positive',qualified:true,passed:first.dialog!==second.dialog});await close(second)
   cur.checks.push({label:'two native detail opens and closes add zero API reads or business writes',passed:calls.length===initial&&calls.every(c=>c.method==='get')})
-  cur.checks.push({label:'exact initial App publicconfig and billing read allowlist',passed:calls.length===2&&calls.some(c=>c.url==='/adapter-service/public/register-status')&&calls.some(c=>c.url==='/adapter-service/billing-records')})
+  cur.checks.push({label:'exact initial App publicconfig and billing read allowlist',passed:calls.length===2&&calls.some(c=>c.url==='/api/public/register-status')&&calls.some(c=>c.url==='/api/billing-records')})
   cur.checks.push({label:'zero clipboard/real IO/runtime/console errors',passed:realIO.length===0&&runtime.length===0&&errors.length===0})
   cur.completedFlow=true;assert.deepEqual(cur.checks.filter(c=>c.qualified!==false&&!c.passed).map(c=>c.label),[],'strict shared Modal contract, all complete-tail checks');cur.passed=true
  }finally{write()}

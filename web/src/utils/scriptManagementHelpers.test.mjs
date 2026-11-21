@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildScriptCommand,
+  buildScriptShortCommand,
   buildScriptDownloadURL,
   buildScriptListParams,
   buildScriptSavePayload,
@@ -31,8 +32,18 @@ test('preset parameters preserve values containing equals signs', () => {
 
 test('script list scope only requests all rows for an administrator', () => {
   assert.deepEqual(buildScriptListParams(true, true), { scope: 'all' })
-  assert.deepEqual(buildScriptListParams(true, false), { scope: 'self' })
+  assert.deepEqual(buildScriptListParams(true, false), { scope: 'all' })
   assert.deepEqual(buildScriptListParams(false, true), { scope: 'self' })
+})
+
+test('short commands require an active unexpired server authorization with a safe address', () => {
+  const grant = { address: 'https://a.muioi.com', command: 'powershell -c "iex(irm https://a.muioi.com)"', status: 'active', expiresAt: '2026-11-21T10:00:00Z' }
+  const now = Date.parse('2026-11-21T09:59:00Z')
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }, now), grant.command)
+  for (const status of ['used', 'disabled', 'expired']) assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, status } }, now), '')
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }, Date.parse(grant.expiresAt)), '')
+  assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, command: 'powershell -c malicious' } }, now), '')
+  assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, address: 'https://a.muioi.com);calc;(' } }, now), '')
 })
 
 test('save payload includes server parameter shape but never a client-generated executable command', () => {

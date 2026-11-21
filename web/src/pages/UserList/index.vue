@@ -11,7 +11,7 @@
       </a-space>
       </template>
     </ConsolePageHeading>
-    <input ref="userImportInput" class="visually-hidden" type="file" accept=".csv,.json,.xlsx,.xls" aria-label="选择用户导入文件" @change="onUserImportFile" />
+    <input ref="userImportInput" class="visually-hidden" hidden style="display: none" type="file" accept=".csv,.json,.xlsx,.xls" aria-label="选择用户导入文件" @change="onUserImportFile" />
     <ConsoleSummaryGrid>
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="用户总数（筛选结果）" :value="summary.total" />

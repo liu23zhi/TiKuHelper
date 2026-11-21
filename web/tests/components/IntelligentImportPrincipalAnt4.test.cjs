@@ -512,7 +512,7 @@ test('SMART_IMPORT legacy option values without presentation names still parse a
 test('SMART_IMPORT real UNKNOWN_OUTCOME create error preserves draft and says unconfirmed rather than failed or automatically replaying', async () => {
   const w = await mountPage(); await doneUpload(w); click(w, '确认导入'); await settle(); const before = JSON.stringify(w.vm.data)
   const networkError = new Error('SYNTHETIC_NETWORK_DOWN'); networkError.code = 'ERR_NETWORK'
-  const unknown = toUserRequestError({ method: 'post', url: '/adapter-service/questions' }, networkError)
+  const unknown = toUserRequestError({ method: 'post', url: '/api/questions' }, networkError)
   assert.equal(unknown.code, 'UNKNOWN_OUTCOME', 'ACTUAL_MUTATION_UNKNOWN_OUTCOME_CONTRACT')
   calls.create[0].reject(unknown); await settle(); await new Promise(resolve => setTimeout(resolve, 25)); await settle()
   assert.equal(JSON.stringify(w.vm.data), before); assert.equal(w.vm.submitLoading, false); assert.equal(calls.create.length, 1); assert.equal(calls.parse.length, 1)

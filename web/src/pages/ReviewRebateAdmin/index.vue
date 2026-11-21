@@ -363,6 +363,7 @@ import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import {
   getReviewRebatePrograms,
   updateReviewRebateProgram,
+  createReviewRebateProgram,
   getReviewRebateRules,
   createReviewRebateRule,
   updateReviewRebateRule,
@@ -827,17 +828,6 @@ export default {
     const saveProgram = async () => {
       if (!canManage() || savingProgram.value || programValidation.value) return
       const id = readPositiveInt(loadedProgram.value?.id)
-      if (!id) {
-        // 零活动时没有 id 可 PUT。**这不是数据格式错误**（原来的
-        // MALFORMED_RESPONSE 会让管理员以为后端坏了），而是后端**没有
-        // 创建活动的 HTTP 接口** —— service.CreateReviewRebateProgramWithDB
-        // 全仓零调用方，router.go 只有 GET/PUT。这里如实说明缺口，
-        // 并给出可执行的绕过方式，而不是把责任推给网络。
-        programWarning.value = '当前没有任何评价返现活动，且后端尚未提供「创建活动」接口，因此无法在此页新建。'
-          + '请先在数据库中插入一条 review_rebate_programs 记录（id 会自动生成），刷新后即可在此编辑。'
-        programWarningContextKey.value += 1
-        return
-      }
       const ticket = ++writeVersion
       const owns = () => canManage() && ticket === writeVersion
       clearProgramFailure()
@@ -856,9 +846,9 @@ export default {
           minAgentConfidence: Number(programForm.minAgentConfidence),
           policyVersion: String(programForm.policyVersion || '').trim(),
         }
-        const res = await updateReviewRebateProgram(id, payload)
+        const res = await (id ? updateReviewRebateProgram(id, payload) : createReviewRebateProgram(payload))
         if (!ownsFailure()) return
-        if (res?.status !== 200) { programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return }
+        if (![200, 201].includes(res?.status)) { programFailureOwner = ownsFailure; programFailure.value = ensureRequestFailure(res); return }
         applyProgram(res.data)
         programSaved.value = true
         message.success('活动配置已保存')

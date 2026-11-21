@@ -167,18 +167,14 @@ test('有活动时 applyProgram 正常套用，且不残留 missing 标记', asy
   assert.equal(programForm.maxClaimsPerUser, 5)
 })
 
-test('保存路径在零活动时给出「缺接口」的明确提示，而不是 MALFORMED_RESPONSE', async () => {
+test('保存路径在零活动时调用创建接口而已有活动继续更新', async () => {
   const source = await loadAdminPage()
 
-  // 原实现在没有 id 时报 ensureRequestFailure({code:'MALFORMED_RESPONSE'})，
-  // 那会让管理员以为后端返回了坏数据，实际是**后端根本没有创建接口**
-  // （service.CreateReviewRebateProgramWithDB 全仓零调用方，router 只有 GET/PUT）。
   assert.doesNotMatch(source, /code: 'MALFORMED_RESPONSE'/,
-    '零活动保存不得伪造「数据格式错误」—— 真正缺的是创建接口')
-
-  // 必须给出可执行的下一步，光说「失败」等于把问题丢回给管理员。
-  assert.match(source, /尚未提供「创建活动」接口/, '必须说明缺的是创建接口')
-  assert.match(source, /review_rebate_programs/, '必须指出绕过方式落在哪张表')
+    '零活动保存不得伪造数据格式错误')
+  assert.match(source, /createReviewRebateProgram\(/, '首次保存必须调用创建接口')
+  assert.match(source, /updateReviewRebateProgram\(/, '已有活动保留更新接口')
+  assert.doesNotMatch(source, /尚未提供「创建活动」接口|请先在数据库中插入/, '管理员可直接创建，无需操作数据库')
 })
 
 test('零活动提示用 info 而不是 error（这是正常状态，不是故障）', async () => {

@@ -21,12 +21,12 @@ const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),body=typeof config.data==='string'?JSON.parse(config.data):config.data,call={method,path:url,actor:user.getStoredCurrentUser()?.id||null};calls.push(call)
  let response
- if(method==='post'&&url==='/adapter-service/questions/search'){
+ if(method==='post'&&url==='/api/questions/search'){
   call.kind='question-read-search';call.queryFields=Object.keys(body||{}).sort();call.pageNo=body?.pageNo;call.pageSize=body?.pageSize
   response={items:clone(rows),total:rows.length,pageNo:body?.pageNo||0,pageSize:body?.pageSize||10}
- }else if(method==='get'&&url==='/adapter-service/courses'){
+ }else if(method==='get'&&url==='/api/courses'){
   call.kind='course-read';response=['SYNTHETIC_ORIGINAL_COURSE_701','SYNTHETIC_ORIGINAL_COURSE_702']
- }else if(method==='put'&&IDS.some(id=>url==='/adapter-service/questions/'+id)){
+ }else if(method==='put'&&IDS.some(id=>url==='/api/questions/'+id)){
   call.kind='question-update';call.id=body?.id;call.fieldNames=Object.keys(body||{}).sort();call.payloadUsesSubmittedA=body?.course_name===COURSE_A
   const expected={...rows.find(r=>r.id===body?.id),course_name:COURSE_A}
   call.fullPublicRowPreserved=sameRow(body||{},expected)

@@ -108,6 +108,7 @@ func reviewRebateControllerRouter(actor *entity.User) *gin.Engine {
 	router.POST("/user/review-rebate/claims", auth, CreateReviewRebateClaim)
 	router.GET("/user/review-rebate/claims", auth, MyReviewRebateClaims)
 	router.GET("/admin/review-rebate/programs", auth, middleware.RequireAdmin, AdminReviewRebatePrograms)
+	router.POST("/admin/review-rebate/programs", auth, middleware.RequireAdmin, AdminCreateReviewRebateProgram)
 	router.PUT("/admin/review-rebate/programs/:id", auth, middleware.RequireAdmin, AdminUpdateReviewRebateProgram)
 	router.GET("/admin/review-rebate/rules", auth, middleware.RequireAdmin, AdminReviewRebateRules)
 	router.POST("/admin/review-rebate/rules", auth, middleware.RequireAdmin, AdminCreateReviewRebateRule)
@@ -117,6 +118,40 @@ func reviewRebateControllerRouter(actor *entity.User) *gin.Engine {
 	router.POST("/admin/review-rebate/claims/:id/decision", auth, middleware.RequireAdmin, AdminDecideReviewRebateClaim)
 	router.POST("/admin/review-rebate/claims/:id/score", auth, middleware.RequireAdmin, AdminScoreReviewRebateClaim)
 	return router
+}
+
+func TestAdminCreateReviewRebateProgramFromEmptyDatabase(t *testing.T) {
+	db := newReviewRebateControllerTestDB(t)
+	installReviewRebateTestDB(t, db)
+	admin := seedReviewRebateControllerUser(t, db, 981, "program-admin", "admin")
+	payload := `{"name":"首次活动","storeUrl":"https://example.invalid/store","enabled":true,"maxClaimsPerUser":3,"maxAmountPerUser":5.04,"minAgentConfidence":0.6}`
+	request := httptest.NewRequest(http.MethodPost, "/admin/review-rebate/programs", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	reviewRebateControllerRouter(&admin).ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status=%d: %s", response.Code, response.Body.String())
+	}
+	var stored entity.ReviewRebateProgram
+	if err := db.First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ID <= 0 || stored.Name != "首次活动" || !stored.Enabled {
+		t.Fatalf("invalid saved program: %+v", stored)
+	}
+	user := seedReviewRebateControllerUser(t, db, 982, "program-user", "user")
+	request = httptest.NewRequest(http.MethodPost, "/admin/review-rebate/programs", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	reviewRebateControllerRouter(&user).ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("user create status=%d", response.Code)
+	}
+	var count int64
+	db.Model(&entity.ReviewRebateProgram{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("user must not create program, count=%d", count)
+	}
 }
 
 // installReviewRebateTestDB 把控制器里的数据库取用点替换成测试库。

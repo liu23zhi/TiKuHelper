@@ -68,75 +68,10 @@
       <section v-if="actionFailures.notificationTest.state.failure" data-ticket-notification-test-feedback>
       <RequestFailureAlert :key="actionFailures.notificationTest.state.context" :failure="actionFailures.notificationTest.state.failure" :message="actionFailures.notificationTest.state.message" :context-key="actionFailures.notificationTest.state.context" :is-current="actionFailures.notificationTest.isCurrent" :busy="configTesting" closable :onClose="actionFailures.notificationTest.close" />
     </section>
-      <a-form
-        :model="notificationConfig"
-        :disabled="!configLoaded || !canManage()"
-        layout="vertical"
-        :onFinish="pageEntry.bind(saveNotificationConfig)"
-      >
-        <div class="config-grid">
-          <a-form-item label="启用提醒"
-            ><a-switch
-              :checked="notificationConfig.enabled" :onUpdate:checked="pageEntry.bind(setConfig, 'enabled')"
-              checked-children="开启"
-              un-checked-children="关闭"
-          /></a-form-item>
-          <a-form-item
-            label="Webhook 地址"
-            help="只接受企业微信机器人 HTTPS 地址；留空表示保持已保存地址。"
-          >
-            <a-input
-              :value="notificationConfig.webhookUrl" :onUpdate:value="pageEntry.bind(setConfig, 'webhookUrl')"
-              type="url"
-              allow-clear
-              placeholder="输入新地址以替换已保存地址"
-            />
-            <div
-              v-if="notificationConfig.configured"
-              class="config-address-actions"
-            >
-              <span>{{
-                notificationConfig.clearWebhook
-                  ? "保存后将清除当前地址"
-                  : "已配置企业微信机器人"
-              }}</span>
-              <a-button
-                v-if="!notificationConfig.clearWebhook"
-                type="link"
-                danger
-                size="small"
-                :onClick="pageEntry.bind(clearSavedWebhook)"
-                >清除已保存地址</a-button
-              >
-              <a-button
-                v-else
-                type="link"
-                size="small"
-                :onClick="pageEntry.bind(keepSavedWebhook)"
-                >保留已保存地址</a-button
-              >
-            </div>
-          </a-form-item>
-          <a-form-item label="@成员 ID" help="多个成员用逗号分隔，可填写 @all。"
-            ><a-input
-              :value="notificationConfig.mentionedList" :onUpdate:value="pageEntry.bind(setConfig, 'mentionedList')"
-              allow-clear
-              placeholder="成员 ID，可选"
-          /></a-form-item>
-        </div>
-        <a-space
-          ><a-button type="primary" html-type="submit" :loading="configSaving" :disabled="!configLoaded || !canManage() || configTesting"
-            >保存提醒设置</a-button
-          ><a-button
-            :loading="configTesting"
-            :disabled="!configLoaded || !canManage() || configSaving"
-            :onClick="pageEntry.bind(testNotification)"
-            >发送测试消息</a-button
-          ><span v-if="notificationConfig.configured" class="config-hint"
-            >当前已配置 Webhook</span
-          ></a-space
-        >
-      </a-form>
+      <TicketNotificationSettingsForm :config="notificationConfig" :entry="pageEntry"
+        :loaded="configLoaded" :disabled="!canManage()" :saving="configSaving" :testing="configTesting"
+        :save="saveNotificationConfig" :test="testNotification" :set-field="setConfig"
+        :clear-webhook="clearSavedWebhook" :keep-webhook="keepSavedWebhook" />
     </a-modal>
     <ConsolePanel
       title="工单列表"
@@ -163,7 +98,7 @@
             allow-clear
             placeholder="全部状态"
             style="width: 150px"
-            :options="statusOptions"
+            :options="filterStatusOptions"
             :onChange="pageEntry.bind(applyFilters)"
         /></a-form-item>
         <a-form-item v-if="isAdmin" label="创建日期"
@@ -229,8 +164,8 @@
                 ticketCategoryLabel(ticket.category)
               }}</a-tag
               ><a-tag v-if="isSystemTicket(ticket)" color="geekblue">{{ TICKET_SYSTEM_ORIGIN_LABEL }}</a-tag
-              ><a-tag :color="ticketStatusColor(ticket.status)">{{
-                ticketStatusLabel(ticket.status)
+              ><a-tag :color="effectiveStatusColor(ticket)">{{
+                effectiveStatusLabel(ticket)
               }}</a-tag></span
             >
           </div>
@@ -282,16 +217,8 @@
             }}</span
             ><a-tag
               v-else-if="column.key === 'status'"
-              :color="ticketStatusColor(record.status)"
-              >{{ ticketStatusLabel(record.status) }}</a-tag
-            ><!-- T-209：退款行必须显示**退款真实状态**（7 态），
-                 而不是工单那 4 态的映射结果 —— 「冻结中 / 处理中 / 结果待核对」
-                 才是管理员判断该不该重试打款的依据。 -->
-            <span v-else-if="column.key === 'refundStatus'" class="refund-status-cell"
-              ><a-tag v-if="isRefundTicketRow(record) && ticketRowRefundStatus(record)" color="gold">{{
-                refundStatusLabel(ticketRowRefundStatus(record))
-              }}</a-tag
-              ><span v-else>—</span></span
+              :color="effectiveStatusColor(record)"
+              >{{ effectiveStatusLabel(record) }}</a-tag
             ><span v-else-if="column.key === 'updatedAt'" class="time-cell">{{
               formatTicketTime(record.lastMessageAt || record.updatedAt)
             }}</span
@@ -593,6 +520,8 @@
             :visible="agreementVisible"
             :text="agreementText"
             :signed-attachment-id="draft.refundSignatureAttachmentId"
+            :signed-at="agreementSignedAt"
+            :payout-qr-ready="Boolean(draft.refundPayoutQrAttachmentId) && !payoutQrBusy"
             @close="agreementVisible = false"
             @signed="onAgreementSigned"
           />
@@ -730,8 +659,8 @@
       ><a-spin :spinning="detailLoading"
         ><template v-if="detailTicket"
           ><div class="detail-summary">
-            <a-tag :color="ticketStatusColor(detailTicket.status)">{{
-              ticketStatusLabel(detailTicket.status)
+            <a-tag :color="effectiveStatusColor(detailTicket)" data-ticket-effective-status>{{
+              effectiveStatusLabel(detailTicket)
             }}</a-tag
             ><a-tag
               v-if="ticketCategoryLabel(detailTicket.category)"
@@ -758,6 +687,7 @@
             v-if="detailTicket.refund"
             :refund="detailTicket.refund"
             :is-admin="isAdmin"
+            :show-status="false"
             :on-changed="detailEntry.bind(reloadDetail)"
           />
           <a-alert
@@ -831,7 +761,7 @@
           <section v-if="actionFailures.retry.state.failure" data-ticket-notification-retry-feedback>
       <RequestFailureAlert :key="actionFailures.retry.state.context" :failure="actionFailures.retry.state.failure" :message="actionFailures.retry.state.message" :context-key="actionFailures.retry.state.context" :is-current="actionFailures.retry.isCurrent" :busy="retryLoading" closable :onClose="actionFailures.retry.close" />
     </section>
-          <div v-if="isAdmin" class="detail-actions">
+          <div v-if="isAdmin && !detailTicket.refund" class="detail-actions">
             <label :for="detailStatusId">工单状态</label>
             <a-select
               :id="detailStatusId"
@@ -889,6 +819,7 @@
 </template>
 
 <script setup>
+import TicketNotificationSettingsForm from "@/components/TicketNotificationSettingsForm.vue";
 defineOptions({ name: "TicketsPage" });
 
 import {
@@ -952,7 +883,7 @@ import {
 } from "@/utils/ticketHelpers.mjs";
 // 退款 7 态的中文文案、金额格式化与可退订单列表都与退款面板共用同一份实现，
 // 避免列表与面板对同一状态/金额给出不同说法。
-import { formatRefundCents, refundStatusLabel } from "./refundTicketHelpers.mjs"
+import { formatRefundCents, refundStatusLabel, REFUND_STATUS_OPTIONS } from "./refundTicketHelpers.mjs"
 // 分摊算法抽成纯函数：「不覆盖用户手改金额」这条
 // 写在 .vue 里测不到，只能靠人点界面看 —— 那不叫验证。
 import {
@@ -969,10 +900,8 @@ import {
   buildTicketCreatePayload,
   getTicketCreateDraftValidation,
   isAccountClosureTicketType,
-  isRefundTicketRow,
   parseRefundYuanToCents,
   ticketCreateTypeNeedsRefundFields,
-  ticketRowRefundStatus,
   ticketWizardCanAdvanceFromType,
   ticketWizardCanSubmit,
   ticketWizardInitialStep,
@@ -1065,6 +994,7 @@ const statusOptions = TICKET_STATUS_OPTIONS.map(({ value, label }) => ({
   value,
   label,
 }));
+const filterStatusOptions = [...statusOptions, ...REFUND_STATUS_OPTIONS];
 // 分类筛选/展示用；建单**不**透传 category（服务端按来源强制赋值，
 // 用户自选只会变成「挑能一键补发」的套利口子）。
 const categoryOptions = TICKET_CATEGORY_OPTIONS.map(({ value, label }) => ({
@@ -1086,10 +1016,6 @@ const columns = computed(() => {
   base.push(
     { title: "分类", dataIndex: "category", key: "category", width: 130 },
     { title: "状态", dataIndex: "status", key: "status", width: 120 },
-    // T-209：退款专属列。普通工单这里显示「—」；退款行显示 7 态真实状态。
-    // 单开一列而不是塞进「状态」列：两者含义不同（工单状态 vs 资金状态），
-    // 合成一格会让管理员以为「工单 closed 就代表钱退了」。
-    { title: "退款状态", key: "refundStatus", width: 150 },
     { title: "最近更新", dataIndex: "updatedAt", key: "updatedAt", width: 180 },
     { title: "操作", key: "action", width: 100 }
   );
@@ -1437,8 +1363,8 @@ async function sendRefundSms() {
   } catch (error) { if (owns()) message.error(responseMessage(error, '验证码发送失败')) }
   finally { if (owns()) refundSmsBusy.value = false }
 }
-const agreementVisible = ref(false), agreementText = ref(''), agreementLoading = ref(false)
-function resetAgreement() { agreementVisible.value = false; agreementText.value = ''; draft.refundAgreementSigned = false; draft.refundSignatureAttachmentId = 0 }
+const agreementVisible = ref(false), agreementText = ref(''), agreementLoading = ref(false), agreementSignedAt = ref('')
+function resetAgreement() { agreementVisible.value = false; agreementText.value = ''; agreementSignedAt.value = ''; draft.refundAgreementSigned = false; draft.refundSignatureAttachmentId = 0 }
 async function openAgreement() {
   if (agreementLoading.value || createLoading.value) return
   if (agreementText.value) { agreementVisible.value = true; return }
@@ -1456,10 +1382,11 @@ function onToggleAgreement(event) {
   if (event?.target) event.target.checked = draft.refundAgreementSigned
   void openAgreement()
 }
-function onAgreementSigned(attachmentId) {
+function onAgreementSigned(attachmentId, signedAt) {
   if (!createVisible.value || draft.refundMethod !== REFUND_METHOD_MANUAL) return
   draft.refundSignatureAttachmentId = Number(attachmentId) || 0
   draft.refundAgreementSigned = draft.refundSignatureAttachmentId > 0
+  agreementSignedAt.value = String(signedAt || '')
   agreementVisible.value = false; retireCreateValidation()
 }
 function resetRefundDraft() {
@@ -1627,14 +1554,7 @@ function messageAuthorText(item) {
   const role = String(item?.authorRole || "").trim().toLowerCase();
   if (!isAdmin.value && role === "admin") return "管理员";
   const name = String(item?.authorName || "").trim() || (role === "admin" ? "管理员" : detailTicket.value?.userName || "用户");
-  if (!isAdmin.value) {
-    const itemUserId = Number(item?.userId);
-    const currentId = Number(currentUser.value?.id);
-    if (role === "user" && itemUserId > 0 && itemUserId === currentId && currentUser.value?.nickname) {
-      return String(currentUser.value.nickname).trim() || name;
-    }
-    return name;
-  }
+  if (!isAdmin.value) return name;
   const id = Number(item?.userId);
   const displayName = role === "user" && detailUser.value && Number(item?.userId) === Number(detailUser.value.id)
     ? String(detailUser.value.nickname || detailUser.value.username || name).trim() || name
@@ -1643,6 +1563,14 @@ function messageAuthorText(item) {
   return (role === "user" || role === "admin") && Number.isSafeInteger(id) && id > 0
     ? `${label}（用户ID：${id}）`
     : label;
+}
+function effectiveStatusLabel(ticket) {
+  return ticket?.refund ? refundStatusLabel(ticket.refund.status) : ticketStatusLabel(ticket?.status);
+}
+function effectiveStatusColor(ticket) {
+  return ticket?.refund
+    ? ({ pending_review: 'gold', frozen: 'blue', processing: 'blue', unknown: 'orange', succeeded: 'green', rejected: 'red', failed: 'red' }[ticket.refund.status] || 'default')
+    : ticketStatusColor(ticket?.status);
 }
 function responseMessage(error, fallback) {
   return (
@@ -2055,7 +1983,7 @@ async function submitReply() {
   try {
     const payload = { body };
     if (attachmentIds.length) payload.attachmentIds = attachmentIds;
-    if (isAdmin.value && statusWasChosen.value)
+    if (isAdmin.value && !detailTicket.value?.refund && statusWasChosen.value)
       payload.status = detailStatus.value;
     const replyParams = routeViewMode.value === "self" ? { scope: "self" } : {};
     const result = normalizeTicketDetailResponse(
@@ -2106,6 +2034,7 @@ async function submitReply() {
   }
 }
 async function saveStatus() {  if (!canManage() || statusSaving.value || !detailVisible.value) return;
+  if (detailTicket.value?.refund) return;
   const owns = captureDetail();
   if (!detailTicket.value || !detailStatus.value) return;
   const ticketId = detailTicket.value.id;

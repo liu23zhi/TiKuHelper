@@ -348,7 +348,7 @@ func TestAsyncTaskExportCreateDefaultsToMasked(t *testing.T) {
 	_ = manager
 }
 
-// 非题库资源仍只接受 CSV；题库导出由服务端异步生成多种格式。
+// 管理资源支持 CSV / JSON；题库还支持工作簿与文档格式。
 func TestAsyncTaskExportCreateRejectsNonQuestionFormats(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newAsyncTaskControllerTestDB(t)
@@ -357,7 +357,7 @@ func TestAsyncTaskExportCreateRejectsNonQuestionFormats(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9203, "SYNTHETIC_CSV_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	for _, format := range []string{"json", "xlsx", "xml", "html"} {
+	for _, format := range []string{"xml", "html"} {
 		recorder := asyncTaskRequest(router, "POST", "/api/export/tasks",
 			`{"resource":"users","format":"`+format+`"}`)
 		if recorder.Code != http.StatusBadRequest {

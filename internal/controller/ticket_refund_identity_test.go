@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,51 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
+
+func TestTicketRefundSignedPayoutEvidenceCanBeReviewedInsideTicketFlow(t *testing.T) {
+	db := newTicketAttachmentControllerTestDB(t)
+	if err := db.AutoMigrate(&entity.TicketRefund{}, &entity.TicketRefundLedger{}, &entity.TicketRefundProof{}, &entity.RechargeOrder{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := seedControllerUser(t, db, 0, "signed-refund-owner", "user")
+	admin := seedControllerUser(t, db, 0, "signed-refund-admin", "admin")
+	if err := db.Model(&owner).Update("balance", 20).Error; err != nil {
+		t.Fatal(err)
+	}
+	qr, err := service.StoreTicketAttachmentWithDB(db, &owner, 0, ticketAttachmentControllerPNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := service.StoreTicketAttachmentWithDB(db, &owner, 0, ticketAttachmentControllerPNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refund, err := service.CreateTicketRefundWithDB(db, owner, service.CreateTicketRefundInput{Kind: service.TicketRefundKindManual, RequestedCents: 500, Reason: "已上传收款码并签署", PayoutQrAttachmentID: &qr.ID, SignatureAttachmentID: &signature.ID, AgreementText: service.GetRefundAgreementTextWithDB(db)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := ticketRefundDB
+	ticketRefundDB = func() *gorm.DB { return db }
+	t.Cleanup(func() { ticketRefundDB = old })
+	read := performTicketControllerRequest(t, &admin, http.MethodGet, "/refunds/id", "", gin.Params{{Key: "id", Value: fmt.Sprint(refund.ID)}}, TicketRefundDetail)
+	if read.Code != 200 || !strings.Contains(read.Body.String(), `"hasSignedPayoutEvidence":true`) || !strings.Contains(read.Body.String(), `"hasProof":false`) {
+		t.Fatalf("signed evidence should be sufficient without legacy extra proof: %d %s", read.Code, read.Body)
+	}
+	if err := db.Model(&entity.TicketAttachment{}).Where("id = ?", signature.ID).Update("user_id", admin.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreign := performTicketControllerRequest(t, &admin, http.MethodPost, "/refunds/id/decision", `{"action":"approve","approvedCents":500}`, gin.Params{{Key: "id", Value: fmt.Sprint(refund.ID)}}, ReviewTicketRefund)
+	if foreign.Code == 200 {
+		t.Fatalf("foreign signature must not authorize a refund: %s", foreign.Body)
+	}
+	if err := db.Model(&entity.TicketAttachment{}).Where("id = ?", signature.ID).Update("user_id", owner.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	decision := performTicketControllerRequest(t, &admin, http.MethodPost, "/refunds/id/decision", `{"action":"approve","approvedCents":500}`, gin.Params{{Key: "id", Value: fmt.Sprint(refund.ID)}}, ReviewTicketRefund)
+	if decision.Code != 200 || !strings.Contains(decision.Body.String(), `"status":"frozen"`) {
+		t.Fatalf("valid signed evidence could not be approved: %d %s", decision.Code, decision.Body)
+	}
+}
 
 func TestTicketRefundRecoveryRequiresPasswordAndPreviewContainsNoSource(t *testing.T) {
 	db := newTicketAttachmentControllerTestDB(t)

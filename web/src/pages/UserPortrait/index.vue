@@ -174,6 +174,10 @@ export default defineComponent({
     const chartOptions = computed(() => buildPortraitAllOptions(charts.value, palette.value))
     const chartList = computed(() => [
       {
+        key: 'daily', title: '近 30 天账单趋势', hint: '按北京时间的自然日统计，仅展示有账单的日期。',
+        ariaLabel: '近三十天账单记录数量趋势', options: chartOptions.value.daily,
+      },
+      {
         key: 'hours', title: PORTRAIT_HOURS_TITLE,
         hint: '只显示有账单记录的小时，不补齐空时段。',
         ariaLabel: '按小时统计的账单记录分布', options: chartOptions.value.hours,
@@ -188,6 +192,14 @@ export default defineComponent({
         hint: '只显示出现过账单记录的星期。',
         ariaLabel: '按星期统计的账单记录分布', options: chartOptions.value.weekdays,
       },
+      ...[
+        ['regions', '账单来源地区', '按账单 IP 归属地统计记录数，未解析的地址归入未知地区。'],
+        ['tickets', '工单处理状态', '全部工单按当前状态统计。'],
+        ['registerSources', '账号注册来源', '按未归档账号的注册来源统计用户数。'],
+        ['registerRegions', '账号注册地区', '按未归档账号的注册 IP 归属地统计用户数。'],
+        ['userStatuses', '账号状态', '按未归档账号的当前状态统计用户数。'],
+        ['userRoles', '账号角色', '普通用户与管理员均以实际账号记录为准。'],
+      ].map(([key, title, hint]) => ({ key, title, hint, ariaLabel: `${title}分布图`, options: chartOptions.value[key] })),
     ])
     const tableViewList = computed(() => buildPortraitBreakdownTables(portrait.value || {}))
     const generatedAt = computed(() => {

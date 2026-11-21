@@ -44,6 +44,7 @@ async function createPage(overrides = {}) {
     computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch,
     onBeforeRouteLeave, useRoute, useCurrentUserDisplay, isAdminUser, useUnsavedDraft,
     sumTableColumnWidths,
+    AdminDataTransfer: {},
     globalThis: { localStorage: undefined },
     message: { success() {} },
     Modal: confirming(),

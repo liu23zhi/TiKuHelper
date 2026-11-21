@@ -151,24 +151,41 @@
             <div><dt>余额</dt><dd>{{ moneyText(detailUser.balance) }}</dd></div>
             <div><dt>赠送余额</dt><dd>{{ moneyText(detailUser.giftBalance) }}</dd></div>
             <div><dt>注册时间</dt><dd>{{ formatDateTime(detailUser.createdAt) }}</dd></div>
+            <div><dt>账号角色</dt><dd>{{ detailUser.role === 'admin' ? '管理员' : '普通用户' }}</dd></div>
+            <div><dt>账号状态</dt><dd>{{ detailUser.status === 'enabled' ? '正常' : '已禁用' }}</dd></div>
+            <div><dt>注册来源</dt><dd>{{ detailUser.registerSource || '未记录' }}</dd></div>
+            <div><dt>注册 IP</dt><dd>{{ detailUser.registerIp || '未记录' }}</dd></div>
+            <div><dt>最近登录</dt><dd>{{ formatDateTime(detailUser.lastLoginAt) }}</dd></div>
+            <div><dt>登录 IP</dt><dd>{{ detailUser.lastLoginIp || '未记录' }}</dd></div>
+            <div><dt>手机号</dt><dd>{{ identityRevealed ? identityCurrent.phone || '未绑定' : detailUser.phone || '未绑定' }}</dd></div>
+            <div><dt>微信标识</dt><dd>{{ identityRevealed ? identityCurrent.wechatId || '未绑定' : detailUser.wechatId || '未绑定' }}</dd></div>
+            <div><dt>邀请人</dt><dd>{{ detailUser.invitedByUserId ? `#${detailUser.invitedByUserId}` : '无' }}</dd></div>
           </dl>
-          <h3 class="detail-heading">绑定记录历史</h3>
+          <div class="detail-binding-heading">
+            <h3 class="detail-heading">绑定记录历史</h3>
+            <a-button v-if="!identityRevealed" size="small" :loading="identityLoading" :disabled="detailLoading || identityLoading" data-action="reveal-archived-identity" @click="revealIdentity">查看身份原文</a-button>
+            <a-button v-else size="small" data-action="hide-archived-identity" @click="hideIdentity">隐藏原文</a-button>
+          </div>
           <p class="detail-hint">已释放的绑定不再占位，别人可以重新绑定同一个手机号 / 微信。</p>
+          <p v-if="identityRevealed" class="detail-hint">原文仅在当前弹窗显示，关闭后清除；本次查看已记录审计。</p>
+          <a-alert v-if="identityError" type="error" show-icon :message="identityError" class="status-alert" />
           <a-table
             size="small"
             :data-source="detailBindings"
             :columns="bindingColumns"
             :pagination="false"
+            :scroll="{ x: 1170 }"
             row-key="id"
             :locale="{ emptyText: '该账号没有绑定记录' }"
           >
             <template #bodyCell="{ column, record }">
               <span v-if="column.key === 'kind'">{{ bindingKindLabel(record.kind) }}</span>
-              <span v-else-if="column.key === 'valueMasked'">{{ record.valueMasked || '—' }}</span>
+              <span v-else-if="column.key === 'valueMasked'">{{ identityValue(record) }}</span>
               <a-tag v-else-if="column.key === 'state'" :color="record.state === 'active' ? 'green' : 'default'">
                 {{ record.state === 'active' ? '生效中' : '已释放' }}
               </a-tag>
               <span v-else-if="column.key === 'releaseSource'">{{ releaseSourceLabel(record.releaseSource) }}</span>
+              <span v-else-if="column.key === 'boundAt'">{{ formatDateTime(record.boundAt || record.createdAt) }}</span>
               <span v-else-if="column.key === 'releasedAt'">{{ formatDateTime(record.releasedAt) }}</span>
             </template>
           </a-table>
@@ -210,7 +227,7 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
-import { getArchivedUserDetail, getArchivedUsers, restoreArchivedUser } from '@/api/ArchivedUserApi'
+import { getArchivedUserDetail, getArchivedUserIdentity, getArchivedUsers, restoreArchivedUser } from '@/api/ArchivedUserApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
@@ -253,6 +270,12 @@ export default {
     const detailError = ref('')
     const detailUser = shallowRef(null)
     const detailBindings = ref([])
+    const identityBindings = shallowRef([])
+    const identityCurrent = shallowRef({})
+    const identityRevealed = ref(false)
+    const identityLoading = ref(false)
+    const identityError = ref('')
+    let detailVersion = 0
     const conflictOpen = ref(false)
     const conflict = reactive({ id: null, currentUsername: '', occupiedByUserId: null, suggestedUsername: '' })
 
@@ -295,9 +318,12 @@ export default {
 
     const bindingColumns = [
       { title: '类型', dataIndex: 'kind', key: 'kind', width: 90 },
-      { title: '值（脱敏）', dataIndex: 'valueMasked', key: 'valueMasked', width: 160 },
+      { title: '绑定值', dataIndex: 'valueMasked', key: 'valueMasked', width: 170 },
       { title: '状态', dataIndex: 'state', key: 'state', width: 100 },
+      { title: '绑定时间', key: 'boundAt', width: 175 },
       { title: '释放来源', dataIndex: 'releaseSource', key: 'releaseSource', width: 120 },
+      { title: '释放原因', dataIndex: 'releaseReason', key: 'releaseReason', width: 150 },
+      { title: '操作人 ID', dataIndex: 'operatorUserId', key: 'operatorUserId', width: 110 },
       { title: '释放时间', dataIndex: 'releasedAt', key: 'releasedAt', width: 175 },
     ]
 
@@ -447,6 +473,10 @@ export default {
       if (!canManage() || loading.value) return
       const id = Number(record?.id)
       if (!Number.isInteger(id) || id <= 0) return
+      const version = ++detailVersion
+      const owner = currentUserIdentity(currentUser.value)
+      const owns = () => version === detailVersion && canManage() && detailOpen.value && owner === currentUserIdentity(currentUser.value)
+      hideIdentity()
       detailOpen.value = true
       detailLoading.value = true
       detailError.value = ''
@@ -454,7 +484,7 @@ export default {
       detailBindings.value = []
       try {
         const res = await getArchivedUserDetail(id)
-        if (!detailOpen.value) return
+        if (!owns()) return
         if (res?.status !== 200) {
           detailError.value = res?.message || '读取账号详情失败，请稍后重试。'
           return
@@ -463,10 +493,45 @@ export default {
         detailUser.value = body.data || null
         detailBindings.value = Array.isArray(body.bindings) ? body.bindings : []
       } catch (error) {
-        if (detailOpen.value) detailError.value = '读取账号详情失败，请稍后重试。'
+        if (owns()) detailError.value = '读取账号详情失败，请稍后重试。'
       } finally {
-        detailLoading.value = false
+        if (owns()) detailLoading.value = false
       }
+    }
+
+    function hideIdentity() {
+      identityBindings.value = []
+      identityCurrent.value = {}
+      identityRevealed.value = false
+      identityLoading.value = false
+      identityError.value = ''
+      identityRequestVersion += 1
+    }
+    let identityRequestVersion = 0
+    const identityValue = record => identityRevealed.value
+      ? identityBindings.value.find(item => item.id === record.id)?.value || record.valueMasked || '—'
+      : record.valueMasked || '—'
+    async function revealIdentity() {
+      if (!canManage() || !detailOpen.value || !detailUser.value || identityLoading.value) return
+      const id = detailUser.value.id
+      const version = ++identityRequestVersion
+      const detail = detailVersion
+      const owner = currentUserIdentity(currentUser.value)
+      const owns = () => canManage() && detailOpen.value && detail === detailVersion && version === identityRequestVersion && owner === currentUserIdentity(currentUser.value)
+      identityLoading.value = true
+      identityError.value = ''
+      try {
+        const res = await getArchivedUserIdentity(id)
+        if (!owns()) return
+        if (Number(res?.status) !== 200 || Number(res.data?.userId) !== Number(id) || !Array.isArray(res.data?.bindings)) {
+          identityError.value = '读取身份原文失败，请重试。'
+          return
+        }
+        identityBindings.value = res.data.bindings.map(item => ({ id: item.id, value: item.value }))
+        identityCurrent.value = { phone: res.data.phone, wechatId: res.data.wechatId }
+        identityRevealed.value = true
+      } catch { if (owns()) identityError.value = '读取身份原文失败，请重试。' }
+      finally { if (owns()) identityLoading.value = false }
     }
 
     // 恢复：先探冲突（confirmRename=false），409 才弹二次确认。
@@ -536,7 +601,17 @@ export default {
 
     // 弹窗开关一律走具名处理函数（不在模板里给 ref 赋值）：
     // 模板内联赋值在 setup 返回 ref 时依赖代理行为，写错方向会静默不生效。
-    const setDetailOpen = value => { detailOpen.value = value === true }
+    const setDetailOpen = value => {
+      detailOpen.value = value === true
+      if (!detailOpen.value) {
+        detailVersion += 1
+        hideIdentity()
+        detailUser.value = null
+        detailBindings.value = []
+        detailLoading.value = false
+        detailError.value = ''
+      }
+    }
     const setConflictOpen = value => { if (!value) cancelConflict() }
 
     const resetView = () => {
@@ -546,7 +621,7 @@ export default {
       pagination.total = 0
       hasLoaded.value = false
       lastLoadedAt.value = ''
-      detailOpen.value = false
+      setDetailOpen(false)
       conflictOpen.value = false
       restoreError.value = ''
       listError.value = ''
@@ -555,7 +630,7 @@ export default {
 
     // 与其它管理页一致：操作者/角色/状态/登出/路由任一变化都作废在途读取，
     // 否则 A 的列表可能被 B 的响应覆盖（跨账号数据串台）。
-    watch(() => [currentUserIdentity(currentUser.value), currentUser.value?.role, currentUser.value?.status], () => {
+    watch([() => currentUserIdentity(currentUser.value), () => currentUser.value?.role, () => currentUser.value?.status], () => {
       resetView()
       if (mounted && canManage()) void load()
     }, { flush: 'sync' })
@@ -574,6 +649,7 @@ export default {
       alive = false
       mounted = false
       readVersion += 1
+      setDetailOpen(false)
     })
 
     return {
@@ -581,6 +657,7 @@ export default {
       filterError, listError, restoreError, pagination, columns, bindingColumns, reasonOptions,
       reasonCounts, scopeDescription, emptyText, sumTableColumnWidths,
       detailOpen, detailLoading, detailError, detailUser, detailBindings,
+      identityRevealed, identityLoading, identityError, identityCurrent, revealIdentity, hideIdentity, identityValue,
       conflictOpen, conflict, load, reload, resetFilters, onTableChange, setFilter,
       openDetail, startRestore, confirmRenameRestore, cancelConflict, setDetailOpen, setConflictOpen,
       reasonLabel, reasonColor, bindingKindLabel, releaseSourceLabel, moneyText, formatDateTime,
@@ -604,6 +681,9 @@ export default {
 .detail-grid div { display: flex; gap: 8px; }
 .detail-grid dt { color: var(--text-muted, #6b7280); min-width: 72px; }
 .detail-grid dd { margin: 0; }
+.detail-grid dd { min-width: 0; overflow-wrap: anywhere; }
+.detail-binding-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+.detail-binding-heading .detail-heading { margin: 0; }
 .detail-heading { margin: 20px 0 4px; font-size: 15px; }
 .detail-hint { margin: 0 0 12px; color: var(--text-muted, #6b7280); font-size: 13px; }
 .conflict-text { margin: 0 0 8px; }

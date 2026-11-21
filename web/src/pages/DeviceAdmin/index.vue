@@ -133,6 +133,9 @@
                     :disabled="busy()"
                     @click="confirmUnban(record)"
                   >解封</a-button>
+                  <a-tooltip :title="record.revokedAt ? '仅删除绑定历史，保留封禁与拉黑状态' : '请先解绑设备'">
+                    <a-button type="link" danger :disabled="busy() || !record.revokedAt" @click="confirmDelete(record)">删除记录</a-button>
+                  </a-tooltip>
                 </a-space>
               </template>
             </template>
@@ -230,7 +233,7 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
-import { banAdminDevice, getAdminDevices, unbanAdminDevice, unbindAdminDevice } from '@/api/DeviceAdminApi'
+import { banAdminDevice, deleteAdminDevice, getAdminDevices, unbanAdminDevice, unbindAdminDevice } from '@/api/DeviceAdminApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -329,7 +332,7 @@ export default {
       { title: '解绑时间', dataIndex: 'revokedAt', key: 'revokedAt', width: 220 },
       { title: '封禁到期', dataIndex: 'banExpiresAt', key: 'banExpiresAt', width: 165 },
       { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-      { title: '操作', key: 'action', width: 150 },
+      { title: '操作', key: 'action', width: 230 },
     ]
 
     const orphanColumns = [
@@ -504,6 +507,14 @@ export default {
       return loadRows()
     }
 
+    const confirmDelete = async record => {
+      if (!record?.revokedAt || !canManage() || busy()) return false
+      const result = await Swal.fire({ title: '删除这条设备记录？', text: '仅清除已解绑的历史记录；设备封禁和账号拉黑状态会保留。', icon: 'warning', showCancelButton: true, confirmButtonText: '删除记录', cancelButtonText: '取消' })
+      if (!result.isConfirmed || !canManage()) return false
+      await runWrite(() => deleteAdminDevice(record.id), '已删除设备记录')
+      return loadRows()
+    }
+
     const openBanModal = deviceId => {
       if (!canManage() || busy()) return
       Object.assign(draft, emptyDraft())
@@ -641,7 +652,7 @@ watch(scopedUserId, () => {
       loading, writing, hasLoaded, total, listError, filterError, actionWarning,
       revocationSupported, pagination, scopeLabel, tableDescription, emptyText, scopedUserId,
       statusOptions, formatDateTime, setFilter, reload, resetFilters, onTableChange,
-      confirmUnbind, openBanModal, banVisible, banError, draft, setDraft, submitBan, closeBanModal,
+      confirmUnbind, confirmDelete, openBanModal, banVisible, banError, draft, setDraft, submitBan, closeBanModal,
       confirmUnban, loadRows,
       // 纯展示 helper 直出给模板（页面不再重复一份格式化逻辑）。
       shortDeviceId, deviceStatusText, deviceStatusColor, revokeReasonText,

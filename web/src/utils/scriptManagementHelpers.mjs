@@ -96,8 +96,8 @@ export function normalizeScriptRows(response) {
   return rows.map(normalizeScriptRecord)
 }
 
-export function buildScriptListParams(isAdmin, showAll) {
-  return { scope: isAdmin && showAll ? 'all' : 'self' }
+export function buildScriptListParams(isAdmin) {
+  return { scope: isAdmin ? 'all' : 'self' }
 }
 
 export function buildScriptDownloadURL(record = {}) {
@@ -116,6 +116,16 @@ export function buildScriptDownloadURL(record = {}) {
 export function buildScriptCommand(record = {}) {
   const command = typeof record.command === 'string' ? record.command : ''
   return command.length <= 16384 && /^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command) ? command : ''
+}
+
+export function buildScriptShortCommand(record = {}, now = Date.now()) {
+  const grant = record.shortAuthorization
+  if (!['active', 'scheduled'].includes(grant?.status) || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now) return ''
+  if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
+  const address = String(grant.address || '')
+  if (!/^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''
+  const command = `powershell -c "iex(irm ${address})"`
+  return grant.command === command ? command : ''
 }
 
 export function buildScriptSavePayload(form = {}) {

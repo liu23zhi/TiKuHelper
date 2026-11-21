@@ -31,7 +31,8 @@ var refundManualReferencePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,96}$`)
 
 type ticketRefundResponse struct {
 	entity.TicketRefund
-	HasProof bool `json:"hasProof"`
+	HasProof                bool `json:"hasProof"`
+	HasSignedPayoutEvidence bool `json:"hasSignedPayoutEvidence"`
 }
 
 func ticketRefundRequest(c *gin.Context, admin bool) (*gorm.DB, entity.User, bool) {
@@ -89,7 +90,11 @@ func withTicketRefundProofFlags(db *gorm.DB, refunds []entity.TicketRefund) ([]t
 	}
 	for _, refund := range refunds {
 		owner, found := hasProof[refund.ID]
-		result = append(result, ticketRefundResponse{TicketRefund: refund, HasProof: found && owner == refund.UserID})
+		signedEvidence, err := service.HasTicketRefundSignedPayoutEvidenceWithDB(db, refund)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, ticketRefundResponse{TicketRefund: refund, HasProof: found && owner == refund.UserID, HasSignedPayoutEvidence: signedEvidence})
 	}
 	return result, nil
 }
@@ -229,7 +234,19 @@ func ReviewTicketRefund(c *gin.Context) {
 		return
 	}
 	if input.Action == "approve" && refund.Kind == service.TicketRefundKindManual && refund.Status == service.TicketRefundStatusPendingReview {
-		if _, _, err := service.ReadTicketRefundProofWithDB(db, actor, id); err != nil {
+		signedEvidence, err := service.HasTicketRefundSignedPayoutEvidenceWithDB(db, refund)
+		if err != nil {
+			writeTicketRefundError(c, err)
+			return
+		}
+		if signedEvidence {
+			for _, attachmentID := range []int64{*refund.PayoutQrAttachmentID, *refund.SignatureAttachmentID} {
+				if _, _, _, err := service.ReadTicketAttachmentWithDB(db, &actor, attachmentID); err != nil {
+					writeTicketRefundError(c, err)
+					return
+				}
+			}
+		} else if _, _, err := service.ReadTicketRefundProofWithDB(db, actor, id); err != nil {
 			if errors.Is(err, service.ErrTicketRefundNotFound) {
 				err = service.ErrTicketRefundProofRequired
 			}

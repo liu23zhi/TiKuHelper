@@ -26,7 +26,7 @@ const CONFIG = {
 const PRICES = [{ id: 501, modelName: 'MODEL-ZERO', displayName: 'Zero fixture', contextWindowTokens: 128000, inputPrice: 0, cachedPrice: 0, cacheWritePrice: 0.000062, outputPrice: 1.234567, multiplier: 1.2345, status: 'enabled', remark: 'SYNTHETIC_PRICE_REMARK', isUserModified: true }]
 const LABELS = {
   connection: ['是否启用', '服务地址', 'API Key', '默认模型', '备用模型', '模型列表'],
-  advanced: ['模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '本地题库检索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数'],
+  advanced: ['模型最大调用次数', '最大搜索次数', '每轮重试次数', '联网搜索单价（元/次）', '网页读取次数', '网页读取单价（元/次）', '图片 OCR 单价（元/次）', '自动压缩上下文', '压缩执行顺序', '压缩触发比例', '压缩目标比例', '压缩最大尝试次数'],
   prompt: ['Prompt 设置', '温度', 'Top P'],
   stage: ['启用阶段计费', '平滑变化倍率'],
   price: ['模型名称', '显示名称', '上下文窗口', '输入单价', '缓存输入单价', '缓存写入单价', '输出单价', '倍率', '备注'],
@@ -154,7 +154,7 @@ test('positive: original30 plus3 upstream labels values secret masking readonly 
   assert.equal(payload.useRemoteContextCompression, CONFIG.useRemoteContextCompression, 'legacy remote bool remains compatible in the real payload builders, not a removed UI checkbox')
   assert.deepEqual(clone(payload.contextCompressionOrder), clone(canonical.contextCompressionOrder))
   assert.equal(payload.temperature, 0); assert.equal(payload.topP, 0)
-  assert.equal(payload.searchPricePerCall, CONFIG.searchPricePerCall); assert.equal(payload.tiku_search_price_per_call, CONFIG.tiku_search_price_per_call); assert.equal(payload.webReadPricePerCall, CONFIG.webReadPricePerCall)
+  assert.equal(payload.searchPricePerCall, CONFIG.searchPricePerCall); assert.ok(!('tiku_search_price_per_call' in payload)); assert.equal(payload.webReadPricePerCall, CONFIG.webReadPricePerCall)
   for (const name of ['connection', 'advanced', 'prompt', 'stage']) assert.deepEqual(labels(region(w, name)), LABELS[name])
   assert.equal(field(region(w, 'connection'), '服务地址').control.value, CONFIG.baseUrl)
   const key = field(region(w, 'connection'), 'API Key').control
@@ -163,10 +163,10 @@ test('positive: original30 plus3 upstream labels values secret masking readonly 
   assert.equal(field(region(w, 'connection'), '模型列表').control.value, 'MODEL-ZERO')
   assert.equal(field(region(w, 'connection'), '备用模型').control.value, CONFIG.backupModel)
   for (const label of ['温度', 'Top P']) { const c = field(region(w, 'prompt'), label).control; assert.equal(c.value, '0'); assert.equal(c.disabled, true); assert.equal(c.readOnly, true) }
-  for (const [label, value] of [['联网搜索单价（元/次）', '0.000062'], ['本地题库检索单价（元/次）', '0.000061'], ['网页读取单价（元/次）', '1.234567'], ['图片 OCR 单价（元/次）', '0.000000'], ['模型最大调用次数', '4'], ['最大搜索次数', '3'], ['每轮重试次数', '3'], ['网页读取次数', '5'], ['压缩触发比例', '80'], ['压缩目标比例', '50'], ['压缩最大尝试次数', '3']]) assert.equal(field(region(w, 'advanced'), label).control.value, value)
+  for (const [label, value] of [['联网搜索单价（元/次）', '0.000062'], ['网页读取单价（元/次）', '1.234567'], ['图片 OCR 单价（元/次）', '0.000000'], ['模型最大调用次数', '4'], ['最大搜索次数', '3'], ['每轮重试次数', '3'], ['网页读取次数', '5'], ['压缩触发比例', '80'], ['压缩目标比例', '50'], ['压缩最大尝试次数', '3']]) assert.equal(field(region(w, 'advanced'), label).control.value, value)
   const modal = await open(w); assert.deepEqual(labels(modal), LABELS.price); assert.equal(w.vm.priceForm, canonicalPrice)
   for (const [label, value] of [['模型名称', 'MODEL-ZERO'], ['显示名称', 'Zero fixture'], ['上下文窗口', '128000'], ['输入单价', '0.000000'], ['缓存输入单价', '0.000000'], ['缓存写入单价', '0.000062'], ['输出单价', '1.234567'], ['倍率', '1.2345'], ['备注', 'SYNTHETIC_PRICE_REMARK']]) assert.equal(field(modal, label).control.value, value)
-  assert.equal(labels(w.element).length + labels(modal).length, 33)
+  assert.equal(labels(w.element).length + labels(modal).length, 32)
   await cancel(w, modal); assert.equal(w.vm.formState, canonical); assert.deepEqual(clone(canonical), initial); assert.equal(w.vm.hasUnsavedChanges, false); assert.equal(w.vm.priceForm, canonicalPrice); assert.equal(canonicalPrice.id, null)
 })
 
@@ -208,7 +208,7 @@ test('native labels focus all enabled own controls and activate only own switche
       label.click(); await settle(); assert.equal(control.getAttribute('aria-checked'), checked, 'second local label click restores its own switch: ' + text)
     }
   }
-  assert.equal(focused, 31); assert.equal(disabled, 2); assert.deepEqual(clone(w.vm.formState), config); await cancel(w, modal)
+  assert.equal(focused, 30); assert.equal(disabled, 2); assert.deepEqual(clone(w.vm.formState), config); await cancel(w, modal)
 })
 
 test('same app: two page instances and simultaneous price editors have unique stable IDs and independent canonical drafts', async () => {

@@ -111,6 +111,12 @@ export function buildPortraitCharts(portrait) {
     weekdays: { ...weekdays, title: '时间段分布（按星期）' },
     regions: { ...regions, title: '区域分布' },
     billingTypes: { ...billingTypes, title: '消费类型分布' },
+    daily: buildPortraitSeries(data.daily, { labelKey: 'date' }),
+    tickets: buildPortraitSeries(data.tickets),
+    registerSources: buildPortraitSeries(data.registerSources),
+    registerRegions: buildPortraitSeries(data.registerRegions),
+    userStatuses: buildPortraitSeries(data.userStatuses),
+    userRoles: buildPortraitSeries(data.userRoles),
   }
 }
 

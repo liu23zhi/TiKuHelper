@@ -69,6 +69,11 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if activation.UsedAt == nil {
+			if err := validateIssuedScriptAuthorization(script, activation, now); err != nil {
+				return err
+			}
+		}
 		if err := ValidateScriptDomainWithDB(tx, script.BaseDomain); err != nil {
 			return err
 		}
@@ -293,6 +298,9 @@ func DownloadScriptVersionByActivationTokenWithDB(db *gorm.DB, shortCode, activa
 		return entity.ScriptVersion{}, ErrScriptTokenInvalid
 	}
 	if err := validateScriptLaunchActorWithDB(db, script); err != nil {
+		return entity.ScriptVersion{}, err
+	}
+	if err := validateIssuedScriptAuthorization(script, activation, time.Now()); err != nil {
 		return entity.ScriptVersion{}, err
 	}
 	versionID := activation.VersionID

@@ -18,13 +18,13 @@ const originalAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'inert adapter before actual request/API import')
 const exactParams=(actual,expected)=>Object.keys(actual).length===Object.keys(expected).length&&Object.keys(expected).every(k=>Object.prototype.hasOwnProperty.call(actual,k)&&Object.is(actual[k],expected[k]))
 axios.defaults.adapter=config=>{
- const method=String(config.method||'get').toLowerCase(),url=String(config.url),params=config.params||{},paramsKeys=Object.keys(params).sort();calls.push({method,url,paramsKeys,...(url==='/adapter-service/tickets'?{params:{page:params.page,pageSize:params.pageSize}}:{})})
+ const method=String(config.method||'get').toLowerCase(),url=String(config.url),params=config.params||{},paramsKeys=Object.keys(params).sort();calls.push({method,url,paramsKeys,...(url==='/api/tickets'?{params:{page:params.page,pageSize:params.pageSize}}:{})})
  if(method!=='get')return Promise.reject(deny('nonGET'))
- if(calls.slice(activePlan.start).filter(c=>c.url===url).length>(url==='/adapter-service/tickets'?2:(url==='/adapter-service/tickets/8094'&&activePlan.actorB?2:1)))return Promise.reject(deny('unplanned-repeated-GET'))
+ if(calls.slice(activePlan.start).filter(c=>c.url===url).length>(url==='/api/tickets'?2:(url==='/api/tickets/8094'&&activePlan.actorB?2:1)))return Promise.reject(deny('unplanned-repeated-GET'))
  let data,status=200;const actorB=activePlan.actorB&&Number(user.getStoredCurrentUser()?.id)===1906202
- if(url==='/adapter-service/public/register-status'){if(!exactParams(params,{}))return Promise.reject(deny('unexpected-public-params'));data={siteName:'Synthetic Tickets Readonly App'}}
- else if(url==='/adapter-service/tickets'){if(!exactParams(params,{page:1,pageSize:20}))return Promise.reject(deny('unexpected-list-params'));data={items:actorB?[]:[{...ROW}],total:actorB?0:1,page:1,pageSize:20}}
- else if(url==='/adapter-service/tickets/8094'){if(!exactParams(params,{}))return Promise.reject(deny('unexpected-detail-params'));if(actorB){status=404;data={message:'Synthetic owned record unavailable'}}else data={ticket:{...ROW},messages:[{...THREAD}],notification:null}}
+ if(url==='/api/public/register-status'){if(!exactParams(params,{}))return Promise.reject(deny('unexpected-public-params'));data={siteName:'Synthetic Tickets Readonly App'}}
+ else if(url==='/api/tickets'){if(!exactParams(params,{page:1,pageSize:20}))return Promise.reject(deny('unexpected-list-params'));data={items:actorB?[]:[{...ROW}],total:actorB?0:1,page:1,pageSize:20}}
+ else if(url==='/api/tickets/8094'){if(!exactParams(params,{}))return Promise.reject(deny('unexpected-detail-params'));if(actorB){status=404;data={message:'Synthetic owned record unavailable'}}else data={ticket:{...ROW},messages:[{...THREAD}],notification:null}}
  else return Promise.reject(deny('unknownGET'))
  return Promise.resolve({status,data,headers:{},config,request:{memoryOnly:true}})
 }
@@ -62,7 +62,7 @@ test('TK01 actual App ordinary Ticket detail declares native modal and preserves
  cur={name:'TK01',completedFlow:false,passed:false,checks:[],observations:[]};cases.push(cur)
  try{
   const {w,router}=await appPage(),opener=button(w.element.querySelector('tr[data-row-key="8094"]'),'查看详情');await click(opener)
-  await until(()=>router.currentRoute.value.path==='/adapter/tickets/8094'&&calls.some(c=>c.url==='/adapter-service/tickets/8094'),'original view action admits original route and real detail read')
+  await until(()=>router.currentRoute.value.path==='/adapter/tickets/8094'&&calls.some(c=>c.url==='/api/tickets/8094'),'original view action admits original route and real detail read')
   const dialog=await until(()=>[...document.querySelectorAll('.ant-modal')].find(n=>visible(n)&&compact(n.querySelector('.ant-modal-title')?.textContent)===ROW.subject&&n.querySelector('.message-item p')?.textContent===THREAD.body),'actual detail body from original GET response'),e={w,router,opener,dialog};observe('admitted',e)
   await until(()=>!entering(dialog),'real original Transition naturally settles');await settle();observe('settled',e)
   const role=dialog.closest('[role="dialog"]')||dialog.querySelector('[role="dialog"]'),ids=String(role?.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean),name=compact(ids.map(id=>document.getElementById(id)?.textContent||'').join(' '))
@@ -74,7 +74,7 @@ test('TK01 actual App ordinary Ticket detail declares native modal and preserves
   cur.observations.push({label:'closed-settled',route:router.currentRoute.value.path,oldDialogConnected:dialog.isConnected,oldDialogVisible:visible(dialog),openerConnected:opener.isConnected,openerEnabled:!opener.disabled,focus:focus(opener,dialog),connectedThreadCount:document.querySelectorAll('.message-item').length,visibleDialogCount:[...document.querySelectorAll('[role="dialog"]')].filter(visible).length,detailFooterAbsent:!dialog.querySelector('.ant-modal-footer'),createOrReplyNeverInvoked:true})
   cur.checks.push({label:'native Header X returns focus to exact still-connected enabled original detail opener',category:'primary-close-focus',qualified:opener.isConnected&&!opener.disabled&&opener.tabIndex>=0,passed:document.activeElement===opener})
   cur.checks.push({label:'original detail route and closed thread/overlay state observed without writes',passed:router.currentRoute.value.path==='/adapter/tickets'&&!visible(dialog)&&document.querySelectorAll('.message-item').length===0})
-  cur.checks.push({label:'only exact allowlisted GETs within original route-return reread bound',passed:calls.length>=3&&calls.length<=4&&calls.every(c=>c.method==='get')&&calls.filter(c=>c.url==='/adapter-service/tickets').length>=1&&calls.filter(c=>c.url==='/adapter-service/tickets').length<=2&&['/adapter-service/public/register-status','/adapter-service/tickets/8094'].every(url=>calls.filter(c=>c.url===url).length===1)})
+  cur.checks.push({label:'only exact allowlisted GETs within original route-return reread bound',passed:calls.length>=3&&calls.length<=4&&calls.every(c=>c.method==='get')&&calls.filter(c=>c.url==='/api/tickets').length>=1&&calls.filter(c=>c.url==='/api/tickets').length<=2&&['/api/public/register-status','/api/tickets/8094'].every(url=>calls.filter(c=>c.url===url).length===1)})
   cur.checks.push({label:'zero clipboard/real IO/runtime/console errors',passed:!realIO.length&&!runtime.length&&!errors.length})
   cur.completedFlow=true;assert.deepEqual(cur.checks.filter(c=>!c.passed).map(c=>c.label),[],'complete-tail current native Ticket detail contract; no create/reply/state action');cur.passed=true
  }finally{write()}
@@ -82,7 +82,7 @@ test('TK01 actual App ordinary Ticket detail declares native modal and preserves
 
 async function guardDetail(w,router){
  const opener=button(w.element.querySelector('tr[data-row-key="8094"]'),'查看详情');await click(opener)
- await until(()=>router.currentRoute.value.path==='/adapter/tickets/8094'&&calls.slice(activePlan.start).some(c=>c.url==='/adapter-service/tickets/8094'),'real native detail route/read before close guard')
+ await until(()=>router.currentRoute.value.path==='/adapter/tickets/8094'&&calls.slice(activePlan.start).some(c=>c.url==='/api/tickets/8094'),'real native detail route/read before close guard')
  const dialog=await until(()=>[...document.querySelectorAll('.ant-modal')].find(n=>visible(n)&&compact(n.querySelector('.ant-modal-title')?.textContent)===ROW.subject&&n.querySelector('.message-item p')?.textContent===THREAD.body),'real readonly detail for close guard');await until(()=>!entering(dialog),'original detail transition settled for guard');await settle();return{w,router,opener,dialog}
 }
 function holdOriginalCloseRoute(router){
@@ -110,7 +110,7 @@ test('TC02 original readonly close navigation preserves foreground/dialog and re
      other=Antd.Modal.info({title:'SYNTHETIC_FOREIGN_DIALOG',content:'Synthetic readonly foreign focus owner',wrapProps:{'aria-modal':true}})
      const foreign=await until(()=>[...document.querySelectorAll('.ant-modal')].find(n=>visible(n)&&compact(n.querySelector('.ant-modal-confirm-title')?.textContent)==='SYNTHETIC_FOREIGN_DIALOG'),'other real Antd dialog visible');await until(()=>!entering(foreign),'other actual dialog natural transition');await settle();const role=foreign.closest('[role="dialog"]')||foreign.querySelector('[role="dialog"]');assert.ok(role?.contains(document.activeElement),'real other dialog settled focus qualification');expectedFocus=document.activeElement;vector.qualification.otherRealAntdDialog=true
     }else if(mode==='actor'){
-     user.setStoredCurrentUser({...ACTOR,id:1906202,username:'synthetic_ticket_actor_b'});await until(()=>calls.slice(activePlan.start).filter(c=>c.url==='/adapter-service/tickets').length===2&&calls.slice(activePlan.start).filter(c=>c.url==='/adapter-service/tickets/8094').length===2,'new enabled actor legitimate exact list-empty/detail404 reads settle');await settle();input=focusInput(mode);expectedFocus=input;vector.qualification.newActorVisible=Number(user.getStoredCurrentUser()?.id)===1906202
+     user.setStoredCurrentUser({...ACTOR,id:1906202,username:'synthetic_ticket_actor_b'});await until(()=>calls.slice(activePlan.start).filter(c=>c.url==='/api/tickets').length===2&&calls.slice(activePlan.start).filter(c=>c.url==='/api/tickets/8094').length===2,'new enabled actor legitimate exact list-empty/detail404 reads settle');await settle();input=focusInput(mode);expectedFocus=input;vector.qualification.newActorVisible=Number(user.getStoredCurrentUser()?.id)===1906202
     }else if(mode==='role-ABA'){
      user.setStoredCurrentUser({...ACTOR,role:'SYNTHETIC_NONADMIN'});vector.qualification.roleLiteralStored=user.getStoredCurrentUser()?.role==='SYNTHETIC_NONADMIN';user.setStoredCurrentUser({...ACTOR});await settle();vector.qualification.roleReturnedToUser=user.getStoredCurrentUser()?.role==='user';vector.qualification.originalOpenerStillConnected=e.opener.isConnected;vector.qualification.activeBodyBeforeRelease=document.activeElement===document.body
      guardCheck('role-only nonadmin literal ABA accepted without identity/adminness or DOM-disconnect masking',vector.qualification.roleLiteralStored&&vector.qualification.roleReturnedToUser&&e.opener.isConnected&&document.activeElement===document.body);expectedFocus=document.body

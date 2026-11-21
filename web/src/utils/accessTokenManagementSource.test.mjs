@@ -67,7 +67,7 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
     const widths = () => state.columns.value.map(column => column.width);
     assert.ok(widths().every(width => Number.isFinite(width) && width > 0));
     assert.equal(state.tableScrollX.value, widths().reduce((sum, width) => sum + width, 0));
-    assert.equal(state.columns.value.some(column => column.key === 'username'), false);
+    assert.equal(state.columns.value.some(column => column.key === 'username'), true);
     const collapsed = state.tableScrollX.value;
     state.remarkExpansion.toggle(state.dataSource.value[0], 'remark');
     assert.equal(state.columns.value.find(column => column.key === 'remark').width, 236);
@@ -76,7 +76,7 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
     assert.equal(state.tableScrollX.value, collapsed);
     state.showAllTokens.value = true;
     assert.equal(state.columns.value[0].key, 'username');
-    assert.equal(state.tableScrollX.value, collapsed + 160);
+    assert.equal(state.tableScrollX.value, collapsed);
   } finally {
     scope.stop();
   }
@@ -85,10 +85,7 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
 test('AccessTokenManagement page restricts the all-token view to admins and adds usernames', async () => {
   const content = await readFile(pagePath, 'utf8');
 
-  assert.match(content, /显示全部令牌/);
-  assert.match(content, /只看我的令牌/);
-  assert.match(content, /v-if="isAdmin"/);
-  assert.match(content, /showAllTokens/);
-  assert.match(content, /buildAccessTokenListParams\(this\.showAllTokens\)/);
+  assert.doesNotMatch(content.match(/<template>[\s\S]*?<\/template>/)?.[0] || '', /只看我的令牌|toggleAllTokens/);
+  assert.match(content, /buildAccessTokenListParams\(this\.isAdmin\)/);
   assert.match(content, /title: '用户名'/);
 });

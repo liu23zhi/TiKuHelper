@@ -125,12 +125,14 @@ type UpdateUserScriptInput struct {
 
 type ScriptListItem struct {
 	entity.UserScript
-	Username              string `json:"username,omitempty"`
-	Version               string `json:"version"`
-	VersionSHA256         string `json:"versionSha256"`
-	Command               string `json:"command"`
-	DownloadURL           string `json:"downloadUrl"`
-	EscrowAvailableMicros *int64 `json:"escrowAvailableMicros,omitempty"`
+	Username              string                        `json:"username,omitempty"`
+	Version               string                        `json:"version"`
+	VersionSHA256         string                        `json:"versionSha256"`
+	Command               string                        `json:"command"`
+	DownloadURL           string                        `json:"downloadUrl"`
+	ShortAuthorization    *ScriptShortAuthorizationView `gorm:"-" json:"shortAuthorization,omitempty"`
+	LauncherAuthorization *ScriptShortAuthorizationView `gorm:"-" json:"launcherAuthorization,omitempty"`
+	EscrowAvailableMicros *int64                        `json:"escrowAvailableMicros,omitempty"`
 	// RevokeNotice 是「我的脚本」通知区的一条提示；nil = 无需提示。
 	//
 	// 用指针而不是值：前端要能区分「后端说没事」（字段存在且为空）
@@ -147,9 +149,10 @@ type ScriptListItem struct {
 }
 
 type ScriptExchangeGrant struct {
-	ShortCode string    `json:"shortCode"`
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	ShortCode    string    `json:"shortCode"`
+	Token        string    `json:"token"`
+	ExpiresAt    time.Time `json:"expiresAt"`
+	LaunchOrigin string    `json:"-"`
 }
 
 type ScriptExchangeResult struct {
@@ -559,6 +562,9 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 		}
 		if result[i].UserID != operator.ID {
 			result[i].Command, result[i].Instruction = "", ""
+		} else {
+			result[i].ShortAuthorization = scriptShortAuthorizationView(result[i].UserScript)
+			result[i].LauncherAuthorization = scriptLauncherAuthorizationView(result[i].UserScript)
 		}
 	}
 	// 撤销通知（2026-11-17）：一次批量查询覆盖全部脚本，不做 N+1。
@@ -827,6 +833,9 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
 			return err
 		}
+		if err := validateIssuedScriptAuthorization(script, grant, time.Now()); err != nil {
+			return err
+		}
 		versionID := grant.VersionID
 		if versionID <= 0 {
 			versionID = script.VersionID
@@ -856,10 +865,18 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 			return err
 		}
 		activationExpiresAt := now.Add(ScriptExchangeTokenTTL)
-		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt}).Error; err != nil {
+		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt, AuthorizationKind: grant.AuthorizationKind, AuthorizationGeneration: grant.AuthorizationGeneration}).Error; err != nil {
 			return err
 		}
-		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/api/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/api/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: ScriptCommandOrigin(script), ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
+		launchOrigin := ScriptCommandOrigin(script)
+		if grant.LaunchAddress != "" {
+			_, origin, err := validateScriptShortAddressWithDB(tx, grant.LaunchAddress)
+			if err != nil {
+				return ErrScriptTokenInvalid
+			}
+			launchOrigin = origin
+		}
+		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/api/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/api/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: launchOrigin, ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
 		return nil
 	})
 	return result, err
@@ -983,6 +1000,9 @@ func scriptLauncherCapability(script entity.UserScript) string {
 	}
 	mac := hmac.New(sha256.New, []byte(script.AccessKey))
 	_, _ = mac.Write([]byte("tikuhelper/script-launcher/v1\x00" + script.ShortCode))
+	if script.LauncherGeneration > 0 {
+		_, _ = mac.Write([]byte("\x00" + fmt.Sprint(script.LauncherGeneration)))
+	}
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -1126,12 +1146,8 @@ func IssuePublicScriptExchangeTokenWithDB(db *gorm.DB, shortCode, capability str
 	if ttl <= 0 || ttl > ScriptExchangeTokenTTL {
 		ttl = ScriptExchangeTokenTTL
 	}
-	token, err := randomScriptSecret(24)
-	if err != nil {
-		return ScriptExchangeGrant{}, err
-	}
-	expires := time.Now().Add(ttl)
-	resolvedShortCode := ""
+	var token, resolvedShortCode string
+	var expires time.Time
 	if err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var script entity.UserScript
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("short_code = ? AND deleted_at IS NULL AND enabled = ?", strings.TrimSpace(shortCode), true).First(&script).Error; err != nil {
@@ -1144,33 +1160,18 @@ func IssuePublicScriptExchangeTokenWithDB(db *gorm.DB, shortCode, capability str
 		if normalizeScriptScheme(script.Scheme) != "https" || expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(capability)) != 1 {
 			return ErrScriptNotFound
 		}
-		resolvedShortCode = script.ShortCode
-		var user entity.User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
+		if err := consumeScriptLauncherAuthorizationInTx(tx, script, time.Now()); err != nil {
 			return err
 		}
-		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
-			return ErrScriptTokenInvalid
-		}
-		if err := validateScriptLaunchKeyWithDB(tx, script); err != nil {
+		grant, err := IssueScriptExchangeTokenWithDB(tx, entity.User{ID: script.UserID}, script.ID, ttl)
+		if err != nil {
 			return err
 		}
-		if util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {
-			return ErrScriptTokenBalanceInsufficient
-		}
-		if err := deleteExpiredScriptExchangeTokens(tx, script.ID); err != nil {
+		if err := tx.Model(&entity.ScriptExchangeToken{}).Where("token_hash = ?", hashScriptSecret(grant.Token)).Updates(map[string]any{"authorization_kind": "full", "authorization_generation": script.LauncherGeneration}).Error; err != nil {
 			return err
 		}
-		var active int64
-		if err := tx.Model(&entity.ScriptExchangeToken{}).
-			Where("script_id = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?", script.ID, "exchange", time.Now()).
-			Count(&active).Error; err != nil {
-			return err
-		}
-		if active > 0 {
-			return ErrScriptExchangeAlreadyIssued
-		}
-		return tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: script.VersionID, Purpose: "exchange", TokenHash: hashScriptSecret(token), ExpiresAt: expires}).Error
+		token, expires, resolvedShortCode = grant.Token, grant.ExpiresAt, grant.ShortCode
+		return nil
 	}); err != nil {
 		return ScriptExchangeGrant{}, err
 	}

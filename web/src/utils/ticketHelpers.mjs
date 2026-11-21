@@ -93,7 +93,9 @@ export function normalizeTicketDetailResponse(response) {
   const payload = response?.data?.data || response?.data || {};
   const ticket = payload?.ticket || payload;
   return {
-    ticket: ticket && typeof ticket === "object" ? ticket : null,
+    ticket: ticket && typeof ticket === "object"
+      ? { ...ticket, ...(payload?.refund && typeof payload.refund === "object" ? { refund: payload.refund } : {}) }
+      : null,
     messages: Array.isArray(payload?.messages) ? payload.messages : [],
     user: payload?.user && typeof payload.user === "object" ? payload.user : null,
     // 附件可能是占位条目（visible=false），前端只按 visible 决定是否拉图。

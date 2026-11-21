@@ -63,16 +63,33 @@ type UserScript struct {
 	AnswerPriceMultiplier float64 `gorm:"column:answer_price_multiplier;type:decimal(18,6);not null;default:0" json:"answerPriceMultiplier"`
 	// AnswerPrice is retained for backwards-compatible reads of pre-multiplier
 	// rows. New scripts use AnswerPriceMultiplier against the current tiku price.
-	AnswerPrice       float64    `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`
-	ShortCode         string     `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
-	AccessTokenID     int32      `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
-	AccessKey         string     `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
-	ReservedFee       float64    `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
-	EscrowClosingAt   *time.Time `gorm:"column:escrow_closing_at;index" json:"escrowClosingAt,omitempty"`
-	EscrowWorkTracked bool       `gorm:"column:escrow_work_tracked;not null;default:false" json:"-"`
-	DeletedAt         *time.Time `gorm:"column:deleted_at;index" json:"deletedAt,omitempty"`
-	CreatedAt         time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt         time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	AnswerPrice   float64 `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`
+	ShortCode     string  `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
+	AccessTokenID int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
+	AccessKey     string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
+	ReservedFee   float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
+	// Full and short entry budgets are independent; legacy full commands remain
+	// enabled with no time/count limit until the owner explicitly configures them.
+	LauncherDisabled   bool       `gorm:"column:launcher_disabled;not null;default:false" json:"-"`
+	LauncherGeneration int64      `gorm:"column:launcher_generation;not null;default:0" json:"-"`
+	LauncherStartsAt   *time.Time `gorm:"column:launcher_starts_at" json:"-"`
+	LauncherExpiresAt  *time.Time `gorm:"column:launcher_expires_at" json:"-"`
+	LauncherMaxUses    int64      `gorm:"column:launcher_max_uses;not null;default:0" json:"-"`
+	LauncherUsedCount  int64      `gorm:"column:launcher_used_count;not null;default:0" json:"-"`
+	// NULL frees the short address after exhaustion/revocation.
+	ShortEntryAddress    string     `gorm:"column:short_entry_address;type:varchar(512);not null;default:''" json:"-"`
+	ShortEntryAddressKey *string    `gorm:"column:short_entry_address_key;type:char(64);uniqueIndex:ux_user_scripts_short_entry" json:"-"`
+	ShortEntryExpiresAt  *time.Time `gorm:"column:short_entry_expires_at;index" json:"-"`
+	ShortEntryUsedAt     *time.Time `gorm:"column:short_entry_used_at" json:"-"`
+	ShortEntryStartsAt   *time.Time `gorm:"column:short_entry_starts_at" json:"-"`
+	ShortEntryMaxUses    int64      `gorm:"column:short_entry_max_uses;not null;default:0" json:"-"`
+	ShortEntryUsedCount  int64      `gorm:"column:short_entry_used_count;not null;default:0" json:"-"`
+	ShortEntryGeneration int64      `gorm:"column:short_entry_generation;not null;default:0" json:"-"`
+	EscrowClosingAt      *time.Time `gorm:"column:escrow_closing_at;index" json:"escrowClosingAt,omitempty"`
+	EscrowWorkTracked    bool       `gorm:"column:escrow_work_tracked;not null;default:false" json:"-"`
+	DeletedAt            *time.Time `gorm:"column:deleted_at;index" json:"deletedAt,omitempty"`
+	CreatedAt            time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt            time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*UserScript) TableName() string { return TableNameUserScript }
@@ -80,14 +97,17 @@ func (*UserScript) TableName() string { return TableNameUserScript }
 // ScriptExchangeToken is a short-lived, single-use capability for a script.
 // Only a SHA-256 digest is persisted; the plaintext token is returned once.
 type ScriptExchangeToken struct {
-	ID        int64      `gorm:"primaryKey;autoIncrement" json:"id"`
-	ScriptID  int32      `gorm:"column:script_id;not null;index" json:"scriptId"`
-	VersionID int32      `gorm:"column:version_id;not null;default:0;index" json:"-"`
-	Purpose   string     `gorm:"column:purpose;type:varchar(16);not null;default:exchange;index" json:"-"`
-	TokenHash string     `gorm:"column:token_hash;type:char(64);not null;uniqueIndex" json:"-"`
-	ExpiresAt time.Time  `gorm:"column:expires_at;not null;index" json:"expiresAt"`
-	UsedAt    *time.Time `gorm:"column:used_at;index" json:"usedAt,omitempty"`
-	CreatedAt time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	ID                      int64      `gorm:"primaryKey;autoIncrement" json:"id"`
+	ScriptID                int32      `gorm:"column:script_id;not null;index" json:"scriptId"`
+	VersionID               int32      `gorm:"column:version_id;not null;default:0;index" json:"-"`
+	Purpose                 string     `gorm:"column:purpose;type:varchar(16);not null;default:exchange;index" json:"-"`
+	LaunchAddress           string     `gorm:"column:launch_address;type:varchar(512);not null;default:''" json:"-"`
+	AuthorizationKind       string     `gorm:"column:authorization_kind;type:varchar(8);not null;default:''" json:"-"`
+	AuthorizationGeneration int64      `gorm:"column:authorization_generation;not null;default:0" json:"-"`
+	TokenHash               string     `gorm:"column:token_hash;type:char(64);not null;uniqueIndex" json:"-"`
+	ExpiresAt               time.Time  `gorm:"column:expires_at;not null;index" json:"expiresAt"`
+	UsedAt                  *time.Time `gorm:"column:used_at;index" json:"usedAt,omitempty"`
+	CreatedAt               time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 }
 
 func (*ScriptExchangeToken) TableName() string { return TableNameScriptExchangeToken }

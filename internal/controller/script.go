@@ -306,6 +306,43 @@ func IssueScriptExchangeToken(c *gin.Context) {
 	c.JSON(http.StatusOK, grant)
 }
 
+func ConfigureScriptShortAuthorization(c *gin.Context) {
+	configureScriptAuthorization(c, false)
+}
+
+func ConfigureScriptLauncherAuthorization(c *gin.Context) {
+	configureScriptAuthorization(c, true)
+}
+
+func configureScriptAuthorization(c *gin.Context, full bool) {
+	c.Header("Cache-Control", "no-store")
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 32)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "脚本参数错误"})
+		return
+	}
+	var input service.ConfigureScriptShortAuthorizationInput
+	if c.ShouldBindJSON(&input) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	var result service.ScriptShortAuthorizationView
+	if full {
+		result, err = service.ConfigureScriptLauncherAuthorizationWithDB(scriptDB(), operator, int32(id), input)
+	} else {
+		result, err = service.ConfigureScriptShortAuthorizationWithDB(scriptDB(), operator, int32(id), input)
+	}
+	if err != nil {
+		writeScriptError(c, err, "命令授权未完成")
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func ExchangeScriptToken(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	token := strings.TrimSpace(c.GetHeader("X-Script-Token"))
@@ -518,6 +555,22 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 	if db == nil {
 		return false
 	}
+	// Header-bearing full launchers always retain their original authorization
+	// path. A header-free request may consume only a separately enabled, exact
+	// host/path short authorization, never a guessed legacy locator.
+	if strings.TrimSpace(c.GetHeader(service.ScriptLauncherHeader)) == "" {
+		script, grant, err := service.ConsumeScriptShortAuthorizationWithDB(db, c.Request.Host, c.Request.URL.Path)
+		if err == nil {
+			c.Header("Cache-Control", "no-store")
+			c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(grant.LaunchOrigin, script.ShortCode, grant.Token, script.BillingMode != "")))
+			return true
+		}
+		if errors.Is(err, service.ErrScriptShortAuthorizationInactive) || !errors.Is(err, service.ErrScriptNotFound) {
+			c.Header("Cache-Control", "no-store")
+			writeScriptError(c, err, "短命令暂不可用")
+			return true
+		}
+	}
 	script, err := service.ResolvePublicScriptWithDB(db, c.Request.Host, c.Request.URL.Path)
 	if err != nil {
 		if errors.Is(err, service.ErrScriptNotFound) {
@@ -619,6 +672,10 @@ func DownloadScriptVersion(c *gin.Context) {
 func writeScriptError(c *gin.Context, err error, fallback string) {
 	status, message := http.StatusInternalServerError, fallback
 	switch {
+	case errors.Is(err, service.ErrScriptShortAddressInUse):
+		status, message = http.StatusConflict, err.Error()
+	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
+		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyPending):
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrIdempotencyKeyInvalid):

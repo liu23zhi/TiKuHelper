@@ -34,7 +34,7 @@ axios.defaults.adapter = async config => {
   if (url.endsWith('/reconcile') && method === 'post') { record = { ...record, status: data.outcome }; return response(config, { ...record }) }
   if (url.endsWith('/proof') && method === 'post') { record = { ...record, hasProof: true }; return response(config, { hasProof: true }, 201) }
   if (url.endsWith('/proof') && method === 'get') { if (proofWait) await proofWait; return response(config, image) }
-  if (/^\/api\/ticket-attachments\/\d+\/admin$/.test(url) && method === 'get') return response(config, image)
+  if (/^\/api\/ticket-attachments\/\d+(?:\/admin)?$/.test(url) && method === 'get') return response(config, image)
   unexpected.push(`${method} ${url}`); throw new Error('Unexpected fixture HTTP')
 }
 URL.createObjectURL = blob => { created.push(blob); return 'blob:http://localhost/refund-proof-fixture' }
@@ -139,6 +139,14 @@ test('人工核销必须填写真实凭据编号，并使用reconcile接口', as
   assert.match(wrapper.text(), /退款成功/)
 });
 
+test('人工退款已带本次签署收款证据时可直接审核，不再要求另传旧核验图', async () => {
+  const wrapper = await open({ ...manual, hasSignedPayoutEvidence: true })
+  assert.equal(findButton(wrapper.element, '审核通过').disabled, false)
+  await confirm(wrapper, '审核通过')
+  assert.equal(writes().length, 1)
+  assert.equal(writes()[0].url, '/api/ticket-refunds/2/decision')
+});
+
 test('详情切换或账户退出时，旧凭证响应不显示且旧动作不发送请求', async () => {
   const wrapper = await open({ ...manual, hasProof: true }, false)
   let release; proofWait = new Promise(resolve => { release = resolve })
@@ -159,4 +167,20 @@ test('管理员从退款详情查看收款码、签名和已签协议快照', as
   state(wrapper).closeProof()
   findButton(wrapper.element, '查看签名').click(); await settle()
   assert.ok(calls.some(call => call.url === '/api/ticket-attachments/42/admin'))
+});
+
+test('已提交承诺书展示真实签名图像、服务端签署及申请时间，普通申请人也可查看', async () => {
+  const wrapper = await open({ ...manual, signatureAttachmentId: 42, agreementText: '承诺条款\n申请人（以电子签名方式确认）：见签名图像\n签署日期：提交本次退款申请之日', agreementSignedAt: '2026-11-20T12:34:56Z', createdAt: '2026-11-20T12:35:06Z' }, false)
+  const details = wrapper.element.querySelector('details')
+  assert.ok(details)
+  details.open = true
+  details.dispatchEvent(new Event('toggle'))
+  await settle()
+  const evidence = wrapper.element.querySelector('[data-refund-signed-evidence]')
+  assert.match(evidence.textContent, /申请人（以电子签名方式确认）：/)
+  assert.match(evidence.textContent, /签署日期：2026\/11\/20.*20:34:56/)
+  assert.match(evidence.textContent, /申请时间：2026\/11\/20.*20:35:06/)
+  assert.doesNotMatch(wrapper.text(), /见签名图像|提交本次退款申请之日/)
+  assert.ok(evidence.querySelector('img'))
+  assert.ok(calls.some(call => call.url === '/api/ticket-attachments/42'))
 });

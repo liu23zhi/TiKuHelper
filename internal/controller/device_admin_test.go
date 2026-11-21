@@ -90,6 +90,7 @@ func deviceAdminTestRouter(actor *entity.User) *gin.Engine {
 	}
 	router.GET("/api/admin/devices", auth, middleware.RequireAdmin, AdminDeviceList)
 	router.POST("/api/admin/devices/:id/unbind", auth, middleware.RequireAdmin, AdminDeviceUnbind)
+	router.DELETE("/api/admin/devices/:id", auth, middleware.RequireAdmin, AdminDeviceDelete)
 	router.POST("/api/admin/device-bans", auth, middleware.RequireAdmin, AdminDeviceBan)
 	router.DELETE("/api/admin/device-bans/:deviceId", auth, middleware.RequireAdmin, AdminDeviceUnban)
 	return router

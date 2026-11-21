@@ -2,6 +2,7 @@
   <div class="console-page binding-history-page">
     <ConsolePageHeading :title="pageTitle" :description="pageDescription">
       <template #actions>
+        <AdminDataTransfer v-if="canManage()" :key="kind" :resource="kind === 'wechat' ? 'wechat_bindings' : 'phone_bindings'" :title="pageTitle" />
         <a-button :loading="loading" :disabled="!canManage() || loading" @click="load">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -233,6 +234,7 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { getBindingHistory, normalizeBindingKind, voidBindingRecord } from '@/api/UserBindingApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -272,7 +274,7 @@ const emptyFilters = () => ({ state: undefined, releaseReason: undefined, userId
 
 export default {
   name: 'BindingHistoryPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert, AdminDataTransfer },
   setup() {
     const route = useRoute()
     const prefix = 'binding-history-' + useId()

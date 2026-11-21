@@ -120,6 +120,13 @@ var (
 		}
 		return service.ListReviewRebateProgramsWithDB(db)
 	}
+	createReviewRebateProgram = func(program entity.ReviewRebateProgram) (entity.ReviewRebateProgram, error) {
+		db, err := requireReviewRebateDB()
+		if err != nil {
+			return entity.ReviewRebateProgram{}, err
+		}
+		return service.CreateReviewRebateProgramWithDB(db, program)
+	}
 	updateReviewRebateProgram = func(id int32, update service.ReviewRebateProgramUpdate) (entity.ReviewRebateProgram, error) {
 		db, err := requireReviewRebateDB()
 		if err != nil {
@@ -323,6 +330,44 @@ func AdminReviewRebatePrograms(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": programs})
+}
+
+// AdminCreateReviewRebateProgram provides the first-use initialization path.
+func AdminCreateReviewRebateProgram(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name               string  `json:"name"`
+		StoreURL           string  `json:"storeUrl"`
+		ExtensionID        string  `json:"extensionId"`
+		Enabled            bool    `json:"enabled"`
+		MaxClaimsPerUser   int     `json:"maxClaimsPerUser"`
+		MaxAmountPerUser   float64 `json:"maxAmountPerUser"`
+		MinAgentConfidence float64 `json:"minAgentConfidence"`
+		PolicyVersion      string  `json:"policyVersion"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
+		return
+	}
+	program, err := createReviewRebateProgram(entity.ReviewRebateProgram{
+		Name: input.Name, StoreURL: input.StoreURL, ExtensionID: input.ExtensionID,
+		Enabled: input.Enabled, MaxClaimsPerUser: input.MaxClaimsPerUser,
+		MaxAmountPerUser: input.MaxAmountPerUser, MinAgentConfidence: input.MinAgentConfidence,
+		PolicyVersion: input.PolicyVersion,
+	})
+	if err != nil {
+		writeReviewRebateError(c, err)
+		return
+	}
+	recordAccountAudit(c, &operator, "review_rebate", 1, "创建评价返现活动", map[string]any{"programId": program.ID, "enabled": program.Enabled})
+	c.JSON(http.StatusCreated, program)
 }
 
 // AdminUpdateReviewRebateProgram 部分更新活动配置（管理员）。

@@ -60,9 +60,12 @@ const QuestionImportMaxRows = DefaultImportMaxRows
 
 // 导入资源标识。与导出共用同一套命名（题库 questions / 黑名单 blacklist / 用户 users）。
 const (
-	ImportResourceQuestions = ExportResourceQuestions
-	ImportResourceBlacklist = ExportResourceBlacklist
-	ImportResourceUsers     = ExportResourceUsers
+	ImportResourceQuestions      = ExportResourceQuestions
+	ImportResourceBlacklist      = ExportResourceBlacklist
+	ImportResourceWhitelist      = ExportResourceWhitelist
+	ImportResourceUsers          = ExportResourceUsers
+	ImportResourceIPLocations    = ExportResourceIPLocations
+	ImportResourcePhoneLocations = ExportResourcePhoneLocations
 )
 
 // 导入格式。
@@ -702,7 +705,7 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 	}
 	resource := strings.ToLower(strings.TrimSpace(opts.Resource))
 	switch resource {
-	case ImportResourceQuestions, ImportResourceBlacklist, ImportResourceUsers:
+	case ImportResourceQuestions, ImportResourceBlacklist, ImportResourceWhitelist, ImportResourceUsers, ImportResourceIPLocations, ImportResourcePhoneLocations, ImportResourceSensitiveImages, ImportResourceOCRCache:
 	default:
 		return ImportResult{}, fmt.Errorf("%w: %q", ErrImportResourceUnsupported, opts.Resource)
 	}
@@ -713,6 +716,18 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 			return ImportResult{}, err
 		}
 		format = detected
+	}
+	if resource == ImportResourceIPLocations || resource == ImportResourcePhoneLocations {
+		return importManagementLocations(db, opts, resource, format)
+	}
+	if resource == ImportResourceSensitiveImages {
+		return importSensitiveImages(db, opts, format)
+	}
+	if resource == ImportResourceOCRCache {
+		return importOCRCacheRows(db, opts, format)
+	}
+	if resource == ImportResourceBlacklist || resource == ImportResourceWhitelist {
+		return importManagementRules(db, opts, resource, format)
 	}
 	header, rows, err := ParseImportRows(format, opts.Content)
 	if err != nil {
@@ -731,120 +746,11 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 	}
 
 	switch resource {
-	case ImportResourceBlacklist:
-		return importBlacklistRows(db, opts, index, rows, now)
 	case ImportResourceQuestions:
 		return importQuestionRows(db, opts, index, rows)
 	default:
 		return importUserRows(db, opts, index, rows, now)
 	}
-}
-
-// importBlacklistRows 导入黑名单（111 §7.5 的模板：value,reason,expires_at）。
-//
-// 复用 CreateBlacklistEntryWithDB：归一化、校验、唯一性都在那一处，
-// 导入路径绝不能自己再写一遍（两份实现必然分叉，最终「导入能进、手工进不去」）。
-func importBlacklistRows(db *gorm.DB, opts ImportDataOptions, index map[string]int, rows [][]string, now func() time.Time) (ImportResult, error) {
-	if err := requireImportColumns(index, []string{"value"}); err != nil {
-		return ImportResult{}, err
-	}
-	result := ImportResult{Total: len(rows), Details: make([]ImportRowResult, 0, len(rows))}
-	// 本批内已出现的 (kind, value) 用于区分「已存在」与「本批内重复」两种跳过原因。
-	seen := make(map[string]int, len(rows))
-	// 模板列：value / reason / expires_at / kind / match_type。
-	const createdBySystem = 0
-
-	for i, row := range rows {
-		rowNo := i + 2 // 1 基且跳过表头，与用户在 Excel 里看到的行号一致
-		value := importCell(row, index, "value")
-		entry := ImportRowResult{Row: rowNo, Key: value}
-		if value == "" {
-			entry.Result = ImportRowFailed
-			entry.Reason = "value 不能为空"
-			result.Details = append(result.Details, entry)
-			result.Failed++
-			continue
-		}
-		kind := strings.ToLower(importCell(row, index, "kind"))
-		if kind == "" {
-			// 推断必须**严格**：猜错方向的代价是「abc 被当成微信 OpenID 建进黑名单」，
-			// 它永远匹配不到任何真实请求，而且运营以为已经拉黑了。
-			// 因此只接受形态无歧义的两类（IP / 11 位大陆手机号），
-			// 其余一律要求填 kind 列 —— 明确报错比静默建错规则好。
-			inferred, inferErr := inferBlacklistKindForImport(value)
-			if inferErr != nil {
-				entry.Result = ImportRowFailed
-				entry.Reason = inferErr.Error()
-				result.Details = append(result.Details, entry)
-				result.Failed++
-				continue
-			}
-			kind = inferred
-		}
-		matchType := strings.ToLower(importCell(row, index, "match_type"))
-		reason := importCell(row, index, "reason")
-		if reason == "" {
-			reason = "批量导入"
-		}
-		expiresAt, expiresErr := parseImportExpiresAt(importCell(row, index, "expires_at"))
-		if expiresErr != nil {
-			entry.Result = ImportRowFailed
-			entry.Reason = expiresErr.Error()
-			result.Details = append(result.Details, entry)
-			result.Failed++
-			continue
-		}
-
-		seenKey := kind + "\x00" + value
-		if firstRow, duplicated := seen[seenKey]; duplicated {
-			entry.Result = ImportRowSkipped
-			entry.Reason = fmt.Sprintf("本批内重复（第 %d 行已处理）", firstRow)
-			result.Details = append(result.Details, entry)
-			result.Skipped++
-			continue
-		}
-
-		if opts.DryRun {
-			entry.Result = ImportRowCreated
-			entry.Reason = "预览模式，未落库"
-			result.Details = append(result.Details, entry)
-			result.Succeeded++
-			seen[seenKey] = rowNo
-			continue
-		}
-
-		_, createErr := CreateBlacklistEntryWithDB(db, CreateBlacklistEntryInput{
-			Kind:      kind,
-			Pattern:   value,
-			MatchType: matchType,
-			Reason:    reason,
-			// 导入的规则一律启用：运营导进来就是为了拦人。
-			Enabled:   true,
-			ExpiresAt: expiresAt,
-			CreatedBy: int32(createdBySystem),
-		})
-		if createErr != nil {
-			if isDuplicateBlacklistError(createErr) {
-				entry.Result = ImportRowSkipped
-				entry.Reason = "已存在相同规则"
-				result.Details = append(result.Details, entry)
-				result.Skipped++
-				seen[seenKey] = rowNo
-				continue
-			}
-			entry.Result = ImportRowFailed
-			entry.Reason = createErr.Error()
-			result.Details = append(result.Details, entry)
-			result.Failed++
-			continue
-		}
-		entry.Result = ImportRowCreated
-		result.Details = append(result.Details, entry)
-		result.Succeeded++
-		seen[seenKey] = rowNo
-	}
-	result.ErrorReport = buildImportErrorReport(result.Details)
-	return result, nil
 }
 
 // inferBlacklistKindForImport 按值的形态推断 kind（导入侧，**只认无歧义的两类**）。
@@ -1408,7 +1314,7 @@ func buildImportErrorReport(details []ImportRowResult) []byte {
 
 // ImportResourceList 返回支持导入的资源标识（升序）。
 func ImportResourceList() []string {
-	return []string{ImportResourceBlacklist, ImportResourceQuestions, ImportResourceUsers}
+	return []string{ImportResourceBlacklist, ImportResourceIPLocations, ImportResourceOCRCache, ImportResourcePhoneLocations, ImportResourceQuestions, ImportResourceSensitiveImages, ImportResourceUsers, ImportResourceWhitelist}
 }
 
 // ImportTemplateCSV 返回某资源的导入模板（只有表头，111 §4.1 Q12-h 的「下载模板」按钮）。
@@ -1418,12 +1324,18 @@ func ImportResourceList() []string {
 func ImportTemplateCSV(resource string) ([]byte, error) {
 	var header []string
 	switch strings.ToLower(strings.TrimSpace(resource)) {
-	case ImportResourceBlacklist:
-		header = []string{"kind", "value", "match_type", "reason", "expires_at"}
+	case ImportResourceBlacklist, ImportResourceWhitelist:
+		header = managementRuleHeaders()
 	case ImportResourceQuestions:
 		header = []string{"question", "type", "options", "answer", "course_name", "extra", "source_name"}
 	case ImportResourceUsers:
 		header = []string{"username", "password", "phone", "level_rank", "balance", "gift_balance", "remark"}
+	case ImportResourceIPLocations, ImportResourcePhoneLocations:
+		header = managementLocationHeaders()
+	case ImportResourceSensitiveImages:
+		header = sensitiveImageTransferHeaders()
+	case ImportResourceOCRCache:
+		header = ocrTransferHeaders()
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrImportResourceUnsupported, resource)
 	}
@@ -1452,6 +1364,21 @@ func ImportTemplateData(resource, format string) ([]byte, error) {
 		return ImportTemplateCSV(resource)
 	}
 	if resource != ImportResourceQuestions {
+		if format == ExportFormatJSON || format == ExportFormatXlsx {
+			content, err := ImportTemplateCSV(resource)
+			if err != nil {
+				return nil, err
+			}
+			header, err := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(content, []byte("\uFEFF")))).Read()
+			if err != nil {
+				return nil, err
+			}
+			columns := make([]ExportColumn, 0, len(header))
+			for _, name := range header {
+				columns = append(columns, exportColumn(name))
+			}
+			return serializeExportRows(columns, [][]string{make([]string, len(columns))}, format)
+		}
 		return nil, fmt.Errorf("%w：当前格式的模板仅支持题库", ErrImportResourceUnsupported)
 	}
 	switch format {

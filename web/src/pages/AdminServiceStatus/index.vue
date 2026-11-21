@@ -42,7 +42,13 @@
         <p class="hint">这些是 API 请求诊断事件，不代表用户数、账务金额或上游调用量。</p>
       </ConsolePanel>
 
-      <ConsolePanel title="逐分钟 API 调用" description="最近 24 小时的分钟级采样；仅展示最近 30 个点。">
+      <ConsolePanel title="请求趋势与分布" description="图表使用最近 24 小时的实际分钟采样，空白时段不补造数据。">
+        <div class="status-charts">
+          <PortraitChart v-for="chart in statusCharts" :key="chart.key" :title="chart.title" :hint="chart.hint" :options="chart.options" :aria-label="chart.title" />
+        </div>
+      </ConsolePanel>
+
+      <ConsolePanel title="逐分钟 API 调用" description="最近 24 小时的分钟级采样；明细表展示最近 30 个点，图表展示全部保留点。">
         <p v-if="recentPoints.length === 0" class="hint" role="status">暂无采样点，服务启动或重启后会逐分钟积累。</p>
         <div v-else class="table-scroll">
           <table class="status-table">
@@ -70,6 +76,9 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import SystemMetricsPanel from '@/pages/SystemSettings/SystemMetricsPanel.vue'
+import PortraitChart from '@/pages/UserPortrait/PortraitChart.vue'
+import { useChartPalette } from '@/utils/useChartPalette'
+import { buildServiceStatusCharts } from '@/utils/operationalCharts.mjs'
 import { getAdminServiceStatus } from '@/api/AdminServiceStatusApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
@@ -85,11 +94,13 @@ function isSupportedStatus(value) {
 
 export default {
   name: 'AdminServiceStatusPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, SystemMetricsPanel },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, SystemMetricsPanel, PortraitChart },
   setup() {
     const { currentUser } = useCurrentUserDisplay()
     const canView = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
     const payload = shallowRef(null)
+    const palette = useChartPalette()
+    const statusCharts = computed(() => buildServiceStatusCharts(payload.value, palette.value))
     const loading = ref(false)
     const errorMessage = ref('')
     let requestVersion = 0
@@ -146,13 +157,14 @@ export default {
       return date && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '未知'
     })
     const pointTime = minute => new Date(Number(minute) * 60000).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
-    return { payload, loading, errorMessage, summary, recentPoints, statusLabel, tone, count, percent, latency, restartedAt, pointTime, load }
+    return { payload, loading, errorMessage, summary, recentPoints, statusLabel, tone, count, percent, latency, restartedAt, pointTime, load, statusCharts }
   },
 }
 </script>
 
 <style scoped>
 .page-alert { margin-bottom: 16px; }
+.status-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; min-width: 0; }
 .status-loading { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 140px; color: var(--console-muted); }
 .status-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .status-hero__dot { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 50%; background: var(--console-muted); }

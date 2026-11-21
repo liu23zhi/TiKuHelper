@@ -115,6 +115,12 @@ type PortraitSourceSlice struct {
 	Count  int64  `json:"count"`
 }
 
+type PortraitDailySlice struct {
+	Date   string  `json:"date"`
+	Count  int64   `json:"count"`
+	Amount float64 `json:"amount"`
+}
+
 // PortraitTotals 是概览标量。
 //
 // 全部用指针：nil = 该范围下**没有可分析的数据**（前端显示「暂无数据」），
@@ -169,6 +175,9 @@ type UserPortrait struct {
 	RegisterSources []PortraitSourceSlice `json:"registerSources"`
 	// RegisterRegions 是「注册 IP 的归属地」分布（数据源 users.register_ip）。
 	RegisterRegions []PortraitRegionSlice `json:"registerRegions"`
+	Daily           []PortraitDailySlice  `json:"daily"`
+	UserStatuses    []PortraitSourceSlice `json:"userStatuses"`
+	UserRoles       []PortraitSourceSlice `json:"userRoles"`
 	Base            *PortraitBase         `json:"base"`
 	// Notes 如实标注「哪些栏位当前没有数据源」，避免前端画成 0 让人以为「用得少」。
 	Notes []string `json:"notes"`
@@ -180,6 +189,56 @@ type UserPortrait struct {
 // 归属地表和进程内存都拖住，而画像只需要「主要来源区域」。这是**采样口径**，
 // 已在 Notes 里如实告知（Top N 覆盖的账单行数比例），不是隐藏的估算。
 const portraitRegionIPLimit = 500
+
+// fillPortraitDailyAndAccounts reads bounded daily billing totals and live account distributions.
+// It keeps empty series empty and uses the same user scope as the rest of the portrait.
+func fillPortraitDailyAndAccounts(db *gorm.DB, scope PortraitScope, portrait *UserPortrait) error {
+	dateExpr := "DATE(created_at)"
+	if portraitDialect(db) == "sqlite" {
+		dateExpr = "strftime('%Y-%m-%d', created_at, '+8 hours')"
+	}
+	zone := time.FixedZone("Asia/Shanghai", 8*60*60)
+	end := portrait.GeneratedAt.In(zone)
+	startDay := end.AddDate(0, 0, -29).Format("2006-01-02")
+	endDay := end.Format("2006-01-02")
+	if err := portraitBillingScope(db, scope).
+		Select(dateExpr+" AS date, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount").
+		Where(dateExpr+" >= ? AND "+dateExpr+" <= ?", startDay, endDay).
+		Group(dateExpr).Order("date ASC").Scan(&portrait.Daily).Error; err != nil {
+		return err
+	}
+	for _, spec := range []struct {
+		column      string
+		destination *[]PortraitSourceSlice
+		labels      map[string]string
+	}{
+		{"status", &portrait.UserStatuses, map[string]string{"enabled": "正常", "disabled": "已禁用"}},
+		{"role", &portrait.UserRoles, map[string]string{"user": "普通用户", "admin": "管理员"}},
+	} {
+		var rows []struct {
+			Source string
+			Count  int64
+		}
+		query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{})
+		if scope.UserID > 0 {
+			query = query.Where("id = ?", scope.UserID)
+		}
+		if err := query.Select(spec.column + " AS source, COUNT(*) AS count").Group(spec.column).Order(spec.column).Scan(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			label := spec.labels[row.Source]
+			if label == "" {
+				label = row.Source
+			}
+			if label == "" {
+				label = "未记录"
+			}
+			*spec.destination = append(*spec.destination, PortraitSourceSlice{Source: row.Source, Label: label, Count: row.Count})
+		}
+	}
+	return nil
+}
 
 // 小时/星期的展示文案。
 var portraitWeekdayLabels = [7]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
@@ -303,6 +362,9 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 		Tickets:         make([]PortraitTicketSlice, 0, 4),
 		RegisterSources: make([]PortraitSourceSlice, 0, 4),
 		RegisterRegions: make([]PortraitRegionSlice, 0, 8),
+		Daily:           make([]PortraitDailySlice, 0, 30),
+		UserStatuses:    make([]PortraitSourceSlice, 0, 3),
+		UserRoles:       make([]PortraitSourceSlice, 0, 3),
 		Notes:           make([]string, 0, 4),
 	}
 
@@ -346,11 +408,15 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 	if err := fillPortraitRegisterRegions(db, normalized, &portrait); err != nil {
 		return UserPortrait{}, err
 	}
+	if err := fillPortraitDailyAndAccounts(db, normalized, &portrait); err != nil {
+		return UserPortrait{}, err
+	}
 
 	portrait.Notes = append(portrait.Notes,
 		"设备指纹数据源不存在（98 §1.1），本页不含设备维度，也不做「新设备/设备农场」类判断。",
 		"答题正确率无数据源：billing_records 没有正确性字段，本页只统计量与金额。",
 		"时间/区域/类型分布均来自 billing_records：免费额度内的调用不产生账单行，因此是「计费口径」而非「请求口径」。",
+		"按日趋势统计近 30 个自然日的账单，使用北京时间；仅展示有记录的日期，不补齐空日。账号状态与角色仅统计未归档账号。",
 		fmt.Sprintf("区域分布按「出现次数最多的 %d 个 client_ip」解析，未命中本地归属地库的 IP 单独归入未知地区，不外呼上游。", portraitRegionIPLimit),
 	)
 	return portrait, nil

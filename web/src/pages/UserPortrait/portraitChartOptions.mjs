@@ -235,6 +235,13 @@ export function buildPortraitAllOptions(charts, palette) {
     hours: buildPortraitHoursOption(source.hours, palette),
     types: buildPortraitTypesOption(source.billingTypes, palette),
     weekdays: buildPortraitHoursOption(source.weekdays, palette),
+    daily: buildPortraitTrendOption(source.daily, palette, { name: '账单记录数' }),
+    regions: buildPortraitTypesOption(source.regions, palette),
+    tickets: buildPortraitTypesOption(source.tickets, palette),
+    registerSources: buildPortraitTypesOption(source.registerSources, palette),
+    registerRegions: buildPortraitTypesOption(source.registerRegions, palette),
+    userStatuses: buildPortraitTypesOption(source.userStatuses, palette),
+    userRoles: buildPortraitTypesOption(source.userRoles, palette),
     // 保留旧字段给逐用户画像消费者，整站页面明确只使用实际时间桶分布。
     trend: buildPortraitTrendOption(source.hours, palette, { name: '次数' }),
   }

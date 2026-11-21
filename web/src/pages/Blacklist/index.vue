@@ -5,6 +5,7 @@
       description="按 IP / 手机号 / 微信 / 地区拉黑请求来源。规则写入后立即生效；命中记录用于解释「为什么被拦」并判断规则是否误伤。"
     >
       <template #actions>
+        <AdminDataTransfer v-if="canManage()" resource="blacklist" title="黑名单规则" importable import-description="支持 IP、手机号、微信和地区规则的 CSV / JSON，每次最多 5000 条；相同规则跳过，保留文件中的启停状态，不改变总开关。" @imported="loadEntries" />
         <a-button :loading="loadingEntries" :disabled="!canManage() || loadingEntries || writing" @click="loadEntries">刷新</a-button>
       </template>
     </ConsolePageHeading>
@@ -305,6 +306,7 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
+import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import {
   createBlacklistEntry,
   deleteBlacklistEntry,
@@ -335,7 +337,7 @@ function readNonnegativeInt(value) {
 
 export default {
   name: 'BlacklistPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, AdminDataTransfer },
   setup() {
     const route = useRoute()
     const prefix = 'blacklist-' + useId()
@@ -402,8 +404,7 @@ export default {
       { label: 'IP', value: 'ip' },
       { label: '手机号', value: 'phone' },
       { label: '微信', value: 'wechat' },
-      // 地区匹配（BL-4）尚未接入判定：选项保留但明确禁用，避免运营选了却存不进去。
-      { label: '地区（暂未开放）', value: 'region', disabled: true },
+      { label: '地区', value: 'region' },
     ]
     const enabledOptions = [
       { label: '启用中', value: 'true' },

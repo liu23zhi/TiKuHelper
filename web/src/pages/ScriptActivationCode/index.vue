@@ -19,7 +19,7 @@
 
     <template v-if="canManage()">
       <ConsolePanel title="生成激活码" description="单次最多 100 个。生成的码只在生成结果里显示一次全码。">
-        <a-form layout="vertical" :onFinish="submitCreate">
+        <a-form layout="vertical" :model="createForm" @finish="submitCreate">
           <a-row :gutter="16">
             <a-col :xs="24" :md="6">
               <a-form-item label="生成数量">

@@ -19,7 +19,7 @@
         data-refund-agreement-text
         @scroll="onScroll"
       >
-        <pre class="refund-agreement__body">{{ text }}</pre>
+        <pre class="refund-agreement__body">{{ refundAgreementBody(text) }}</pre>
         <div class="refund-agreement__sign">
           <a-button
             v-if="!signed"
@@ -30,13 +30,14 @@
             @click="openSignaturePad"
           >签署</a-button>
           <div v-else class="refund-agreement__signed" data-refund-agreement-signed>
-            <img v-if="signaturePreviewUrl" :src="signaturePreviewUrl" alt="本次退款申请的签名" class="refund-agreement__signature" />
-            <span class="refund-agreement__signed-tip">本次申请已签署</span>
+            <div class="refund-agreement__applicant"><span>申请人（以电子签名方式确认）：</span><img v-if="signaturePreviewUrl" :src="signaturePreviewUrl" alt="本次退款申请的签名" class="refund-agreement__signature" /><span v-else>正在读取签名图片…</span></div>
+            <p>签署日期：{{ formatTicketTime(signedAt || localSignedAt) }}</p>
           </div>
         </div>
       </div>
       <p v-if="!signed" class="refund-agreement__progress" data-refund-agreement-progress role="status">
-        <span v-if="!scrolledToBottom">请滚动阅读至最底部<span v-if="remainingSeconds > 0">，还需阅读 {{ remainingSeconds }} 秒</span></span>
+        <span v-if="!payoutQrReady">请先上传或解锁收款码，再签署承诺书。</span>
+        <span v-else-if="!scrolledToBottom">请滚动阅读至最底部<span v-if="remainingSeconds > 0">，还需阅读 {{ remainingSeconds }} 秒</span></span>
         <span v-else-if="remainingSeconds > 0">已读到底，还需阅读 {{ remainingSeconds }} 秒</span>
         <span v-else>已读完，请在协议底部签署</span>
       </p>
@@ -75,7 +76,7 @@
         <a-button data-refund-signature-cancel @click="closeSignaturePad">取消</a-button>
         <a-button
           type="primary"
-          :disabled="!hasStroke"
+          :disabled="!hasStroke || !canSign"
           :loading="uploading"
           data-refund-signature-confirm
           @click="confirmSignature"
@@ -89,12 +90,16 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getTicketAttachment, uploadTicketAttachment } from '@/api/TicketApi'
+import { refundAgreementBody } from '@/utils/refundAgreementDisplay.mjs'
+import { formatTicketTime } from '@/utils/ticketHelpers.mjs'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   text: { type: String, default: '' },
   // 只由本次退款草稿提供；新申请必须传回 0，不写入持久缓存。
   signedAttachmentId: { type: Number, default: 0 },
+  payoutQrReady: { type: Boolean, default: false },
+  signedAt: { type: String, default: '' },
 })
 const emit = defineEmits(['close', 'signed'])
 const READ_SECONDS = 10
@@ -107,6 +112,7 @@ const padCanvas = ref(null)
 const hasStroke = ref(false)
 const uploading = ref(false)
 const signaturePreviewUrl = ref('')
+const localSignedAt = ref('')
 let drawing = false
 let lastPoint = null
 let activePointer = null
@@ -119,7 +125,7 @@ let previewRequest = 0
 let previewAttachmentId = 0
 
 const signed = computed(() => props.signedAttachmentId > 0)
-const canSign = computed(() => props.visible && Boolean(props.text.trim()) && !signed.value && scrolledToBottom.value && remainingSeconds.value <= 0)
+const canSign = computed(() => props.visible && props.payoutQrReady && Boolean(props.text.trim()) && !signed.value && scrolledToBottom.value && remainingSeconds.value <= 0)
 
 function clearTimer() {
   if (timer !== null) clearInterval(timer)
@@ -172,7 +178,7 @@ watch(() => [props.visible, props.text], async ([visible]) => {
 
 watch(() => props.signedAttachmentId, id => {
   ++previewRequest
-  if (!id) clearPreview()
+  if (!id) { clearPreview(); localSignedAt.value = '' }
   else if (props.visible) void loadSignaturePreview(id)
 })
 
@@ -270,8 +276,9 @@ async function confirmSignature() {
     clearPreview()
     signaturePreviewUrl.value = URL.createObjectURL(blob)
     previewAttachmentId = id
+    localSignedAt.value = new Date().toISOString()
     padVisible.value = false
-    emit('signed', id)
+    emit('signed', id, localSignedAt.value)
     emit('close')
   } catch (error) {
     if (owned()) message.error(error?.message || '签名上传失败')
@@ -325,6 +332,7 @@ onBeforeUnmount(() => {
 .refund-agreement__sign { margin-top: 16px; }
 .refund-agreement__signed { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .refund-agreement__signature { max-width: 100%; height: 80px; border: 1px solid var(--console-border); border-radius: 6px; background: #fff; }
+.refund-agreement__applicant { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .refund-agreement__signed-tip { color: var(--success, #52c41a); font-size: 13px; }
 .refund-signature__hint { margin: 0 0 12px; color: var(--console-muted); }
 .refund-signature__canvas {

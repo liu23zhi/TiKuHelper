@@ -17,6 +17,7 @@ const admin = { id: 89101, username: 'SYNTHETIC_VIEW_ADMIN', nickname: 'SYNTHETI
 const user = { id: 89102, username: 'SYNTHETIC_VIEW_USER', nickname: 'SYNTHETIC_USER_NICK', role: 'user', status: 'enabled' }
 const calls = [], pending = [], pages = [], unexpected = [], runtime = [], holds = new Set()
 const originalAdapter = axios.defaults.adapter
+let refundRecord = null
 
 function response(config, data, status = 200) { return { status, data, config, headers: {}, request: { memoryOnly: true } } }
 // Install before importing Tickets, whose request module creates an Axios instance.
@@ -29,14 +30,15 @@ axios.defaults.adapter = config => {
   if (url === '/api/tickets' && method === 'get') {
     kind = params.scope === 'self' ? 'self-list' : 'management-list'
     const own = params.scope === 'self' || currentUser.getStoredCurrentUser()?.role !== 'admin'
-    result = response(config, { items: [{ id: own ? 71 : 72, subject: own ? 'SYNTHETIC_SELF_ROW' : 'SYNTHETIC_MANAGEMENT_ROW', userName: 'Synthetic', status: 'open', updatedAt: '2026-11-19T00:00:00Z' }], total: 1 })
+    result = response(config, { items: [{ id: own ? 71 : 72, subject: own ? 'SYNTHETIC_SELF_ROW' : 'SYNTHETIC_MANAGEMENT_ROW', userName: 'Synthetic', status: 'open', ...(refundRecord ? { category: 'refund', refund: { refundId: refundRecord.id, ...refundRecord } } : {}), updatedAt: '2026-11-19T00:00:00Z' }], total: 1 })
   } else if (/^\/api\/tickets\/\d+$/.test(url) && method === 'get') {
     kind = 'detail'
     const id = Number(url.split('/').pop())
     result = response(config, {
-      ticket: { id, subject: 'SYNTHETIC_SELF_DETAIL', status: 'open', updatedAt: '2026-11-19T00:00:00Z' },
+      ticket: { id, subject: 'SYNTHETIC_SELF_DETAIL', status: 'open', ...(refundRecord ? { category: 'refund' } : {}), updatedAt: '2026-11-19T00:00:00Z' },
+      ...(refundRecord ? { refund: { refundId: refundRecord.id, ...refundRecord } } : {}),
       messages: [
-        { id: 1, body: 'SYNTHETIC_SELF_BODY', userId: 89102, authorRole: 'user', authorName: 'Synthetic', createdAt: '2026-11-19T00:00:00Z' },
+        { id: 1, body: 'SYNTHETIC_SELF_BODY', userId: 89102, authorRole: 'user', authorName: 'SYNTHETIC_CURRENT_USER_NICK', createdAt: '2026-11-19T00:00:00Z' },
         { id: 2, body: 'SYNTHETIC_ADMIN_BODY', userId: 89101, authorRole: 'admin', authorName: 'SYNTHETIC_ADMIN_NAME', createdAt: '2026-11-19T01:00:00Z' },
         { id: 3, body: 'SYNTHETIC_SYSTEM_BODY', userId: 89102, authorRole: 'system', authorName: '系统自动创建', createdAt: '2026-11-19T02:00:00Z' },
       ],
@@ -47,6 +49,14 @@ axios.defaults.adapter = config => {
     kind = 'config'; result = response(config, { enabled: false, configured: false, mentionedList: [] })
   } else if (url === '/api/tickets' && method === 'post') {
     kind = 'create'; result = response(config, { id: 73 }, 201)
+  } else if (url === '/api/ticket-refunds/581' && method === 'get') {
+    result = response(config, { ...refundRecord })
+  } else if (url === '/api/ticket-refunds/581/decision' && method === 'post') {
+    refundRecord = { ...refundRecord, status: data.action === 'approve' ? 'frozen' : 'rejected', approvedCents: refundRecord.requestedCents }
+    result = response(config, { ...refundRecord })
+  } else if (url === '/api/ticket-refunds/581/process' && method === 'post') {
+    refundRecord = { ...refundRecord, status: 'succeeded' }
+    result = response(config, { ...refundRecord })
   } else {
     unexpected.push(`${method} ${url}`)
     return Promise.reject(new Error('Memory fixture denies unmatched HTTP'))
@@ -105,7 +115,7 @@ afterEach(async () => {
   assert.deepEqual(unexpected, [], 'HTTP never leaves the memory fixture')
   assert.deepEqual(runtime, [], 'no Vue runtime errors')
   assert.ok(pending.every(item => item.done), 'all deferred HTTP settled')
-  calls.length = pending.length = unexpected.length = runtime.length = 0; holds.clear()
+  calls.length = pending.length = unexpected.length = runtime.length = 0; holds.clear(); refundRecord = null
 })
 after(() => { axios.defaults.adapter = originalAdapter })
 
@@ -150,7 +160,8 @@ test('普通用户工单详情不显示企业微信通知，且请求使用自�
   assert.equal(state(wrapper, 'notification'), null)
   assert.equal([...document.querySelectorAll('.notification-alert')].filter(visible).length, 0)
   const text = [...document.querySelectorAll('.message-item header strong')].filter(visible).map(node => compact(node.textContent))
-  assert.ok(text.includes('SYNTHETIC_USER_NICK'))
+  assert.ok(text.includes('SYNTHETIC_CURRENT_USER_NICK'), 'server nickname wins over stale local profile')
+  assert.ok(!text.includes('SYNTHETIC_USER_NICK'))
   assert.ok(text.includes('管理员'))
   assert.ok(!text.includes('SYNTHETIC_ADMIN_NAME'))
 })
@@ -175,6 +186,25 @@ test('管理员在工单反馈自助视图也隔离提醒，而工单管理保�
   assert.ok(text.includes('管理员：SYNTHETIC_ADMIN_NAME（用户ID：89101）'))
   assert.ok(text.includes('系统自动创建'))
   assert.ok(!text.some(value => value.startsWith('系统自动创建（')))
+})
+
+test('管理详情接收顶层退款关联，直接审核和办理，并且全程只显示退款有效状态', async () => {
+  refundRecord = { id: 581, kind: 'original', status: 'pending_review', requestedCents: 500, userId: user.id }
+  const { wrapper } = await openPage(admin, '/ticket-admin')
+  assert.equal(state(wrapper, 'columns').filter(column => column.title === '状态').length, 1)
+  assert.equal(state(wrapper, 'columns').some(column => column.key === 'refundStatus'), false)
+  await click(button('查看详情'))
+  for (let i = 0; i < 40 && !buttons('审核通过').length; i++) { await new Promise(resolve => setTimeout(resolve, 10)); await settle() }
+  assert.equal(document.querySelector('[data-ticket-effective-status]')?.textContent.trim(), '待审核')
+  assert.equal(document.querySelector('.detail-actions'), null, 'refund state cannot be overridden by a generic ticket action')
+  await click(button('审核通过'))
+  await click(document.querySelector('[data-refund-action-confirmation] .ant-btn-primary'))
+  assert.equal(document.querySelector('[data-ticket-effective-status]')?.textContent.trim(), '资金已冻结，待处理')
+  await click(button('提交原路退款'))
+  await click(document.querySelector('[data-refund-action-confirmation] .ant-btn-primary'))
+  assert.equal(document.querySelector('[data-ticket-effective-status]')?.textContent.trim(), '退款成功')
+  assert.equal(calls.filter(call => call.url.endsWith('/decision') && call.method === 'post').length, 1)
+  assert.equal(calls.filter(call => call.url.endsWith('/process') && call.method === 'post').length, 1)
 })
 
 test('账号问题默认选中登录异常，且可以选择其它问题', async () => {

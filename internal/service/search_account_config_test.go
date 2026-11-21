@@ -38,8 +38,8 @@ func TestListSearchAccountConfigsWithDBReturnsSupportedProviders(t *testing.T) {
 		t.Fatalf("list configs: %v", err)
 	}
 
-	if len(configs) != 8 {
-		t.Fatalf("expected 8 providers, got %d", len(configs))
+	if len(configs) != 9 {
+		t.Fatalf("expected 9 providers, got %d", len(configs))
 	}
 
 	if configs[0].Provider != "icodef" {
