@@ -36,7 +36,8 @@ async function choose(w, selected) { settings(w).vm.$emit('update:modelValue', s
 function storedPreferences() { return ['localStorage', 'sessionStorage'].flatMap(area => Array.from({ length: window[area].length }, (_, index) => [area, window[area].key(index), window[area].getItem(window[area].key(index))]).filter(([, key]) => key !== 'adapter_current_user')) }
 afterEach(async () => {
  console.log('USER_TOKEN_COLUMN_LEDGER ' + JSON.stringify({ calls, session: storedPreferences() }))
- for (const w of wrappers) { if (w.exists()) w.unmount(); w.fixtureRouter?.options.history.destroy() }; wrappers.length = 0
+ for (const w of wrappers) { if (w.exists()) w.unmount(); w.fixtureRouter?.options.history.destroy() }
+ wrappers.length = 0
  user.clearStoredCurrentUser(); window.sessionStorage.clear(); window.localStorage.clear(); Antd.message.destroy(); Antd.Modal.destroyAll(); await settle(); document.body.replaceChildren(); calls.length = 0
 })
 
