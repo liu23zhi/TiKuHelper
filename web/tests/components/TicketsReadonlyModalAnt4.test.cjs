@@ -50,7 +50,7 @@ function observe(label,e){
 }
 async function appPage(){
  user.setStoredCurrentUser(ACTOR)
- const router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/tickets/:id?',component:Page},{path:'/fixture-other',component:{render:()=>h('div',{class:'fixture-other-route'},'SYNTHETIC_OTHER_ROUTE')}}]});await router.push('/adapter/tickets');await router.isReady()
+ const router=createRouter({history:createMemoryHistory(),routes:[{path:'/tickets/:id?',component:Page},{path:'/fixture-other',component:{render:()=>h('div',{class:'fixture-other-route'},'SYNTHETIC_OTHER_ROUTE')}}]});await router.push('/tickets');await router.isReady()
  const app=mount(App,{attachTo:document.body,global:{plugins:[Antd,router],stubs:{transition:false,'transition-group':false},config:{errorHandler:e=>runtime.push(e?.name||'vue-error')}}});roots.push({app,router});await settle()
  const w=app.findComponent(Page);assert.ok(w.exists(),'actual TicketsPage through current App')
  await until(()=>w.element.querySelector('tr[data-row-key="8094"]')?.textContent.includes(ROW.subject),'actual ordinary ticket list DTO becomes original native row')
@@ -62,7 +62,7 @@ test('TK01 actual App ordinary Ticket detail declares native modal and preserves
  cur={name:'TK01',completedFlow:false,passed:false,checks:[],observations:[]};cases.push(cur)
  try{
   const {w,router}=await appPage(),opener=button(w.element.querySelector('tr[data-row-key="8094"]'),'查看详情');await click(opener)
-  await until(()=>router.currentRoute.value.path==='/adapter/tickets/8094'&&calls.some(c=>c.url==='/api/tickets/8094'),'original view action admits original route and real detail read')
+  await until(()=>router.currentRoute.value.path==='/tickets/8094'&&calls.some(c=>c.url==='/api/tickets/8094'),'original view action admits original route and real detail read')
   const dialog=await until(()=>[...document.querySelectorAll('.ant-modal')].find(n=>visible(n)&&compact(n.querySelector('.ant-modal-title')?.textContent)===ROW.subject&&n.querySelector('.message-item p')?.textContent===THREAD.body),'actual detail body from original GET response'),e={w,router,opener,dialog};observe('admitted',e)
   await until(()=>!entering(dialog),'real original Transition naturally settles');await settle();observe('settled',e)
   const role=dialog.closest('[role="dialog"]')||dialog.querySelector('[role="dialog"]'),ids=String(role?.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean),name=compact(ids.map(id=>document.getElementById(id)?.textContent||'').join(' '))
@@ -70,10 +70,10 @@ test('TK01 actual App ordinary Ticket detail declares native modal and preserves
   cur.checks.push({label:'current active native ticket detail declares aria-modal true',category:'primary',qualified:!!role,passed:role?.getAttribute('aria-modal')==='true'})
   cur.checks.push({label:'original naturally settled detail focus is inside owned native role',category:'positive',qualified:true,passed:!!role?.contains(document.activeElement)})
   const close=dialog.querySelector('button.ant-modal-close');assert.ok(close&&visible(close),'original native detail header X');await click(close)
-  await until(()=>router.currentRoute.value.path==='/adapter/tickets'&&!visible(dialog),'original header close returns route and hides current detail');await settle()
+  await until(()=>router.currentRoute.value.path==='/tickets'&&!visible(dialog),'original header close returns route and hides current detail');await settle()
   cur.observations.push({label:'closed-settled',route:router.currentRoute.value.path,oldDialogConnected:dialog.isConnected,oldDialogVisible:visible(dialog),openerConnected:opener.isConnected,openerEnabled:!opener.disabled,focus:focus(opener,dialog),connectedThreadCount:document.querySelectorAll('.message-item').length,visibleDialogCount:[...document.querySelectorAll('[role="dialog"]')].filter(visible).length,detailFooterAbsent:!dialog.querySelector('.ant-modal-footer'),createOrReplyNeverInvoked:true})
   cur.checks.push({label:'native Header X returns focus to exact still-connected enabled original detail opener',category:'primary-close-focus',qualified:opener.isConnected&&!opener.disabled&&opener.tabIndex>=0,passed:document.activeElement===opener})
-  cur.checks.push({label:'original detail route and closed thread/overlay state observed without writes',passed:router.currentRoute.value.path==='/adapter/tickets'&&!visible(dialog)&&document.querySelectorAll('.message-item').length===0})
+  cur.checks.push({label:'original detail route and closed thread/overlay state observed without writes',passed:router.currentRoute.value.path==='/tickets'&&!visible(dialog)&&document.querySelectorAll('.message-item').length===0})
   cur.checks.push({label:'only exact allowlisted GETs within original route-return reread bound',passed:calls.length>=3&&calls.length<=4&&calls.every(c=>c.method==='get')&&calls.filter(c=>c.url==='/api/tickets').length>=1&&calls.filter(c=>c.url==='/api/tickets').length<=2&&['/api/public/register-status','/api/tickets/8094'].every(url=>calls.filter(c=>c.url===url).length===1)})
   cur.checks.push({label:'zero clipboard/real IO/runtime/console errors',passed:!realIO.length&&!runtime.length&&!errors.length})
   cur.completedFlow=true;assert.deepEqual(cur.checks.filter(c=>!c.passed).map(c=>c.label),[],'complete-tail current native Ticket detail contract; no create/reply/state action');cur.passed=true
@@ -82,13 +82,13 @@ test('TK01 actual App ordinary Ticket detail declares native modal and preserves
 
 async function guardDetail(w,router){
  const opener=button(w.element.querySelector('tr[data-row-key="8094"]'),'查看详情');await click(opener)
- await until(()=>router.currentRoute.value.path==='/adapter/tickets/8094'&&calls.slice(activePlan.start).some(c=>c.url==='/api/tickets/8094'),'real native detail route/read before close guard')
+ await until(()=>router.currentRoute.value.path==='/tickets/8094'&&calls.slice(activePlan.start).some(c=>c.url==='/api/tickets/8094'),'real native detail route/read before close guard')
  const dialog=await until(()=>[...document.querySelectorAll('.ant-modal')].find(n=>visible(n)&&compact(n.querySelector('.ant-modal-title')?.textContent)===ROW.subject&&n.querySelector('.message-item p')?.textContent===THREAD.body),'real readonly detail for close guard');await until(()=>!entering(dialog),'original detail transition settled for guard');await settle();return{w,router,opener,dialog}
 }
 function holdOriginalCloseRoute(router){
  const gate={entered:false,released:false,enteredFrom:null,enteredTo:null,completed:false,failureType:null,completionPath:null};let release
- const promise=new Promise(r=>{release=r});const removeBefore=router.beforeEach((to,from)=>{if(!gate.entered&&to.path==='/adapter/tickets'&&from.path==='/adapter/tickets/8094'){gate.entered=true;gate.enteredFrom=from.path;gate.enteredTo=to.path;return promise}})
- const removeAfter=router.afterEach((to,from,failure)=>{if(gate.entered&&to.path==='/adapter/tickets'&&from.path==='/adapter/tickets/8094'){gate.completed=true;gate.failureType=failure?.type??null;gate.completionPath=router.currentRoute.value.path}})
+ const promise=new Promise(r=>{release=r});const removeBefore=router.beforeEach((to,from)=>{if(!gate.entered&&to.path==='/tickets'&&from.path==='/tickets/8094'){gate.entered=true;gate.enteredFrom=from.path;gate.enteredTo=to.path;return promise}})
+ const removeAfter=router.afterEach((to,from,failure)=>{if(gate.entered&&to.path==='/tickets'&&from.path==='/tickets/8094'){gate.completed=true;gate.failureType=failure?.type??null;gate.completionPath=router.currentRoute.value.path}})
  return{gate,release(){if(!gate.released){gate.released=true;release()}},remove(){removeBefore();removeAfter()}}
 }
 function focusInput(mode){const input=document.createElement('input');input.id='fixture-owned-'+mode;input.setAttribute('aria-label','Synthetic foreground focus owner');document.body.append(input);input.focus();assert.equal(document.activeElement,input,'native standalone foreground focus qualification');return input}
@@ -103,7 +103,7 @@ test('TC02 original readonly close navigation preserves foreground/dialog and re
     const close=e.dialog.querySelector('button.ant-modal-close');assert.ok(close&&visible(close),'original native header close for real router gate');await click(close)
     await until(()=>g.gate.entered&&!visible(e.dialog),'actual original close navigation reaches held beforeEach and dialog closes')
     vector.qualification={realNavigationGateEntered:g.gate.entered,heldFrom:g.gate.enteredFrom,heldTo:g.gate.enteredTo,heldCurrentPath:r.router.currentRoute.value.path,oldDialogDisconnected:!e.dialog.isConnected,openerConnected:e.opener.isConnected,openerEnabled:!e.opener.disabled}
-    guardCheck(mode+' actual original close reaches pending router navigation before restoration',g.gate.entered&&r.router.currentRoute.value.path==='/adapter/tickets/8094'&&!visible(e.dialog))
+    guardCheck(mode+' actual original close reaches pending router navigation before restoration',g.gate.entered&&r.router.currentRoute.value.path==='/tickets/8094'&&!visible(e.dialog))
     guardCheck(mode+' no premature opener return while close route is unresolved',document.activeElement!==e.opener)
     if(mode==='foreground'){input=focusInput(mode);expectedFocus=input}
     else if(mode==='other-dialog'){
@@ -118,7 +118,7 @@ test('TC02 original readonly close navigation preserves foreground/dialog and re
     else if(mode==='unmount'){const own=roots.find(x=>x.router===r.router);own.app.unmount();unmounted=true;await settle();input=focusInput(mode);expectedFocus=input;vector.qualification.actualAppUnmounted=true}
     else if(mode==='other-route'){await r.router.push('/fixture-other');await until(()=>r.router.currentRoute.value.path==='/fixture-other','actual later route supersedes old pending close');input=focusInput(mode);expectedFocus=input;vector.qualification.actualOtherRoute=true}
     vector.observations.push({label:'before-original-close-navigation-release',focusTag:document.activeElement?.tagName||null,isOldOpener:document.activeElement===e.opener,oldOpenerConnected:e.opener.isConnected,route:r.router.currentRoute.value.path})
-    g.release();await until(()=>g.gate.completed,'public afterEach observes matching original close navigation completion or cancellation');await until(()=>r.router.currentRoute.value.path===(mode==='unmount'?'/':mode==='other-route'?'/fixture-other':'/adapter/tickets'),'actual final route respects last-App unmount START_LOCATION or superseding other route');await settle();await settle()
+    g.release();await until(()=>g.gate.completed,'public afterEach observes matching original close navigation completion or cancellation');await until(()=>r.router.currentRoute.value.path===(mode==='unmount'?'/':mode==='other-route'?'/fixture-other':'/tickets'),'actual final route respects last-App unmount START_LOCATION or superseding other route');await settle();await settle()
     guardCheck(mode+' original pending close never steals newer or retired focus',document.activeElement===expectedFocus&&document.activeElement!==e.opener)
     vector.observations.push({label:'after-route-completion-and-Vue-disposal',matchingCloseAfterEach:g.gate.completed,closeNavigationFailureType:g.gate.failureType,closeAfterEachCurrentPath:g.gate.completionPath,focusTag:document.activeElement?.tagName||null,focusPreserved:document.activeElement===expectedFocus,isOldOpener:document.activeElement===e.opener,oldOpenerConnected:e.opener.isConnected,route:r.router.currentRoute.value.path,connectedTicketThreads:document.querySelectorAll('.message-item').length,createNeverOpened:true})
     vector.calls=calls.slice(activePlan.start);vector.completedFlow=true

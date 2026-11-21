@@ -52,11 +52,12 @@
          仅管理员可见（canManage），与原来 ConsolePanel 的可见条件一致。 -->
     <a-modal
       v-if="canManage()"
+      :key="pageEpoch"
       :open="notificationConfigVisible"
       title="企业微信工单提醒"
       :footer="null"
       :width="560"
-      :onUpdate:open="pageEntry.bind(setNotificationConfigVisible)"
+      :onUpdate:open="notificationEntry.bind(setNotificationConfigVisible)"
       data-testid="ticket-notification-config-modal"
     >
       <p class="config-modal-lead">
@@ -68,7 +69,7 @@
       <section v-if="actionFailures.notificationTest.state.failure" data-ticket-notification-test-feedback>
       <RequestFailureAlert :key="actionFailures.notificationTest.state.context" :failure="actionFailures.notificationTest.state.failure" :message="actionFailures.notificationTest.state.message" :context-key="actionFailures.notificationTest.state.context" :is-current="actionFailures.notificationTest.isCurrent" :busy="configTesting" closable :onClose="actionFailures.notificationTest.close" />
     </section>
-      <TicketNotificationSettingsForm :config="notificationConfig" :entry="pageEntry"
+      <TicketNotificationSettingsForm :config="notificationConfig" :entry="notificationEntry"
         :loaded="configLoaded" :disabled="!canManage()" :saving="configSaving" :testing="configTesting"
         :save="saveNotificationConfig" :test="testNotification" :set-field="setConfig"
         :clear-webhook="clearSavedWebhook" :keep-webhook="keepSavedWebhook" />
@@ -880,7 +881,7 @@ import {
   validateTicketAttachmentFile,
   TICKET_ATTACHMENT_MAX_PER_MESSAGE,
 } from "@/utils/ticketAttachmentHelpers.mjs";
-import { useCurrentUserDisplay, isAdminUser } from "@/utils/currentUser";
+import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch, getCurrentSessionRevision } from "@/utils/currentUser";
 import { useCurrentUserRequestScope } from "@/utils/currentUserScope";
 import {
   buildTicketListParams,
@@ -953,6 +954,20 @@ const TicketAccountActions = defineAsyncComponent(() => import("./TicketAccountA
 // 注销引导 / 自助注销：与工单向导的「注销申请」分支、个人中心入口共用同一组件。
 const ClosureGuide = defineAsyncComponent(() => import("./ClosureGuide.vue"));
 const { currentUser } = useCurrentUserDisplay();
+const notificationConfigVisible = ref(false);
+let authorizedLogoutEpoch = getCurrentUserLogoutEpoch(), seenLogoutEpoch = authorizedLogoutEpoch, loggedOutRevision = "";
+// A failed localStorage.removeItem may leave the old display object readable.
+// Explicit logout still retires this page until a different identity or fresh login.
+watch(currentUser, (next, previous) => {
+  const epoch = getCurrentUserLogoutEpoch();
+  if (epoch !== seenLogoutEpoch) {
+    seenLogoutEpoch = epoch; loggedOutRevision = getCurrentSessionRevision();
+  } else if (epoch !== authorizedLogoutEpoch && next?.id &&
+      (next.id !== previous?.id || getCurrentSessionRevision() !== loggedOutRevision)) {
+    authorizedLogoutEpoch = epoch;
+  }
+}, { flush: "sync" });
+
 const route = useRoute();
 const router = useRouter();
 let listRequestVersion = 0;
@@ -1318,11 +1333,11 @@ function closePageReadFailure(error, context) { if (actionFailures.pageRead.clos
 
 function canUseTickets() {
   const id = Number(currentUser.value?.id);
-  return active && Number.isInteger(id) && id > 0 && id <= 2147483647
+  return active && authorizedLogoutEpoch === getCurrentUserLogoutEpoch() && Number.isInteger(id) && id > 0 && id <= 2147483647
     && ['enabled', 'banned'].includes(String(currentUser.value?.status || "enabled"))
     && (!bannedApplicant.value || routeViewMode.value === 'self');
 }
-function canManage() { return canUseTickets() && isAdmin.value; }
+function canManage() { return canUseTickets() && isAdmin.value && isAdminRoleUser.value; }
 function canCreateTickets() { return canUseTickets() && !isAdmin.value; }
 // 收款码组件按草稿生命周期隔离；设备私钥只在服务端记忆注册成功后保存。
 const payoutQrComponent = ref(null), payoutQrBusy = ref(false)
@@ -1429,6 +1444,7 @@ function resetRefundDraft() {
   refundOrdersVersion += 1; refundOrdersLoading.value = false; refundOrdersError.value = '';
 }
 function clearOwned() {
+  notificationConfigVisible.value = false;
   resetAppealVerification(); detailAppealTarget.value = null;
   resetRefundDraft();
   draft.refundPayoutQrAttachmentId = null;
@@ -1495,8 +1511,12 @@ function entry(capture) { return { bind(action, ...args) {
 const pageEntry = entry(capturePage), createEntry = entry(captureCreate), detailEntry = entry(captureDetail);
 function setKeyword(value) { if (canUseTickets()) keywordInput.value = value; }
 function setFilter(key, value) { if (canUseTickets()) filters[key] = value; }
-// 通知设置弹窗开关。默认收起：它是配置，不该和工单列表抢版面。
-const notificationConfigVisible = ref(false);
+// Ant Form may emit a queued finish after its actor/role changed. Capture the
+// authority of the mounted form, not the authority present when it fires.
+const notificationEntry = { bind(action, ...args) {
+  const owns = capturePage(true);
+  return (...events) => { if (owns()) return action(...args, ...events); };
+} };
 function openNotificationConfig() { if (canManage()) notificationConfigVisible.value = true; }
 function setNotificationConfigVisible(value) { if (!value) notificationConfigVisible.value = false; }
 function setConfig(key, value) {
