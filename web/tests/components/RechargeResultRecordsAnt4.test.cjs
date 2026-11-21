@@ -124,10 +124,10 @@ for (const actor of [USER, ADMIN]) for (const input of cases) test('RECHARGE_RES
     user.setStoredCurrentUser(actor)
     const storedBefore = window.localStorage.getItem('adapter_current_user')
     const home = user.resolveHomePath(user.getStoredCurrentUser())
-    assert.equal(home, actor.role === 'admin' ? '/adapter/component' : '/adapter/user-usage')
+    assert.equal(home, actor.role === 'admin' ? '/component' : '/user-usage')
     const sentinel = { render: () => null }
     const router = createRouter({ history: createMemoryHistory(), routes: [
-      { path: '/adapter/recharge/result', name: 'recharge-result', component: sentinel },
+      { path: '/recharge/result', name: 'recharge-result', component: sentinel },
       { path: '/adapter/recharge-orders', name: 'recharge-orders', component: sentinel },
       { path: home, name: 'synthetic-existing-home', component: sentinel },
     ] })

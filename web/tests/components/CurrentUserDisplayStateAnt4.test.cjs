@@ -94,7 +94,7 @@ test('legacy bytes, arrays, primitive clear, malformed getter, readonly snapshot
     window.localStorage.setItem(key, '{broken')
     assert.equal(user.getStoredCurrentUser(), null); assert.equal(window.localStorage.getItem(key), null)
     assert.equal(user.isAdminUser({ role: ' ADMIN ' }), true)
-    assert.equal(user.resolveHomePath({ role: 'user' }), '/adapter/user-usage')
+    assert.equal(user.resolveHomePath({ role: 'user' }), '/user-usage')
     assert.equal(user.clearStoredCurrentUser(), undefined)
     b.unmount(); assert.equal(listeners.size, 0, 'last scope removes listener')
     user.setStoredCurrentUser({ ...initial, balance: 3 })
