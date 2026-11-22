@@ -17,6 +17,8 @@ run/config.yaml
 reamed.md
 /logs/
 /run/logs/
+/run/nginx/ssl/
+/run/nginx/logs/
 
 # Never send operator-only bootstrap credentials in an image build context.
 admin-bootstrap-*.password

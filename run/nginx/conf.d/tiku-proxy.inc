@@ -1,5 +1,4 @@
-# 两个 server 段共用的反向代理参数（被 tiku-adapter.conf include）。
-# 文件名不以 .conf 结尾：官方镜像只会 include conf.d/*.conf，不会被重复加载。
+# 网关生成的全部 server 共用此文件；.inc 不会作为 http 配置重复加载。
 
 proxy_http_version 1.1;
 proxy_set_header Host              $http_host;
@@ -8,7 +7,7 @@ proxy_set_header Host              $http_host;
 proxy_set_header X-Real-IP         $remote_addr;
 proxy_set_header X-Forwarded-For   $remote_addr;
 proxy_set_header Forwarded         "";
-proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Proto $tiku_forwarded_proto;
 proxy_set_header X-Forwarded-Port  $server_port;
 
 # WebSocket 必需的两行：升级请求带 Connection: upgrade，普通请求保持空值
