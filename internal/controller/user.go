@@ -698,6 +698,7 @@ func UserRegister(c *gin.Context) {
 			c.JSON(status, gin.H{"message": message})
 			return
 		}
+		recordCommittedRegistrationBrowser(c, user.ID, user.RegisterIP)
 		bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
 		evaluateUserLevelAfterRegister(user.ID)
 		recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "wechat_register"})
@@ -773,6 +774,7 @@ func UserRegister(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": failureMessage})
 		return
 	}
+	recordCommittedRegistrationBrowser(c, user.ID, user.RegisterIP)
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
 	evaluateUserLevelAfterRegister(user.ID)
 	recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "register"})

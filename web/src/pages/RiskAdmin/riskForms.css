@@ -1,0 +1,16 @@
+.risk-form { display: grid; gap: 10px; color: var(--console-text); }
+.risk-form h3, .risk-form p { margin: 0; }
+.risk-form h3 { font-size: 15px; }
+.risk-form label { display: grid; gap: 4px; font-weight: 500; }
+.risk-form .form-row { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.risk-form .form-row label { flex: 1 1 130px; }
+.risk-form input:not([type=checkbox]), .risk-form select, .risk-form textarea {
+  min-height: 32px; padding: 4px 8px; width: 100%; box-sizing: border-box;
+  font: inherit; color: inherit; background: var(--console-surface, transparent);
+  border: 1px solid var(--console-border, #bbb); border-radius: 5px;
+}
+.risk-form .confirm { display: flex; align-items: start; gap: 8px; }
+.risk-form .hint { font-size: 13px; color: var(--console-muted); }
+.risk-form [role=alert] { color: var(--console-danger, #ac3636); }
+.risk-form [role=status] { color: var(--console-text); }
+.risk-form button { justify-self: start; }

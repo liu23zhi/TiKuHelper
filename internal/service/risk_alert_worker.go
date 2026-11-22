@@ -76,7 +76,11 @@ func StartRiskAlertEvaluationWorker(db *gorm.DB, interval time.Duration) func() 
 			}
 			// 失败只告警、不退出循环：一次评估失败（表未迁移/数据库抖动）不该让
 			// 风控永久停摆。下个周期重试。
-			if _, err := EvaluateDebtAlerts(db, time.Now()); err != nil {
+			now := time.Now()
+			if err := pruneRegistrationBrowserEvents(db, now); err != nil {
+				logger.SysWarn("注册浏览器事件清理失败，下个周期重试：" + err.Error())
+			}
+			if _, err := EvaluateDebtAlerts(db, now); err != nil {
 				logger.SysWarn("风控判定任务失败（不影响主服务，下个周期重试）：" + err.Error())
 			}
 		}

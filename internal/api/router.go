@@ -99,6 +99,14 @@ func SetAPIRouter(router *gin.Engine) {
 	// 「当使用 Sqlite 启动时候，需要给与警告」）。挂上就永远只有管理员看得到，需求只兑现一半。
 	// 这也是最容易被「顺手补一个管理员校验」改回去的地方，所以 auth 只到 Auth 这一层。
 	apiRouter.GET("/system/storage-status", controller.Auth, controller.StorageStatus)
+	// 扩展只可向自己的题库服务提交预定义诊断事件；可读路由单独走管理会话。
+	apiRouter.GET("/extension-logs/policy", controller.GetExtensionIngestPolicy)
+	apiRouter.POST("/extension-logs/start", middleware.BodyLimit(4096), controller.StartExtensionLogs)
+	apiRouter.POST("/extension-logs", middleware.BodyLimit(64<<10), controller.UploadExtensionLogs)
+	apiRouter.GET("/admin/extension-logs", controller.Auth, middleware.RequireAdmin, controller.AdminExtensionLogs)
+	apiRouter.GET("/admin/extension-logs/settings", controller.Auth, middleware.RequireAdmin, controller.GetExtensionLogPolicy)
+	apiRouter.PUT("/admin/extension-logs/settings", controller.Auth, middleware.RequireAdmin, controller.SetExtensionLogPolicy)
+
 	apiRouter.GET("/script-escrow-policy", controller.Auth, controller.GetScriptEscrowPolicy)
 	apiRouter.PUT("/script-escrow-policy", controller.Auth, middleware.RequireAdmin, controller.PutScriptEscrowPolicy)
 	apiRouter.GET("/script-activation-code-price", controller.Auth, controller.GetScriptActivationCodePrice)
@@ -261,7 +269,8 @@ func SetAPIRouter(router *gin.Engine) {
 	// 两套限流各自可解（45-*.md §0.1.4 五-8：「解除账号锁定」与「解除 IP 锁定」两个操作）。
 	apiRouter.GET("/admin/login-lockouts", controller.Auth, middleware.RequireAdmin, controller.LoginLockoutList)
 	apiRouter.DELETE("/admin/login-lockout/:scope/:key", controller.Auth, middleware.RequireAdmin, controller.ClearLoginLockout)
-	apiRouter.POST("/user/logout", controller.UserLogout)     // 清理浏览器会话
+	apiRouter.POST("/user/logout", controller.UserLogout) // 清理浏览器会话
+	apiRouter.GET("/user/register/status", controller.PublicRegistrationBrowserStatus)
 	apiRouter.POST("/user/register", controller.UserRegister) // 公开注册接口
 	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
 	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
@@ -670,6 +679,13 @@ func SetAPIRouter(router *gin.Engine) {
 	// 规则的启用/停用（risk_rules.enabled）。此前这一列同样没有写接口。
 	// 接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
 	apiRouter.GET("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.RiskRuleStateList)
+	apiRouter.GET("/risk/offhours-window", controller.Auth, middleware.RequireAdmin, controller.RiskOffhoursWindowGet)
+	apiRouter.PUT("/risk/offhours-window", controller.Auth, middleware.RequireAdmin, controller.RiskOffhoursWindowPut)
+	apiRouter.DELETE("/risk/offhours-window", controller.Auth, middleware.RequireAdmin, controller.RiskOffhoursWindowReset)
+	apiRouter.GET("/risk/response-policies/:detector", controller.Auth, middleware.RequireAdmin, controller.RiskResponsePolicyGet)
+	apiRouter.PUT("/risk/response-policies/:detector", controller.Auth, middleware.RequireAdmin, controller.RiskResponsePolicyPut)
+	apiRouter.GET("/risk/alerts/:id/response", controller.Auth, middleware.RequireAdmin, controller.RiskAlertResponseGet)
+	apiRouter.POST("/risk/alerts/:id/response", controller.Auth, middleware.RequireAdmin, controller.RiskAlertResponseApply)
 	apiRouter.GET("/risk/rule-types", controller.Auth, middleware.RequireAdmin, controller.RiskRuleTypeList)
 	apiRouter.POST("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.CreateRiskRule)
 	apiRouter.PUT("/risk/rules/:ruleId", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskRule)

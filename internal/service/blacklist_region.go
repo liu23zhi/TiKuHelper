@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -63,6 +65,41 @@ const (
 	// blacklistRegionSegmentMaxRunes 是单个段的最大长度（防止脏值撑爆 pattern varchar(191)）。
 	blacklistRegionSegmentMaxRunes = 64
 )
+
+// region_scope is a four-field equality rule. Its distinct match_type means
+// no existing manually-authored prefix/wildcard rule is ever reinterpreted.
+const blacklistMatchRegionScope = "region_scope"
+const regionScopeSeparator = " · "
+
+func (loc BlacklistRegionLocation) exactScope() string {
+	if loc.ambiguous {
+		return ""
+	}
+	parts := []string{loc.Country, loc.Province, loc.City, loc.Operator}
+	for _, p := range parts {
+		if isPlaceholderLocationValue(p) || strings.TrimSpace(p) != p ||
+			strings.ContainsAny(p, "*·") || strings.IndexFunc(p, unicode.IsControl) >= 0 ||
+			utf8.RuneCountInString(p) > blacklistRegionSegmentMaxRunes {
+			return ""
+		}
+	}
+	label := strings.Join(parts, regionScopeSeparator)
+	if utf8.RuneCountInString(label) > blacklistPatternMaxRunes {
+		return ""
+	}
+	return label
+}
+
+func parseExactRegionScope(label string) (BlacklistRegionLocation, error) {
+	p := strings.Split(label, regionScopeSeparator)
+	if len(p) == 4 {
+		loc := BlacklistRegionLocation{Country: p[0], Province: p[1], City: p[2], Operator: p[3]}
+		if loc.exactScope() == label {
+			return loc, nil
+		}
+	}
+	return BlacklistRegionLocation{}, fmt.Errorf("%w：需要明确的国家、省、市和运营商", ErrInvalidBlacklistPattern)
+}
 
 // BlacklistRegionPattern 是一条地区规则解析后的结构化条件（空字段 = 该级别不限）。
 type BlacklistRegionPattern struct {
@@ -211,10 +248,11 @@ func buildBlacklistRegionCanonical(geo string, city string, operator string) str
 
 // BlacklistRegionLocation 是一次归属地解析结果（占位值已归一成空串）。
 type BlacklistRegionLocation struct {
-	Country  string
-	Province string
-	City     string
-	Operator string
+	Country   string
+	Province  string
+	City      string
+	Operator  string
+	ambiguous bool // presentation-only or extra components: never evidence for a precise risk ban
 }
 
 // IsZero 表示这次归属地没有任何可用信息（此时任何规则都不该命中）。
@@ -306,7 +344,12 @@ func (s *BlacklistSnapshot) MatchRegion(address string) (BlacklistMatch, bool) {
 		return BlacklistMatch{}, false
 	}
 	region, operator := splitBlacklistRegionAddress(address)
-	return s.MatchRegionLocation(region, operator, "")
+	legacy := ParseBlacklistRegionLocation(region, operator, "")
+	var precise BlacklistRegionLocation
+	if len(strings.Fields(address)) == 4 {
+		precise = offlineBlacklistLocation(region, operator, "")
+	}
+	return s.matchRegionLocation(legacy, precise)
 }
 
 // MatchRegionLocation 判定一个结构化归属地是否命中地区规则。
@@ -320,11 +363,11 @@ func (s *BlacklistSnapshot) MatchRegionLocation(region string, llc string, isp s
 	if s == nil || len(s.region) == 0 {
 		return BlacklistMatch{}, false
 	}
-	return s.matchRegionLocation(ParseBlacklistRegionLocation(region, llc, isp))
+	return s.matchRegionLocation(ParseBlacklistRegionLocation(region, llc, isp), offlineBlacklistLocation(region, llc, isp))
 }
 
 // matchRegionLocation 是已解析归属地后的判定内核（gate 与 MatchRegion 共用）。
-func (s *BlacklistSnapshot) matchRegionLocation(location BlacklistRegionLocation) (BlacklistMatch, bool) {
+func (s *BlacklistSnapshot) matchRegionLocation(location, precise BlacklistRegionLocation) (BlacklistMatch, bool) {
 	if s == nil || len(s.region) == 0 {
 		return BlacklistMatch{}, false
 	}
@@ -334,9 +377,18 @@ func (s *BlacklistSnapshot) matchRegionLocation(location BlacklistRegionLocation
 	if location.IsZero() {
 		return BlacklistMatch{}, false
 	}
+	now := time.Now()
 	for i := range s.region {
 		rule := s.region[i]
-		if rule.Rule == nil {
+		if !rule.Rule.activeAt(now) {
+			continue
+		}
+		if rule.scope != nil {
+			want := rule.scope
+			if !precise.ambiguous && strings.EqualFold(precise.Country, want.Country) &&
+				strings.EqualFold(precise.Province, want.Province) && strings.EqualFold(precise.City, want.City) && strings.EqualFold(precise.Operator, want.Operator) {
+				return rule.Rule.toMatch(), true
+			}
 			continue
 		}
 		if blacklistRegionRuleMatches(rule, location) {
@@ -387,42 +439,90 @@ func blacklistRegionGeoMatches(geo string, location BlacklistRegionLocation) boo
 // ok=false 表示没有可用缓存（此时不判定、放行、**不发起上游查询**）。
 type BlacklistRegionLooker func(clientIP string) (BlacklistRegionLocation, bool)
 
-// NewBlacklistRegionCacheLooker 返回一个**只读 `location_cache_entries`** 的查表器。
-//
-// 为什么不用 LookupIPLocationsWithDB：那条路径在缓存缺失时会对回环/私有 IP
-// 「本地合成并写库」，在配置了密钥时还会回源外呼 —— 两者都不该出现在**每个请求**的
-// 判定链上（46-*.md §4 与 §7：「地区规则命中时不产生 UApiPro 计费（只读缓存，不主动查询）」）。
-// 本函数只做一次按主键的索引点读，零外呼、零写入。
-//
-// ⚠️ 只读默认来源（source 为空串）：商业增强来源（commercial）的记录不参与地区判定，
-// 因为运营开启商业来源只是为了让**管理页展示**更完整，不该顺带改变拦截口径。
+// NewBlacklistRegionCacheLooker resolves only offline, standard-source geography. Never call the
+// upstream API here. A precise IP row wins. An incomplete row may fall back to the narrowest
+// containing standard segment, but contradictory evidence must not widen a block.
 func NewBlacklistRegionCacheLooker(db *gorm.DB) BlacklistRegionLooker {
 	return func(clientIP string) (BlacklistRegionLocation, bool) {
-		if db == nil {
-			return BlacklistRegionLocation{}, false
-		}
 		key := normalizeIPLookupKey(strings.TrimSpace(clientIP))
-		if key == "" || net.ParseIP(key) == nil {
+		if db == nil || net.ParseIP(key) == nil {
 			return BlacklistRegionLocation{}, false
 		}
+		var loc BlacklistRegionLocation
 		rows := loadLocationCacheRows(db, entity.LocationKindIP, "", []string{key})
-		row, ok := rows[locationCacheLookupKey(key)]
-		if !ok {
-			return BlacklistRegionLocation{}, false
+		if row, ok := rows[locationCacheLookupKey(key)]; ok {
+			info := parseIPInfoRawJSON(row.RawJSON)
+			loc = offlineBlacklistLocation(info.Region, info.LLC, info.ISP)
+			if loc.IsZero() {
+				region, operator := splitBlacklistRegionAddress(row.Address)
+				loc = offlineBlacklistLocation(region, operator, "")
+				loc.ambiguous = true // display text alone does not delimit the four fields
+			}
 		}
-		info := parseIPInfoRawJSON(row.RawJSON)
-		location := ParseBlacklistRegionLocation(info.Region, info.LLC, info.ISP)
-		if location.IsZero() {
-			// RawJSON 缺失（更早版本写入的行）时回退 address 列；
-			// 与 displayAddressFromCacheRow 同一条兜底原则。
-			region, operator := splitBlacklistRegionAddress(row.Address)
-			location = ParseBlacklistRegionLocation(region, operator, "")
+		if (loc.City == "" || loc.Operator == "") && db.Migrator().HasTable(entity.TableNameIPSegment) {
+			if other, ok := narrowestStandardRegion(db, key); ok {
+				agrees := func(a, b string) bool { return a == "" || b == "" || strings.EqualFold(a, b) }
+				if loc.IsZero() || (other.City != "" && other.Operator != "" && agrees(loc.Country, other.Country) && agrees(loc.Province, other.Province) && agrees(loc.City, other.City) && agrees(loc.Operator, other.Operator)) {
+					loc = other
+				}
+			}
 		}
-		if location.IsZero() {
-			return BlacklistRegionLocation{}, false
-		}
-		return location, true
+		return loc, !loc.IsZero()
 	}
+}
+
+// A direct IP cache record has higher precedence; this fallback is standard
+// segments only. Preserve the existing newest-row winner for legacy manual
+// rules. A precise ban additionally requires consensus among complete rows at
+// the same narrowest width. Older/wider or commercial rows do not arbitrate it.
+func narrowestStandardRegion(db *gorm.DB, ip string) (BlacklistRegionLocation, bool) {
+	value, ok := ipv4ToUint32(ip)
+	if !ok {
+		return BlacklistRegionLocation{}, false
+	}
+	// Clone the scoped query so the MIN and projection share the same filters
+	// and the database observes the entire tie in a single read.
+	candidates := db.Session(&gorm.Session{NewDB: true}).Model(&entity.IPSegment{}).
+		Where("begin_ip <= ? AND end_ip >= ? AND source IN ?", value, value, []string{"", "standard"}).
+		Session(&gorm.Session{})
+	var rows []struct{ Region, LLC, ISP string }
+	if err := candidates.Select("region,llc,isp").
+		Where("(end_ip - begin_ip) = (?)", candidates.Select("MIN(end_ip - begin_ip)")).
+		Order("fetched_at DESC, id DESC").Find(&rows).Error; err != nil || len(rows) == 0 {
+		return BlacklistRegionLocation{}, false
+	}
+	winner := offlineBlacklistLocation(rows[0].Region, rows[0].LLC, rows[0].ISP)
+	if expected := winner.exactScope(); expected != "" {
+		for _, row := range rows[1:] {
+			scope := offlineBlacklistLocation(row.Region, row.LLC, row.ISP).exactScope()
+			if scope != "" && !strings.EqualFold(expected, scope) {
+				winner.ambiguous = true
+				break
+			}
+		}
+	}
+	return winner, true
+}
+
+// Read the geographic positions without compressing an unknown city into its province.
+func offlineBlacklistLocation(region, llc, isp string) BlacklistRegionLocation {
+	loc := BlacklistRegionLocation{Operator: ParseBlacklistRegionLocation("", llc, isp).Operator}
+	parts := strings.Fields(region)
+	loc.ambiguous = len(parts) > 3
+	field := func(n int) string {
+		if n < len(parts) && !isPlaceholderLocationValue(parts[n]) && !strings.Contains(parts[n], "*") {
+			return parts[n]
+		}
+		return ""
+	}
+	loc.Country, loc.Province, loc.City = field(0), field(1), field(2)
+	if len(parts) == 2 && (loc.Country == "中国" || loc.Country == "中华人民共和国") {
+		switch strings.TrimSuffix(loc.Province, "市") {
+		case "北京", "上海", "天津", "重庆":
+			loc.City = loc.Province
+		}
+	}
+	return loc
 }
 
 // BlacklistRegionOutcome 是地区判定的四种结果。
@@ -470,7 +570,7 @@ func EvaluateBlacklistRegion(cache *BlacklistCache, looker BlacklistRegionLooker
 	if !ok {
 		return BlacklistMatch{}, BlacklistRegionMiss
 	}
-	if match, hit := snapshot.matchRegionLocation(location); hit {
+	if match, hit := snapshot.matchRegionLocation(location, location); hit {
 		return match, BlacklistRegionHit
 	}
 	return BlacklistMatch{}, BlacklistRegionMiss

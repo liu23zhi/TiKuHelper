@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual Vue/Antd + real API/request/WeakMap. Axios and clipboard are memory
  * adapters only. No passwords/whole forms, real IO, mutation retry or new rules.
  * Issued clipboard work cannot be withdrawn: only later UI/new calls are gated. */
