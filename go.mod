@@ -7,24 +7,25 @@ require (
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/antlabs/strsim v0.0.4
 	github.com/elastic/go-elasticsearch/v8 v8.19.7
-	github.com/gin-contrib/static v1.1.9
+	github.com/extrame/xls v0.0.1
+	github.com/gin-contrib/static v1.1.10
 	github.com/gin-gonic/gin v1.12.0
-	github.com/glebarez/go-sqlite v1.21.2
+	github.com/glebarez/go-sqlite v1.23.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-resty/resty/v2 v2.17.2
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/gookit/goutil v0.8.6
+	github.com/gookit/goutil v0.9.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.21.0
-	github.com/tidwall/gjson v1.20.1
+	github.com/tidwall/gjson v1.20.4
 	github.com/xuri/excelize/v2 v2.11.1
-	golang.org/x/crypto v0.58.0
-	golang.org/x/image v0.47.0
+	golang.org/x/crypto v0.59.0
+	golang.org/x/image v0.48.0
 	golang.org/x/sys v0.50.0
-	golang.org/x/term v0.47.0
+	golang.org/x/term v0.48.0
 	golang.org/x/time v0.16.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gen v0.3.29
@@ -46,7 +47,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.9.0 // indirect
 	github.com/extrame/ole2 v0.0.0-20160812065207-d69429661ad7 // indirect
-	github.com/extrame/xls v0.0.1 // indirect
 	github.com/fatih/set v0.2.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
@@ -60,7 +60,6 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/google/pprof v0.0.0-20231101202521-4ca4178f5c7a // indirect
 	github.com/jaytaylor/html2text v0.0.0-20200412013138-3577fbdbcff7 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
@@ -72,6 +71,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/olekukonko/tablewriter v0.0.4 // indirect
 	github.com/otiai10/gosseract/v2 v2.2.4 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
@@ -89,7 +89,7 @@ require (
 	github.com/ssor/bom v0.0.0-20170718123548-6386211fdfcf // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/pretty v1.3.0 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
@@ -102,16 +102,16 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.29.0 // indirect
 	golang.org/x/exp v0.0.0-20240112132812-db7319d0e0e3 // indirect
-	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/tools v0.51.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gorm.io/datatypes v1.2.4 // indirect
 	gorm.io/hints v1.1.0 // indirect
-	modernc.org/libc v1.22.5 // indirect
-	modernc.org/mathutil v1.5.0 // indirect
-	modernc.org/memory v1.5.0 // indirect
-	modernc.org/sqlite v1.23.1 // indirect
+	modernc.org/libc v1.74.1 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.55.0 // indirect
 )
