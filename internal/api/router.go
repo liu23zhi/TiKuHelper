@@ -24,6 +24,8 @@ import (
 func SetAPIRouter(router *gin.Engine) {
 	router.Use(middleware.RequestCorrelation, middleware.CORS, middleware.SecurityHeaders)
 
+	registerDeploymentQRCode(router, "/usr/share/nginx/html/Wechat_qc_code.jpg")
+
 	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Auth, middleware.RequireAdmin, controller.Proxy)
 
 	apiRouter := router.Group("/api")
@@ -521,6 +523,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/system-metrics", controller.Auth, middleware.RequireAdmin, controller.GetSystemMetrics)
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
+	apiRouter.GET("/admin/system-settings/certificate-passwords", controller.Auth, middleware.RequireAdmin, controller.GatewayCertificatePasswordState)
+	apiRouter.PUT("/admin/system-settings/certificate-passwords", controller.Auth, middleware.RequireAdmin, controller.UpdateGatewayCertificatePasswords)
 
 	// 黑名单管理页（BL-5，46-黑名单设计.md §6）。全部 Auth + RequireAdmin：
 	// 规则原文（pattern）是「攻击者换 IP 的边界」，只有管理员能看。
@@ -840,6 +844,13 @@ func collectReservedPrefixes(router *gin.Engine) ([]string, int) {
 	return prefixes, len(routes)
 }
 
+// Health and web routes register after the main API snapshot. Refresh after
+// each registration phase so no earlier prefix snapshot can grant their paths.
+func refreshScriptReservedPrefixes(router *gin.Engine) {
+	prefixes, _ := collectReservedPrefixes(router)
+	service.SetReservedScriptPrefixes(prefixes)
+}
+
 // firstRouteSegment 取路由第一段；首段是 gin 参数/通配则返回空串。
 func firstRouteSegment(routePath string) string {
 	for _, part := range strings.Split(strings.TrimPrefix(routePath, "/"), "/") {
@@ -1036,4 +1047,5 @@ func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)
 	})
+	refreshScriptReservedPrefixes(router)
 }

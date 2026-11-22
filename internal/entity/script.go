@@ -67,15 +67,19 @@ type UserScript struct {
 	ShortCode   string  `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
 	// Legacy scripts have no locator and continue using their original address.
 	LauncherLocator *string `gorm:"column:launcher_locator;type:char(36);uniqueIndex:ux_user_scripts_launcher_locator" json:"-"`
-	AccessTokenID   int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
-	AccessKey       string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
-	ReservedFee     float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
+	// Old locators were public identifiers. Only newly issued/rotated locators
+	// may authorize a launch without the legacy header capability.
+	LauncherBearerEnabled bool    `gorm:"column:launcher_bearer_enabled;not null;default:false" json:"-"`
+	AccessTokenID         int32   `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
+	AccessKey             string  `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
+	ReservedFee           float64 `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
 	// Full and short entry budgets are independent; legacy full commands remain
 	// enabled with no time/count limit until the owner explicitly configures them.
 	LauncherDisabled   bool       `gorm:"column:launcher_disabled;not null;default:false" json:"-"`
 	LauncherGeneration int64      `gorm:"column:launcher_generation;not null;default:0" json:"-"`
 	LauncherStartsAt   *time.Time `gorm:"column:launcher_starts_at" json:"-"`
 	LauncherExpiresAt  *time.Time `gorm:"column:launcher_expires_at" json:"-"`
+	LauncherWindows    string     `gorm:"column:launcher_windows;type:text" json:"-"`
 	LauncherMaxUses    int64      `gorm:"column:launcher_max_uses;not null;default:0" json:"-"`
 	LauncherUsedCount  int64      `gorm:"column:launcher_used_count;not null;default:0" json:"-"`
 	// NULL frees the short address after exhaustion/revocation.
@@ -84,6 +88,7 @@ type UserScript struct {
 	ShortEntryExpiresAt  *time.Time `gorm:"column:short_entry_expires_at;index" json:"-"`
 	ShortEntryUsedAt     *time.Time `gorm:"column:short_entry_used_at" json:"-"`
 	ShortEntryStartsAt   *time.Time `gorm:"column:short_entry_starts_at" json:"-"`
+	ShortEntryWindows    string     `gorm:"column:short_entry_windows;type:text" json:"-"`
 	ShortEntryMaxUses    int64      `gorm:"column:short_entry_max_uses;not null;default:0" json:"-"`
 	ShortEntryUsedCount  int64      `gorm:"column:short_entry_used_count;not null;default:0" json:"-"`
 	ShortEntryGeneration int64      `gorm:"column:short_entry_generation;not null;default:0" json:"-"`
@@ -124,6 +129,9 @@ type ScriptRunSession struct {
 	AccessTokenID int32  `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
 	TokenHash     string `gorm:"column:token_hash;type:char(64);not null;uniqueIndex" json:"-"`
 	IdentityHash  string `gorm:"column:identity_hash;type:char(64);not null" json:"-"`
+	// LaunchAddress retains a short entry's origin for immediate domain-policy
+	// rechecks. Historical sessions keep the empty default and use the launcher.
+	LaunchAddress string `gorm:"column:launch_address;type:varchar(512);not null;default:''" json:"-"`
 	// LeaseSlot is unique while a managed run owns the script. NULL preserves
 	// retired and historical sessions without making the old rows exclusive.
 	LeaseSlot       *int32     `gorm:"column:lease_slot;uniqueIndex" json:"-"`

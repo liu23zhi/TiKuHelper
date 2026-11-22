@@ -38,7 +38,10 @@ function denyIO(kind) { network.push(kind); throw new Error('FORBIDDEN_SETTINGS_
 function denyMutation(name) { mutations.push(name); throw new Error('FORBIDDEN_SETTINGS_FORM_MUTATION_' + name) }
 function read(name, data) { reads.push({ name, actorId: user.getStoredCurrentUser()?.id }); return Promise.resolve({ status: 200, data: clone(data) }) }
 const apiPath = path.join(web, 'src/api/TikuComponentApi.js'), api = new Module(apiPath); api.loaded = true
-const getters = { getRefundAgreement: () => Promise.resolve({status:200,data:{text:'fixture',defaultText:'fixture',isDefault:true}}), getSystemSettings: () => read('getSystemSettings', detail), getPaymentMethods: () => read('getPaymentMethods', []), getSystemMetrics: () => read('getSystemMetrics', metrics) }
+const getters = { getGatewayCertificatePasswordState: feedback => {
+  assert.deepEqual(feedback, {errorFeedback:'local'})
+  return read('getGatewayCertificatePasswordState', {count:0,updatedAt:''})
+}, getRefundAgreement: () => Promise.resolve({status:200,data:{text:'fixture',defaultText:'fixture',isDefault:true}}), getSystemSettings: () => read('getSystemSettings', detail), getPaymentMethods: () => read('getPaymentMethods', []), getSystemMetrics: () => read('getSystemMetrics', metrics) }
 api.exports = new Proxy(getters, { get(target, key) { if (key === '__esModule' || key === 'then') return undefined; return key in target ? target[key] : () => denyMutation(String(key)) } })
 require.cache[apiPath] = api
 window.XMLHttpRequest.prototype.open = function () { return denyIO('XHR') }
@@ -109,7 +112,7 @@ async function mountPages(count = 1) {
   assert.equal(pages.length, count)
   for (const page of pages) { assert.equal(page.vm.settingsLoaded, true); assert.equal(page.vm.paymentMethodsLoaded, true); assert.deepEqual([...page.vm.paymentMethods], []); assert.equal(page.vm.paymentMethodVisible, false) }
   assert.equal(document.querySelector('.ant-modal'), null, 'no payment dialog opened')
-  assert.equal(reads.length, count * 2, 'only settings/payment reads; diagnostics belong to server details')
+  assert.equal(reads.length, count * 3, 'only settings, payment, and certificate metadata reads; diagnostics belong to server details')
   return pages
 }
 function type(control, value) { control.value = value; control.dispatchEvent(new Event('input', { bubbles: true })); control.dispatchEvent(new Event('change', { bubbles: true })) }
@@ -129,7 +132,7 @@ test('Settings original positives preserve 2 GB, six-decimal bonus, fixed/derive
   const secretFields = ['wechatApiBearerToken', 'captchaApiKey', 'uapiApiKey', 'epayPlatformPublicKey', 'epayMerchantPrivateKey', 'smsbaoSecret']
   SECRET_LABELS.forEach((text, index) => { const control = field(w, text).controls[0]; assert.equal(control.type, 'password'); assert.equal(control.value, detail[secretFields[index]]) })
   assert.equal(w.vm.hasUnsavedChanges, false)
-  assert.deepEqual(reads.map(entry => entry.name).sort(), ['getPaymentMethods', 'getSystemSettings'].sort())
+  assert.deepEqual(reads.map(entry => entry.name).sort(), ['getGatewayCertificatePasswordState', 'getPaymentMethods', 'getSystemSettings'].sort())
 })
 test('Settings all 38 visible Chinese form labels cover 38 actual controls', async () => {
   const [w] = await mountPages(), entries = fields(w)
@@ -184,6 +187,28 @@ test('Settings conditional remote-captcha controls reuse stable IDs after ordina
   w.vm.updateSetting('captchaProvider', 'remote'); await settle()
   assert.deepEqual(ids(w), before); assert.deepEqual(clone(w.vm.formState), snapshot)
 })
+
+test('Settings QR guidance names the built-in mapping, optional mount, missing state and custom override', async () => {
+  const [w] = await mountPages()
+  const entry = field(w, '验证码二维码')
+  const input = entry.controls[0]
+  const hint = entry.item.querySelector('.hint')
+  assert.ok(hint, 'QR field has visible guidance')
+  const text = compact(hint.textContent)
+  assert.match(text, /\/api\/Wechat_qc_code/)
+  assert.match(text, /\.\/Wechat_qc_code\.jpg/)
+  assert.match(text, /Compose/)
+  assert.match(text, /不生成/)
+  assert.match(text, /自定义.*(URL|路径)/)
+  assert.equal(input.getAttribute('aria-describedby'), hint.id, 'QR guidance is associated with its input')
+  const before = w.vm.formState.wechatCodeStaticQrcodeUrl
+  w.vm.updateSetting('wechatCodeStaticQrcodeUrl', 'https://synthetic.invalid/custom-qr.jpg')
+  await settle()
+  assert.equal(w.vm.formState.wechatCodeStaticQrcodeUrl, 'https://synthetic.invalid/custom-qr.jpg')
+  assert.notEqual(w.vm.formState.wechatCodeStaticQrcodeUrl, before)
+  assert.equal(w.vm.hasUnsavedChanges, true, 'custom URL still uses the existing dirty-state protocol')
+})
+
 test('Settings existing native action-button text remains a positive accessible name', async () => {
   const [w] = await mountPages()
   for (const text of ['刷新', '保存', '从浏览器地址栏获取']) {

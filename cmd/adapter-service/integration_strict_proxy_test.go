@@ -120,7 +120,7 @@ func TestIntegrationProxyBeforeManager(t *testing.T) {
 			if !ok {
 				return true
 			}
-			if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "loadTrustedProxies" {
+			if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "loadHTTPRuntime" {
 				proxy = c.Pos()
 			}
 			if s, ok := c.Fun.(*ast.SelectorExpr); ok {

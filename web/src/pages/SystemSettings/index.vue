@@ -159,8 +159,8 @@
         </a-form-item>
 
         <a-form-item label="验证码二维码" :html-for="fieldId('wechatCodeStaticQrcodeUrl')">
-          <a-input :id="fieldId('wechatCodeStaticQrcodeUrl')" :value="formState.wechatCodeStaticQrcodeUrl" v-on="{ 'update:value': settingsEntry.bind(updateSetting, 'wechatCodeStaticQrcodeUrl') }" placeholder="请输入微信验证码模式下展示的静态二维码图片地址" />
-          <!-- <div class="hint">微信验证码模式会在登录页展示该二维码，用户扫码关注后发送“验证码”获取登录码。</div> -->
+          <a-input :id="fieldId('wechatCodeStaticQrcodeUrl')" :aria-describedby="fieldId('wechatCodeStaticQrcodeUrlHint')" :value="formState.wechatCodeStaticQrcodeUrl" v-on="{ 'update:value': settingsEntry.bind(updateSetting, 'wechatCodeStaticQrcodeUrl') }" placeholder="请输入微信验证码模式下展示的静态二维码图片地址" />
+          <div :id="fieldId('wechatCodeStaticQrcodeUrlHint')" class="hint">默认预置映射为 <code>/api/Wechat_qc_code</code>；Compose 会只读挂载可选的 <code>./Wechat_qc_code.jpg</code>。图片缺失时该映射不生成，不会阻止启动；也可以在此输入自定义 URL 或路径。</div>
         </a-form-item>
 
         <a-form-item label="验证码提供方" :html-for="fieldId('captchaProvider')">
@@ -296,6 +296,7 @@
     <TicketNotificationSettingsPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <CacheRetentionSettings :key="'cache-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <LogRetentionSettingsPanel :key="'logs-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
+    <CertificatePasswordPanel :key="'certificate-passwords-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <RefundAgreementPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <ReferralSettingsPanel :disabled="!canManageSettings() || settingsDraining" />
 
@@ -374,6 +375,7 @@ import ReferralSettingsPanel from '@/components/ReferralSettingsPanel.vue';
 import TicketNotificationSettingsPanel from '@/components/TicketNotificationSettingsPanel.vue';
 import CacheRetentionSettings from '@/components/CacheRetentionSettings.vue';
 import LogRetentionSettingsPanel from '@/components/LogRetentionSettingsPanel.vue';
+import CertificatePasswordPanel from './CertificatePasswordPanel.vue';
 import {
   createPaymentMethod,
   deletePaymentMethod,
@@ -505,7 +507,7 @@ const projectSettingsSaveFailure = source => {
 
 export default defineComponent({
   name: 'SystemSettings',
-  components: { PaymentMethodPanel, ReferralSettingsPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
+  components: { PaymentMethodPanel, ReferralSettingsPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, CertificatePasswordPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
   setup() {
     const settingsFormId = `system-settings-${useId()}`
     const fieldId = field => `${settingsFormId}-${field}`

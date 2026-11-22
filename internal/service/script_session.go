@@ -74,7 +74,7 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 				return err
 			}
 		}
-		if err := validateScriptLauncherDomainWithDB(tx, script); err != nil {
+		if err := validateScriptLauncherDomainWithDB(tx, script, activation.LaunchAddress); err != nil {
 			return err
 		}
 		if script.AccessTokenID <= 0 {
@@ -166,6 +166,7 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 			AccessTokenID: accessToken.ID,
 			TokenHash:     hashScriptSecret(plainSessionToken),
 			IdentityHash:  hashScriptSecret(identity),
+			LaunchAddress: activation.LaunchAddress,
 			ActivatedAt:   now,
 			ExpiresAt:     expiresAt,
 		}
@@ -237,7 +238,7 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, 
 	if err := freshDB.Where("id = ? AND user_id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL", session.ScriptID, session.UserID, session.AccessTokenID, true).First(&script).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本已停用或删除")
 	}
-	if err := validateScriptLauncherDomainWithDB(freshDB, script); err != nil {
+	if err := validateScriptLauncherDomainWithDB(freshDB, script, session.LaunchAddress); err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本域名不可用")
 	}
 	var accessToken entity.AccessToken
@@ -317,7 +318,7 @@ func DownloadScriptVersionByActivationTokenWithDB(db *gorm.DB, shortCode, activa
 	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 		return entity.ScriptVersion{}, ErrScriptTokenInvalid
 	}
-	if err := validateScriptLaunchActorWithDB(db, script); err != nil {
+	if err := validateScriptLaunchActorWithDB(db, script, activation.LaunchAddress); err != nil {
 		return entity.ScriptVersion{}, err
 	}
 	if err := validateIssuedScriptAuthorization(script, activation, time.Now()); err != nil {

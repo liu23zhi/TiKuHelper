@@ -101,3 +101,34 @@ test('an authorized short command with no expiry stays copyable until revoked', 
   assert.equal(buildScriptShortCommand({ shortAuthorization: grant }), grant.command)
   assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, status: 'disabled' } }), '')
 })
+
+test('commands paused between authorized windows remain copyable without resetting shared use limits', () => {
+  const grant = {
+    address: 'https://a.muioi.com', command: 'powershell -c "iex(irm https://a.muioi.com)"', status: 'paused',
+    startsAt: '2026-11-21T08:00:00Z', expiresAt: '2026-11-21T12:00:00Z', maxUses: 3, usedCount: 2,
+    windows: [{ startsAt: '2026-11-21T08:00:00Z', expiresAt: '2026-11-21T09:00:00Z' }, { startsAt: '2026-11-21T11:00:00Z', expiresAt: '2026-11-21T12:00:00Z' }],
+  }
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }, Date.parse('2026-11-21T10:00:00Z')), grant.command)
+  assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, usedCount: 3 } }, Date.parse('2026-11-21T11:30:00Z')), '')
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }, Date.parse('2026-11-21T12:00:00Z')), '')
+})
+
+test('consumed activation script qualification cannot reconstruct either launcher command', () => {
+  const address = 'https://a.example.test'
+  const command = `powershell -c "iex(irm ${address} -MaximumRedirection 0 -TimeoutSec 15)"`
+  const row = { command, billingMode: 'activation_code', runConsumedAt: '2026-11-21T09:00:00Z', enabled: true, shortAuthorization: { address, command, status: 'active', expiresAt: null } }
+  assert.equal(buildScriptCommand(row), '')
+  assert.equal(buildScriptShortCommand(row), '')
+  assert.equal(buildScriptCommand({ ...row, billingMode: 'escrow' }), command)
+  assert.equal(buildScriptCommand({ ...row, runConsumedAt: null }), command)
+})
+
+test('bare UUID launch commands and guarded custom short commands are accepted only in their exact server shape', () => {
+  const command = 'powershell -c "iex(irm https://123e4567-e89b-12d3-a456-426614174000.example.test -MaximumRedirection 0 -TimeoutSec 15)"'
+  assert.equal(buildScriptCommand({ command }), command)
+  assert.equal(buildScriptCommand({ command: command.replace(' -TimeoutSec 15', '') }), '')
+  assert.equal(buildScriptCommand({ command: command.replace('example.test', 'example.test;calc') }), '')
+  const grant = { address: 'https://a.example.test', status: 'active', command: command.replace('123e4567-e89b-12d3-a456-426614174000.example.test', 'a.example.test'), expiresAt: null }
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }), grant.command)
+  assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, command: grant.command.replace('a.example.test', 'b.example.test') } }), '')
+})

@@ -1,10 +1,15 @@
-# JWT_SECRET 环境变量优先；未配置时复用/生成数据库中的签名密钥。
-# 反向代理部署可通过 TRUSTED_PROXIES 配置可信代理网段。
+# 可选：主站及可信别名，填写精确主机名，不使用通配符或路径。配置脚本泛域时自动保留该域下的 tiku 主机。
+# 无托管子域的单站（含历史纯路径部署）可留空；配置主站或启用泛域后严格隔离未知 Host。修改此项后重启。
+siteHosts: []
+# jwtSecret 可选：至少 32 个 UTF-8 字节，没有最大长度或字符集限制，可使用特殊符号；
+# 首尾空白会裁剪。未配置时复用/生成数据库中的签名密钥。
+# 直接运行服务时 JWT_SECRET 环境变量优先；Compose 部署固定为空，不读取宿主环境插值。
+# 反向代理部署可通过 TRUSTED_PROXIES 或 trusted_proxies.txt 配置可信代理网段。
 limit:
   enable: true
   duration: 60 # 时间窗口为60秒
   requests: 120 # 每个来源IP在窗口内最多120个请求
-jwtSecret: "" # 可选，至少32字节；JWT_SECRET 环境变量优先
+jwtSecret: "" # 可选，至少32个UTF-8字节；无最大长度/字符集限制
 mysql: "" # MySQL DSN；SQL_DSN 环境变量优先，两者都填时以环境变量为准
 database:
   path: "" # SQLite数据库文件路径，留空默认为 tiku.db（向后兼容），Docker部署建议设置为 data/tiku.db

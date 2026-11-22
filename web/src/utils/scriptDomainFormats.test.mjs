@@ -4,6 +4,7 @@ import {
   buildScriptDomainFromFormat,
   buildScriptDomainForms,
   normalizeScriptDomainFormats,
+  isKnownPlatformRoot,
   parseScriptDomainFormat,
   splitScriptDomainForFormat,
   validateScriptDomainSlot,
@@ -124,4 +125,14 @@ test('split 是 build 的逆运算（UI 回填编辑态）', () => {
   }
   // Q2 的另一种表述：裸域不是 `*.a.com` 的槽位
   assert.equal(splitScriptDomainForFormat('*.a.com', 'a.com'), null)
+})
+
+test('the known site-root rule uses normalized hostname, not a whole-domain or path-prefix ban', () => {
+  const site = 'console.example.test'
+  for (const address of ['https://TiKu.example.test.:8443/', 'https://console.example.test:443']) {
+    assert.equal(isKnownPlatformRoot(address, site), true, address)
+  }
+  for (const address of ['https://alpha.example.test/', 'https://tikux.example.test/', 'https://alpha.tiku.example.test/', 'https://tiku.example.test/team', 'https://console.example.test/team', '']) {
+    assert.equal(isKnownPlatformRoot(address, site), false, address)
+  }
 })

@@ -119,22 +119,30 @@ export function buildScriptDownloadURL(record = {}) {
 // The authenticated API constructs the launcher and controls whether the caller
 // may receive one. Do not reconstruct executable code from a draft, a URL, or
 // the legacy instruction field.
+export function isScriptRunConsumed(record = {}) {
+  return record.billingMode === 'activation_code' && Boolean(record.runConsumedAt)
+}
+
 export function buildScriptCommand(record = {}) {
+  if (isScriptRunConsumed(record)) return ''
   const command = typeof record.command === 'string' ? record.command : ''
   if (command.length > 16384) return ''
   if (/^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command)) return command
+  if (/^powershell -c "iex\(irm https:\/\/(?:[a-z0-9][a-z0-9.-]*|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)* -MaximumRedirection 0 -TimeoutSec 15\)"$/.test(command)) return command
   return /^powershell -c "iex\(irm https:\/\/(?:[a-z0-9][a-z0-9.-]*|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)* -Headers @\{'X-Script-Launcher'='[A-Za-z0-9_-]{43}'\} -MaximumRedirection 0 -TimeoutSec 15\)"$/.test(command) ? command : ''
 }
 
 export function buildScriptShortCommand(record = {}, now = Date.now()) {
+  if (isScriptRunConsumed(record)) return ''
   const grant = record.shortAuthorization
-  if (!['active', 'scheduled'].includes(grant?.status)) return ''
+  if (!['active', 'scheduled', 'paused'].includes(grant?.status)) return ''
   if (grant.expiresAt != null && (!Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now)) return ''
   if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
   const address = String(grant.address || '')
   if (!/^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''
-  const command = `powershell -c "iex(irm ${address})"`
-  return grant.command === command ? command : ''
+  const command = `powershell -c "iex(irm ${address} -MaximumRedirection 0 -TimeoutSec 15)"`
+  const legacy = `powershell -c "iex(irm ${address})"`
+  return grant.command === command || grant.command === legacy ? grant.command : ''
 }
 
 export function buildScriptSavePayload(form = {}) {

@@ -14,8 +14,9 @@ func TestFreshAdministratorUsesConfiguredOrFactoryCredentialWithoutFiles(t *test
 	for _, tc := range []struct{ name, environment, want string }{{"unset", "", "123456"}, {"explicit_default", "123456", "123456"}, {"explicit_placeholder", "ChangeMe", "ChangeMe"}, {"chosen", "ChosenFixture-209!", "ChosenFixture-209!"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			resetRegistryDBState(t)
-			t.Cleanup(func() { resetRegistryDBState(t) })
 			dir := t.TempDir()
+			// Close the DB before TempDir's cleanup removes the SQLite files on Windows.
+			t.Cleanup(func() { resetRegistryDBState(t) })
 			t.Chdir(dir)
 			t.Setenv("TIKU_ADMIN_PASSWORD", tc.environment)
 			t.Setenv("TIKU_APP_MODE", "production")

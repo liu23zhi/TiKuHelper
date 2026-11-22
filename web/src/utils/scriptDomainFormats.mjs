@@ -15,6 +15,17 @@
 const FORMAT_WILDCARD = 'wildcard'
 const FORMAT_PATH = 'path'
 
+// Public hints only: additional deployment-owned hosts and the administrator's
+// private deny list are checked by the server, not disclosed by this predicate.
+export function isKnownPlatformRoot(address, consoleHostname = '') {
+  if (!address) return false
+  let url
+  try { url = new URL(address) } catch { return false }
+  if (url.pathname !== '/') return false
+  const name = url.hostname.toLowerCase().replace(/\.$/, '')
+  return Boolean(name) && (name.split('.')[0] === 'tiku' || name === consoleHostname.toLowerCase().replace(/\.$/, ''))
+}
+
 // 与 Go 的 validScriptDomainHost 同规则：至少两级、标签 [a-z0-9-]、不以 - 开头/结尾、
 // 顶级域纯字母且 ≥2 位。
 function isValidHost(host) {

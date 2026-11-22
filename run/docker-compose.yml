@@ -1,102 +1,79 @@
-# tiku-adapter + nginx 反向代理（含 WebSocket 透传修复）。
+# 单容器运行 Nginx 与 Go；不需要独立 Nginx 服务。
 #
-# 用法：
-#   1) 先把证书放进 ./nginx/ssl（fullchain.pem / privkey.key），
-#      扫码图放进 ./nginx/html（可选，对应 /api/Wechat_qc_code）。
-#   2) 首次启动可设置 TIKU_ADMIN_PASSWORD；留空使用仅限本地设置的 123456。
-#      同时显式设置 TRUSTED_PROXIES=none 或实际 nginx IP/CIDR；也可显式选择
-#      TRUSTED_PROXIES_FILE=/app/trusted_proxies.txt（TRUSTED_PROXIES 留空时使用）。
-#   3) docker compose up -d --build
-#   4) 浏览器访问 http://<主机>:8680 或 https://<主机>:9043 即可；
-#      nginx 通过 compose 网络以服务名 tikuhelper:8060 访问后端，
-#      因此 8060 不再需要对外发布（见下面的 ports 说明）。
-
+# 网关进程是容器 PID 1：Go 只监听容器内的 127.0.0.1:8061，Nginx 对外
+# 提供 8060/8680/9043。任一子进程异常退出都会结束容器，由 restart 策略恢复。
+# 证书可选：没有有效证书时保留 HTTP，9043 不监听；证书到位后自动启用 HTTPS。
+#
+# 从旧版「Go + 独立 Nginx」升级时，先执行：
+#   docker compose up -d --build --remove-orphans
+# --remove-orphans 会移除旧的 tikuhelper-nginx 容器，避免它继续占用 8680/9043。
 name: tikuhelper
 
 services:
   tikuhelper:
     image: tikuhelper:local
+    # 从当前仓库根目录构建；执行 compose 命令时仍应位于 run/ 目录。
     build:
       context: ..
       dockerfile: Dockerfile
     container_name: tikuhelper
     restart: unless-stopped
+    # 网关停止时先等待 Nginx 和 Go 排空请求，再结束容器。
+    stop_grace_period: 30s
     ports:
-      # 只绑本机回环：容器间由 nginx 通过 compose 网络访问，无需对外暴露。
-      # 需要从别的机器直连调试时改成 "8060:8060"，但要知道：
-      # 仍须正确配置可信代理；生产默认不会隐式信任所有来源或局域网。
+      # 兼容本机直接访问 API；只绑定回环地址，不暴露给局域网。
       - "127.0.0.1:8060:8060"
+      # HTTP 公网入口。脚本地址仍由服务端按 HTTPS 生成。
+      - "8680:8680"
+      # HTTPS 公网入口。仅在证书目录存在有效证书时实际监听。
+      - "9043:9043"
     environment:
-      TIKU_APP_MODE: "${TIKU_APP_MODE:-production}"
-      JWT_SECRET: "${JWT_SECRET:-}"
-      # 新建/空凭据管理员：优先使用此变量；留空默认为 123456。不会生成密码文件。
-      # 公共初始口令仅用于本机：docker compose exec tikuhelper /app/tiku-adapter --init-admin-password；不重置既有自选密码。
-      TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
-      # 生产须显式选 none（不信任转发头）或实际受限 IP/CIDR；不补入本机/私网默认段。
-      # 空/非法/合并覆盖整个地址族的列表会拒绝启动，不是信任所有来源。
-      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
-      # 仅在上项留空时使用显式文件；空/仅注释文件无效，文件须写 none 或受限 IP/CIDR。
-      TRUSTED_PROXIES_FILE: "${TRUSTED_PROXIES_FILE:-}"
-      # 扩展设置默认由后台数据库管理；仅显式配置的 EXTENSION_* 环境变量覆盖对应字段。
-      # 隔离开发预览必须显式禁用扩展更新及工单提醒，不能依赖无网络路由。
-      # 固定时区，避免访问日志/GORM 时间变成 UTC。
+      # 可选值只有 production / development；空值按 production 处理。
+      # Compose 不读取宿主环境，需要开发模式时直接把本行改为 "development"。
+      TIKU_APP_MODE: ""
+      # 可选；空值由服务端生成并持久化随机 JWT 密钥。
+      # 手动填写时至少 32 个 UTF-8 字节，没有最大长度或字符集限制，可使用特殊符号。
+      # 首尾空白会被裁剪，YAML 特殊字符请保留引号；更换值会使旧 JWT 失效。
+      JWT_SECRET: ""
+      # 可选；空值使用本地初始化口令 123456。该公共口令不能直接登录 Web 管理员账号。
+      # 手动填写时最多 72 个 UTF-8 字节，可使用特殊符号；生产模式建议至少 8 个字符并含
+      # 大写、小写、数字、特殊字符。不符合强度时记录警告但仍启动，已有密码不会被重置。
+      TIKU_ADMIN_PASSWORD: ""
+      # 可选；非空时优先使用逗号分隔的 IP/CIDR（也支持项目现有地址段写法）。
+      # 空值或 none 表示信任所有来源的 X-Forwarded-For；具体列表会额外补入本地/私网段。
+      # HTTPS 协议头只信任显式列出的上游；Nginx 直接 TLS 请求始终识别为 HTTPS。
+      TRUSTED_PROXIES: ""
+      # 可选文件路径；空值仍尝试读取 /app/trusted_proxies.txt（工作目录默认路径）。
+      # 默认文件不存在或为空且 TRUSTED_PROXIES 为空时信任所有；明确填写的文件路径不存在，或文件含无效条目，则启动失败。
+      # 需要使用其它文件时直接填写容器内路径，不从宿主环境插值读取。
+      TRUSTED_PROXIES_FILE: ""
+      # 固定上海时区，不通过宿主环境覆盖；修改后需重建/重启容器才会生效。
       TZ: Asia/Shanghai
     volumes:
-      # 扩展 CRX 与元数据默认缓存于 /app/data/extensions，即宿主 ./data/extensions。
+      # 持久化 SQLite 数据库、上传内容、扩展缓存和系统设置；升级时不要加 -v。
       - ./data:/app/data
+      # 应用日志与 Nginx 访问日志分别写入宿主机，便于排障和备份。
       - ./logs:/app/logs
+      # 运行配置只读挂载；修改后按 README 说明重启或等待网关热加载。
       - ./config.yaml:/app/config.yaml:ro
-      # 仅挂载不自动启用：选择此文件时须显式设置 TRUSTED_PROXIES_FILE=/app/trusted_proxies.txt。
+      # 代理来源名单只读挂载；TRUSTED_PROXIES_FILE 为空时也会按默认路径主动读取。
       - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
-
-  nginx:
-    image: nginx:alpine
-    container_name: tikuhelper-nginx
-    restart: unless-stopped
-    depends_on:
-      - tikuhelper
-    ports:
-      - "8680:8680"   # HTTP
-      - "9043:9043"   # HTTPS（证书见 ./nginx/ssl）
-    volumes:
-      # 配置：conf.d/tiku-adapter.conf（server + upstream + WS map）
-      #       conf.d/tiku-proxy.inc（两个 server 共用的代理参数）
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      # 保留原格式输入，由启动脚本转换为 Nginx realip 指令。
-      - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
-      - ./nginx/trusted-proxies-convert.sh:/app/trusted-proxies-convert.sh:ro
+      # 可选 Nginx 扩展配置只读挂载；基础配置始终来自镜像内置模板。
+      # 冲突或语法错误的单个文件会被记录并跳过，不影响基础入口。
+      - ./nginx-extra:/app/nginx-extra:ro
+      # 证书目录只读挂载，支持多个 PEM 证书/私钥，按 SAN 和公钥自动配对。
       - ./nginx/ssl:/etc/nginx/ssl:ro
+      # 可选扫码图片等静态文件；没有文件时对应接口按应用逻辑返回。
       - ./nginx/html:/usr/share/nginx/html:ro
+      # 可选预置二维码；仅普通站由 Go 按原始 Host 校验后返回；缺失或目录时返回 404。
+      - ./Wechat_qc_code.jpg:/usr/share/nginx/html/Wechat_qc_code.jpg:ro
+      # Nginx 访问日志目录；证书、私钥和日志不会被打进镜像。
       - ./nginx/logs:/var/log/nginx
-    environment:
-      TZ: Asia/Shanghai
-    command:
-      - /bin/sh
-      - -c
-      - >-
-        set -e;
-        sed 's/\r$//' /app/trusted-proxies-convert.sh > /tmp/trusted-proxies-convert.sh;
-        sh /tmp/trusted-proxies-convert.sh /app/trusted_proxies.txt /tmp/trusted-proxies.generated.conf;
-        nginx -g 'daemon off;' &
-        sleep 2;
-        last='';
-        while true; do
-        cur=$(sha256sum /etc/nginx/conf.d/*.conf /etc/nginx/conf.d/*.inc /app/trusted_proxies.txt /app/trusted-proxies-convert.sh 2>/dev/null | sha256sum | cut -d' ' -f1);
-        if [ -n "$$last" ] && [ "$$cur" != "$$last" ]; then
-        sed 's/\r$//' /app/trusted-proxies-convert.sh > /tmp/trusted-proxies-convert.sh;
-        sh /tmp/trusted-proxies-convert.sh /app/trusted_proxies.txt /tmp/trusted-proxies.generated.conf.next 2>/dev/null || true;
-        if [ -s /tmp/trusted-proxies.generated.conf.next ]; then cp /tmp/trusted-proxies.generated.conf.next /tmp/trusted-proxies.generated.conf; fi;
-        if nginx -t 2>&1; then nginx -s reload && echo 'reloaded: config changed'; else echo 'reload skipped: nginx -t failed'; fi;
-        fi;
-        last="$$cur";
-        sleep 3;
-        done
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
+      # 同时检查 Nginx 配置、Go /readyz 和经 Nginx 转发的 /readyz。
+      test: ["CMD", "/app/container-gateway", "--healthcheck"]
+      # 启动期间给数据库初始化和网关首轮证书扫描留出时间。
       interval: 30s
-      timeout: 5s
+      timeout: 15s
+      start_period: 30s
       retries: 3
-
-# 注意：nginx 在启动时会解析 upstream 里的服务器名，如果 tiku-adapter 还没创建，
-# nginx 会以 "host not found in upstream" 退出；restart: unless-stopped 会让它自动重试，
-# 等后端容器起来后即可正常。

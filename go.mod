@@ -22,6 +22,8 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/tidwall/gjson v1.20.4
 	github.com/xuri/excelize/v2 v2.11.1
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
+	software.sslmate.com/src/go-pkcs12 v0.7.4
 	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
 	golang.org/x/sys v0.50.0

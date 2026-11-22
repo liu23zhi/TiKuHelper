@@ -150,6 +150,7 @@ func ScriptDomainFormats(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"formats":               views,
+		"reservedPrefixes":      service.ScriptReservedPrefixes(),
 		"allowFullNeverExpire":  settings.AllowFullNeverExpire,
 		"allowShortNeverExpire": settings.AllowShortNeverExpire,
 	})
@@ -570,7 +571,7 @@ func ScriptBinaryDownload(c *gin.Context) {
 // ScriptPublicHostMiddleware handles the root of a wildcard host before the
 // embedded web app's static middleware gets a chance to serve index.html.
 func ScriptPublicHostMiddleware(c *gin.Context) {
-	if c.Request.Method == http.MethodGet && c.Request.URL.Path == "/" {
+	if !c.GetBool(platformRootKey) && c.Request.Method == http.MethodGet && c.Request.URL.Path == "/" {
 		if servePublicScriptBootstrap(c) {
 			c.Abort()
 			return
@@ -582,6 +583,9 @@ func ScriptPublicHostMiddleware(c *gin.Context) {
 // ScriptPublicPath is called from the web router's NoRoute handler for the
 // non-wildcard `/shortCode` form.
 func ScriptPublicPath(c *gin.Context) bool {
+	if c.GetBool(platformRootKey) && c.Request.URL.Path == "/" {
+		return false
+	}
 	// 两个 API 前缀都要排除（2026-11-14 改名 /adapter-service → /api）：
 	// 它们是接口路径，不是脚本短码。只排新前缀会让旧路径的未知请求被当成
 	// 短码去查库（多一次无谓查询，且可能命中一个同名短码）。
@@ -597,13 +601,15 @@ func ScriptPublicPath(c *gin.Context) bool {
 }
 
 func servePublicScriptBootstrap(c *gin.Context) bool {
+	if service.IsReservedScriptHostRoot(c.Request.Host, c.Request.URL.Path) {
+		return false
+	}
 	db := scriptDB()
 	if db == nil {
 		return false
 	}
-	// Header-bearing full launchers always retain their original authorization
-	// path. A header-free request may consume only a separately enabled, exact
-	// host/path short authorization, never a guessed legacy locator.
+	// Header-bearing requests retain legacy authentication. Header-free long
+	// launchers require the exact high-entropy UUID, never the legacy short code.
 	capability := strings.TrimSpace(c.GetHeader(service.ScriptLauncherHeader))
 	if capability == "" {
 		script, grant, err := service.ConsumeScriptShortAuthorizationWithDB(db, c.Request.Host, c.Request.URL.Path)
@@ -628,7 +634,12 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 		return true
 	}
 	c.Set(logger.ScriptEntryLogKey, true)
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, capability, service.ScriptExchangeTokenTTL)
+	var grant service.ScriptExchangeGrant
+	if capability == "" {
+		grant, err = service.IssuePublicScriptExchangeTokenByLocatorWithDB(db, c.Request.Host, c.Request.URL.Path, service.ScriptExchangeTokenTTL)
+	} else {
+		grant, err = service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, capability, service.ScriptExchangeTokenTTL)
+	}
 	c.Header("Cache-Control", "no-store")
 	c.Header("Referrer-Policy", "no-referrer")
 	if err != nil {
@@ -722,9 +733,16 @@ func DownloadScriptVersion(c *gin.Context) {
 func writeScriptError(c *gin.Context, err error, fallback string) {
 	status, message := http.StatusInternalServerError, fallback
 	switch {
+	case errors.Is(err, service.ErrScriptDomainDenied):
+		value, _ := c.Get("user")
+		if user, ok := value.(*entity.User); ok && user != nil && user.ID > 0 {
+			status, message = http.StatusBadRequest, err.Error()
+		} else {
+			status, message = http.StatusNotFound, service.ErrScriptNotFound.Error()
+		}
 	case errors.Is(err, service.ErrScriptShortAddressInUse):
 		status, message = http.StatusConflict, err.Error()
-	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
+	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptReservedPrefix), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyPending):
 		status, message = http.StatusConflict, err.Error()

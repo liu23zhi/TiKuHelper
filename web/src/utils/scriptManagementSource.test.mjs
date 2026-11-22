@@ -35,7 +35,9 @@ test('script management is routed for both scopes and exposes admin upload contr
   assert.match(page, /一次性激活码/)
   assert.doesNotMatch(page, /独立答题倍率（X）/)
   assert.match(page, /发布为最新版本/)
-  assert.match(page, /PowerShell 2.*兼容指令/)
+  assert.match(page, /默认生成随机长命令/)
+  assert.match(page, /data-script-short-address/)
+  assert.doesNotMatch(page, /复制兼容指令/)
 })
 
 test('paid script creation sends exactly one stable idempotency header without changing the payload', async () => {

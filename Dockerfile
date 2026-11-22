@@ -27,14 +27,15 @@ RUN test -f cmd/adapter-service/dist/index.html \
  && grep -q 'id="app"' cmd/adapter-service/dist/index.html \
  && echo "嵌入前端产物：$(find cmd/adapter-service/dist -type f | wc -l) 个文件"
 
-RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapter-service
+RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapter-service \
+ && go build -ldflags "-s -w" -o container-gateway ./cmd/container-gateway
 
 
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 RUN apk update \
     && apk upgrade \
-    && apk add --no-cache ca-certificates tzdata \
+    && apk add --no-cache ca-certificates tzdata nginx \
     && update-ca-certificates
 
 # 时区固定上海：镜像默认 TZ=UTC 会让 Gin 访问日志/GORM 时间变 UTC，
@@ -42,6 +43,8 @@ RUN apk update \
 ENV TZ=Asia/Shanghai
 
 COPY --from=builder2 /build/tiku-adapter /app/tiku-adapter
+COPY --from=builder2 /build/container-gateway /app/container-gateway
+RUN mkdir -p /app/nginx-extra /etc/nginx/ssl /usr/share/nginx/html /var/log/nginx /run/tiku-gateway
 
 # --- 考试客户端 DB 脱机工具（管理员专用）内嵌到镜像 -------------------------
 #
@@ -115,10 +118,11 @@ ENV USEREXAM_TOOL_PATH=/app/userexam-crypto.exe
 # 创建数据目录用于持久化数据库文件
 RUN mkdir -p /app/data
 
-EXPOSE 8060
+EXPOSE 8060 8680 9043
 WORKDIR /app
 
 # 声明数据卷用于持久化
 VOLUME ["/app/data"]
 
-ENTRYPOINT ["/app/tiku-adapter"]
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 CMD ["/app/container-gateway", "--healthcheck"]
+ENTRYPOINT ["/app/container-gateway"]

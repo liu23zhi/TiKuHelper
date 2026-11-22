@@ -181,6 +181,63 @@ func TestLoadTrustedProxiesFallsBackToTrustAll(t *testing.T) {
 	}
 }
 
+func TestLoadTrustedProxiesProductionUsesDefaultFileWhenPathIsBlank(t *testing.T) {
+	t.Setenv("TIKU_APP_MODE", "production")
+	t.Setenv(trustedProxiesEnv, "")
+	t.Setenv(trustedProxiesFileEnv, "")
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+	if err := os.WriteFile(filepath.Join(dir, trustedProxiesFileName), []byte("203.0.113.10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := loadTrustedProxies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Source != trustedProxiesFileName || len(config.List) == 0 || config.List[0] != "203.0.113.10" {
+		t.Fatalf("blank file path should use default file, got source=%q list=%v", config.Source, config.List)
+	}
+}
+
+func TestLoadTrustedProxiesProductionMissingOrEmptyDefaultFileTrustsAll(t *testing.T) {
+	for _, name := range []string{"missing", "empty"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("TIKU_APP_MODE", "production")
+			t.Setenv(trustedProxiesEnv, "")
+			t.Setenv(trustedProxiesFileEnv, "")
+			oldDir, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(oldDir) })
+			if name == "empty" {
+				if err := os.WriteFile(filepath.Join(dir, trustedProxiesFileName), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config, err := loadTrustedProxies()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(config.List, []string{trustAllProxiesIPv4, trustAllProxiesIPv6}) {
+				t.Fatalf("expected trust-all fallback, got %v", config.List)
+			}
+		})
+	}
+}
+
 // 文件里全是无法解析的内容时必须报错，不能静默降级成「信任所有来源」。
 func TestLoadTrustedProxiesRejectsUnparsableFile(t *testing.T) {
 	t.Setenv("TIKU_APP_MODE", "development")
@@ -260,4 +317,22 @@ func countEntry(list []string, target string) int {
 		}
 	}
 	return count
+}
+
+func TestProductionProxyShippedCommentsAreEmptyNotInvalid(t *testing.T) {
+	template, err := os.ReadFile("../../run/trusted_proxies.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	t.Setenv("TIKU_APP_MODE", "production")
+	t.Setenv(trustedProxiesEnv, "")
+	t.Setenv(trustedProxiesFileEnv, "")
+	if err = os.WriteFile(trustedProxiesFileName, template, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadTrustedProxies()
+	if err != nil || config.ConfiguredCount != 0 || !reflect.DeepEqual(config.List, []string{trustAllProxiesIPv4, trustAllProxiesIPv6}) {
+		t.Fatalf("config=%+v err=%v", config, err)
+	}
 }

@@ -26,4 +26,5 @@ func SetHealthRouter(router *gin.Engine, checkReadiness func(context.Context) er
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
+	refreshScriptReservedPrefixes(router)
 }

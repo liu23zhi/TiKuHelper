@@ -230,7 +230,7 @@ func TestScriptGlobReservedPrefixEnumerationStaysComplete(t *testing.T) {
 		}
 	}
 	// 兜底清单必须覆盖四类固定入口：API、静态资源、gin 自带探针、本仓入口。
-	for _, required := range []string{"adapter-service", "sqp", "assets", "static", "health", "metrics"} {
+	for _, required := range []string{"adapter-service", "api", "sqp", "assets", "static", "health", "healthz", "readyz", "metrics", "adapter", "css", "js", "img", "fonts", "index.html", "theme-init.js"} {
 		if !scriptReservedPrefix(required) {
 			t.Fatalf("required reserved prefix %q is not protected", required)
 		}
