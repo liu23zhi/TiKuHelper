@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile, rename, access } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -264,9 +265,14 @@ test('production gateway starts a private real backend, preserves admin initiali
   successful(execute('go', ['build', '-buildvcs=false', '-o', probe, './scripts/ci/s04-fixture'], {
     timeout: 150000, env: { ...process.env, GOOS: 'linux', GOARCH: arch, CGO_ENABLED: '0' },
   }));
+  const originProbe = join(directory, 'origin-probe');
+  successful(execute('go', ['build', '-buildvcs=false', '-o', originProbe, './internal/gateway/testdata/probe'], {
+    timeout: 150000, env: { ...process.env, GOOS: 'linux', GOARCH: arch, CGO_ENABLED: '0' },
+  }));
+  const picture = join(directory, 'Wechat_qc_code.jpg'); await writeFile(picture, '');
   const marker = join(directory, 'fixture-marker'); const config = join(directory, 'config.yaml');
   await writeFile(marker, 'tikuhelper-s04-synthetic-only\n');
-  await writeFile(config, 'database:\n  path: data/fixture.db\napi: []\nlimit:\n  enable: false\n');
+  await writeFile(config, 'siteHosts: [tiku.example.test]\ndatabase:\n  path: data/fixture.db\napi: []\nlimit:\n  enable: false\n');
   for (const mode of ['environment', 'local']) {
     const name = `tiku-gateway-admin-${mode}-${process.pid}-${Date.now()}`;
     // The built-in S04 helper accepts only a marked synthetic data/fixture.db and compares bcrypt internally.
@@ -275,6 +281,8 @@ test('production gateway starts a private real backend, preserves admin initiali
       '--env', 'TIKU_APP_MODE=production', '--env', `TIKU_ADMIN_PASSWORD=${mode === 'environment' ? fixturePassword : ''}`,
       '--env', 'EXTENSION_UPDATE_ENABLED=false', '--env', 'EXTENSION_EDGE_ID=', '--env', 'EXTENSION_CHROME_ID=',
       '--tmpfs', '/app/data', '--mount', `type=bind,source=${config},target=/app/config.yaml,readonly`,
+      '--mount', `type=bind,source=${originProbe},target=/origin-probe,readonly`,
+      '--mount', `type=bind,source=${picture},target=/usr/share/nginx/html/Wechat_qc_code.jpg,readonly`,
       '--mount', `type=bind,source=${marker},target=/app/.s04-fixture,readonly`,
       '--mount', `type=bind,source=${probe},target=/fixture-probe,readonly`,
       '--mount', `type=bind,source=${join(run, 'trusted_proxies.txt')},target=/app/trusted_proxies.txt,readonly`, image]));
@@ -285,6 +293,27 @@ test('production gateway starts a private real backend, preserves admin initiali
       await eventually(() => assert.equal(ready(8061).status, 'ready'), 'private standalone backend readiness', 200);
       assert.equal(ready(8060).status, 'ready');
       assert.match(exec(['/app/container-gateway', '--healthcheck']), /HTTP ready; HTTPS 未启用/);
+      if (mode === 'environment') {
+        const generated = execute('docker', ['exec', name, '/origin-probe', 'qr-fixture'], { encoding: null });
+        assert.equal(generated.status, 0); assert.ok(generated.stdout.length > 32);
+        await writeFile(picture, generated.stdout);
+        const expectedDigest = createHash('sha256').update(generated.stdout).digest('hex');
+        const rows = JSON.parse(exec(['/origin-probe', 'host-matrix']));
+        assert.equal(rows.length, 12);
+        for (const r of rows) {
+          const normal = r.Host === 'tiku.example.test:8680';
+          assert.equal(r.Status, normal ? 200 : 404, `${r.Host} ${r.Method} ${r.Path}`);
+          if (normal && r.Path === '/') assert.equal(r.SPA, true);
+          else if (normal && r.Path === '/api/public/register-status') assert.equal(r.JSON, true);
+          else if (normal) {
+            assert.equal(r.Type, 'image/jpeg');
+            if (r.Method === 'GET') assert.equal(r.SHA256, expectedDigest); else assert.equal(r.Bytes, 0);
+          } else {
+            assert.equal(r.SPA, false); assert.notEqual(r.Type, 'image/jpeg');
+          }
+          t.diagnostic(`real Nginx -> real Go ${r.Host} ${r.Method} ${r.Path}: ${r.Status} ${r.Type || '-'}`);
+        }
+      }
       const db = (operation) => {
         const report = JSON.parse(exec(['/fixture-probe', operation, '--db', '/app/data/fixture.db']));
         assert.equal(report.ok, true); assert.equal(report.quickCheck, 'ok'); assert.equal(report.userCount, 1);
