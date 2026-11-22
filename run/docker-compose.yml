@@ -28,17 +28,21 @@ services:
       # HTTPS 公网入口。仅在证书目录存在有效证书时实际监听。
       - "9043:9043"
     environment:
-      # production 会启用严格的启动配置校验；本地调试可显式设为 development。
-      TIKU_APP_MODE: "${TIKU_APP_MODE:-production}"
-      # 生产环境必须设置稳定的 JWT_SECRET；留空只适合本地初始化或测试。
-      JWT_SECRET: "${JWT_SECRET:-}"
-      # 留空默认 123456；公共初始化口令只能通过容器内 CLI 修改后用于登录。
-      TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
+      # 不从宿主环境读取；空值按 production 处理。需要开发模式时直接修改本行。
+      TIKU_APP_MODE: ""
+      # 不从宿主环境读取；空值由服务端生成并持久化随机 JWT 密钥。
+      # 生产环境如需固定密钥，请直接在本文件填写，不要依赖外部插值。
+      JWT_SECRET: ""
+      # 不从宿主环境读取；空值使用本地初始化口令 123456。
+      # 首次登录后请通过容器内初始化命令修改管理员密码。
+      TIKU_ADMIN_PASSWORD: ""
       # 保留现有客户端 IP 语义：空或 none 读取所有来源 XFF；具体列表补入本地/私网段。
       # HTTPS 协议头只信任显式列出的上游；Nginx 直接 TLS 请求始终识别为 HTTPS。
-      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
-      # TRUSTED_PROXIES 留空且明确选择文件时读取；仅挂载文件不会自动启用。
-      TRUSTED_PROXIES_FILE: "${TRUSTED_PROXIES_FILE:-}"
+      # 不从宿主环境读取；如有外层反向代理，请直接填写 IP/CIDR。
+      TRUSTED_PROXIES: ""
+      # 不从宿主环境读取；空值表示不启用 trusted_proxies.txt。
+      # 如需启用挂载文件，请直接填写 /app/trusted_proxies.txt。
+      TRUSTED_PROXIES_FILE: ""
       # 数据库和日志时间统一使用上海时区；修改后需重建/重启容器才会生效。
       TZ: Asia/Shanghai
     volumes:

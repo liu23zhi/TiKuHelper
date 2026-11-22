@@ -74,7 +74,7 @@ test('single-container Compose preserves mounts, ports, and graceful shutdown', 
     assert.ok(backend.volumes.some((mount) => mount.target === target && resolve(mount.source) === join(run, source)), target);
   }
   assert.deepEqual(backend.healthcheck.test, ['CMD', '/app/container-gateway', '--healthcheck']);
-  assert.equal(backend.environment.TRUSTED_PROXIES, 'none');
+  assert.equal(backend.environment.TRUSTED_PROXIES, '');
   assert.ok(!Object.keys(backend.environment).some((key) => key.startsWith('EXTENSION_')));
 });
 
