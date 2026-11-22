@@ -90,16 +90,18 @@ type loggerState struct {
 	// 现在既装结构化轨迹，也装完整请求体 / 响应体 / 来源 / 结果摘要。
 	thinking *rotatingFile
 	// reviewRebate 是评价返现打分的专用追踪（task_doc/73）。
-	reviewRebate  *rotatingFile
-	stdout        io.Writer
-	stderr        io.Writer
-	standard      io.Writer
-	standardFlags int
-	out           *outputWriter
-	err           *outputWriter
-	closed        bool
-	logDir        string
-	maxTotalBytes int64
+	reviewRebate *rotatingFile
+	// sensitiveImage 是工单图片敏感检测的专用追踪；不写图片字节或密钥。
+	sensitiveImage *rotatingFile
+	stdout         io.Writer
+	stderr         io.Writer
+	standard       io.Writer
+	standardFlags  int
+	out            *outputWriter
+	err            *outputWriter
+	closed         bool
+	logDir         string
+	maxTotalBytes  int64
 	// maxLogAgeDays 是归档的保留天数（0 = 关闭按年龄清理）。
 	//
 	// 与 maxTotalBytes 是**两条独立策略**，不是替代关系：
@@ -195,6 +197,21 @@ func setupLoggerWithRetention(dir string, maxBytes int64, maxTotalBytes int64, m
 		return fmt.Errorf("open Tiku-review-rebate log: %w", err)
 	}
 	s.reviewRebate = reviewRebateFile
+	s.sensitiveImage, err = openRotatingFile(dir, "Tiku-sensitive-image", maxBytes)
+	if err != nil {
+		for _, opened := range s.files {
+			if opened != nil {
+				_ = opened.close()
+			}
+		}
+		if s.thinking != nil {
+			_ = s.thinking.close()
+		}
+		if s.reviewRebate != nil {
+			_ = s.reviewRebate.close()
+		}
+		return fmt.Errorf("open Tiku-sensitive-image log: %w", err)
+	}
 	// 顺序固定：先按年龄删超龄归档，再按总量删最旧。
 	//
 	// 反过来也能收敛（总量那次会把年龄该删的也删掉一部分），但**日志无法区分
@@ -293,6 +310,9 @@ func (s *loggerState) close() error {
 	}
 	if s.reviewRebate != nil {
 		errs = append(errs, s.reviewRebate.close())
+	}
+	if s.sensitiveImage != nil {
+		errs = append(errs, s.sensitiveImage.close())
 	}
 	s.mu.Unlock()
 	if gin.DefaultWriter == s.out {
@@ -509,6 +529,8 @@ func dedicatedFileOf(s *loggerState, field string) *rotatingFile {
 		return s.thinking
 	case "reviewRebate":
 		return s.reviewRebate
+	case "sensitiveImage":
+		return s.sensitiveImage
 	default:
 		return nil
 	}
@@ -531,6 +553,13 @@ func dedicatedFileOf(s *loggerState, field string) *rotatingFile {
 // 否则轮转出的 .txt.N / .txt.gz 归档不再被 pruneLogFiles 识别，磁盘会无限增长。
 func ReviewRebateTrace(text string, secrets ...string) {
 	writeDedicatedFile("reviewRebate", "Tiku-review-rebate", "[REVIEW-REBATE]", text, secrets...)
+}
+
+// SensitiveImageTrace writes structured, redacted image-detection diagnostics.
+// It records metadata and upstream errors, never image bytes, API keys or raw
+// upstream responses.
+func SensitiveImageTrace(text string, secrets ...string) {
+	writeDedicatedFile("sensitiveImage", "Tiku-sensitive-image", "[SENSITIVE-IMAGE]", text, secrets...)
 }
 
 var shanghaiLocation = func() *time.Location {
@@ -820,7 +849,7 @@ func pruneLogFilesByAge(dir string, maxLogAgeDays int) error {
 // Tiku-ai-payload 已删除（2026-11-11 用户定案三档并两档，
 // 完整报文并入 Tiku-thinking，见 task_doc/45 §0.26.1）。历史上轮转出的
 // Tiku-ai-payload*.txt 因此不再被清理，需要人工删一次。
-var managedLogPrefixes = []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-review-rebate"}
+var managedLogPrefixes = []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-review-rebate", "Tiku-sensitive-image"}
 
 func isManagedLogFile(name string) bool {
 	for _, prefix := range managedLogPrefixes {

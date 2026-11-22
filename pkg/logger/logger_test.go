@@ -577,6 +577,42 @@ func TestReviewRebateTraceFileIsManaged(t *testing.T) {
 	}
 }
 
+func TestSensitiveImageTraceUsesDedicatedFileAndRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	if err := setupLogger(dir, 1024*1024); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	SensitiveImageTrace("event=detect_error image_sha256=abc request_id=req-1 error=HTTP 502 Authorization: Bearer image-secret")
+	if err := closeLogger(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+	trace := readLoggerFile(t, dir, "Tiku-sensitive-image.txt")
+	if !strings.Contains(trace, "event=detect_error") || !strings.Contains(trace, "HTTP 502") {
+		t.Fatalf("sensitive-image trace is incomplete: %s", trace)
+	}
+	if strings.Contains(trace, "image-secret") {
+		t.Fatalf("sensitive-image trace leaked a secret: %s", trace)
+	}
+	if strings.Contains(readLoggerFile(t, dir, "Tiku-thinking.txt"), "detect_error") {
+		t.Fatal("sensitive-image trace must not enter the AI thinking log")
+	}
+}
+
+func TestSensitiveImageTraceFileIsManaged(t *testing.T) {
+	for _, name := range []string{
+		"Tiku-sensitive-image.txt",
+		"Tiku-sensitive-image.txt.gz",
+		"Tiku-sensitive-image01.txt",
+		"Tiku-sensitive-image01.txt.gz",
+	} {
+		if !isManagedLogFile(name) {
+			t.Fatalf("%s must be recognized as a managed log file", name)
+		}
+	}
+}
+
 // 三档并两档（task_doc/45 §0.26.1）之后，两份保留文件的**轮转归档**
 // 必须仍然被 isManagedLogArchive 认出来，而被取消的 Tiku-ai-payload 必须不再被认。
 //

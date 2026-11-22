@@ -496,7 +496,13 @@ type TicketAttachmentScanResult struct {
 // 任何错误都返回 State=failed 的结果而不是零值：调用方把结果写进库里，
 // 图片因此保持隐藏。**没有 key** 也走这条路径，这就是「无 API key 按敏感处理」。
 func scanTicketAttachmentOnce(ctx context.Context, db *gorm.DB, attachmentID int64, plain []byte, mimeType string) TicketAttachmentScanResult {
+	started := time.Now()
+	imageSHA := HashSensitiveImage(plain)
+	logger.SensitiveImageTrace(fmt.Sprintf("event=detect_start attachment_id=%d image_sha256=%s bytes=%d mime=%s channel=background",
+		attachmentID, imageSHA, len(plain), strings.TrimSpace(mimeType)))
 	failed := func(reason string) TicketAttachmentScanResult {
+		logger.SensitiveImageTrace(fmt.Sprintf("event=detect_error attachment_id=%d image_sha256=%s duration_ms=%d reason=%s",
+			attachmentID, imageSHA, time.Since(started).Milliseconds(), reason))
 		return TicketAttachmentScanResult{State: entity.TicketAttachmentScanFailed, CheckError: truncateUTF8(reason, 500)}
 	}
 	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
@@ -526,6 +532,8 @@ func scanTicketAttachmentOnce(ctx context.Context, db *gorm.DB, attachmentID int
 		State: state, NSFWScore: result.NSFWScore, RiskLevel: strings.ToLower(strings.TrimSpace(result.RiskLevel)),
 		Suggestion: strings.ToLower(strings.TrimSpace(result.Suggestion)), Label: strings.TrimSpace(result.Label),
 	}
+	logger.SensitiveImageTrace(fmt.Sprintf("event=detect_result attachment_id=%d image_sha256=%s duration_ms=%d state=%s nsfw_score=%v risk_level=%s suggestion=%s label=%s inference_time_ms=%d",
+		attachmentID, imageSHA, time.Since(started).Milliseconds(), scan.State, scan.NSFWScore, scan.RiskLevel, scan.Suggestion, scan.Label, result.InferenceTimeMS))
 	if state == entity.TicketAttachmentScanSensitive {
 		// 只记判定结论与分数；原始响应体可能含模型细节，且对排障没有额外价值。
 		logger.SysLog(fmt.Sprintf("ticket_attachment_sensitive attachmentId=%d reason=%s nsfwScore=%v", attachmentID, reason, result.NSFWScore))

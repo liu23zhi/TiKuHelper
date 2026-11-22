@@ -574,6 +574,9 @@ func ManualDetectSensitiveImageWithDB(
 	mimeType string,
 	now time.Time,
 ) (SensitiveImageDetectResult, error) {
+	started := time.Now()
+	logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_start image_sha256=%s bytes=%d mime=%s channel=admin",
+		HashSensitiveImage(data), len(data), strings.TrimSpace(mimeType)))
 	if db == nil {
 		return SensitiveImageDetectResult{}, errSensitiveImageQuotaNoDatabase
 	}
@@ -598,6 +601,8 @@ func ManualDetectSensitiveImageWithDB(
 
 	detector := sensitiveImageDetectorWithDB(db)
 	if detector == nil {
+		logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_error image_sha256=%s duration_ms=%d code=detector_unconfigured",
+			result.ImageSHA256, time.Since(started).Milliseconds()))
 		return result, errors.New("未配置敏感图片检测通道")
 	}
 	result.UpstreamCalled = true
@@ -605,6 +610,8 @@ func ManualDetectSensitiveImageWithDB(
 	if err != nil {
 		// 手动触发失败要把错误如实返回给管理员（与用户路径的静默降级相反）。
 		_ = markSensitiveImageCacheErrorWithDB(db, imageSHA, err.Error(), now)
+		logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_error image_sha256=%s duration_ms=%d code=upstream error=%s",
+			imageSHA, time.Since(started).Milliseconds(), err))
 		return result, fmt.Errorf("敏感图片检测失败：%w", err)
 	}
 	status := entity.SensitiveImageCacheStatusClean
@@ -629,6 +636,8 @@ func ManualDetectSensitiveImageWithDB(
 	result.State = sensitiveImageStateOfCacheStatus(status)
 	result.ScanState = sensitiveImageScanStateOfCacheStatus(status)
 	result.Reason = verdict.Reason
+	logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_result image_sha256=%s duration_ms=%d state=%s sensitive=%t provider=%s",
+		imageSHA, time.Since(started).Milliseconds(), result.State, verdict.Sensitive, verdict.Provider))
 	return result, nil
 }
 
