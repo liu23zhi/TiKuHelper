@@ -57,6 +57,12 @@
         <strong>*.a.com</strong> 生成 <code>UUID.a.com</code>，<code>*a.com</code> 保存为 <code>*.a.com</code>。
         <strong>a.com/*</strong> 生成 <code>a.com/UUID</code>。
       </p>
+      <div class="denied-domain-field">
+        <label :for="fieldId('deniedDomains')">禁止设置的域名</label>
+        <a-textarea :id="fieldId('deniedDomains')" :value="deniedDomainText" :onUpdate:value="pageEntry.bind(setDeniedDomainText)" aria-label="禁止设置的域名" :rows="4" placeholder="每行一条，例如：&#10;api.a.com&#10;*.internal.a.com" :disabled="domainSaving || !domainReady" />
+        <p class="hint">每行填写完整域名或最左通配域名，不含协议、端口或路径。留空表示不禁止。<code>*.internal.a.com</code> 仅禁止其子域名。</p>
+        <p class="hint">禁止规则优先于可用规则，两份列表可交叠。保存后对新命令和已有命令立即生效。</p>
+      </div>
       <a-alert v-if="domainError" type="error" show-icon :message="domainError" class="page-alert" role="alert" />
       <a-space wrap class="domain-settings-actions">
         <a-button type="primary" :loading="domainSaving" :disabled="!domainReady || !domainDirty" :onClick="pageEntry.bind(saveDomainSettings)">保存域名设置</a-button>
@@ -525,13 +531,15 @@ const showSkipBindingButton = computed(() => shouldShowSkipBindingButton({ isAdm
 const lastUploadKey = ref('')
 const summary = reactive({ total: 0, enabled: 0, reserved: 0 })
 const domainText = ref('')
+const deniedDomainText = ref('')
 const domainReady = ref(false)
 const domainSaving = ref(false)
 // 诉求 ④：`domainAllowWildcard` 已删除（泛域名可用性由列表内容表达）。
 const domainError = ref('')
 // 保存按钮的 dirty 判据：只有内容真的变了才允许保存，避免「点了一下但什么都没改」的无效往返。
 const domainSavedText = ref('')
-const domainDirty = computed(() => domainText.value.trim() !== domainSavedText.value.trim() || savedExpiryPolicy.value !== `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`)
+const deniedDomainSavedText = ref('')
+const domainDirty = computed(() => domainText.value.trim() !== domainSavedText.value.trim() || deniedDomainText.value.trim() !== deniedDomainSavedText.value.trim() || savedExpiryPolicy.value !== `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`)
 // 诉求 ⑤：用户可选的域名格式模板（管理员配置），以及编辑中的域名行。
 const domainFormats = ref([])
 const scriptAdminAction = describeScriptAdminAction()
@@ -607,6 +615,7 @@ function setFormField(name, value) {
 }
 function setUploadVersion(value) { if (isAdmin.value && !uploading.value) uploadVersion.value = value }
 function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainText.value = value } }
+function setDeniedDomainText(value) { if (canAct() && isAdmin.value && !domainSaving.value) { domainRevision++; deniedDomainText.value = value } }
 function setExpiryPolicy(kind, value) {
   if (!canAct() || !isAdmin.value || domainSaving.value) return
   domainRevision++
@@ -1148,6 +1157,8 @@ async function loadDomainSettings() {
     if (response?.status !== 200) { message.warning('域名设置未读取成功，请刷新页面。'); return }
     domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : ''
     domainSavedText.value = domainText.value
+    deniedDomainText.value = Array.isArray(response.data?.deniedDomains) ? response.data.deniedDomains.join('\n') : ''
+    deniedDomainSavedText.value = deniedDomainText.value
     allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
     allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true
     savedExpiryPolicy.value = `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`
@@ -1187,7 +1198,8 @@ async function saveDomainSettings() {
   domainError.value = ''
   try {
     const domains = domainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-    const response = await updateScriptDomainSettings({ domains, allowFullNeverExpire: allowFullNeverExpire.value, allowShortNeverExpire: allowShortNeverExpire.value })
+    const deniedDomains = deniedDomainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+    const response = await updateScriptDomainSettings({ domains, deniedDomains, allowFullNeverExpire: allowFullNeverExpire.value, allowShortNeverExpire: allowShortNeverExpire.value })
     if (!owns() || ticket !== domainRevision) return
     if (response?.status !== 200) {
       // 诉求 ④：旧格式必须**明确报错**，让管理员知道要改成新写法，
@@ -1199,6 +1211,8 @@ async function saveDomainSettings() {
     }
     domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : domainText.value
     domainSavedText.value = domainText.value
+    deniedDomainText.value = Array.isArray(response.data?.deniedDomains) ? response.data.deniedDomains.join('\n') : deniedDomainText.value
+    deniedDomainSavedText.value = deniedDomainText.value
     allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
     allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true
     savedExpiryPolicy.value = `${allowFullNeverExpire.value}:${allowShortNeverExpire.value}`
@@ -1311,7 +1325,7 @@ function retireScope() {
   closeShortAuthorization(true); rows.value = []; versions.value = []
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
-  domainText.value = ''; domainReady.value = false; domainSaving.value = false; domainError.value = ''
+  domainText.value = ''; deniedDomainText.value = ''; domainReady.value = false; domainSaving.value = false; domainError.value = ''
   domainFormats.value = []
   reservedShortPrefixes.value = [...DEFAULT_RESERVED_SHORT_PREFIXES]
   lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
@@ -1341,6 +1355,8 @@ onBeforeUnmount(() => { alive = false; mounted = false; retireScope() })
 .hint, .table-hint { margin: 8px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .upload-result { max-width: 100%; overflow-wrap: anywhere; }
 .domain-settings-actions { margin-top: 12px; }
+.denied-domain-field { margin-top: 20px; }
+.denied-domain-field > label { display: block; margin-bottom: 8px; }
 .short-authorization-form, .short-authorization-actions { margin-top: 20px; }
 .short-authorization-result { padding: 16px; border: 1px solid var(--console-border); border-radius: 12px; }
 .consumed-authorization-alert { margin-top: 12px; }
