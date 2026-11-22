@@ -65,6 +65,8 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
       # 可选扫码图片等静态文件；没有文件时对应接口按应用逻辑返回。
       - ./nginx/html:/usr/share/nginx/html:ro
+      # 可选预置二维码；文件存在时网关生成 /api/Wechat_qc_code 路由，缺失/目录时不生成。
+      - ./Wechat_qc_code.jpg:/usr/share/nginx/html/Wechat_qc_code.jpg:ro
       # Nginx 访问日志目录；证书、私钥和日志不会被打进镜像。
       - ./nginx/logs:/var/log/nginx
     healthcheck:

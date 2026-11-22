@@ -194,9 +194,8 @@ test('Settings QR guidance names the built-in mapping, optional mount, missing s
   const text = compact(hint.textContent)
   assert.match(text, /\/api\/Wechat_qc_code/)
   assert.match(text, /\.\/Wechat_qc_code\.jpg/)
-  assert.match(text, /run\/start\.ps1/)
-  assert.match(text, /run\/start\.sh/)
-  assert.match(text, /未配置/)
+  assert.match(text, /Compose/)
+  assert.match(text, /不生成/)
   assert.match(text, /自定义.*(URL|路径)/)
   assert.equal(input.getAttribute('aria-describedby'), hint.id, 'QR guidance is associated with its input')
   const before = w.vm.formState.wechatCodeStaticQrcodeUrl

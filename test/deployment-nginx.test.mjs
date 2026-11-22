@@ -45,7 +45,7 @@ test('Docker build context excludes operator certificates and Nginx logs', async
 });
 
 test('Nginx access log only keeps paths under reserved API prefixes', async () => {
-  const config = await readFile(join(run, 'nginx/conf.d/tiku-adapter.conf'), 'utf8');
+  const config = await readFile(join(repo, 'internal/gateway/templates/tiku-adapter.conf'), 'utf8');
   const map = /map \$uri \$tiku_log_path \{([^}]+)\}/.exec(config)?.[1];
   assert.ok(map);
   assert.match(map, /default\s+"\[public-entry\]";/);
@@ -70,7 +70,7 @@ test('single-container Compose preserves mounts, ports, and graceful shutdown', 
     { host_ip: undefined, target: 8680, published: '8680' },
     { host_ip: undefined, target: 9043, published: '9043' },
   ]);
-  for (const [source, target] of [['data', '/app/data'], ['logs', '/app/logs'], ['config.yaml', '/app/config.yaml'], ['trusted_proxies.txt', '/app/trusted_proxies.txt'], ['nginx-extra', '/app/nginx-extra'], ['nginx/ssl', '/etc/nginx/ssl'], ['nginx/html', '/usr/share/nginx/html'], ['nginx/logs', '/var/log/nginx']]) {
+  for (const [source, target] of [['data', '/app/data'], ['logs', '/app/logs'], ['config.yaml', '/app/config.yaml'], ['trusted_proxies.txt', '/app/trusted_proxies.txt'], ['nginx-extra', '/app/nginx-extra'], ['Wechat_qc_code.jpg', '/usr/share/nginx/html/Wechat_qc_code.jpg'], ['nginx/ssl', '/etc/nginx/ssl'], ['nginx/html', '/usr/share/nginx/html'], ['nginx/logs', '/var/log/nginx']]) {
     assert.ok(backend.volumes.some((mount) => mount.target === target && resolve(mount.source) === join(run, source)), target);
   }
   assert.equal(backend.volumes.some((mount) => mount.target === '/etc/nginx/conf.d'), false);

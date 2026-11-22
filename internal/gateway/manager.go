@@ -16,6 +16,7 @@ import (
 
 type Manager struct {
 	Root, CertificateDir, ConfigDir     string
+	QRCodePath                          string
 	ProxyConfig                         string
 	Check                               func(string) error
 	Reload                              func() error
@@ -126,6 +127,8 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 	for _, name := range selectedNames {
 		fmt.Fprintf(digest, "%s:%s\x00", name, selected[name].ID)
 	}
+	qrEnabled := regularFile(m.QRCodePath)
+	fmt.Fprintf(digest, "qr:%t:%s\x00", qrEnabled, m.QRCodePath)
 	fingerprint := hex.EncodeToString(digest.Sum(nil))
 	if fingerprint == m.fingerprint {
 		return false, nil
@@ -171,7 +174,7 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 	if err = os.WriteFile(filepath.Join(candidate, "certificates.json"), manifest, 0600); err != nil {
 		return false, err
 	}
-	servers := renderServers(candidate, configRoot, fallback, selected)
+	servers := renderServers(candidate, configRoot, fallback, selected, qrEnabled)
 	if err = os.WriteFile(filepath.Join(candidate, "servers.conf"), []byte(servers), 0600); err != nil {
 		return false, err
 	}
@@ -294,23 +297,29 @@ func atomicWrite(path string, data []byte) error {
 	return os.Rename(name, path)
 }
 
-func renderServers(directory, confRoot string, fallback Certificate, selected map[string]Certificate) string {
+func renderServers(directory, confRoot string, fallback Certificate, selected map[string]Certificate, qrEnabled bool) string {
+	qrLocation := ""
+	if qrEnabled {
+		qrLocation = `
+ location = /api/Wechat_qc_code {
+  alias /usr/share/nginx/html/Wechat_qc_code.jpg;
+  default_type image/jpeg;
+  add_header Cache-Control "no-cache";
+ }
+`
+	}
 	common := fmt.Sprintf(`
  access_log /var/log/nginx/access.log tiku_safe;
  client_header_timeout 3600s;
  client_body_timeout 3600s;
  send_timeout 3600s;
  keepalive_timeout 3600s;
- location = /api/Wechat_qc_code {
-  alias /usr/share/nginx/html/Wechat_qc_code.jpg;
-  default_type image/jpeg;
-  add_header Cache-Control "no-cache";
- }
+%s
  location / {
   proxy_pass http://tiku_adapter;
   include %s;
  }
-`, nginxQuote(filepath.Join(confRoot, "tiku-proxy.inc")))
+`, qrLocation, nginxQuote(filepath.Join(confRoot, "tiku-proxy.inc")))
 	var b strings.Builder
 	fmt.Fprintf(&b, "server {\n listen 8060 default_server;\n listen 8680 default_server;\n server_name _;\n%s}\n", common)
 	if fallback.ID == "" {
@@ -341,4 +350,12 @@ func renderServers(directory, confRoot string, fallback Certificate, selected ma
 		tlsServer(serverName, selected[name], false)
 	}
 	return b.String()
+}
+
+func regularFile(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }

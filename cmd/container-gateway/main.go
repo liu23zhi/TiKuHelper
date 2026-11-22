@@ -52,7 +52,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	manager := &gateway.Manager{Root: runtimeRoot, CertificateDir: "/etc/nginx/ssl", ConfigDir: "/app/nginx-extra", ProxyConfig: proxyConfig, Report: func(s string) { log.Print(s) }}
+	manager := &gateway.Manager{Root: runtimeRoot, CertificateDir: "/etc/nginx/ssl", ConfigDir: "/app/nginx-extra", QRCodePath: "/usr/share/nginx/html/Wechat_qc_code.jpg", ProxyConfig: proxyConfig, Report: func(s string) { log.Print(s) }}
 	manager.Check = func(path string) error { return nginxCommand("-t", "-c", path) }
 	if _, err = manager.Refresh(time.Now()); err != nil {
 		// Restart during a renewal/config edit can still use the last accepted

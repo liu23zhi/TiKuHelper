@@ -160,7 +160,7 @@
 
         <a-form-item label="验证码二维码" :html-for="fieldId('wechatCodeStaticQrcodeUrl')">
           <a-input :id="fieldId('wechatCodeStaticQrcodeUrl')" :aria-describedby="fieldId('wechatCodeStaticQrcodeUrlHint')" :value="formState.wechatCodeStaticQrcodeUrl" v-on="{ 'update:value': settingsEntry.bind(updateSetting, 'wechatCodeStaticQrcodeUrl') }" placeholder="请输入微信验证码模式下展示的静态二维码图片地址" />
-          <div :id="fieldId('wechatCodeStaticQrcodeUrlHint')" class="hint">默认预置映射为 <code>/api/Wechat_qc_code</code>；启动脚本 <code>run/start.ps1</code> 或 <code>run/start.sh</code> 会按约定尝试挂载可选的 <code>./Wechat_qc_code.jpg</code>。图片缺失时该映射显示“未配置”，不会阻止启动；也可以在此输入自定义 URL 或路径。</div>
+          <div :id="fieldId('wechatCodeStaticQrcodeUrlHint')" class="hint">默认预置映射为 <code>/api/Wechat_qc_code</code>；Compose 会只读挂载可选的 <code>./Wechat_qc_code.jpg</code>。图片缺失时该映射不生成，不会阻止启动；也可以在此输入自定义 URL 或路径。</div>
         </a-form-item>
 
         <a-form-item label="验证码提供方" :html-for="fieldId('captchaProvider')">
