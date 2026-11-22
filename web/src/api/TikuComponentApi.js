@@ -1007,6 +1007,25 @@ export function updateSystemSettings(data, feedback) {
   return request(config)
 }
 
+export function getGatewayCertificatePasswordState(feedback) {
+  const config = {
+    url: `/api/admin/system-settings/certificate-passwords`,
+    method: 'get',
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
+}
+
+export function updateGatewayCertificatePasswords(passwords, feedback) {
+  const config = {
+    url: `/api/admin/system-settings/certificate-passwords`,
+    method: 'put',
+    data: { passwords },
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
+}
+
 export function getAISearchModels(params) {
   return request({
     url: `/api/ai-search-config/models`,

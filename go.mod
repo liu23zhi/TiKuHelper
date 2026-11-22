@@ -7,6 +7,7 @@ require (
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/antlabs/strsim v0.0.4
 	github.com/elastic/go-elasticsearch/v8 v8.19.7
+	github.com/extrame/xls v0.0.1
 	github.com/gin-contrib/static v1.1.9
 	github.com/gin-gonic/gin v1.12.0
 	github.com/glebarez/go-sqlite v1.21.2
@@ -21,6 +22,8 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/tidwall/gjson v1.20.1
 	github.com/xuri/excelize/v2 v2.11.1
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
+	software.sslmate.com/src/go-pkcs12 v0.7.4
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
 	golang.org/x/sys v0.50.0
@@ -46,7 +49,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.9.0 // indirect
 	github.com/extrame/ole2 v0.0.0-20160812065207-d69429661ad7 // indirect
-	github.com/extrame/xls v0.0.1 // indirect
 	github.com/fatih/set v0.2.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect

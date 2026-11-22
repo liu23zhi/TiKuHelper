@@ -15,15 +15,20 @@ import (
 )
 
 type Manager struct {
-	Root, CertificateDir, ConfigDir     string
-	QRCodePath                          string
-	ProxyConfig                         string
+	Root, CertificateDir, ConfigDir string
+	QRCodePath                      string
+	ProxyConfig                     string
+	// PasswordProvider reads the current certificate password candidates from
+	// the application store. A provider error is reported and the last
+	// successful candidates remain active for this refresh.
+	PasswordProvider                    func() ([]string, error)
 	Check                               func(string) error
 	Reload                              func() error
 	Report                              func(string)
 	active                              []Certificate
 	activeDir, rollbackDir, fingerprint string
 	uncertainDirs                       []string
+	certificatePasswords                []string
 	restored                            bool
 }
 
@@ -47,7 +52,22 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 		}
 		m.restored = true
 	}
-	pairs, err := ScanCertificates(m.CertificateDir, now, m.Report)
+	passwords := append([]string(nil), m.certificatePasswords...)
+	if m.PasswordProvider != nil {
+		loaded, providerErr := m.PasswordProvider()
+		if providerErr != nil {
+			diagnostic(m.Report, "certificate password candidates unavailable: %v", providerErr)
+			// A provider may return its own last-known value together with an
+			// error. Use it, otherwise retain Manager's previous value.
+			if loaded != nil {
+				passwords = append([]string(nil), loaded...)
+			}
+		} else {
+			passwords = append([]string(nil), loaded...)
+			m.certificatePasswords = append([]string(nil), loaded...)
+		}
+	}
+	pairs, err := ScanCertificatesWithPasswords(m.CertificateDir, now, passwords, m.Report)
 	if err != nil {
 		return false, err
 	}

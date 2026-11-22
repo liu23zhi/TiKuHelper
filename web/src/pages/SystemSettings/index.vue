@@ -296,6 +296,7 @@
     <TicketNotificationSettingsPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <CacheRetentionSettings :key="'cache-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <LogRetentionSettingsPanel :key="'logs-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
+    <CertificatePasswordPanel :key="'certificate-passwords-' + settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <RefundAgreementPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
     <ReferralSettingsPanel :disabled="!canManageSettings() || settingsDraining" />
 
@@ -374,6 +375,7 @@ import ReferralSettingsPanel from '@/components/ReferralSettingsPanel.vue';
 import TicketNotificationSettingsPanel from '@/components/TicketNotificationSettingsPanel.vue';
 import CacheRetentionSettings from '@/components/CacheRetentionSettings.vue';
 import LogRetentionSettingsPanel from '@/components/LogRetentionSettingsPanel.vue';
+import CertificatePasswordPanel from './CertificatePasswordPanel.vue';
 import {
   createPaymentMethod,
   deletePaymentMethod,
@@ -505,7 +507,7 @@ const projectSettingsSaveFailure = source => {
 
 export default defineComponent({
   name: 'SystemSettings',
-  components: { PaymentMethodPanel, ReferralSettingsPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
+  components: { PaymentMethodPanel, ReferralSettingsPanel, RefundAgreementPanel, TicketNotificationSettingsPanel, CacheRetentionSettings, LogRetentionSettingsPanel, CertificatePasswordPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
   setup() {
     const settingsFormId = `system-settings-${useId()}`
     const fieldId = field => `${settingsFormId}-${field}`

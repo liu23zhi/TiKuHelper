@@ -521,6 +521,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/system-metrics", controller.Auth, middleware.RequireAdmin, controller.GetSystemMetrics)
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
+	apiRouter.GET("/admin/system-settings/certificate-passwords", controller.Auth, middleware.RequireAdmin, controller.GatewayCertificatePasswordState)
+	apiRouter.PUT("/admin/system-settings/certificate-passwords", controller.Auth, middleware.RequireAdmin, controller.UpdateGatewayCertificatePasswords)
 
 	// 黑名单管理页（BL-5，46-黑名单设计.md §6）。全部 Auth + RequireAdmin：
 	// 规则原文（pattern）是「攻击者换 IP 的边界」，只有管理员能看。

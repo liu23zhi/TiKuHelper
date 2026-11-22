@@ -8,12 +8,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/youmark/pkcs8"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 func fixtureCertificate(t *testing.T, names []string, before, after time.Time, rsaKey bool) (Certificate, []byte, []byte) {
@@ -51,7 +55,11 @@ func fixtureCertificate(t *testing.T, names []string, before, after time.Time, r
 }
 func writeFixture(t *testing.T, dir, name string, value []byte) {
 	t.Helper()
-	if e := os.WriteFile(filepath.Join(dir, name), value, 0600); e != nil {
+	path := filepath.Join(dir, name)
+	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.WriteFile(path, value, 0600); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -156,4 +164,86 @@ func TestScanSupportsPKCS1RSAAndSEC1ECPrivateKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScanSupportsDERAndPasswordProtectedPKCS12WithoutExtensions(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	_, certPEM, keyPEM := fixtureCertificate(t, []string{"der.example"}, now.Add(-time.Hour), now.Add(time.Hour), true)
+	certBlock, _ := pem.Decode(certPEM)
+	keyBlock, _ := pem.Decode(keyPEM)
+	key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, dir, "certificate-without-crt", certBlock.Bytes)
+	writeFixture(t, dir, "private-without-key", keyDER)
+	pairs, err := ScanCertificates(dir, now, nil)
+	if err != nil || len(pairs) != 1 {
+		t.Fatalf("DER pair: %d %v", len(pairs), err)
+	}
+
+	pfx, err := pkcs12.Encode(rand.Reader, key, certificate, nil, "fixture-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pfxDir := t.TempDir()
+	writeFixture(t, pfxDir, "certificate-container", pfx)
+	pairs, err = ScanCertificatesWithPasswords(pfxDir, now, []string{"wrong", "fixture-password"}, nil)
+	if err != nil || len(pairs) != 1 {
+		t.Fatalf("password protected PKCS#12: %d %v", len(pairs), err)
+	}
+
+	pkcs8DER, err := pkcs8.MarshalPrivateKey(key, []byte("fixture-key-password"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDir := t.TempDir()
+	writeFixture(t, keyDir, "encrypted-certificate", certBlock.Bytes)
+	writeFixture(t, keyDir, "encrypted-private", pkcs8DER)
+	pairs, err = ScanCertificatesWithPasswords(keyDir, now, []string{"fixture-key-password"}, nil)
+	if err != nil || len(pairs) != 1 {
+		t.Fatalf("password protected PKCS#8: %d %v", len(pairs), err)
+	}
+}
+
+func TestScanCertificateBudgetsBoundFilesAndBytes(t *testing.T) {
+	now := time.Now()
+	t.Run("file-count", func(t *testing.T) {
+		dir := t.TempDir()
+		var messages []string
+		for i := 0; i < maxCertificateScanFiles+1; i++ {
+			writeFixture(t, dir, filepath.Join("nested", fmt.Sprintf("%03d", i)), []byte("ignored"))
+		}
+		_, err := ScanCertificates(dir, now, func(message string) { messages = append(messages, message) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(strings.Join(messages, "\n"), "stopped after") {
+			t.Fatalf("missing file budget diagnostic: %v", messages)
+		}
+	})
+	t.Run("total-bytes", func(t *testing.T) {
+		dir := t.TempDir()
+		var messages []string
+		payload := make([]byte, 1<<20)
+		for i := 0; i < maxCertificateScanBytes/(1<<20)+1; i++ {
+			writeFixture(t, dir, fmt.Sprintf("%03d.bin", i), payload)
+		}
+		_, err := ScanCertificates(dir, now, func(message string) { messages = append(messages, message) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(strings.Join(messages, "\n"), "64 MiB total budget") {
+			t.Fatalf("missing total budget diagnostic: %v", messages)
+		}
+	})
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -16,6 +17,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/youmark/pkcs8"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 type Certificate struct {
@@ -54,98 +58,224 @@ func validDNSName(name string) bool {
 	return true
 }
 
-// ScanCertificates reads regular PEM files only. Paths never enter Nginx syntax;
-// the generated configuration uses private filenames derived from content hashes.
+const (
+	maxCertificateFileBytes = 16 << 20
+	maxCertificateScanBytes = 64 << 20
+	maxCertificateScanFiles = 256
+)
+
+var errCertificateScanFileBudget = errors.New("certificate scan file budget reached")
+
+type certificateBundle struct {
+	path  string
+	certs []byte
+}
+
+type privateKeyCandidate struct {
+	path string
+	pem  []byte
+}
+
+func signerPEM(key any) ([]byte, crypto.Signer, error) {
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return nil, nil, fmt.Errorf("private key does not implement crypto.Signer")
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), signer, nil
+}
+
+func parsePrivateKeyDER(der []byte, passwords []string) (any, error) {
+	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParseECPrivateKey(der); err == nil {
+		return key, nil
+	}
+	for _, password := range passwords {
+		if key, err := pkcs8.ParsePKCS8PrivateKey(der, []byte(password)); err == nil {
+			return key, nil
+		}
+	}
+	return nil, fmt.Errorf("unsupported or encrypted private key")
+}
+
+func appendPrivateKey(path string, key any, keys map[string]privateKeyCandidate) error {
+	canonical, signer, err := signerPEM(key)
+	if err != nil {
+		return err
+	}
+	public, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(public)
+	id := hex.EncodeToString(digest[:])
+	previous, exists := keys[id]
+	if !exists || path == "privkey.key" || previous.path != "privkey.key" && path < previous.path {
+		keys[id] = privateKeyCandidate{path: path, pem: canonical}
+	}
+	return nil
+}
+
+func appendCertificateChain(path string, certificates []*x509.Certificate, bundles *[]certificateBundle) {
+	if len(certificates) == 0 {
+		return
+	}
+	var chain []byte
+	for _, certificate := range certificates {
+		chain = append(chain, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})...)
+	}
+	*bundles = append(*bundles, certificateBundle{path: path, certs: chain})
+}
+
+func parseCertificateFile(path string, raw []byte, passwords []string, bundles *[]certificateBundle, keys map[string]privateKeyCandidate, report func(string)) {
+	relative := path
+	var pemFound bool
+	var pemCertificates []*x509.Certificate
+	remaining := raw
+	for len(remaining) > 0 {
+		block, rest := pem.Decode(remaining)
+		if block == nil {
+			break
+		}
+		pemFound = true
+		remaining = rest
+		switch block.Type {
+		case "CERTIFICATE":
+			certificate, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				diagnostic(report, "certificate scan: %s invalid PEM certificate", relative)
+				continue
+			}
+			pemCertificates = append(pemCertificates, certificate)
+		default:
+			key, err := parsePrivateKeyDER(block.Bytes, passwords)
+			if err != nil && (strings.Contains(block.Type, "ENCRYPTED") || x509.IsEncryptedPEMBlock(block)) {
+				for _, password := range passwords {
+					decrypted, decryptErr := x509.DecryptPEMBlock(block, []byte(password))
+					if decryptErr != nil {
+						continue
+					}
+					key, err = parsePrivateKeyDER(decrypted, passwords)
+					if err == nil {
+						break
+					}
+				}
+			}
+			if err == nil {
+				if keyErr := appendPrivateKey(relative, key, keys); keyErr != nil {
+					diagnostic(report, "certificate scan: %s unsupported private key: %v", relative, keyErr)
+				}
+			} else if strings.Contains(block.Type, "PRIVATE") || strings.Contains(block.Type, "ENCRYPTED") {
+				diagnostic(report, "certificate scan: %s private key could not be decoded", relative)
+			}
+		}
+	}
+	if pemFound {
+		appendCertificateChain(relative, pemCertificates, bundles)
+		return
+	}
+
+	// Non-PEM inputs are deliberately parsed by content, so a .crt/.key/.pfx
+	// rename never changes the result.
+	if certificates, err := x509.ParseCertificates(raw); err == nil {
+		appendCertificateChain(relative, certificates, bundles)
+	}
+	for _, password := range append([]string{""}, passwords...) {
+		key, certificate, caCertificates, err := pkcs12.DecodeChain(raw, password)
+		if err != nil {
+			continue
+		}
+		if certificate == nil {
+			diagnostic(report, "certificate scan: %s PKCS#12 container has no leaf certificate", relative)
+			return
+		}
+		if appendErr := appendPrivateKey(relative, key, keys); appendErr != nil {
+			diagnostic(report, "certificate scan: %s unsupported PKCS#12 private key: %v", relative, appendErr)
+			return
+		}
+		appendCertificateChain(relative, append([]*x509.Certificate{certificate}, caCertificates...), bundles)
+		return
+	}
+	if key, err := parsePrivateKeyDER(raw, passwords); err == nil {
+		if appendErr := appendPrivateKey(relative, key, keys); appendErr != nil {
+			diagnostic(report, "certificate scan: %s unsupported DER private key: %v", relative, appendErr)
+		}
+	}
+}
+
+// ScanCertificates reads regular certificate/key files by content. Paths never
+// enter Nginx syntax; generated configuration uses private filenames derived
+// from content hashes. The legacy entry point intentionally has no passwords.
 func ScanCertificates(root string, now time.Time, report func(string)) ([]Certificate, error) {
-	type bundle struct {
-		path  string
-		certs []byte
-	}
-	type privateKey struct {
-		path string
-		pem  []byte
-	}
-	var bundles []bundle
-	keys := map[string]privateKey{}
+	return ScanCertificatesWithPasswords(root, now, nil, report)
+}
+
+// ScanCertificatesWithPasswords accepts plaintext password candidates for
+// encrypted PKCS#8, legacy PEM and PKCS#12/PFX files. Passwords are never
+// included in diagnostics. The scanner is bounded to avoid a misplaced large
+// file or an unbounded directory blocking the gateway refresh loop.
+func ScanCertificatesWithPasswords(root string, now time.Time, passwords []string, report func(string)) ([]Certificate, error) {
+	var bundles []certificateBundle
+	keys := map[string]privateKeyCandidate{}
+	readBytes := int64(0)
+	readFiles := 0
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if path == root && os.IsNotExist(walkErr) {
 				return fs.SkipDir
 			}
-			return walkErr
+			diagnostic(report, "certificate scan: skipped unreadable path %s: %v", path, walkErr)
+			return fs.SkipDir
 		}
-		if entry.IsDir() || !entry.Type().IsRegular() {
+		if entry.IsDir() {
 			return nil
 		}
 		info, e := entry.Info()
 		if e != nil {
-			return e
+			diagnostic(report, "certificate scan: skipped unreadable file metadata %s: %v", path, e)
+			return nil
 		}
-		if info.Size() > 16<<20 {
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if readFiles >= maxCertificateScanFiles {
+			diagnostic(report, "certificate scan: stopped after %d files", maxCertificateScanFiles)
+			return errCertificateScanFileBudget
+		}
+		readFiles++
+		if info.Size() > maxCertificateFileBytes {
 			diagnostic(report, "certificate scan: %s exceeds 16 MiB", path)
+			return nil
+		}
+		if readBytes+info.Size() > maxCertificateScanBytes {
+			diagnostic(report, "certificate scan: skipped %s because the 64 MiB total budget would be exceeded", path)
 			return nil
 		}
 		raw, e := os.ReadFile(path)
 		if e != nil {
-			return e
+			diagnostic(report, "certificate scan: skipped unreadable file %s: %v", path, e)
+			return nil
 		}
+		readBytes += int64(len(raw))
 		relative, e := filepath.Rel(root, path)
 		if e != nil {
 			return e
 		}
 		relative = filepath.ToSlash(relative)
-		var chain []byte
-		for len(raw) > 0 {
-			block, rest := pem.Decode(raw)
-			if block == nil {
-				break
-			}
-			raw = rest
-			if block.Type == "CERTIFICATE" {
-				chain = append(chain, pem.EncodeToMemory(block)...)
-				continue
-			}
-			if strings.Contains(block.Type, "ENCRYPTED") || x509.IsEncryptedPEMBlock(block) {
-				diagnostic(report, "certificate scan: %s encrypted private key skipped", relative)
-				continue
-			}
-			var key any
-			switch block.Type {
-			case "PRIVATE KEY":
-				key, e = x509.ParsePKCS8PrivateKey(block.Bytes)
-			case "RSA PRIVATE KEY":
-				key, e = x509.ParsePKCS1PrivateKey(block.Bytes)
-			case "EC PRIVATE KEY":
-				key, e = x509.ParseECPrivateKey(block.Bytes)
-			default:
-				continue
-			}
-			if e != nil {
-				diagnostic(report, "certificate scan: %s invalid private key", relative)
-				continue
-			}
-			signer, ok := key.(crypto.Signer)
-			if !ok {
-				diagnostic(report, "certificate scan: %s unsupported private key", relative)
-				continue
-			}
-			public, e := x509.MarshalPKIXPublicKey(signer.Public())
-			if e != nil {
-				continue
-			}
-			digest := sha256.Sum256(public)
-			id := hex.EncodeToString(digest[:])
-			// A conventional default key wins only among keys with the same public key.
-			previous, exists := keys[id]
-			if !exists || relative == "privkey.key" || previous.path != "privkey.key" && relative < previous.path {
-				keys[id] = privateKey{relative, pem.EncodeToMemory(block)}
-			}
-		}
-		if len(chain) > 0 {
-			bundles = append(bundles, bundle{relative, chain})
-		}
+		parseCertificateFile(relative, raw, passwords, &bundles, keys, report)
 		return nil
 	})
+	if errors.Is(err, errCertificateScanFileBudget) {
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
