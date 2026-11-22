@@ -70,7 +70,7 @@ type RiskThresholdItem struct {
 	Label string `json:"label"`
 	// Kind 见 RiskThresholdKind*。
 	Kind string `json:"kind"`
-	// Value 是**当前生效值**（三层兜底后的结果）。
+	// Value 是当前生效值；只有实例主阈值能从 risk_rules 列回退。
 	Value float64 `json:"value"`
 	// DefaultValue 是代码默认值，用于「重置为默认」与界面提示。
 	DefaultValue float64 `json:"defaultValue"`
@@ -83,6 +83,9 @@ type RiskThresholdItem struct {
 	Configured bool `json:"configured"`
 	// Unit 是展示单位（如「次」「元」「天」「比例」）。
 	Unit string `json:"unit"`
+	// Scope distinguishes a rule instance's primary threshold from shared detector criteria.
+	Scope    string  `json:"scope"`
+	MaxValue float64 `json:"maxValue"`
 }
 
 // 阈值来源标记。
@@ -205,6 +208,8 @@ func riskThresholdSpecs() []riskThresholdSpec {
 			Label: "30 天内成功退款次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "次", SyncRuleColumn: true, MaxValue: 1_000},
 		{Key: "risk_rule_register_burst_threshold", RuleID: entity.RiskRuleIDRegisterBurst,
 			Label: "同 /24 段 1h 注册账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
+		{Key: "risk_rule_device_register_burst_threshold", RuleID: entity.RiskRuleIDDeviceRegisterBurst,
+			Label: "同一浏览器 1 小时注册账号数阈值", Kind: RiskThresholdKindInteger, DefaultValue: 3, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_answer_pattern_repeat_threshold", RuleID: entity.RiskRuleIDAnswerPatternRepeat,
 			Label: "7 天内同题搜题次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 20, Unit: "次", SyncRuleColumn: true, MaxValue: 10_000},
 		// R10 proxy_ip_login **没有数值阈值**（它的判据是「ASN 是否在名单里」），
@@ -258,10 +263,16 @@ func ValidateRiskThresholdValue(kind string, value float64) error {
 // ⚠️ 上界**不写进数据库**，它是代码里的规格（`riskThresholdSpec.MaxValue`）。
 // 改上界不需要迁移，与「默认值写在代码里」是同一套理由（96 §2.2）。
 func ValidateRiskThresholdValueForKey(key, kind string, value float64) error {
+	spec, _ := riskThresholdSpecByKey(key)
+	spec.Kind = kind
+	return spec.validate(value)
+}
+
+func (spec riskThresholdSpec) validate(value float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return fmt.Errorf("%w：必须是有限数", ErrRiskThresholdInvalid)
 	}
-	switch kind {
+	switch spec.Kind {
 	case RiskThresholdKindRatio:
 		// 占比必须落在 (0, 1]。填 3 会让 `share < 3` 恒真、规则永不触发。
 		if value <= 0 || value > 1 {
@@ -270,7 +281,7 @@ func ValidateRiskThresholdValueForKey(key, kind string, value float64) error {
 	case RiskThresholdKindInteger:
 		// 「连续 N 天」必须是正整数；2.5 会被 int() 截断成 2，语义漂移。
 		if value < 1 || value != math.Trunc(value) {
-			return fmt.Errorf("%w：连续天数必须是不小于 1 的整数（当前 %v）", ErrRiskThresholdInvalid, value)
+			return fmt.Errorf("%w：阈值必须是不小于 1 的整数（当前 %v）", ErrRiskThresholdInvalid, value)
 		}
 	default:
 		// absolute
@@ -282,7 +293,7 @@ func ValidateRiskThresholdValueForKey(key, kind string, value float64) error {
 	//
 	// 不认识的 key 不加额外限制（保持向后兼容：ValidateRiskThresholdValue 的
 	// 单参数版本传空 key，老调用方的行为一字不变）。
-	if spec, ok := riskThresholdSpecByKey(key); ok && spec.MaxValue > 0 && value > spec.MaxValue {
+	if spec.MaxValue > 0 && value > spec.MaxValue {
 		return fmt.Errorf("%w：%s 不能超过 %v（当前 %v）。"+
 			"阈值调到这个量级会让规则实际失效 —— 若要停用规则请用启停开关",
 			ErrRiskThresholdInvalid, spec.Label, spec.MaxValue, value)
@@ -310,37 +321,46 @@ func RiskThresholds(db *gorm.DB) ([]RiskThresholdItem, error) {
 	return items, nil
 }
 
-// riskThresholdItem 解析单项的三层兜底结果。
+// riskThresholdSettingValue returns zero for an unusable value; the bool records
+// whether a setting row actually exists (and can therefore be reset).
+func riskThresholdSettingValue(db *gorm.DB, key string, spec riskThresholdSpec) (float64, bool) {
+	if db == nil {
+		return 0, false
+	}
+	setting, exists, err := getSystemSettingByKey(db, key)
+	if err != nil || !exists {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(setting.Value), 64)
+	if err != nil || spec.validate(value) != nil {
+		return 0, true
+	}
+	return value, true
+}
+
 func riskThresholdItem(db *gorm.DB, spec riskThresholdSpec) RiskThresholdItem {
 	item := RiskThresholdItem{
-		Key:          spec.Key,
-		RuleID:       spec.RuleID,
-		Label:        spec.Label,
-		Kind:         spec.Kind,
-		DefaultValue: spec.DefaultValue,
-		Unit:         spec.Unit,
-		Value:        spec.DefaultValue,
-		Source:       RiskThresholdSourceCode,
+		Key: spec.Key, RuleID: spec.RuleID, Label: spec.Label, Kind: spec.Kind,
+		DefaultValue: spec.DefaultValue, Unit: spec.Unit, MaxValue: spec.MaxValue,
+		Value: spec.DefaultValue, Source: RiskThresholdSourceCode, Scope: "detector",
 	}
-	// 第一层：system_settings。
-	raw := getSystemSettingStringWithDefault(db, spec.Key, "")
-	if strings.TrimSpace(raw) != "" {
-		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && value > 0 {
-			item.Value = value
-			item.Source = RiskThresholdSourceSetting
-			item.Configured = true
-			return item
-		}
+	if spec.SyncRuleColumn {
+		item.Scope = "instance"
 	}
-	// 第二层：risk_rules.threshold 列。
-	if db.Migrator().HasTable(entity.TableNameRiskRule) {
+	value, configured := riskThresholdSettingValue(db, spec.Key, spec)
+	item.Configured = configured
+	if value > 0 {
+		item.Value, item.Source = value, RiskThresholdSourceSetting
+		return item
+	}
+	// Only the primary threshold owns this column. It cannot supply an IP
+	// count in place of a quota multiplier, or a share in place of days.
+	if spec.SyncRuleColumn && db != nil && db.Migrator().HasTable(entity.TableNameRiskRule) {
 		var row entity.RiskRule
 		err := db.Session(&gorm.Session{NewDB: true}).
-			Where("rule_id = ?", spec.RuleID).First(&row).Error
-		if err == nil && row.Threshold > 0 {
-			item.Value = row.Threshold
-			item.Source = RiskThresholdSourceColumn
-			return item
+			Where("rule_id = ? AND deleted_at IS NULL", spec.RuleID).First(&row).Error
+		if err == nil && spec.validate(row.Threshold) == nil {
+			item.Value, item.Source = row.Threshold, RiskThresholdSourceColumn
 		}
 	}
 	return item
@@ -495,9 +515,10 @@ type RiskRuleState struct {
 	Name   string `json:"name"`
 	// Enabled 是**当前生效**的启用状态（表里没有行时为代码默认值）。
 	Enabled bool `json:"enabled"`
-	// Severity / Threshold 也是生效值，便于前端一次拿全。
-	Severity  string  `json:"severity"`
-	Threshold float64 `json:"threshold"`
+	// HasThreshold 为 false 时 Threshold 仅供旧客户端保持字段兼容，不能展示为判据。
+	Severity     string  `json:"severity"`
+	Threshold    float64 `json:"threshold"`
+	HasThreshold bool    `json:"hasThreshold"`
 	// Exists 表示 risk_rules 表里有这一行（false = 用的是代码默认值补齐）。
 	Exists bool `json:"exists"`
 	// Description 给运营看的说明（含「需 3 天历史」这类重要前提）。
@@ -512,22 +533,9 @@ type RiskRuleState struct {
 	Unit string `json:"unit"`
 }
 
-// riskThresholdUnitForRule 按 RuleID 取该规则的阈值单位（供 GET /risk/rules 展示用）。
-//
-// 返回第一个匹配项的 Unit。同一规则有多个可调项时（R16 的「连续天数」与「占比」），
-// 取到的会是**规格表里排在前面**的那个 —— 当前是「连续天数（天）」，
-// 这与 RiskRuleState.Threshold 的口径一致（Threshold 也取 `riskRuleThreshold`，
-// 即 `risk_rule_<id>_threshold` 那一项，不是占比项）。
-//
-// 找不到返回空串（表示这条规则没有可调阈值，或规格表漏登记 —— 后者由
-// TestRiskRuleAndThresholdSpecsCoverSameRuleIDs 兜住）。
-func riskThresholdUnitForRule(ruleID string) string {
-	for _, spec := range riskThresholdSpecs() {
-		if spec.RuleID == ruleID {
-			return spec.Unit
-		}
-	}
-	return ""
+// A detector's instance threshold is distinct from any shared auxiliary criteria.
+func riskPrimaryThresholdSpec(kind string) (riskThresholdSpec, bool) {
+	return riskThresholdSpecByKey(riskRuleThresholdSettingKey(kind))
 }
 
 // RiskRuleStates 返回全部规则的当前状态（含未在表里建行的）。
@@ -558,6 +566,7 @@ func RiskRuleStates(db *gorm.DB) ([]RiskRuleState, error) {
 	}
 	states := make([]RiskRuleState, 0, len(rules))
 	for _, rule := range rules {
+		spec, hasThreshold := riskPrimaryThresholdSpec(effectiveRiskRuleType(rule))
 		state := RiskRuleState{
 			RuleID:      rule.RuleID,
 			Name:        rule.Name,
@@ -566,7 +575,7 @@ func RiskRuleStates(db *gorm.DB) ([]RiskRuleState, error) {
 			Threshold:   riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID)),
 			Exists:      existing[rule.RuleID],
 			Description: rule.Description,
-			Unit:        riskThresholdUnitForRule(rule.Type),
+			Unit:        spec.Unit, HasThreshold: hasThreshold,
 		}
 		if d, ok := defaults[rule.RuleID]; ok && state.Description == "" {
 			state.Description = d.Description

@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 // Real Vue + Antd controls; only API responses are synthetic. No network/database IO.
 const { test, afterEach } = require('node:test')
 const assert = require('node:assert/strict'), path = require('node:path'), Module = require('node:module')

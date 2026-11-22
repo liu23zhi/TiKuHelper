@@ -152,17 +152,12 @@ test('C3 状态文案：未配置 / 已配置未启用 / 已启用 三态可区�
 // C1：只告警不拦截
 // ─────────────────────────────────────────────────────────────────────
 
-test('C1 页面必须有「不做自动处置」的常驻提示', () => {
-  assert.ok(RISK_ADVISORY_NOTE.includes('不会封禁'))
-  assert.ok(RISK_ADVISORY_NOTE.includes('不会拒绝请求'))
-  assert.ok(RISK_ADVISORY_NOTE.includes('不会修改任何用户状态'))
-  // 必须指明处置去哪做，否则运营看到告警找不到下一步。
-  assert.ok(RISK_ADVISORY_NOTE.includes('黑名单'))
+test('区分默认通知、自动临时单 IP 与管理员确认的范围/永久处置', () => {
+  for (const text of ['默认', '自动临时封单 IP', '范围封禁', '永久封禁', '管理员', '黑名单']) assert.ok(RISK_ADVISORY_NOTE.includes(text))
 })
 
-test('C1 页面源码里不得出现任何封禁/处置写操作', async () => {
+test('告警页不得修改账号状态或擅自开启全站黑名单', async () => {
   const page = await readSource('pages/RiskAdmin/index.vue')
-  // 风控页只读：出现这些词就意味着有人在告警页接了处置入口。
   const forbidden = [
     /updateUserStatus/i,
     /banUser/i,
@@ -172,9 +167,9 @@ test('C1 页面源码里不得出现任何封禁/处置写操作', async () => {
     /api\/user\/\$\{[^}]*\}\/status/,
   ]
   for (const pattern of forbidden) {
-    assert.doesNotMatch(page, pattern, `风控页不得包含处置写操作：${pattern}`)
+    assert.doesNotMatch(page, pattern, `告警页不得变更用户状态或总开关：${pattern}`)
   }
-  // 反向：必须只有**只读**的两个数据源（列表 / 详情）。
+  // 原有告警列表与证据详情继续可用。
   assert.match(page, /getRiskAlerts\(/, '列表读取必须存在')
   assert.match(page, /getRiskAlertDetail\(/, '详情读取必须存在')
 })
@@ -248,7 +243,7 @@ test('判据 ②（改阈值落库）已实现：前端必须提供阈值读写�
   const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/-]+)'/g)].map(m => m[1])
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    ['/alerts', '/alerts/', '/config', '/config/', '/rule-types', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
+    ['/alerts', '/alerts/', '/config', '/config/', '/offhours-window', '/response-policies/', '/rule-types', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
     '风控 API 模块包含规则类型目录、规则 CRUD、启停及既有配置路径',
   )
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路径必须是拼接形式（不能写成模板字面量绕过上面的统计）')

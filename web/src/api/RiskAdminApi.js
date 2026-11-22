@@ -1,6 +1,6 @@
 import request from '../utils/request'
 
-// 风控管理（task_doc/96-风控管理仅告警与用户画像-设计.md §4）。
+// 风控管理：告警/通知、规则和共享配置；两项核心保护的处置独立于告警级别。
 // 后端契约（internal/controller/risk_admin.go，路由需在 internal/api/router.go 接线）：
 //   GET  /api/risk/alerts            告警列表：分页 + ruleId / userId / notified / createdFrom / createdTo
 //   GET  /api/risk/alerts/:id        告警详情：Detail 是触发时刻的证据快照 JSON
@@ -285,3 +285,16 @@ export function resetRiskConfig(key) {
     method: 'delete',
   })
 }
+
+// 整个窗口一次读写；不要用两个旧单键请求模拟原子保存。
+export const getRiskWindow = () => localRequest({ url: RISK_BASE + '/offhours-window', method: 'get' })
+export const putRiskWindow = (startHour, endHour) => localRequest({ url: RISK_BASE + '/offhours-window', method: 'put', data: { startHour, endHour } })
+export const resetRiskWindow = () => localRequest({ url: RISK_BASE + '/offhours-window', method: 'delete' })
+
+const policyURL = detector => RISK_BASE + '/response-policies/' + encodeURIComponent(detector)
+export const getRiskPolicy = detector => localRequest({ url: policyURL(detector), method: 'get' })
+export const putRiskPolicy = (detector, mode, durationMinutes) => localRequest({ url: policyURL(detector), method: 'put', data: { mode, durationMinutes } })
+const responseURL = id => RISK_BASE + '/alerts/' + readPositiveId(id, '风控告警') + '/response'
+export const getAlertResponse = id => localRequest({ url: responseURL(id), method: 'get' })
+export const applyAlertResponse = (id, { action, durationMinutes, reason, confirmed, expectedTarget }) =>
+  localRequest({ url: responseURL(id), method: 'post', data: { action, durationMinutes, reason, confirmed, ...(action === 'ip' ? {} : { expectedTarget }) } })

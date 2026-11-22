@@ -25,7 +25,9 @@ package service
 // 常量漂移时两侧同步漂移 ⇒ 断言恒真（本仓已因此交付过假钉子）。
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
@@ -347,5 +349,27 @@ func TestDeviceSlotsMissingTableStillReturnsSchemaError(t *testing.T) {
 	}
 	if _, err := CountDevices(db, 4009); err == nil {
 		t.Fatal("表缺失时 CountDevices 必须返回 ErrDevicePoolSchemaUnavailable（不能假装 0）")
+	}
+}
+
+// Exercise the real host reporting path rather than manufacturing session_count
+// in SQL. A missing binding cannot be created by a report, and all closed
+// browsers leave the single already-bound host, not zero slots.
+func TestNativeHostReportedSessionsUseThreeThenOneSlot(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	const userID = 42001
+	seedDevicePoolUser(t, db, userID, 0)
+	now := time.Now()
+	if err := ReportDeviceSessionCount(db, userID, "new-host", 3, now); !errors.Is(err, ErrDeviceSessionBindingNotFound) {
+		t.Fatal("session report created or authorized an unbound host")
+	}
+	seedDeviceSlotBinding(t, db, userID, "bound-host", 0, false)
+	for _, c := range []struct{ reported, want int }{{3, 3}, {3, 3}, {0, 1}} {
+		if err := ReportDeviceSessionCount(db, userID, "bound-host", c.reported, now); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustCountDevices(t, db, userID); got != c.want {
+			t.Fatalf("after report %d: %d slots, expected %d", c.reported, got, c.want)
+		}
 	}
 }

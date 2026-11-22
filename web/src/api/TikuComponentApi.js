@@ -36,9 +36,9 @@ export function registerUser(data) {
   })
 }
 
-export function getPublicRegisterStatus() {
+export function getPublicRegisterStatus({ forRegistration = false } = {}) {
   return request({
-    url: `/api/public/register-status`,
+    url: forRegistration ? '/api/user/register/status' : '/api/public/register-status',
     method: 'get'
   })
 }

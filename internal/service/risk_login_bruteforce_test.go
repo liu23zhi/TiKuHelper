@@ -412,3 +412,52 @@ func TestRiskDetailThresholdIsConfiguredLoginBruteforce(t *testing.T) {
 }
 
 var _ = logger.ShanghaiLocation
+
+// An IP warning may include captcha/SMS failures, but only password evidence can
+// qualify it for an explicitly enabled automatic temporary IP restriction.
+func TestRiskLoginIPPasswordEvidenceForResponse(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	now := riskR1TestTime().UTC()
+	rule := entity.RiskRule{RuleID: entity.RiskRuleIDLoginBruteforce, Threshold: 2}
+	event := func(scene, reason string) {
+		t.Helper()
+		err := db.Create(&entity.LoginFailureEvent{CreatedAt: now.Add(-time.Minute), ClientIP: riskR2TestIP, Username: "fixture", Scene: scene, Reason: reason}).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(count int, qualified bool) string {
+		t.Helper()
+		rows, err := collectLoginBruteforceCandidates(db, rule, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			if row.IP != riskR2TestIP {
+				continue
+			}
+			var detail map[string]any
+			if err := json.Unmarshal([]byte(row.Detail), &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail["passwordFailures"] != float64(count) || detail["passwordFailureQualified"] != qualified {
+				t.Fatalf("password evidence: count=%v qualified=%v", detail["passwordFailures"], detail["passwordFailureQualified"])
+			}
+			return row.Subject
+		}
+		t.Fatal("expected IP warning")
+		return ""
+	}
+	event(entity.LoginFailureSceneSMS, entity.LoginFailureReasonCaptchaFailed)
+	event(entity.LoginFailureScenePassword, entity.LoginFailureReasonBadPassword)
+	noticeSubject := check(1, false)
+	event(entity.LoginFailureSceneAdminPassword, entity.LoginFailureReasonUserNotFound)
+	passwordSubject := check(2, true)
+	if noticeSubject == passwordSubject {
+		t.Fatal("notice must not throttle a password-qualified alert")
+	}
+	now = now.Add(10 * time.Second)
+	if check(2, true) != passwordSubject {
+		t.Fatal("rolling time must not defeat subject cooldown")
+	}
+}

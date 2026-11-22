@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -50,25 +50,33 @@ type RiskRuleRecord struct {
 	DeletedAt       *time.Time      `json:"deletedAt,omitempty"`
 	Exists          bool            `json:"exists"`
 	Unit            string          `json:"unit"`
+	HasThreshold    bool            `json:"hasThreshold"`
 }
 
 // RiskRuleType describes a server-side detector available for rule instances.
 type RiskRuleType struct {
-	Type             string         `json:"type"`
-	Name             string         `json:"name"`
-	Description      string         `json:"description"`
-	DefaultThreshold float64        `json:"defaultThreshold"`
-	ThresholdUnit    string         `json:"thresholdUnit"`
-	ConfigSchema     map[string]any `json:"configSchema"`
+	Type                   string         `json:"type"`
+	Name                   string         `json:"name"`
+	Description            string         `json:"description"`
+	DefaultThreshold       float64        `json:"defaultThreshold"`
+	ThresholdUnit          string         `json:"thresholdUnit"`
+	HasThreshold           bool           `json:"hasThreshold"`
+	ThresholdKind          string         `json:"thresholdKind,omitempty"`
+	ThresholdMax           float64        `json:"thresholdMax,omitempty"`
+	DefaultSeverity        string         `json:"defaultSeverity"`
+	DefaultThrottleSeconds int            `json:"defaultThrottleSeconds"`
+	ConfigSchema           map[string]any `json:"configSchema"`
 }
 
 func RiskRuleTypes() []RiskRuleType {
 	defaults := entity.DefaultRiskRules()
 	items := make([]RiskRuleType, 0, len(defaults))
 	for _, item := range defaults {
+		spec, hasThreshold := riskPrimaryThresholdSpec(item.RuleID)
 		items = append(items, RiskRuleType{
 			Type: item.RuleID, Name: item.Name, Description: item.Description,
-			DefaultThreshold: item.Threshold, ThresholdUnit: riskThresholdUnitForRule(item.RuleID),
+			DefaultThreshold: item.Threshold, ThresholdUnit: spec.Unit, HasThreshold: hasThreshold,
+			ThresholdKind: spec.Kind, ThresholdMax: spec.MaxValue, DefaultSeverity: item.Severity, DefaultThrottleSeconds: item.ThrottleSeconds,
 			ConfigSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}},
 		})
 	}
@@ -92,15 +100,7 @@ func ListRiskRules(db *gorm.DB) ([]RiskRuleRecord, error) {
 	}
 	items := make([]RiskRuleRecord, 0, len(rules))
 	for _, rule := range rules {
-		config := json.RawMessage(rule.ConfigJSON)
-		if len(config) == 0 || !json.Valid(config) {
-			config = json.RawMessage(`{}`)
-		}
-		items = append(items, RiskRuleRecord{RuleID: rule.RuleID, Name: rule.Name, Description: rule.Description,
-			Type: rule.Type, Config: config, Severity: rule.Severity, Enabled: rule.Enabled, Source: rule.Source,
-			Threshold: riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID)), ThrottleSeconds: rule.ThrottleSeconds,
-			CreatedAt: rule.CreatedAt, UpdatedAt: rule.UpdatedAt, CreatedBy: rule.CreatedBy, UpdatedBy: rule.UpdatedBy,
-			Exists: existing[rule.RuleID], Unit: riskThresholdUnitForRule(rule.Type)})
+		items = append(items, riskRuleRecord(db, rule, existing[rule.RuleID]))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Source != items[j].Source {
@@ -119,7 +119,7 @@ func CreateRiskRule(db *gorm.DB, input RiskRuleInput, actorID int32) (RiskRuleRe
 	if !ok {
 		return RiskRuleRecord{}, fmt.Errorf("%w：不支持的规则类型", ErrRiskRuleInvalid)
 	}
-	config, err := validateRiskRuleInput(input, typeDefault)
+	config, err := prepareRiskRuleInput(&input, typeDefault)
 	if err != nil {
 		return RiskRuleRecord{}, err
 	}
@@ -139,7 +139,7 @@ func CreateRiskRule(db *gorm.DB, input RiskRuleInput, actorID int32) (RiskRuleRe
 			}
 			row.Enabled = false
 		}
-		if err := saveSystemSettingValue(tx, riskRuleThresholdSettingKey(ruleID), formatRiskThresholdValue(input.Threshold), "风控规则阈值："+row.Name); err != nil {
+		if err := persistRiskRuleThreshold(tx, row); err != nil {
 			return err
 		}
 		return writeRiskRuleAudit(tx, row, "create", actorID)
@@ -170,7 +170,7 @@ func UpdateRiskRule(db *gorm.DB, ruleID string, input RiskRuleInput, actorID int
 		if !ok {
 			return fmt.Errorf("%w：规则检测器不存在", ErrRiskRuleInvalid)
 		}
-		config, err := validateRiskRuleInput(input, typeDefault)
+		config, err := prepareRiskRuleInput(&input, typeDefault)
 		if err != nil {
 			return err
 		}
@@ -184,7 +184,7 @@ func UpdateRiskRule(db *gorm.DB, ruleID string, input RiskRuleInput, actorID int
 		}).Error; err != nil {
 			return err
 		}
-		if err := saveSystemSettingValue(tx, riskRuleThresholdSettingKey(ruleID), formatRiskThresholdValue(row.Threshold), "风控规则阈值："+row.Name); err != nil {
+		if err := persistRiskRuleThreshold(tx, row); err != nil {
 			return err
 		}
 		if err := tx.Where("rule_id = ?", ruleID).First(&updated).Error; err != nil {
@@ -262,7 +262,7 @@ func DeleteRiskRule(db *gorm.DB, ruleID string, actorID int32) error {
 	return err
 }
 
-func validateRiskRuleInput(input RiskRuleInput, typeDefault entity.RiskRuleDefault) (string, error) {
+func prepareRiskRuleInput(input *RiskRuleInput, typeDefault entity.RiskRuleDefault) (string, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	if input.Name == "" || len([]rune(input.Name)) > 128 || len([]rune(input.Description)) > 2048 {
@@ -273,17 +273,17 @@ func validateRiskRuleInput(input RiskRuleInput, typeDefault entity.RiskRuleDefau
 	default:
 		return "", fmt.Errorf("%w：severity 只能是 low、medium 或 high", ErrRiskRuleInvalid)
 	}
-	if math.IsNaN(input.Threshold) || math.IsInf(input.Threshold, 0) || input.Threshold <= 0 || input.Threshold > 10_000_000 {
-		return "", fmt.Errorf("%w：threshold 必须大于 0 且不超过 10000000", ErrRiskRuleInvalid)
-	}
-	// Reuse the legacy type-specific threshold contract for every instance of that
-	// detector, so CRUD cannot bypass integer or maximum constraints.
-	for _, spec := range riskThresholdSpecs() {
-		if spec.RuleID == typeDefault.RuleID && spec.SyncRuleColumn {
-			if err := ValidateRiskThresholdValueForKey(spec.Key, spec.Kind, input.Threshold); err != nil {
-				return "", fmt.Errorf("%w：%v", ErrRiskRuleInvalid, err)
-			}
-			break
+	if typeDefault.RuleID == entity.RiskRuleIDProxyIPLogin {
+		// Old clients send a number. The detector uses only its ASN list; never
+		// interpret that number as a criterion, even when it differs from 1.
+		input.Threshold = typeDefault.Threshold
+	} else {
+		spec, ok := riskPrimaryThresholdSpec(typeDefault.RuleID)
+		if !ok {
+			return "", fmt.Errorf("%w：检测器缺少主阈值定义", ErrRiskRuleInvalid)
+		}
+		if err := ValidateRiskThresholdValueForKey(spec.Key, spec.Kind, input.Threshold); err != nil {
+			return "", fmt.Errorf("%w：%v", ErrRiskRuleInvalid, err)
 		}
 	}
 	if input.ThrottleSeconds < 0 || input.ThrottleSeconds > 31*24*60*60 {
@@ -300,7 +300,18 @@ func validateRiskRuleInput(input RiskRuleInput, typeDefault entity.RiskRuleDefau
 	return `{}`, nil
 }
 
+func persistRiskRuleThreshold(tx *gorm.DB, row entity.RiskRule) error {
+	key := riskRuleThresholdSettingKey(row.RuleID)
+	if effectiveRiskRuleType(row) == entity.RiskRuleIDProxyIPLogin {
+		// Older releases wrote this unused key. Drop it on save rather than
+		// perpetuate a fictitious numeric configuration.
+		return tx.Where(clause.Eq{Column: clause.Column{Name: "key"}, Value: key}).Delete(&entity.SystemSetting{}).Error
+	}
+	return saveSystemSettingValue(tx, key, formatRiskThresholdValue(row.Threshold), "风控规则阈值："+row.Name)
+}
+
 func riskRuleRecord(db *gorm.DB, row entity.RiskRule, exists bool) RiskRuleRecord {
+	spec, hasThreshold := riskPrimaryThresholdSpec(effectiveRiskRuleType(row))
 	config := json.RawMessage(row.ConfigJSON)
 	if len(config) == 0 || !json.Valid(config) {
 		config = json.RawMessage(`{}`)
@@ -309,7 +320,7 @@ func riskRuleRecord(db *gorm.DB, row entity.RiskRule, exists bool) RiskRuleRecor
 		Config: config, Severity: row.Severity, Enabled: row.Enabled, Source: row.Source,
 		Threshold: riskRuleThreshold(db, row, riskDefaultThreshold(row.RuleID)), ThrottleSeconds: row.ThrottleSeconds,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy,
-		DeletedAt: row.DeletedAt, Exists: exists, Unit: riskThresholdUnitForRule(row.Type)}
+		DeletedAt: row.DeletedAt, Exists: exists, Unit: spec.Unit, HasThreshold: hasThreshold}
 }
 
 func writeRiskRuleAudit(tx *gorm.DB, row entity.RiskRule, action string, actorID int32) error {
@@ -350,18 +361,27 @@ func auditRiskDetectorSettingChange(tx *gorm.DB, detectorType string, actorID in
 		return err
 	}
 	for _, row := range rows {
+		if err := auditRiskInstanceSettingChange(tx, row, actorID, action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func auditRiskInstanceSettingChange(tx *gorm.DB, row entity.RiskRule, actorID int32, action string) error {
+	row.UpdatedBy, row.UpdatedAt = actorID, time.Now()
+	if row.ID != 0 {
 		if err := tx.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).Where("rule_id = ?", row.RuleID).
-			Updates(map[string]any{"updated_by": actorID, "updated_at": time.Now()}).Error; err != nil {
+			Updates(map[string]any{"updated_by": row.UpdatedBy, "updated_at": row.UpdatedAt}).Error; err != nil {
 			return err
 		}
 		if err := tx.Session(&gorm.Session{NewDB: true}).Where("rule_id = ?", row.RuleID).First(&row).Error; err != nil {
 			return err
 		}
-		if err := writeRiskRuleAudit(tx, row, action, actorID); err != nil {
-			return err
-		}
 	}
-	return nil
+	// A missing built-in row can still be active via loadRiskRules. Record the
+	// effective configuration change without creating a synthetic rule row.
+	return writeRiskRuleAudit(tx, row, action, actorID)
 }
 
 func riskSettingVisibility(db *gorm.DB) (map[string]bool, error) {

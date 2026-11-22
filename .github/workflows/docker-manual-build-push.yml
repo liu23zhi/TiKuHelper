@@ -81,7 +81,7 @@ jobs:
       # 把 build-userexam-exe 产出的 exe 放到 Dockerfile 期望的位置。
       # 不下载的话，Dockerfile 的 WITH_USEREXAM_TOOL=1 分支会 exit 1。
       - name: 下载 userexam-crypto.exe
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: userexam-crypto-exe
           path: tools/userexam-crypto/dist
