@@ -77,10 +77,11 @@ func main() {
 		}
 		_ = logger.Close()
 	}()
-	trustedProxies, err := loadTrustedProxies()
+	httpRuntime, err := loadHTTPRuntime()
 	if err != nil {
 		logger.FatalLog(err)
 	}
+	trustedProxies := httpRuntime.Proxies
 	mg, err := manager.CreateManager()
 	if err != nil {
 		logger.FatalLog(err)
@@ -128,7 +129,7 @@ func main() {
 	defer stopWechatRegisterCleanup()
 	timer.StartTimer(mg.GetDB(), mg.GetEs(), mg.GetConfig().Elasticsearch.Addresses)
 	httpServer := &http.Server{
-		Addr:              "0.0.0.0:8060",
+		Addr:              httpRuntime.Address,
 		Handler:           server,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
