@@ -1191,14 +1191,19 @@ async function loadDomainFormats() {
   }
 }
 
+function splitDomainSettingsLines(text) {
+  // 后端按数组下标报告错误行号；有内容时保留空行，全空白时仍用空数组清空配置。
+  return text.trim() ? text.split(/\r?\n/).map(value => value.trim()) : []
+}
+
 async function saveDomainSettings() {
   if (!canAct() || !isAdmin.value || !domainReady.value || domainSaving.value) return
   const owns = captureOwner(), ticket = ++domainRevision
   domainSaving.value = true
   domainError.value = ''
   try {
-    const domains = domainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-    const deniedDomains = deniedDomainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+    const domains = splitDomainSettingsLines(domainText.value)
+    const deniedDomains = splitDomainSettingsLines(deniedDomainText.value)
     const response = await updateScriptDomainSettings({ domains, deniedDomains, allowFullNeverExpire: allowFullNeverExpire.value, allowShortNeverExpire: allowShortNeverExpire.value })
     if (!owns() || ticket !== domainRevision) return
     if (response?.status !== 200) {

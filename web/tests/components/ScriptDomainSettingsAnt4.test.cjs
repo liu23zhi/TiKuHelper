@@ -82,7 +82,7 @@ test('domain settings save both overlapping lists atomically and explicitly clea
   await allowInput(page).setValue(' *.a.com \n a.com/* \n')
   state.setExpiryPolicy('short', true)
   const request = await save(page)
-  assert.deepEqual(request.payload, { domains: ['*.a.com', 'a.com/*'], deniedDomains: ['api.a.com', '*.internal.a.com', 'admin.a.com'], allowFullNeverExpire: true, allowShortNeverExpire: true })
+  assert.deepEqual(request.payload, { domains: ['*.a.com', 'a.com/*', ''], deniedDomains: ['api.a.com', '', '*.internal.a.com', 'admin.a.com'], allowFullNeverExpire: true, allowShortNeverExpire: true })
   assert.equal(denyInput(page).element.disabled, true)
   assert.equal(allowInput(page).element.disabled, true)
   saved = request.payload; request.resolve(okay(saved)); await settle()
@@ -129,6 +129,24 @@ test('domain settings display server validation errors and keep both drafts edit
   assert.equal(denyInput(page).element.value, 'api.b.com')
   assert.equal(saveButton(page).element.disabled, false)
 })
+
+for (const field of ['domains', 'deniedDomains']) {
+  test(`domain settings preserve blank ${field} rows so server errors identify the actual textarea line`, async () => {
+    const { page } = await open()
+    const input = field === 'domains' ? allowInput(page) : denyInput(page)
+    const first = field === 'domains' ? '*.a.com' : 'api.a.com'
+    const draft = `${first}\n\nhttps://bad.a.com`
+    await input.setValue(draft)
+    const invalid = await save(page)
+    assert.deepEqual(invalid.payload[field], [first, '', 'https://bad.a.com'])
+    const invalidRow = invalid.payload[field].findIndex(value => value.startsWith('https://')) + 1
+    const detail = `${field === 'domains' ? '脚本可用域名' : '禁止设置的域名'}第 ${invalidRow} 行 https://bad.a.com 无效`
+    invalid.resolve({ status: 400, data: { message: detail } }); await settle()
+    assert.match(page.find('[role="alert"]').text(), /第 3 行 https:\/\/bad\.a\.com/)
+    assert.equal(input.element.value, draft)
+    assert.equal(input.element.disabled, false)
+  })
+}
 
 test('a late domain settings read cannot overwrite a newer deny-list draft', async () => {
   const { page, state } = await open()
