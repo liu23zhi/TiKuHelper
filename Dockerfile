@@ -1,11 +1,11 @@
-FROM node:26-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS builder1
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS builder1
 
 WORKDIR /build
 COPY ./web .
 RUN npm ci && npm run build
 
 
-FROM golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e AS builder2
+FROM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder2
 ENV GO111MODULE=on \
     CGO_ENABLED=0 \
     GOOS=linux
@@ -31,7 +31,7 @@ RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapte
  && go build -ldflags "-s -w" -o container-gateway ./cmd/container-gateway
 
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 RUN apk update \
     && apk upgrade \
