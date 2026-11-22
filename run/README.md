@@ -1,14 +1,14 @@
 # 部署
 
-本目录是可直接运行的部署样例（`config.yaml` + `docker-compose.yml` + nginx 反代）。
+本目录是可直接运行的部署样例（`config.yaml` + `docker-compose.yml` + Nginx 反代）。
 
-证书放进 `nginx/ssl/`（说明见该目录 README）。本部署文件不读取宿主机的 `${...}` 插值；可选参数直接编辑 `docker-compose.yml` 的空值，再执行：
+证书放进 `nginx/ssl/`（说明见该目录 README）。基础 Nginx 模板编译在镜像内；需要额外 `server` 或片段时放入可选的 `nginx-extra/` 目录。本部署文件不读取宿主机的 `${...}` 插值；可选参数直接编辑 `docker-compose.yml` 的空值，再执行：
 
 ```bash
 cd run && ./start.sh up -d --build
 ```
 
-Windows PowerShell 使用 `.start.ps1 up -d --build`。两个启动脚本都会把参数原样转发给 `docker compose`，并以脚本所在的 `run/docker-compose.yml` 为基础配置。若 `run/Wechat_qc_code.jpg` 存在，脚本会在系统临时目录生成一次性的 Compose override，以只读方式映射到容器 `/usr/share/nginx/html/Wechat_qc_code.jpg`；图片不存在时不会生成可选映射，容器仍可正常启动。override 会在 Compose 退出、失败或脚本退出时清理，不会覆盖 `docker-compose.yml` 或删除用户文件。需要替换二维码时，直接替换 `run/Wechat_qc_code.jpg` 后重新执行启动脚本。
+Windows PowerShell 使用 `.\start.ps1 up -d --build`。两个启动脚本都会把参数原样转发给 `docker compose`，并以脚本所在的 `run/docker-compose.yml` 为基础配置。若 `run/Wechat_qc_code.jpg` 存在，脚本会在系统临时目录生成一次性的 Compose override，以只读方式映射到容器 `/usr/share/nginx/html/Wechat_qc_code.jpg`；图片不存在时不会生成可选映射，容器仍可正常启动。override 会在 Compose 退出、失败或脚本退出时清理，不会覆盖 `docker-compose.yml` 或删除用户文件。需要替换二维码时，直接替换 `run/Wechat_qc_code.jpg` 后重新执行启动脚本。
 
 二维码接口始终保留在内置 Nginx 配置中；未提供图片时 `/api/Wechat_qc_code` 返回未配置状态，不会导致容器启动失败。其他静态文件仍放入 `nginx/html/`。
 
@@ -39,7 +39,7 @@ Compose 中保留这些变量名是为了让服务读取统一配置，但值默
 
 | 改了文件 | 是否需要重启 | 行为 |
 |---|---|---|
-| `nginx/conf.d/*.conf`、`*.inc` | 不需要 | 每 3 秒复制完整候选配置，`nginx -t` 成功后 reload；失败保留旧版本 |
+| `nginx-extra/*.conf`、`*.inc` | 不需要 | 与镜像内置模板合并；冲突或语法错误的单文件跳过，其他配置继续通过 `nginx -t` 后 reload |
 | `nginx/ssl/` | 不需要 | 递归按 PEM 内容与 SAN 匹配证书/密钥；使用私有快照，不依赖源文件持续完整 |
 | `trusted_proxies.txt`、`TRUSTED_PROXIES`、`TRUSTED_PROXIES_FILE` | 需要重启 `tikuhelper` | 入口来源策略在启动时读取；文件路径为空时默认读取 `/app/trusted_proxies.txt` |
 | `nginx/html/*` | 不需要 | 静态文件直接读取 |
@@ -50,6 +50,6 @@ Compose 中保留这些变量名是为了让服务读取统一配置，但值默
 
 健康检查同时验证活动 Nginx 配置、直连 Go 的 `/readyz` 和经 Nginx 的 `/readyz`，因此数据库或代理不可用会显示 unhealthy。HTTP 健康通过只表示 HTTP 可用，TLS 状态在健康输出中单独显示。任一子进程退出会终止整个容器，由 `restart: unless-stopped` 恢复；正常停止会先排空 Nginx，再结束 Go。
 
-升级前备份 `data/`、`logs/` 和 `nginx/ssl/`，保留原有卷目录。旧版双容器部署升级前停止并移除旧 `nginx` 服务，避免占用 8680/9043：`docker compose up -d --build --remove-orphans`。网关不修改数据库内容。
+升级前备份 `data/`、`logs/`、`nginx-extra/` 和 `nginx/ssl/`，保留原有卷目录。旧版双容器部署升级前停止并移除旧 `nginx` 服务，避免占用 8680/9043：`docker compose up -d --build --remove-orphans`。网关不修改数据库内容。
 
 部署回归可执行 `node --test test/deployment-nginx.test.mjs`；设置 `TIKU_GATEWAY_TEST_IMAGE` 为待测镜像标签后，还会创建独立临时容器验证代理、TLS 与热更新，不使用本目录的数据或现有容器。

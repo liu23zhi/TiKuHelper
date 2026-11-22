@@ -58,8 +58,9 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       # 代理来源名单只读挂载；TRUSTED_PROXIES_FILE 为空时也会按默认路径主动读取。
       - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
-      # Nginx 配置只读挂载；网关会生成候选配置并通过 nginx -t 后 reload。
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # 可选 Nginx 扩展配置只读挂载；基础配置始终来自镜像内置模板。
+      # 冲突或语法错误的单个文件会被记录并跳过，不影响基础入口。
+      - ./nginx-extra:/app/nginx-extra:ro
       # 证书目录只读挂载，支持多个 PEM 证书/私钥，按 SAN 和公钥自动配对。
       - ./nginx/ssl:/etc/nginx/ssl:ro
       # 可选扫码图片等静态文件；没有文件时对应接口按应用逻辑返回。

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile, cp, rename, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile, rename, access } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
@@ -70,9 +70,10 @@ test('single-container Compose preserves mounts, ports, and graceful shutdown', 
     { host_ip: undefined, target: 8680, published: '8680' },
     { host_ip: undefined, target: 9043, published: '9043' },
   ]);
-  for (const [source, target] of [['data', '/app/data'], ['logs', '/app/logs'], ['config.yaml', '/app/config.yaml'], ['trusted_proxies.txt', '/app/trusted_proxies.txt'], ['nginx/conf.d', '/etc/nginx/conf.d'], ['nginx/ssl', '/etc/nginx/ssl'], ['nginx/html', '/usr/share/nginx/html'], ['nginx/logs', '/var/log/nginx']]) {
+  for (const [source, target] of [['data', '/app/data'], ['logs', '/app/logs'], ['config.yaml', '/app/config.yaml'], ['trusted_proxies.txt', '/app/trusted_proxies.txt'], ['nginx-extra', '/app/nginx-extra'], ['nginx/ssl', '/etc/nginx/ssl'], ['nginx/html', '/usr/share/nginx/html'], ['nginx/logs', '/var/log/nginx']]) {
     assert.ok(backend.volumes.some((mount) => mount.target === target && resolve(mount.source) === join(run, source)), target);
   }
+  assert.equal(backend.volumes.some((mount) => mount.target === '/etc/nginx/conf.d'), false);
   assert.deepEqual(backend.healthcheck.test, ['CMD', '/app/container-gateway', '--healthcheck']);
   assert.equal(backend.environment.TIKU_APP_MODE, '');
   assert.equal(backend.environment.JWT_SECRET, '');
@@ -128,9 +129,8 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
   successful(execute('docker', ['image', 'inspect', image]));
   const directory = await mkdtemp(join(tmpdir(), 'tiku-gateway-'));
   const name = `tiku-gateway-test-${process.pid}-${Date.now()}`;
-  const conf = join(directory, 'conf'); const certs = join(directory, 'ssl');
-  await mkdir(conf); await mkdir(certs);
-  await cp(join(run, 'nginx/conf.d'), conf, { recursive: true });
+  const extra = join(directory, 'extra'); const certs = join(directory, 'ssl');
+  await mkdir(extra); await mkdir(certs);
   const fixture = join(directory, process.platform === 'win32' ? 'fixture.exe' : 'fixture');
   const backend = join(directory, 'backend');
   successful(execute('go', ['build', '-o', fixture, './internal/gateway/testdata/probe']));
@@ -152,7 +152,7 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
   });
   const start = (trusted) => {
     successful(execute('docker', ['run', '-d', '--name', name, '--env', `TRUSTED_PROXIES=${trusted}`,
-      '--mount', `type=bind,source=${conf},target=/etc/nginx/conf.d,readonly`,
+      '--mount', `type=bind,source=${extra},target=/app/nginx-extra,readonly`,
       '--mount', `type=bind,source=${certs},target=/etc/nginx/ssl,readonly`,
       '--mount', `type=bind,source=${backend},target=/app/tiku-adapter,readonly`,
       '-p', '127.0.0.1::8060', '-p', '127.0.0.1::8680', '-p', '127.0.0.1::9043', image]));
@@ -187,16 +187,16 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
     const tlsData = await request(ports[2], true, { 'X-Forwarded-Proto': 'http' });
     assert.equal(tlsData.headers['X-Forwarded-Proto'][0], 'https');
     await writeFile(join(certs, 'new.private'), 'broken key');
-    const original = await readFile(join(conf, 'tiku-adapter.conf'), 'utf8');
-    await writeFile(join(conf, 'tiku-adapter.conf'), `${original}\n# trigger safe reload with corrupted source\n`);
+    const original = 'server { listen 127.0.0.1:18081; server_name extra.example; return 204; }\n';
+    await writeFile(join(extra, 'custom.conf'), `${original}\n# trigger safe reload with an external extension\n`);
     await delay(4000);
     assert.equal(await peerSerial(ports[2], 'one.example'), '16');
     successful(execute('docker', ['exec', name, '/app/container-gateway', '--healthcheck']));
-    await writeFile(join(conf, 'tiku-adapter.conf'), 'invalid_nginx_directive;\n');
+    await writeFile(join(extra, 'custom.conf'), 'invalid_nginx_directive;\n');
     await delay(4000);
     assert.equal(await peerSerial(ports[2], 'one.example'), '16');
     successful(execute('docker', ['exec', name, '/app/container-gateway', '--healthcheck']));
-    await writeFile(join(conf, 'tiku-adapter.conf'), original);
+    await writeFile(join(extra, 'custom.conf'), original);
     certificate('replacement', 'one.example', '-10m', '1h', 33);
     await eventually(async () => assert.equal(await peerSerial(ports[2], 'one.example'), '21'), 'actual worker reload accepts replacement SAN');
     await request(ports[1], false, {}, '/css/private-entry-probe');

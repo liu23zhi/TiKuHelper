@@ -44,8 +44,7 @@ ENV TZ=Asia/Shanghai
 
 COPY --from=builder2 /build/tiku-adapter /app/tiku-adapter
 COPY --from=builder2 /build/container-gateway /app/container-gateway
-COPY run/nginx/conf.d/ /etc/nginx/conf.d/
-RUN mkdir -p /etc/nginx/ssl /usr/share/nginx/html /var/log/nginx /run/tiku-gateway
+RUN mkdir -p /app/nginx-extra /etc/nginx/ssl /usr/share/nginx/html /var/log/nginx /run/tiku-gateway
 
 # --- 考试客户端 DB 脱机工具（管理员专用）内嵌到镜像 -------------------------
 #

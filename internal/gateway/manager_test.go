@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -218,5 +219,142 @@ func TestManagerReloadsWhenDefaultPriorityChangesWithoutNewCertificateBytes(t *t
 	}
 	if changed, e := manager.Refresh(now); e != nil || !changed {
 		t.Fatalf("default selection change must reload: %v %v", changed, e)
+	}
+}
+
+func TestManagerGeneratesEmbeddedBaseWithoutExternalConfigDirectory(t *testing.T) {
+	dir, source := t.TempDir(), t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nginx-extra")
+	manager := &Manager{Root: dir, CertificateDir: source, ConfigDir: missing, Check: func(path string) error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(data), filepath.ToSlash(dir)) {
+			t.Fatalf("generated config must use the private runtime directory: %s", path)
+		}
+		return nil
+	}}
+	if changed, err := manager.Refresh(time.Now()); err != nil || !changed {
+		t.Fatalf("missing external directory must still generate a config: changed=%v err=%v", changed, err)
+	}
+	active, err := os.ReadFile(manager.ActiveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(active), "generation-") {
+		t.Fatalf("active config must point at a generated private configuration: %s", active)
+	}
+	for _, name := range []string{"tiku-adapter.conf", "tiku-proxy.inc"} {
+		if _, err := os.Stat(filepath.Join(manager.activeDir, "conf.d", name)); err != nil {
+			t.Fatalf("embedded template %s was not materialized: %v", name, err)
+		}
+	}
+}
+
+func TestManagerMergesValidExternalServer(t *testing.T) {
+	dir, source, extra := t.TempDir(), t.TempDir(), t.TempDir()
+	writeFixture(t, extra, "custom.conf", []byte("server { listen 127.0.0.1:18080; server_name extra.example; return 204; }\n"))
+	writeFixture(t, extra, "headers.inc", []byte("add_header X-External-Config yes;\n"))
+	manager := &Manager{Root: dir, CertificateDir: source, ConfigDir: extra, Check: func(string) error { return nil }}
+	if _, err := manager.Refresh(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(manager.activeDir, "conf.d", "extra", "custom.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "extra.example") {
+		t.Fatalf("valid external server was not merged: %s", data)
+	}
+	if _, err := os.Stat(filepath.Join(manager.activeDir, "conf.d", "extra", "headers.inc")); err != nil {
+		t.Fatalf("valid external include was not merged: %v", err)
+	}
+	active, err := os.ReadFile(filepath.Join(manager.activeDir, "nginx.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(active), "extra/*.inc") {
+		t.Fatalf("generated config must include optional snippets: %s", active)
+	}
+}
+
+func TestManagerRejectsReservedExternalDirectivesWithoutBreakingBase(t *testing.T) {
+	reserved := []struct {
+		name string
+		body string
+	}{
+		{"upstream", "upstream tiku_adapter { server 127.0.0.1:19001; }\n"},
+		{"upgrade-map", "map $http_upgrade $custom_upgrade { default upgrade; }\n"},
+		{"qr-location", "server { location = /api/Wechat_qc_code { return 418; } }\n"},
+		{"default-listener", "server { listen 8680 default_server; }\n"},
+	}
+	for _, testCase := range reserved {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir, source, extra := t.TempDir(), t.TempDir(), t.TempDir()
+			writeFixture(t, extra, "reserved.conf", []byte(testCase.body))
+			manager := &Manager{Root: dir, CertificateDir: source, ConfigDir: extra, Check: func(string) error { return nil }}
+			if _, err := manager.Refresh(time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			active, err := os.ReadFile(manager.ActiveConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(active), testCase.body) {
+				t.Fatalf("reserved external directive was included: %s", active)
+			}
+			if _, err := os.Stat(filepath.Join(manager.activeDir, "conf.d", "tiku-adapter.conf")); err != nil {
+				t.Fatalf("base template missing after rejecting %s: %v", testCase.name, err)
+			}
+		})
+	}
+}
+
+func TestManagerSkipsInvalidExternalSyntaxAndKeepsValidExtra(t *testing.T) {
+	dir, source, extra := t.TempDir(), t.TempDir(), t.TempDir()
+	writeFixture(t, extra, "invalid.conf", []byte("invalid_nginx_directive;\n"))
+	writeFixture(t, extra, "invalid.inc", []byte("invalid_nginx_include;\n"))
+	writeFixture(t, extra, "valid.conf", []byte("# valid optional snippet\n"))
+	check := func(path string) error {
+		root := filepath.Dir(path)
+		var invalid bool
+		_ = filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
+			if err == nil && entry != nil && !entry.IsDir() {
+				data, readErr := os.ReadFile(current)
+				if readErr == nil && (strings.Contains(string(data), "invalid_nginx_directive") || strings.Contains(string(data), "invalid_nginx_include")) {
+					invalid = true
+				}
+			}
+			return nil
+		})
+		if invalid {
+			return errors.New("synthetic nginx syntax error")
+		}
+		return nil
+	}
+	manager := &Manager{Root: dir, CertificateDir: source, ConfigDir: extra, Check: check}
+	if _, err := manager.Refresh(time.Now()); err != nil {
+		t.Fatalf("invalid optional file must not abort startup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.activeDir, "conf.d", "extra", "invalid.conf")); !os.IsNotExist(err) {
+		t.Fatalf("invalid external file should be skipped, stat=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.activeDir, "conf.d", "extra", "invalid.inc")); !os.IsNotExist(err) {
+		t.Fatalf("invalid external include should be skipped, stat=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.activeDir, "conf.d", "extra", "valid.conf")); err != nil {
+		t.Fatalf("valid external file should remain active: %v", err)
+	}
+}
+
+func TestReservedExternalConfigRejectsGeneratedIncludePaths(t *testing.T) {
+	for _, body := range []string{
+		`include /etc/nginx/conf.d/tiku-adapter.conf;`,
+		`include /etc/nginx/conf.d/*.conf;`,
+	} {
+		if reason := reservedExternalConfig([]byte(body)); reason == "" {
+			t.Fatalf("external include path must be rejected: %s", body)
+		}
 	}
 }

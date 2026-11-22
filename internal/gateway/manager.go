@@ -76,24 +76,31 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	files := map[string][]byte{}
-	err = filepath.WalkDir(m.ConfigDir, func(path string, entry fs.DirEntry, e error) error {
-		if e != nil {
-			return e
-		}
-		if entry.IsDir() || !entry.Type().IsRegular() {
+	if strings.TrimSpace(m.ConfigDir) != "" {
+		err = filepath.WalkDir(m.ConfigDir, func(path string, entry fs.DirEntry, e error) error {
+			if e != nil {
+				if path == m.ConfigDir && os.IsNotExist(e) {
+					return fs.SkipDir
+				}
+				return e
+			}
+			if entry.IsDir() || !entry.Type().IsRegular() {
+				return nil
+			}
+			relative, e := filepath.Rel(m.ConfigDir, path)
+			if e != nil {
+				return e
+			}
+			data, e := os.ReadFile(path)
+			if e != nil {
+				return e
+			}
+			if strings.HasSuffix(strings.ToLower(relative), ".conf") || strings.HasSuffix(strings.ToLower(relative), ".inc") {
+				files[relative] = data
+			}
 			return nil
-		}
-		relative, e := filepath.Rel(m.ConfigDir, path)
-		if e != nil {
-			return e
-		}
-		data, e := os.ReadFile(path)
-		if e != nil {
-			return e
-		}
-		files[relative] = data
-		return nil
-	})
+		})
+	}
 	if err != nil {
 		return false, err
 	}
@@ -140,14 +147,12 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 	if err = os.MkdirAll(configRoot, 0700); err != nil {
 		return false, err
 	}
-	for _, name := range names {
-		path := filepath.Join(configRoot, name)
-		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return false, err
+	for _, template := range []string{"tiku-adapter.conf", "tiku-proxy.inc"} {
+		data, readErr := embeddedTemplate(template)
+		if readErr != nil {
+			return false, readErr
 		}
-		// Existing mount paths in includes are redirected to the immutable copy.
-		data := strings.ReplaceAll(string(files[name]), "/etc/nginx/conf.d/", filepath.ToSlash(configRoot)+"/")
-		if err = os.WriteFile(path, []byte(data), 0600); err != nil {
+		if err = os.WriteFile(filepath.Join(configRoot, template), data, 0600); err != nil {
 			return false, err
 		}
 	}
@@ -173,13 +178,37 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 	if err = os.WriteFile(filepath.Join(candidate, "trusted.conf"), []byte(m.ProxyConfig), 0600); err != nil {
 		return false, err
 	}
-	config := fmt.Sprintf("# tiku-gateway-generation: %s\nworker_processes auto;\npid %s;\nerror_log /dev/stderr warn;\nevents { worker_connections 1024; }\nhttp {\n include /etc/nginx/mime.types;\n default_type application/octet-stream;\n include %s;\n include %s;\n include %s;\n}\n", filepath.Base(candidate), nginxQuote(filepath.Join(m.Root, "nginx.pid")), nginxQuote(filepath.Join(candidate, "trusted.conf")), nginxQuote(filepath.Join(configRoot, "*.conf")), nginxQuote(filepath.Join(candidate, "servers.conf")))
+	config := fmt.Sprintf("# tiku-gateway-generation: %s\nworker_processes auto;\npid %s;\nerror_log /dev/stderr warn;\nevents { worker_connections 1024; }\nhttp {\n include /etc/nginx/mime.types;\n default_type application/octet-stream;\n include %s;\n include %s;\n include %s;\n include %s;\n include %s;\n}\n", filepath.Base(candidate), nginxQuote(filepath.Join(m.Root, "nginx.pid")), nginxQuote(filepath.Join(candidate, "trusted.conf")), nginxQuote(filepath.Join(configRoot, "*.conf")), nginxQuote(filepath.Join(candidate, "extra", "*.conf")), nginxQuote(filepath.Join(candidate, "extra", "*.inc")), nginxQuote(filepath.Join(candidate, "servers.conf")))
 	candidateConfig := filepath.Join(candidate, "nginx.conf")
 	if err = os.WriteFile(candidateConfig, []byte(config), 0600); err != nil {
 		return false, err
 	}
 	if m.Check == nil {
 		return false, fmt.Errorf("Nginx candidate checker is required")
+	}
+	// External files are optional extensions. Validate each one in isolation so
+	// a bad operator file cannot disable the generated base configuration.
+	for _, name := range names {
+		if reason := reservedExternalConfig(files[name]); reason != "" {
+			diagnostic(m.Report, "external Nginx config %s skipped: %s", name, reason)
+			continue
+		}
+		relative := filepath.ToSlash(name)
+		path := filepath.Join(configRoot, "extra", filepath.FromSlash(relative))
+		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return false, err
+		}
+		data := strings.ReplaceAll(string(files[name]), "/etc/nginx/conf.d/", filepath.ToSlash(configRoot)+"/")
+		if err = os.WriteFile(path, []byte(data), 0600); err != nil {
+			return false, err
+		}
+		if strings.HasSuffix(strings.ToLower(name), ".conf") || strings.HasSuffix(strings.ToLower(name), ".inc") {
+			if checkErr := m.Check(candidateConfig); checkErr != nil {
+				diagnostic(m.Report, "external Nginx config %s skipped: %v", name, checkErr)
+				_ = os.Remove(path)
+				continue
+			}
+		}
 	}
 	if err = m.Check(candidateConfig); err != nil {
 		return false, fmt.Errorf("candidate nginx -t failed: %w", err)
@@ -220,6 +249,29 @@ func (m *Manager) Refresh(now time.Time) (bool, error) {
 		diagnostic(m.Report, "HTTPS 未启用：未找到有效证书；HTTP 入口继续运行")
 	}
 	return true, nil
+}
+
+func reservedExternalConfig(data []byte) string {
+	text := string(data)
+	checks := []struct {
+		pattern *regexp.Regexp
+		reason  string
+	}{
+		{regexp.MustCompile(`(?im)\bupstream\s+[^\s{;]*tiku_adapter\b`), "reserved upstream tiku_adapter"},
+		{regexp.MustCompile(`(?im)\blog_format\s+tiku_safe\b`), "reserved log format tiku_safe"},
+		{regexp.MustCompile(`(?im)\bmap\s+\$http_upgrade\b`), "reserved upgrade map"},
+		{regexp.MustCompile(`(?im)\blocation\s+(?:=|\^~|~\*?|\s)*\s*/api/Wechat_qc_code\b`), "reserved QR-code location"},
+		{regexp.MustCompile(`(?im)\blisten\s+(?:[^;]*\s)?(?:\b8060\b|\b8680\b|\b9043\b)(?:\s|:|;)`), "reserved generated listener"},
+		{regexp.MustCompile(`(?im)\bdefault_server\b`), "reserved default listener"},
+		{regexp.MustCompile(`(?im)\bserver_name\s+_\s*;`), "reserved catch-all server"},
+		{regexp.MustCompile(`(?im)\binclude\s+["']?/etc/nginx/conf\.d/`), "reserved generated config include"},
+	}
+	for _, check := range checks {
+		if check.pattern.MatchString(text) {
+			return check.reason
+		}
+	}
+	return ""
 }
 
 func atomicWrite(path string, data []byte) error {
