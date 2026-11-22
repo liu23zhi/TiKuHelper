@@ -184,6 +184,29 @@ test('Settings conditional remote-captcha controls reuse stable IDs after ordina
   w.vm.updateSetting('captchaProvider', 'remote'); await settle()
   assert.deepEqual(ids(w), before); assert.deepEqual(clone(w.vm.formState), snapshot)
 })
+
+test('Settings QR guidance names the built-in mapping, optional mount, missing state and custom override', async () => {
+  const [w] = await mountPages()
+  const entry = field(w, '验证码二维码')
+  const input = entry.controls[0]
+  const hint = entry.item.querySelector('.hint')
+  assert.ok(hint, 'QR field has visible guidance')
+  const text = compact(hint.textContent)
+  assert.match(text, /\/api\/Wechat_qc_code/)
+  assert.match(text, /\.\/Wechat_qc_code\.jpg/)
+  assert.match(text, /run\/start\.ps1/)
+  assert.match(text, /run\/start\.sh/)
+  assert.match(text, /未配置/)
+  assert.match(text, /自定义.*(URL|路径)/)
+  assert.equal(input.getAttribute('aria-describedby'), hint.id, 'QR guidance is associated with its input')
+  const before = w.vm.formState.wechatCodeStaticQrcodeUrl
+  w.vm.updateSetting('wechatCodeStaticQrcodeUrl', 'https://synthetic.invalid/custom-qr.jpg')
+  await settle()
+  assert.equal(w.vm.formState.wechatCodeStaticQrcodeUrl, 'https://synthetic.invalid/custom-qr.jpg')
+  assert.notEqual(w.vm.formState.wechatCodeStaticQrcodeUrl, before)
+  assert.equal(w.vm.hasUnsavedChanges, true, 'custom URL still uses the existing dirty-state protocol')
+})
+
 test('Settings existing native action-button text remains a positive accessible name', async () => {
   const [w] = await mountPages()
   for (const text of ['刷新', '保存', '从浏览器地址栏获取']) {
