@@ -152,8 +152,14 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
     ports = mapped;
     ownedPorts.push(...ports.map((port, i) => [port, i === 2]));
   };
+  const removeGateway = () => {
+    const state = successful(execute('docker', ['inspect', '--format', '{{.State.Running}}', name]));
+    if (state === 'true') successful(execute('docker', ['stop', '--time', '25', name], { timeout: 60000 }));
+    successful(execute('docker', ['rm', '-v', name], { timeout: 90000 }));
+    running = false;
+  };
   t.after(async () => {
-    if (running) successful(execute('docker', ['rm', '-fv', name], { timeout: 90000 }));
+    if (running) removeGateway();
     for (const [port, encrypted] of ownedPorts) {
       await assert.rejects(request(port, encrypted), 'owned temporary port must be released');
     }
@@ -224,7 +230,7 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
     await eventually(() => request(ports[1]), 'restart with previous runtime state');
     // Explicit proxy peer trust applies to the original TCP peer, independently of XFF.
     const gateway = JSON.parse(successful(execute('docker', ['inspect', name])))[0].NetworkSettings.Networks.bridge.Gateway;
-    successful(execute('docker', ['rm', '-fv', name], { timeout: 90000 })); running = false;
+    removeGateway();
     await rm(certs, { recursive: true }); await mkdir(certs);
     certificate('short-lived', 'expiry.example', '-1m', '10s', 44);
     await start(gateway);
