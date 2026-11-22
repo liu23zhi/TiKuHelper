@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/middleware"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -32,6 +33,19 @@ func scriptHostBoundary(db *gorm.DB, entry func(*gin.Context) bool) gin.HandlerF
 		reject := func() { c.Header("Cache-Control", "no-store"); c.AbortWithStatus(http.StatusNotFound) }
 		if err != nil {
 			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		// Preserve registered HEAD routes and require a verified HTTPS scheme. No
+		// request to this probe can enter the GET launcher or issue credentials.
+		if role != service.RejectScriptWebHost && c.Request.Method == http.MethodHead && c.FullPath() == "" &&
+			(c.Request.TLS != nil || c.GetBool(scriptProxyHTTPSKey)) &&
+			c.Request.URL.RawPath == "" && c.Request.URL.RawQuery == "" && !c.Request.URL.ForceQuery &&
+			service.ScriptAddressAvailableWithDB(db, c.Request.Host, c.Request.URL.Path) {
+			c.Set(logger.ScriptEntryLogKey, true)
+			c.Header("Cache-Control", "no-store")
+			c.Header("Referrer-Policy", "no-referrer")
+			c.Header("X-Tiku-Script-Address", "available")
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 		switch role {

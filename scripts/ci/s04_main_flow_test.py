@@ -47,14 +47,14 @@ class S04MainFlowContracts(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(AssertionError):
                 flow.check_probe(json.dumps(bad), 'verify-legacy')
 
-    def test_local_setup_requires_matching_factory_credential_but_no_web_login(self):
-        good = {'ok': True, 'operation': 'verify-local-setup', 'quickCheck': 'ok', 'bcrypt': True,
-                'expectedPasswordMatches': True, 'environmentPasswordMatches': False, 'factoryPasswordRejected': True,
+    def test_default_bootstrap_requires_stored_default_credential(self):
+        good = {'ok': True, 'operation': 'verify-default', 'quickCheck': 'ok', 'bcrypt': True,
+                'expectedPasswordMatches': True, 'environmentPasswordMatches': False,
                 'unrelatedFieldsPreserved': True, 'rwProbe': [0, 1, 0], 'userCount': 1, 'readonlyInspection': True}
-        self.assertEqual(flow.check_probe(json.dumps(good), 'verify-local-setup'), good)
-        for key in ('expectedPasswordMatches', 'factoryPasswordRejected', 'environmentPasswordMatches'):
+        self.assertEqual(flow.check_probe(json.dumps(good), 'verify-default'), good)
+        for key in ('expectedPasswordMatches', 'environmentPasswordMatches'):
             with self.subTest(key=key), self.assertRaises(AssertionError):
-                flow.check_probe(json.dumps(dict(good, **{key: not good[key]})), 'verify-local-setup')
+                flow.check_probe(json.dumps(dict(good, **{key: not good[key]})), 'verify-default')
 
     def test_owner_probe_requires_real_preflight_and_post_chown_verification(self):
         good = {'ok': True, 'operation': 'fixture-owner', 'uid': 1000, 'gid': 1000,

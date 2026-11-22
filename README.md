@@ -41,17 +41,7 @@ Windows 上 `core.autocrlf=true` 会让工作树是 CRLF，`gofmt -l` 因此误�
 
 ## 首次登录
 
-账号为 `admin`。首次建库或补齐空管理员密码时，优先使用 `TIKU_ADMIN_PASSWORD`；未设置则使用 `123456`，不生成随机首密或密码文件。已显式设置自己的非公共密码（最多 72 字节）可直接网页登录；重启、升级和更改环境变量都不会重置已有凭据。
-
-默认密码 `123456` 只用于**本机首次设置**，不是网页密码；显式保留 `changeme` 时同样如此。服务可直接启动。随后在服务的工作目录（或 Compose 部署目录）运行以下命令，依次输入当前初始化口令、新密码并确认。输入不回显；无需重启即可使用新密码登录。该命令不能重置已设置的自选密码。
-
-```sh
-./tiku-adapter --init-admin-password
-# Compose 部署则使用：
-docker compose exec tikuhelper /app/tiku-adapter --init-admin-password
-```
-
-从之前生成过随机首密的版本升级不会更改原凭据，也不会读取或删除旧的首密文件；请先自行改密，再安全移除旧文件。内存 SQLite 无法跨进程设置，请在启动前显式配置非公共的 `TIKU_ADMIN_PASSWORD`。
+账号为 `admin`。首次建库或补齐空管理员密码时，优先使用 `TIKU_ADMIN_PASSWORD`；未设置则使用 `123456`。两者均可直接按普通流程网页登录。程序只在终端提醒默认密码风险；不生成随机首密或密码文件。重启、升级和更改环境变量都不会重置已有密码。
 - 登录需要人机验证（`captcha_provider=remote`）。本地脚本化调试可往
   `captcha_tokens` 插一条 `scene=login_password`、`status=active`、未过期的记录，
   然后把它作为 `captchaToken` 提交。

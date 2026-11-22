@@ -32,14 +32,11 @@ func ResolveApplicationMode(configured string) (string, error) {
 type adminBootstrapPlan struct {
 	exists, initial    bool
 	original, password string
-	// defaultCredential 表示「库里仍是已知默认密码 123456」。
-	//
-	// 2026-11-10 用户拍板：这不再是启动拒绝条件，只是**提示条件** ——
-	// 启动照常进行，由 WebUI 显示「请在后台修改默认密码」的告警。
-	// 早期实现会在 production 直接 errors.New 拒绝启动，导致
-	// 用默认库一键起 docker 的用户完全无法进入后台改密码（死锁）。
+	// A stored default credential triggers a startup warning only.
 	defaultCredential bool
 }
+
+const adminDefaultCredentialWarning = "内置管理员使用公共初始口令，可直接网页登录；请登录后及时修改密码。"
 
 // Keep the same 8-rune/ASCII four-category policy as account password changes.
 // bcrypt's separate 72-byte boundary must be checked before hashing.
@@ -69,12 +66,8 @@ func validateBootstrapPassword(password string) error {
 	return nil
 }
 
-// 本函数只读。2026-11-10 用户拍板：生产环境**不再**因为「库里仍是已知默认密码
-// 123456」而拒绝启动 —— 那会让用默认库一键起 docker 的人进不去后台改密码。
-// 现在的处置是：照常启动 + 打一条醒目日志 + 通过 WebUI 展示告警（见
-// plan.defaultCredential 的消费方），让管理员自行去后台改。
-//
-// 环境变量 TIKU_ADMIN_PASSWORD 仍然**不会**重置已有凭据 —— 这点不变。
+// resolveAdminBootstrap only reads the database. TIKU_ADMIN_PASSWORD (or the
+// default when unset) seeds a missing credential; it never replaces a saved one.
 func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBootstrapPlan, error) {
 	var plan adminBootstrapPlan
 	if database != nil && database.Migrator().HasTable(entity.TableNameUser) {
@@ -87,8 +80,7 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 		plan.original = row.Password
 	}
 	if plan.exists && plan.original != "" {
-		// 只记录「仍是默认密码」这个事实，供 WebUI 告警用；不阻断启动。
-		if matched, _ := util.VerifyPassword(plan.original, "123456"); matched {
+		if matched, _ := util.VerifyPassword(plan.original, util.FactoryAdminPassword); matched {
 			plan.defaultCredential = true
 		}
 		if strings.HasPrefix(plan.original, "$2a$") || strings.HasPrefix(plan.original, "$2b$") || strings.HasPrefix(plan.original, "$2y$") {
@@ -108,7 +100,7 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 		password = util.FactoryAdminPassword
 	}
 	if util.IsPublicAdminSetupPassword(password) {
-		logger.SysLog("内置管理员仍使用本地初始化凭据；请在部署主机运行 tiku-adapter --init-admin-password，再通过网页登录。")
+		logger.SysWarn(adminDefaultCredentialWarning)
 	} else if mode == "production" {
 		if err := validateBootstrapPassword(password); err != nil {
 			logger.SysLog("[WARN] 初始管理员密码强度不足（" + err.Error() +
@@ -130,10 +122,10 @@ func applyAdminBootstrap(database *gorm.DB, plan adminBootstrapPlan) error {
 	if plan.initial {
 		return applyInitialAdminCredential(database, plan)
 	}
+	if plan.defaultCredential {
+		logger.SysWarn(adminDefaultCredentialWarning)
+	}
 	if plan.exists && plan.password == "" {
-		if plan.defaultCredential {
-			logger.SysLog("内置管理员尚待本地设置；请运行 tiku-adapter --init-admin-password。")
-		}
 		return nil
 	}
 	return writeAdminBootstrap(database, plan)

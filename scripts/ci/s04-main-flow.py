@@ -67,9 +67,7 @@ def check_probe(raw, operation):
     elif operation.startswith('verify-'):
         assert value.get('quickCheck') == 'ok' and value.get('bcrypt') is True
         assert value.get('expectedPasswordMatches') is True
-        assert value.get('environmentPasswordMatches') is (operation not in ('verify-legacy', 'verify-local-setup'))
-        if operation == 'verify-local-setup':
-            assert value.get('factoryPasswordRejected') is True
+        assert value.get('environmentPasswordMatches') is (operation not in ('verify-legacy', 'verify-default'))
         assert value.get('unrelatedFieldsPreserved') is True and value.get('rwProbe') == [0, 1, 0]
         assert value.get('userCount') == 1 and value.get('readonlyInspection') is True
     elif operation == 'fixture-owner':
@@ -514,15 +512,16 @@ class MainFlow:
                 result['actualGinClientIP'] = actual_gin_client_ips(logs.stdout, expected_ip)
                 result['trustedAllSources'] = trusted_all
                 assert any(p.stat().st_size > 0 for p in (fixture / 'logs').glob('Tiku*.txt')), 'real log files were not written'
-                local_setup = not legacy and mode == 'production' and secret in (None, '123456')
-                operation = ('verify-local-setup' if local_setup else 'verify-legacy' if legacy
+                default_password = not legacy and secret in (None, '123456')
+                operation = ('verify-default' if default_password else 'verify-legacy' if legacy
                              else 'verify-development' if mode == 'development' else 'verify-new')
                 verified = self.recorder.run(name + '-' + operation, [str(self.probe), operation, '--db', str(db)])
                 result['database'] = check_probe(verified.stdout, operation)
-                if local_setup:
-                    assert b'--init-admin-password' in output, 'operator must be able to find the local setup command'
+                if default_password:
+                    assert '可直接网页登录'.encode() in output, 'default credential startup notice is missing'
+                    assert b'--init-admin-password' not in output, 'startup should not require local setup'
                     assert not list((fixture / 'data').glob('admin-bootstrap-*.password')), 'no random password file'
-                    result['localSetupOnlyWithoutPasswordFile'] = True
+                    result['defaultCredentialWithoutPasswordFile'] = True
                 result['workerIsolation']['databaseAfterMain'] = check_ticket_fixture_isolation(db)
                 assert result['workerIsolation']['databaseAfterMain']['settingsTablePresent'], 'main must migrate notification settings before qualification'
                 result['databaseSHA256AfterMainAndRollbackProbe'] = sha(db)

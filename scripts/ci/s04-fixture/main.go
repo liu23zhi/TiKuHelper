@@ -54,7 +54,6 @@ type databaseObservation struct {
 	Operation                  string `json:"operation"`
 	QuickCheck                 string `json:"quickCheck"`
 	Bcrypt                     bool   `json:"bcrypt"`
-	FactoryPasswordRejected    bool   `json:"factoryPasswordRejected"`
 	ExpectedPasswordMatches    bool   `json:"expectedPasswordMatches"`
 	EnvironmentPasswordMatches bool   `json:"environmentPasswordMatches"`
 	UnrelatedFieldsPreserved   bool   `json:"unrelatedFieldsPreserved"`
@@ -194,18 +193,12 @@ func inspectDatabase(p, kind string) (databaseObservation, error) {
 	expected := environmentPassword
 	if kind == "legacy" {
 		expected = legacyPassword
-	} else if kind == "local-setup" {
+	} else if kind == "default" {
 		expected = util.FactoryAdminPassword
 		files, err := filepath.Glob(filepath.Join(filepath.Dir(p), "admin-bootstrap-*.password"))
 		if err != nil || len(files) != 0 {
 			return report, errors.New("unexpected bootstrap password file")
 		}
-		allowed, _ := util.VerifyAccountLoginPassword(row.ID, row.Role, row.Password, expected)
-		report.FactoryPasswordRejected = !allowed
-		if allowed {
-			return report, errors.New("factory password permitted for a web login")
-		}
-
 	}
 	report.ExpectedPasswordMatches, _ = util.VerifyPassword(row.Password, expected)
 	report.EnvironmentPasswordMatches, _ = util.VerifyPassword(row.Password, environmentPassword)
@@ -263,7 +256,7 @@ func readWriteProbe(p string) ([]int, error) {
 	return counts, nil
 }
 func verifyDatabase(p, kind string) (databaseObservation, error) {
-	if kind != "new" && kind != "legacy" && kind != "development" && kind != "local-setup" {
+	if kind != "new" && kind != "legacy" && kind != "development" && kind != "default" {
 		return databaseObservation{}, errors.New("unknown synthetic verification mode")
 	}
 	report, err := inspectDatabase(p, kind)
@@ -581,7 +574,7 @@ func run(args []string, out io.Writer) int {
 			return fail(operation, err)
 		}
 		return emit(map[string]any{"ok": true, "operation": operation})
-	case "verify-new", "verify-legacy", "verify-development", "verify-local-setup":
+	case "verify-new", "verify-legacy", "verify-development", "verify-default":
 		report, err := verifyDatabase(*db, strings.TrimPrefix(operation, "verify-"))
 		if err != nil {
 			return fail(operation, err)

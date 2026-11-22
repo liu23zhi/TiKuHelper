@@ -769,24 +769,42 @@ func TestLoginFailureWritesExactlyOneResponse(t *testing.T) {
 	}
 }
 
-func TestPublicAdministratorSetupPasswordIsNotAnHTTPLogin(t *testing.T) {
-	d := newLoginRateLimitControllerDB(t)
-	stubCtrlCaptcha(t, nil)
-	current := util.FactoryAdminPassword
-	hash, err := util.HashPassword(current)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = d.Create(&entity.User{ID: 1, Username: "admin", Password: hash, Role: "admin", Status: "enabled"}).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, peer := range []string{"127.0.0.1:4321", "192.0.2.44:4321"} {
-		for _, post := range []func(*testing.T, map[string]any, string) *httptest.ResponseRecorder{postAdminLogin, postUserLogin} {
-			reply := post(t, map[string]any{"username": "admin", "password": current, "captchaToken": "valid-fixture"}, peer)
-			b := decodeBody(t, reply)
-			if b["message"] != "用户名或密码错误" || b["jwt"] != nil || reply.Header().Get("Set-Cookie") != "" {
-				t.Fatal("public credential was not rejected as a password failure")
+func TestAdministratorWebLoginUsesStoredPassword(t *testing.T) {
+	for _, tc := range []struct {
+		name, stored, candidate string
+		allowed                 bool
+	}{
+		{"default password matches", util.FactoryAdminPassword, util.FactoryAdminPassword, true},
+		{"explicit password matches", "changeme", "changeme", true},
+		{"default is not a fallback after change", "ChangedPassw0rd!", util.FactoryAdminPassword, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newLoginRateLimitControllerDB(t)
+			stubCtrlCaptcha(t, nil)
+			hash, err := util.HashPassword(tc.stored)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			if err = d.Create(&entity.User{ID: 1, Username: "admin", Password: hash, Role: "admin", Status: "enabled"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, peer := range []string{"127.0.0.1:4321", "192.0.2.44:4321"} {
+				for _, entry := range []struct {
+					name string
+					post func(*testing.T, map[string]any, string) *httptest.ResponseRecorder
+				}{{"admin", postAdminLogin}, {"user", postUserLogin}} {
+					reply := entry.post(t, map[string]any{"username": "admin", "password": tc.candidate, "captchaToken": "valid-fixture"}, peer)
+					body := decodeBody(t, reply)
+					token, _ := body["jwt"].(string)
+					if tc.allowed {
+						if reply.Code != http.StatusOK || token == "" || reply.Header().Get("Set-Cookie") == "" {
+							t.Errorf("%s login from %s did not issue a session: HTTP %d", entry.name, peer, reply.Code)
+						}
+					} else if body["message"] != "用户名或密码错误" || token != "" || reply.Header().Get("Set-Cookie") != "" {
+						t.Errorf("%s login from %s accepted a non-matching password", entry.name, peer)
+					}
+				}
+			}
+		})
 	}
 }

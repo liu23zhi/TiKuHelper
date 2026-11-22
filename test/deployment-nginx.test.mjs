@@ -328,7 +328,7 @@ test('production gateway starts a private real backend, preserves admin initiali
         assert.equal(report.expectedPasswordMatches, true); assert.equal(report.bcrypt, true);
       };
       if (mode === 'local') {
-        db('verify-local-setup');
+        db('verify-default');
         const setup = execute('docker', ['exec', '-i', name, '/app/container-gateway', '--init-admin-password'],
           { input: `123456\n${fixturePassword}\n${fixturePassword}\n` });
         successful(setup); // The CLI intentionally writes prompts and its success message to stderr.

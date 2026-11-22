@@ -135,7 +135,7 @@ func TestLocalAdminSetupIsOneShotAndDoesNotResetOtherUsers(t *testing.T) {
 		if err = d.First(&a, 1).Error; err != nil {
 			t.Fatal(err)
 		}
-		if ok, _ := util.VerifyAccountLoginPassword(a.ID, a.Role, a.Password, replacement); !ok || a.LoginSessionID == "previous-session" || a.LoginSessionID == "" {
+		if ok, _ := util.VerifyPassword(a.Password, replacement); !ok || a.LoginSessionID == "previous-session" || a.LoginSessionID == "" {
 			t.Fatal("personalized password or session retirement failed")
 		}
 		if err = d.First(&other, 2).Error; err != nil || other.Password != hashed {

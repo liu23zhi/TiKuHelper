@@ -40,23 +40,16 @@ func TestIntegrationAdminBootstrapChild(t *testing.T) {
 func TestIntegrationAdminBootstrap(t *testing.T) {
 	cases := []struct {
 		name, mode, password, seed, expected string
-		localOnly                            bool
+		defaultWarning                       bool
 	}{
-		{name: "missing_production_password_is_local_setup", expected: "123456", localOnly: true},
-		{name: "factory_placeholder_is_local_setup", password: "123456", expected: "123456", localOnly: true},
+		{name: "missing_production_password_uses_default", expected: util.FactoryAdminPassword, defaultWarning: true},
+		{name: "explicit_default_password_is_stored", password: util.FactoryAdminPassword, expected: util.FactoryAdminPassword, defaultWarning: true},
+		{name: "explicit_placeholder_is_stored", password: "changeme", expected: "changeme", defaultWarning: true},
 		{name: "operator_weak_non_placeholder_is_not_rejected", password: "mine", expected: "mine"},
-		{name: "explicit_development_compat", mode: "development", expected: "123456"},
+		{name: "explicit_development_compat", mode: "development", expected: util.FactoryAdminPassword, defaultWarning: true},
 		{name: "strong_production_bootstrap", password: "Create#123", expected: "Create#123"},
 		{name: "legacy_same_secret_upgrade_not_environment_reset", password: "Replace#456", seed: "Original#123", expected: "Original#123"},
-		// 2026-11-10 用户拍板：production 下「库里仍是已知默认密码 123456」
-		// **不再拒绝启动**，改为启动 + WebUI 告警。因此 reject 由 true 改 false，
-		// 校验点平移到 defaultCredential —— 见下方对 row 的断言与此处的 wanted 注释。
-		//
-		// 注意：这里是**子进程**跑真实 RegisterDB，拿不到 plan.defaultCredential，
-		// 所以本用例的语义改为「启动成功且不重置已有凭据」；
-		// defaultCredential 的识别由 s04_startup_policy_test.go 的
-		// TestS04ProductionAdminPlan 直接断言（那里能拿到 plan）。
-		{name: "known_default_existing_accepted_not_reset", password: "Replace#456", seed: "123456", expected: "123456"},
+		{name: "known_default_existing_accepted_not_reset", password: "Replace#456", seed: util.FactoryAdminPassword, expected: util.FactoryAdminPassword, defaultWarning: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,13 +78,11 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 				t.Fatal(e)
 			}
 			expected := tc.expected
-			if tc.localOnly {
-				if !strings.Contains(string(out), "--init-admin-password") || strings.Contains(string(out), tc.expected) {
-					t.Fatal("missing safe local setup directions or plaintext disclosed")
-				}
-				if ok, _ := util.VerifyAccountLoginPassword(row.ID, row.Role, row.Password, expected); ok {
-					t.Fatal("public setup credential grants a web session")
-				}
+			if strings.Contains(string(out), "可直接网页登录") != tc.defaultWarning {
+				t.Fatal("unexpected default credential startup warning")
+			}
+			if strings.Contains(string(out), expected) || strings.Contains(string(out), "--init-admin-password") {
+				t.Fatal("startup disclosed plaintext credentials or required local setup")
 			}
 			if paths, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "admin-bootstrap-*.password")); len(paths) != 0 {
 				t.Fatal("unexpected initial password file")

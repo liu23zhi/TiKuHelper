@@ -178,13 +178,6 @@
             </a-button>
           </a-form-item>
         </a-form>
-        <details class="admin-setup-help">
-          <summary>管理员首次登录</summary>
-          <p>已设置自己的 TIKU_ADMIN_PASSWORD 可直接登录。保留公共初始口令时，请先在部署主机更换密码；网页登录不能进行首次设置。</p>
-          <p>Compose 部署：<code>docker compose exec tikuhelper /app/tiku-adapter --init-admin-password</code></p>
-          <p>直接运行：<code>./tiku-adapter --init-admin-password</code></p>
-        </details>
-
         <div class="auth-actions">
           <div class="action-title">还没有账号？</div>
           <a-button class="secondary-button" block @click="renderHandlers.goToRegister">前往注册页</a-button>

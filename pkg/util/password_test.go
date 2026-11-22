@@ -31,20 +31,3 @@ func TestVerifyPasswordRejectsOverlongCandidatesIncludingLegacyPlaintext(t *test
 		t.Fatal("legacy plaintext verification must reject overlong candidates")
 	}
 }
-
-func TestPublicSetupCredentialCannotGrantAnAdministratorSession(t *testing.T) {
-	for _, candidate := range []string{FactoryAdminPassword, "cHaNgEmE", "independent"} {
-		hash, err := HashPassword(candidate)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, stored := range []string{candidate, hash} {
-			if actual, _ := VerifyAccountLoginPassword(1, "admin", stored, candidate); actual == IsPublicAdminSetupPassword(candidate) {
-				t.Fatal("remote administrative credential boundary failed")
-			}
-			if ok, _ := VerifyAccountLoginPassword(1, "user", stored, candidate); !ok {
-				t.Fatal("ordinary user policy changed")
-			}
-		}
-	}
-}

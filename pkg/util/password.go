@@ -56,19 +56,11 @@ func VerifyPassword(storedPassword string, candidate string) (bool, bool) {
 	return legacyMatch, legacyMatch
 }
 
-// FactoryAdminPassword is the documented local setup credential, not a Web login.
+// FactoryAdminPassword is used to create the built-in administrator when no
+// password is configured. Login still requires a match with the stored value.
 const FactoryAdminPassword = "123456"
 
 func IsPublicAdminSetupPassword(value string) bool {
 	v := strings.TrimSpace(value)
 	return v == FactoryAdminPassword || strings.EqualFold(v, "changeme")
-}
-
-// Built-in administrator setup never relies on ClientIP: nginx and container
-// port publishing may make a remote connection look like a local peer.
-func VerifyAccountLoginPassword(id int32, role, stored, candidate string) (bool, bool) {
-	if id == 1 && strings.EqualFold(strings.TrimSpace(role), "admin") && IsPublicAdminSetupPassword(candidate) {
-		return false, false
-	}
-	return VerifyPassword(stored, candidate)
 }

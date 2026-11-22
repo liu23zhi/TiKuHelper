@@ -638,12 +638,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/admin/userexam/decrypt-key", controller.Auth, middleware.RequireAdmin, controller.UserExamDecryptKeyDetail)
 	apiRouter.PUT("/admin/userexam/decrypt-key", controller.Auth, middleware.RequireAdmin, controller.UserExamDecryptKeyUpdate)
 
-	// 管理员账号安全状态：仅管理员，只读，只回布尔。
-	//
-	// 存在原因（68-默认管理员密码处理设定.md）：库里仍是默认密码 123456 时
-	// **不再拒绝启动**（那会造成「进不去后台改密码」的死锁），
-	// 改由本接口把事实告诉前端，让管理台显示告警引导管理员自行修改。
-	// 一条不可协商的性质：只回布尔，不回任何凭据内容（含 hash）。
+	// 兼容既有管理员安全状态查询；不返回凭据或哈希。
 	apiRouter.GET("/admin/security-status", controller.Auth, middleware.RequireAdmin, controller.AdminSecurityStatus)
 
 	// ── 第 8 轮落地模块的管理端接线 ────────────────────────────────────────────

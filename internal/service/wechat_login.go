@@ -567,7 +567,13 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	if err := util.ValidateBcryptPasswordBytes(password); err != nil {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
-	passwordMatches, needsUpgrade := util.VerifyAccountLoginPassword(user.ID, user.Role, user.Password, password)
+	// Password login accepts a stored default credential. Binding a new WeChat
+	// identity before login is a separate account change and keeps its existing
+	// prohibition on public bootstrap credentials.
+	if user.ID == 1 && isAdminUser(user) && util.IsPublicAdminSetupPassword(password) {
+		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
+	}
+	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, password)
 	if !passwordMatches {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
