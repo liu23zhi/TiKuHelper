@@ -1,22 +1,36 @@
 # 单容器运行 Nginx 与 Go；不需要独立 Nginx 服务。
-# 证书可选：没有有效证书时保留 HTTP，证书到位后自动启用 HTTPS。
+#
+# 网关进程是容器 PID 1：Go 只监听容器内的 127.0.0.1:8061，Nginx 对外
+# 提供 8060/8680/9043。任一子进程异常退出都会结束容器，由 restart 策略恢复。
+# 证书可选：没有有效证书时保留 HTTP，9043 不监听；证书到位后自动启用 HTTPS。
+#
+# 从旧版「Go + 独立 Nginx」升级时，先执行：
+#   docker compose up -d --build --remove-orphans
+# --remove-orphans 会移除旧的 tikuhelper-nginx 容器，避免它继续占用 8680/9043。
 name: tikuhelper
 
 services:
   tikuhelper:
     image: tikuhelper:local
+    # 从当前仓库根目录构建；执行 compose 命令时仍应位于 run/ 目录。
     build:
       context: ..
       dockerfile: Dockerfile
     container_name: tikuhelper
     restart: unless-stopped
+    # 网关停止时先等待 Nginx 和 Go 排空请求，再结束容器。
     stop_grace_period: 30s
     ports:
+      # 兼容本机直接访问 API；只绑定回环地址，不暴露给局域网。
       - "127.0.0.1:8060:8060"
+      # HTTP 公网入口。脚本地址仍由服务端按 HTTPS 生成。
       - "8680:8680"
+      # HTTPS 公网入口。仅在证书目录存在有效证书时实际监听。
       - "9043:9043"
     environment:
+      # production 会启用严格的启动配置校验；本地调试可显式设为 development。
       TIKU_APP_MODE: "${TIKU_APP_MODE:-production}"
+      # 生产环境必须设置稳定的 JWT_SECRET；留空只适合本地初始化或测试。
       JWT_SECRET: "${JWT_SECRET:-}"
       # 留空默认 123456；公共初始化口令只能通过容器内 CLI 修改后用于登录。
       TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
@@ -25,18 +39,29 @@ services:
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       # TRUSTED_PROXIES 留空且明确选择文件时读取；仅挂载文件不会自动启用。
       TRUSTED_PROXIES_FILE: "${TRUSTED_PROXIES_FILE:-}"
+      # 数据库和日志时间统一使用上海时区；修改后需重建/重启容器才会生效。
       TZ: Asia/Shanghai
     volumes:
+      # 持久化 SQLite 数据库、上传内容、扩展缓存和系统设置；升级时不要加 -v。
       - ./data:/app/data
+      # 应用日志与 Nginx 访问日志分别写入宿主机，便于排障和备份。
       - ./logs:/app/logs
+      # 运行配置只读挂载；修改后按 README 说明重启或等待网关热加载。
       - ./config.yaml:/app/config.yaml:ro
+      # 代理来源名单只读挂载；只有设置 TRUSTED_PROXIES_FILE 才会主动读取它。
       - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
+      # Nginx 配置只读挂载；网关会生成候选配置并通过 nginx -t 后 reload。
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # 证书目录只读挂载，支持多个 PEM 证书/私钥，按 SAN 和公钥自动配对。
       - ./nginx/ssl:/etc/nginx/ssl:ro
+      # 可选扫码图片等静态文件；没有文件时对应接口按应用逻辑返回。
       - ./nginx/html:/usr/share/nginx/html:ro
+      # Nginx 访问日志目录；证书、私钥和日志不会被打进镜像。
       - ./nginx/logs:/var/log/nginx
     healthcheck:
+      # 同时检查 Nginx 配置、Go /readyz 和经 Nginx 转发的 /readyz。
       test: ["CMD", "/app/container-gateway", "--healthcheck"]
+      # 启动期间给数据库初始化和网关首轮证书扫描留出时间。
       interval: 30s
       timeout: 15s
       start_period: 30s
