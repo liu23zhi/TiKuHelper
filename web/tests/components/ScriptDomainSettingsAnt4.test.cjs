@@ -40,10 +40,11 @@ async function settle() { await nextTick(); await flushPromises(); await nextTic
 async function open(account = admin, viewMode = account.role === 'admin' ? 'admin' : 'self') {
   user.setStoredCurrentUser(account)
   const history = createMemoryHistory(), router = createRouter({ history, routes: [
-    { path: '/adapter/scripts', name: 'scripts', component: PAGE, meta: { viewMode } },
+    { path: '/script-admin', name: 'script-admin', component: PAGE, meta: { viewMode: 'admin' } },
+    { path: '/scripts', name: 'scripts', component: PAGE, meta: { viewMode: 'self' } },
     { path: '/other', component: { render: () => h('div', 'Other') } },
   ] })
-  await router.push('/adapter/scripts'); await router.isReady()
+  await router.push(viewMode === 'admin' ? '/script-admin' : '/scripts'); await router.isReady()
   const wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router, Antd] } })
   mounts.push({ wrapper, history })
   await settle()
@@ -73,7 +74,7 @@ test('domain settings load the administrator deny list with exact and wildcard g
   assert.match(page.text(), /已有命令立即生效/)
   const label = page.find(`label[for="${denyInput(page).attributes('id')}"]`)
   assert.equal(label.text(), '禁止设置的域名')
-  assert.match(denyInput(page).attributes('placeholder'), /api\.a\.com[\s\S]*\*\.internal\.a\.com/)
+  assert.match(denyInput(page).attributes('placeholder'), /api\.example\.test[\s\S]*\*\.internal\.example\.test/)
 })
 
 test('domain settings save both overlapping lists atomically and explicitly clear the deny list', async () => {
@@ -186,4 +187,40 @@ test('ordinary script views cannot read, display or save administrator domain se
   }
   assert.equal(reads.length, 0)
   assert.equal(writes.length, 0)
+})
+
+test('clearing custom prohibitions does not advertise the platform root as available', async () => {
+  saved.deniedDomains = []
+  const { page } = await open()
+  assert.equal(denyInput(page).element.value, '')
+  const guide = denyInput(page).element.closest('.denied-domain-field').textContent
+  assert.match(guide, /tiku\.example\.test/)
+  assert.match(guide, /API/)
+  assert.match(guide, /保留/)
+  assert.doesNotMatch(guide, /留空表示不禁止/)
+})
+
+test('losing the admin role hides and retires the domain policy before navigation completes', async () => {
+  const { page, state } = await open()
+  const adminReadCount = reads.length
+  await denyInput(page).setValue('private.example.test')
+  user.setStoredCurrentUser(normal)
+  await settle()
+  assert.equal(denyInput(page).exists(), false)
+  await state.saveDomainSettings()
+  assert.equal(reads.length, adminReadCount)
+  assert.equal(writes.length, 0)
+  assert.doesNotMatch(page.text(), /private\.example\.test/)
+})
+
+test('a successful HTTP envelope without the saved policy does not acknowledge the admin draft', async () => {
+  const { page } = await open()
+  await denyInput(page).setValue('restricted.example.test')
+  const request = await save(page)
+  request.resolve(okay({ domains: saved.domains }))
+  await settle()
+  assert.match(page.find('[role="alert"]').text(), /未确认/)
+  assert.equal(denyInput(page).element.value, 'restricted.example.test')
+  assert.equal(saveButton(page).element.disabled, false)
+  assert.doesNotMatch(document.body.textContent, /脚本域名设置已保存/)
 })

@@ -43,6 +43,12 @@ const apiPath = path.join(root, 'src/api/TikuComponentApi.js')
 const api = new Module(apiPath); api.loaded = true
 api.exports = Object.fromEntries(names.map(name => [name, payload => transport(name, payload)]))
 api.exports.getSystemMetrics = () => { metricsReads += 1; return Promise.resolve({ status: 200, data: metricSnapshot }) }
+const certificateMetadataReaders = []
+api.exports.getGatewayCertificatePasswordState = feedback => {
+  assert.deepEqual(feedback, {errorFeedback:'local'})
+  certificateMetadataReaders.push(user.getStoredCurrentUser()?.id)
+  return Promise.resolve({status:200,data:{count:0,updatedAt:''}})
+}
 api.exports.getRefundAgreement = () => Promise.resolve({ status: 200, data: { text: 'SYNTHETIC_AGREEMENT', defaultText: 'SYNTHETIC_AGREEMENT', isDefault: true } })
 require.cache[apiPath] = api
 for (const kind of ['success', 'error', 'warning']) {
@@ -118,6 +124,7 @@ function finishLatest(tag) {
   }
 }
 afterEach(async () => {
+  certificateMetadataReaders.length = 0
   for (const w of wrappers) { if (w.exists()) w.unmount() }
   wrappers = []
   for (const name of names) for (const c of calls[name]) if (!c.completed) c.resolve({ status: 200, data: name === 'getPaymentMethods' ? [] : {} })
@@ -131,6 +138,7 @@ test('SS_PRINCIPAL anonymous/nonadmin mount and native actions perform zero sett
   for (const actor of [null, { id: 7103, role: 'user', username: 'SYNTHETIC_USER' }]) {
     const w = await mountPage(actor, false)
     assert.deepEqual(readCounts(), [0, 0], 'UNAUTHORIZED_ZERO_PRIVATE_READS')
+    assert.deepEqual(certificateMetadataReaders, [], 'no certificate metadata query before an authorized admin')
     for (const label of ['刷新', '保存', '新增支付方式', '从浏览器地址栏获取']) button(w, label)?.element.click()
     w.vm.handleSave(); w.vm.handleLoad(); w.vm.handleDeletePaymentMethod(71011)
     await settle()
@@ -145,6 +153,7 @@ test('SS_PRINCIPAL main private IO requires a stable positive 32bit userid, not 
   for (const id of invalid) {
     const w = await mountPage({ id, role: 'admin', username: 'SYNTHETIC_LABEL_WITHOUT_VALID_ID' }, false)
     assert.deepEqual(readCounts(), [0, 0], 'INVALID_ID_ZERO_PRIVATE_GET')
+    assert.deepEqual(certificateMetadataReaders, [], 'an invalid actor may not query certificate metadata')
     w.vm.handleSave(); w.vm.handleLoad(); w.vm.handleDeletePaymentMethod(71011)
     button(w, '保存')?.element.click(); button(w, '新增支付方式')?.element.click(); await settle()
     assert.equal(writeCount(), 0, 'INVALID_ID_ZERO_PRIVATE_WRITE')

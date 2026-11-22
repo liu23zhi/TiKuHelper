@@ -51,16 +51,17 @@
     <!-- 诉求 ④：域名语法重写为 `*.a.com`（泛域名）/ `a.com/*`（路径通配），旧格式全部舍弃。
          `AllowWildcard` 开关被删除：泛域名是否可用由「列表里有没有 *.a.com」直接表达，
          两个开关表达同一件事必然出现互相矛盾的状态。 -->
-    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="每行一条。长命令地址由服务端按配置生成。留空时使用当前站点。">
-      <a-textarea :id="fieldId('domains')" :value="domainText" :onUpdate:value="pageEntry.bind(setDomainText)" aria-label="脚本允许域名格式" :rows="4" placeholder="每行一条，例如：&#10;*.a.com&#10;a.com/*" :disabled="domainSaving || !domainReady" />
+    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="每行一条。长命令地址由服务端按配置生成。留空时使用当前站点的非根路径。">
+      <a-textarea :id="fieldId('domains')" :value="domainText" :onUpdate:value="pageEntry.bind(setDomainText)" aria-label="脚本允许域名格式" :rows="4" placeholder="每行一条，例如：&#10;*.example.test&#10;example.test/*" :disabled="domainSaving || !domainReady" />
       <p class="hint">
-        <strong>*.a.com</strong> 生成 <code>UUID.a.com</code>，<code>*a.com</code> 保存为 <code>*.a.com</code>。
-        <strong>a.com/*</strong> 生成 <code>a.com/UUID</code>。
+        <strong>*.example.test</strong> 使用独立子域名，例如 <code>a.example.test/</code>；根路径按访问的主机名区分。
+        <strong>example.test/*</strong> 使用同一主机下的非根路径，例如 <code>example.test/team</code>。
       </p>
       <div class="denied-domain-field">
         <label :for="fieldId('deniedDomains')">禁止设置的域名</label>
-        <a-textarea :id="fieldId('deniedDomains')" :value="deniedDomainText" :onUpdate:value="pageEntry.bind(setDeniedDomainText)" aria-label="禁止设置的域名" :rows="4" placeholder="每行一条，例如：&#10;api.a.com&#10;*.internal.a.com" :disabled="domainSaving || !domainReady" />
-        <p class="hint">每行填写完整域名或最左通配域名，不含协议、端口或路径。留空表示不禁止。<code>*.internal.a.com</code> 仅禁止其子域名。</p>
+        <a-textarea :id="fieldId('deniedDomains')" :value="deniedDomainText" :onUpdate:value="pageEntry.bind(setDeniedDomainText)" aria-label="禁止设置的域名" :rows="4" placeholder="每行一条，例如：&#10;api.example.test&#10;*.internal.example.test" :disabled="domainSaving || !domainReady" />
+        <p class="hint">每行填写完整域名或最左通配域名，不含协议、端口或路径。<code>*.internal.example.test</code> 只匹配它的子域名。</p>
+        <p class="hint">主站（如 <code>tiku.example.test</code>）用于管理界面和常规 API，其根地址由平台保留。清空本栏不会解除主站或部署指定主机的根地址保护。</p>
         <p class="hint">禁止规则优先于可用规则，两份列表可交叠。保存后对新命令和已有命令立即生效。</p>
       </div>
       <a-alert v-if="domainError" type="error" show-icon :message="domainError" class="page-alert" role="alert" />
@@ -297,7 +298,7 @@
                 <a-input :id="fieldId('shortAddress')" :value="shortAuthorizationForm.slot" :onUpdate:value="pageEntry.bind(setShortAuthorizationField, 'slot')" autocomplete="off" :maxlength="512" :placeholder="selectedAuthorizationFormat.kind === 'wildcard' ? '例如 a' : '例如 team/run'" data-script-short-address />
                 <span v-if="selectedAuthorizationFormat.kind === 'wildcard'" class="short-address-affix">.{{ selectedAuthorizationFormat.host }}</span>
               </div>
-              <p class="hint">{{ selectedAuthorizationFormat.kind === 'wildcard' ? '仅填写子域名，例如 a；不要重复填写后面的域名。' : '仅填写路径，例如 team/run；不要填写域名或协议。' }}</p>
+              <p class="hint">{{ selectedAuthorizationFormat.kind === 'wildcard' ? '仅填写子域名前缀，例如 a；访问生成的子域名根地址即可，不要重复填写域名。' : '仅填写路径，例如 team/run；不要填写域名或协议。' }}</p>
             </a-form-item>
             <div v-else-if="shortAuthorizationForm.address" class="short-existing-address" data-script-short-existing>
               <span>现有短地址</span><code>{{ shortAuthorizationForm.address }}</code>
@@ -387,7 +388,7 @@ import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScri
 import { isRedeemableScriptCode, isScriptRunConsumed, buildScriptBillingText, buildScriptCommand, buildScriptShortCommand, buildScriptDownloadURL, buildScriptListParams, parsePresetParams, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
 import { collectScriptRevokeNotices, scriptNoticeAlertType } from '@/utils/scriptRevokeNotice.mjs'
 import { shouldShowSkipBindingButton, buildCreateScriptPayload, isBindingsRequiredError, buildSkipBindingConfirmText } from '@/utils/scriptSkipBinding.mjs'
-import { parseScriptDomainFormat, buildScriptDomainFromFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
+import { parseScriptDomainFormat, buildScriptDomainFromFormat, splitScriptDomainForFormat, isKnownPlatformRoot } from '@/utils/scriptDomainFormats.mjs'
 import { validateScriptAuthorizationWindows } from '@/utils/scriptAuthorizationWindows.mjs'
 import { describeScriptAdminAction, describeScriptUploadGate } from '@/utils/scriptUploadGate.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -497,11 +498,8 @@ const routeViewMode = computed(() => {
   const meta = route?.meta || {}
   return typeof meta.viewMode === 'string' ? meta.viewMode : ''
 })
-const isAdmin = computed(() => {
-  if (routeViewMode.value === 'self') return false
-  if (routeViewMode.value === 'admin') return true
-  return isAdminUser(currentUser.value)
-})
+// The route selects a view; it cannot grant administrator privileges during a role change.
+const isAdmin = computed(() => routeViewMode.value !== 'self' && isAdminUser(currentUser.value))
 const rows = ref([])
 // 通知区数据（2026-11-17）。从 rows 派生而不是独立请求：
 //   1. 撤销状态本来就随列表一起返回（后端 revokeNotice 字段），再查一次会不一致；
@@ -565,6 +563,9 @@ const authorizationFormatChoices = computed(() => [
 ])
 const authorizationReservedError = computed(() => {
   if (shortAuthorizationMode.value !== 'short') return ''
+  if (isKnownPlatformRoot(authorizationAddress.value, window.location.hostname)) {
+    return '该根地址为主站保留，不能分配给脚本。请更换子域名前缀或选择允许的非根路径。'
+  }
   let path = ''
   if (selectedAuthorizationFormat.value?.kind === 'path') path = shortAuthorizationForm.slot
   else if (shortAuthorizationForm.domainFormat === '__existing__' && authorizationAddress.value) path = new URL(authorizationAddress.value).pathname
@@ -1206,17 +1207,17 @@ async function saveDomainSettings() {
     const deniedDomains = splitDomainSettingsLines(deniedDomainText.value)
     const response = await updateScriptDomainSettings({ domains, deniedDomains, allowFullNeverExpire: allowFullNeverExpire.value, allowShortNeverExpire: allowShortNeverExpire.value })
     if (!owns() || ticket !== domainRevision) return
-    if (response?.status !== 200) {
-      // 诉求 ④：旧格式必须**明确报错**，让管理员知道要改成新写法，
-      // 而不是「保存成功但规则不生效」。
-      const detail = response?.data?.message || '保存域名设置未完成，请刷新核对。'
+    const policy = response?.data
+    if (response?.status !== 200 || !Array.isArray(policy?.domains) || !Array.isArray(policy?.deniedDomains)) {
+      // Only the normalized policy returned by the admin API acknowledges both lists.
+      const detail = response?.status === 200 ? '域名设置保存结果未确认：未收到完整策略，请刷新核对。' : response?.data?.message || '保存域名设置未完成，请刷新核对。'
       domainError.value = detail
       message.error(detail)
       return
     }
-    domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : domainText.value
+    domainText.value = policy.domains.join('\n')
     domainSavedText.value = domainText.value
-    deniedDomainText.value = Array.isArray(response.data?.deniedDomains) ? response.data.deniedDomains.join('\n') : deniedDomainText.value
+    deniedDomainText.value = policy.deniedDomains.join('\n')
     deniedDomainSavedText.value = deniedDomainText.value
     allowFullNeverExpire.value = response.data?.allowFullNeverExpire !== false
     allowShortNeverExpire.value = response.data?.allowShortNeverExpire === true

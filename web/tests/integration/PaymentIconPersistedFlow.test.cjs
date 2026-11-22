@@ -140,6 +140,10 @@ test('S02 native Vue/Antd -> production HTTP/controller/service -> isolated SQLi
     switch (config.url) {
       // Sibling panels mounted by the real SystemSettings page: fixed GETs only.
       case '/api/refund-agreement': return Promise.resolve({ status: 200, data: { text: 'S02 fixture agreement', defaultText: 'S02 fixture agreement', isDefault: true } })
+      case '/api/admin/system-settings/certificate-passwords':
+        assert.equal(actor, 'admin', 'certificate configuration metadata is private to the admin settings view')
+        assert.ok(config.errorFeedback === 'local' && config.data == null && !Object.keys(config.params || {}).length, 'metadata GET has no input')
+        return Promise.resolve({ status: 200, data: { count: 0, updatedAt: '' } })
       case '/api/admin/referral-settings':
       case '/api/admin/ticket-image-cache/settings':
       case '/api/admin/log-settings': {

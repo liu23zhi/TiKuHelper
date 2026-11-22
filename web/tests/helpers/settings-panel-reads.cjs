@@ -2,6 +2,7 @@
 // its private layout. Every other request remains with the test's existing
 // adapter (including its explicit no-network / no-unplanned-write checks).
 const bodies = {
+  '/api/admin/system-settings/certificate-passwords': {count:0,updatedAt:''},
   '/api/refund-agreement': {text:'SYNTHETIC_AGREEMENT',defaultText:'SYNTHETIC_AGREEMENT',isDefault:true},
   '/api/system/storage-status': {degraded:false},
   '/api/admin/referral-settings': {enabled:false,rate:0},
@@ -12,6 +13,7 @@ const bodies = {
 }
 function settingsPanelRead(config) {
   if (config.method !== 'get' || config.data != null || !Object.hasOwn(bodies, config.url)) return null
+  if (config.url === '/api/admin/system-settings/certificate-passwords' && (config.errorFeedback !== 'local' || Object.keys(config.params || {}).length)) return null
   return {status:200, data:structuredClone(bodies[config.url]), headers:{}, config, request:{memoryOnly:true}}
 }
 module.exports = {settingsPanelRead}
