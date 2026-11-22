@@ -2,13 +2,15 @@
 
 本目录是可直接运行的部署样例（`config.yaml` + `docker-compose.yml` + Nginx 反代）。
 
-证书放进 `nginx/ssl/`（说明见该目录 README）。基础 Nginx 模板编译在镜像内；需要额外 `server` 或片段时放入可选的 `nginx/extra-config/` 目录。本部署文件不读取宿主机的 `${...}` 插值；可选参数直接编辑 `docker-compose.yml` 的空值，再执行：
+启动后可通过 `http://localhost:8680` 访问 WebUI/API，启用脚本泛域后仍可使用此本机入口。HTTPS 可选；需要时将证书与匹配私钥放进 `nginx/ssl/`（说明见该目录 README），没有有效配对证书不影响 HTTP 启动。
+
+基础 Nginx 模板编译在镜像内；需要额外 `server` 或片段时放入可选的 `nginx/extra-config/` 目录。本部署文件不读取宿主机的 `${...}` 插值；可选参数直接编辑 `docker-compose.yml` 的空值，再执行：
 
 ```bash
 cd run && docker compose up -d --build
 ```
 
-Compose 将 `./nginx/html/` 目录只读挂载到 `/usr/share/nginx/html/`；可选二维码文件路径为 `./nginx/html/Wechat_qc_code.jpg`。二维码与其他普通 API 一样由 Go 校验请求 Host；仅普通站可获取图片，脚本站和未知域名不暴露该资源。文件缺失、为空或不是可读 JPEG 时返回 404，不影响服务启动，也不会因为缺少单文件挂载源而被 Docker 创建成目录。
+Compose 将 `./nginx/html/` 目录只读挂载到 `/usr/share/nginx/html/`；可选二维码文件路径为 `./nginx/html/Wechat_qc_code.jpg`。二维码与其他普通 API 一样由 Go 校验请求 Host；当前或历史独立脚本 Host 不提供该资源，未被独立脚本占用的 Host 可按普通站规则获取图片。文件缺失、为空或不是可读 JPEG 时返回 404，不影响服务启动，也不会因为缺少单文件挂载源而被 Docker 创建成目录。
 
 Nginx 始终向后端透传原始 Host，不直接回复图片，也无需重载网关来识别文件。替换绑定挂载文件后请确认容器仍见到新文件（宿主若原子替换单文件，需重建挂载）。
 
@@ -21,8 +23,10 @@ Nginx 始终向后端透传原始 Host，不直接回复图片，也无需重载
 以自有域 `example.test` 为例：将 `tiku.example.test` 与脚本泛域指向此入口；使用 HTTPS 时，证书须覆盖相应主机名。下面是配置示例，不会自动修改 DNS 或签发证书。
 
 - 在管理员脚本域名配置中允许 `*.example.test`，为一个脚本分配标签 `a`。访问 `https://a.example.test/` 时，后端按 Nginx 透传的原始 Host 定位已分配的短地址，不需要再拼 `/aaa`。域名不代替既有的授权状态、时段、次数和会话校验。
-- `tiku.example.test` 是普通 WebUI/API 的主站，`tiku` 不能被领取为脚本子域，清空可编辑的脚本禁止名单也不能释放它。需要保护其他域名时，可加入脚本禁止名单；已有普通站的其他可信别名可在 `config.yaml` 的 `siteHosts` 中明确列出。
-- 启用子域模式后，未分配或已禁止的脚本主机不会回退到主站页面和普通 API。原来明确配置并且仍获授权的路径型短地址可继续使用；未配置子域及可信别名的旧单站保留原有访问方式。
+- `tiku.example.test` 未被独立脚本占用时可访问普通 WebUI/API。`siteHosts` 可留空；它不是平台访问白名单，只用于保护明确列出的根地址 Host 不被脚本占用。需要保护 `tiku.example.test` 时，将它加入 `siteHosts` 或脚本禁止名单 `DeniedDomains`。
+- 启用泛域后，未被独立脚本占用的 Host 均可访问普通 WebUI/API，包括尚未分配的泛域子域，无需逐一加入 `siteHosts`。管理员自定义脚本禁止名单 `DeniedDomains` 只禁止脚本使用，不会让未占用的 Host 失去平台访问。
+- `localhost`、`*.localhost`、回环地址（如 `127.0.0.1`、`::1`）和未指定地址（如 `0.0.0.0`、`::`）内置禁止分配给脚本，这些请求 Host 仍可访问普通 WebUI/API，清空可编辑的禁止名单也不能释放它们供脚本使用。
+- 已占用的独立脚本 Host 不提供普通站页面或普通 API；脚本迁移、改名后的历史独立地址仍保留占用。路径型脚本只占用对应路径，不独占整个 Host，原来明确配置并且仍获授权的路径型短地址可继续使用。
 
 ## Compose 可选参数
 

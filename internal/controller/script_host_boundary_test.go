@@ -75,7 +75,13 @@ func TestScriptHostRoutesAreSeparateFromOrdinarySite(t *testing.T) {
 	r.HEAD("/api/Wechat_qc_code", func(c *gin.Context) { c.Status(200) })
 	r.POST("/api/script-command/:shortCode/heartbeat", func(c *gin.Context) { c.String(401, "existing credential check") })
 	r.GET("/api/extension-logs/policy", func(c *gin.Context) { c.String(200, "existing scoped handler") })
-	r.NoRoute(func(c *gin.Context) { c.String(200, "normal page") })
+	r.NoRoute(func(c *gin.Context) {
+		// Shared path entries are resolved by the ordinary site's SPA fallback.
+		if c.Request.URL.Path != "/" && entry(c) {
+			return
+		}
+		c.String(200, "normal page")
+	})
 	req := func(method, host, path, forwarded, auth, identity string) (int, string) {
 		t.Helper()
 		q := httptest.NewRequest(method, path, nil)
@@ -100,15 +106,20 @@ func TestScriptHostRoutesAreSeparateFromOrdinarySite(t *testing.T) {
 		{"GET", "tiku.example.test", "/api/normal", "", 200, "normal API"},
 		{"GET", "tiku.example.test", "/api/Wechat_qc_code", "", 200, "QR"},
 		{"GET", "console.independent.test", "/settings", "", 200, "normal page"},
-		{"GET", "localhost:8060", "/api/normal", "", 404, ""},
+		{"GET", "localhost:8680", "/", "", 200, "normal page"},
+		{"GET", "localhost:8060", "/api/normal", "", 200, "normal API"},
+		{"GET", "127.0.0.1:8680", "/api/normal", "", 200, "normal API"},
+		{"GET", "[::1]:8680", "/", "", 200, "normal page"},
+		{"GET", "app.localhost", "/api/normal", "", 200, "normal API"},
 		{"GET", "localhost:8061", "/readyz", "", 200, "ready"},
 		{"GET", "a.example.test", "/api/normal", "", 404, ""},
 		{"GET", "a.example.test", "/api/Wechat_qc_code", "", 404, ""},
 		{"HEAD", "a.example.test", "/api/Wechat_qc_code", "", 404, ""},
-		{"GET", "free.example.test", "/", "tiku.example.test", 404, ""},
-		{"GET", "not-configured.invalid", "/settings", "tiku.example.test", 404, ""},
-		{"GET", "tiku.unknown.invalid", "/api/normal", "", 404, ""},
-		{"GET", "blocked.example.test", "/", "", 404, ""},
+		{"GET", "free.example.test", "/", "tiku.example.test", 200, "normal page"},
+		{"GET", "not-configured.invalid", "/settings", "a.example.test", 200, "normal page"},
+		{"GET", "tiku.unknown.invalid", "/api/normal", "", 200, "normal API"},
+		{"GET", "blocked.example.test", "/", "", 200, "normal page"},
+		{"GET", "entry.example.test", "/api/normal", "", 200, "normal API"},
 		{"POST", "a.example.test", "/api/script-command/" + a.ShortCode + "/heartbeat", "", 401, "existing credential check"},
 		{"POST", "a.example.test", "/api/script-command/" + b.ShortCode + "/heartbeat", "", 404, ""},
 	} {
@@ -120,11 +131,11 @@ func TestScriptHostRoutesAreSeparateFromOrdinarySite(t *testing.T) {
 		t.Fatalf("ordinary key crossed hosted boundary: %d", status)
 	}
 	// Gin's historic same-origin slash redirect remains available to ordinary
-	// clients. On secondary/unknown hosts it cannot return the ordinary resource.
+	// clients. An assigned dedicated script host cannot return the ordinary resource.
 	for _, tc := range []struct {
 		host string
 		want int
-	}{{"tiku.example.test", 200}, {"a.example.test", 404}, {"free.example.test", 404}} {
+	}{{"tiku.example.test", 200}, {"a.example.test", 404}, {"free.example.test", 200}} {
 		q := httptest.NewRequest("GET", "/api/normal/", nil)
 		q.Host = tc.host
 		w := httptest.NewRecorder()
@@ -140,7 +151,7 @@ func TestScriptHostRoutesAreSeparateFromOrdinarySite(t *testing.T) {
 	for _, tc := range []struct {
 		host, path, method string
 		want               int
-	}{{"tiku.example.test", "/api/normal", "GET", 204}, {"a.example.test", "/api/search/health", "GET", 204}, {"entry.example.test", "/api/search/health", "GET", 204}, {"free.example.test", "/api/search/health", "GET", 404}, {"a.example.test", "/api/normal", "GET", 404}, {"a.example.test", "/api/Wechat_qc_code", "GET", 404}, {"a.example.test", "/api/search/health", "DELETE", 404}} {
+	}{{"tiku.example.test", "/api/normal", "GET", 204}, {"a.example.test", "/api/search/health", "GET", 204}, {"entry.example.test", "/api/search/health", "GET", 204}, {"free.example.test", "/api/search/health", "GET", 204}, {"a.example.test", "/api/normal", "GET", 404}, {"a.example.test", "/api/Wechat_qc_code", "GET", 404}, {"a.example.test", "/api/search/health", "DELETE", 404}} {
 		q := httptest.NewRequest("OPTIONS", tc.path, nil)
 		q.Host = tc.host
 		q.Header.Set("Origin", "https://console.independent.test")
@@ -165,7 +176,7 @@ func TestScriptHostRoutesAreSeparateFromOrdinarySite(t *testing.T) {
 	for _, tc := range []struct {
 		host, id string
 		want     int
-	}{{"a.example.test", identity, 200}, {"entry.example.test", identity, 404}, {"foreign.invalid", identity, 404}, {"a.example.test", strings.Repeat("b", 64), 404}} {
+	}{{"a.example.test", identity, 200}, {"entry.example.test", identity, 200}, {"foreign.invalid", identity, 200}, {"a.example.test", strings.Repeat("b", 64), 404}} {
 		if status, _ := req("GET", tc.host, "/api/extension-logs/policy", "", "Bearer "+lease.Token, tc.id); status != tc.want {
 			t.Fatalf("bound legitimate lease routing on %s: got %d want %d", tc.host, status, tc.want)
 		}
@@ -182,5 +193,13 @@ func TestScriptHostRoutesAreSeparateFromOrdinarySite(t *testing.T) {
 	}
 	if code, _ := req(http.MethodPost, "a.example.test", "/api/script-command/"+a.ShortCode+"/heartbeat", "", "", ""); code != 404 {
 		t.Fatalf("new deny on registered route not observed: %d", code)
+	}
+	if err := db.Table("user_scripts").Where("id = ?", a.ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/", "/settings", "/api/normal", "/api/Wechat_qc_code"} {
+		if code, body := req(http.MethodGet, "a.example.test:8680", path, "", "", ""); code != 404 || body == "normal page" {
+			t.Fatalf("disabled script host became a platform host: %s: %d %q", path, code, body)
+		}
 	}
 }

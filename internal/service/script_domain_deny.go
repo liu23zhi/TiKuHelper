@@ -2,14 +2,23 @@ package service
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
 )
 
-// Denied domains are entirely administrator-managed. Reuse the existing DNS
-// syntax and wildcard boundary; no special-purpose domain blocklist is added.
-var ErrScriptDomainDenied = fmt.Errorf("%w：域名已被管理员禁止用于脚本", ErrScriptDomainUnavailable)
+// Administrators maintain DNS deny rules. Local machine names and loopback /
+// unspecified IPs are always reserved for the site, including non-root paths.
+var ErrScriptDomainDenied = fmt.Errorf("%w：域名禁止用于脚本", ErrScriptDomainUnavailable)
+
+func isBuiltinReservedScriptHostname(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "localhost.localdomain" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
 
 func parseScriptDeniedDomain(raw string) (string, error) {
 	value := strings.ToLower(strings.TrimSpace(raw))
@@ -38,7 +47,7 @@ func normalizeScriptDeniedDomains(values []string) []string {
 }
 
 // validateHostNotDenied accepts an actual host (including a development port).
-// Matching is only by DNS hostname, so :443/:8443 cannot bypass a prohibition.
+// Matching ignores ports, so :443/:8443 cannot bypass a prohibition.
 // Callers share their loaded settings with allow checks to avoid extra queries.
 func (settings ScriptDomainSettings) validateHostNotDenied(host string) error {
 	normalized := normalizeScriptLauncherHost(host)
@@ -47,6 +56,9 @@ func (settings ScriptDomainSettings) validateHostNotDenied(host string) error {
 		return nil // The existing address/allow validator handles invalid syntax.
 	}
 	hostname := parsed.Hostname()
+	if isBuiltinReservedScriptHostname(hostname) {
+		return fmt.Errorf("%w：本机名称、回环和未指定地址不能用于脚本", ErrScriptDomainDenied)
+	}
 	for _, rule := range settings.DeniedDomains {
 		matches := hostname == rule
 		if strings.HasPrefix(rule, "*.") {

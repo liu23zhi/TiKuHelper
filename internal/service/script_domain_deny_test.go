@@ -22,6 +22,44 @@ func scriptDeniedSettings(t *testing.T, db *gorm.DB, payload string) (ScriptDoma
 	return UpdateScriptDomainSettingsWithDB(db, input)
 }
 
+func TestBuiltinLocalHostsCannotBeAllocatedEvenWithEmptyDenylist(t *testing.T) {
+	settings := defaultScriptDomainSettings()
+	for _, host := range []string{
+		"localhost", "LOCALHOST.:8443", "app.localhost", "localhost.localdomain",
+		"127.0.0.1", "127.12.34.56:8443", "0.0.0.0", "[::1]", "[::]:8443", "[::ffff:127.0.0.1]",
+	} {
+		t.Run(host, func(t *testing.T) {
+			for _, path := range []string{"", "/", "/script-entry"} {
+				err := settings.validateAddressNotDenied("https://" + host + path)
+				if !errors.Is(err, ErrScriptDomainDenied) {
+					t.Errorf("local script address accepted: %s%s: %v", host, path, err)
+				}
+			}
+		})
+	}
+	for _, host := range []string{"my-localhost.example.test", "localhost.example.test", "192.168.1.10", "[2001:db8::1]"} {
+		if err := settings.validateAddressNotDenied("https://" + host + "/script-entry"); err != nil {
+			t.Errorf("non-local address unexpectedly reserved: %s: %v", host, err)
+		}
+	}
+}
+
+func TestLocalFallbackCannotCreateLongOrShortScriptEntry(t *testing.T) {
+	db, owner, seed := seedScriptReleaseGuard(t)
+	if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{}, DeniedDomains: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"localhost:9043", "127.0.0.1:9043", "[::1]:9043"} {
+		origin := ScriptLauncherOrigin{Host: host, HTTPS: true}
+		if _, err := CreateUserScriptWithDB(db, owner, CreateUserScriptInput{Name: "local", VersionID: seed.VersionID, LauncherOrigin: &origin}); !errors.Is(err, ErrScriptDomainDenied) {
+			t.Errorf("generated local long entry was accepted: %s: %v", host, err)
+		}
+		if _, _, err := validateScriptShortAddressWithDB(db, "https://"+host+"/short", host); !errors.Is(err, ErrScriptDomainDenied) {
+			t.Errorf("custom local short entry was accepted: %s: %v", host, err)
+		}
+	}
+}
+
 func TestScriptDomainDenyPrecedenceAndNormalization(t *testing.T) {
 	db := newScriptTestDB(t)
 	settings, err := scriptDeniedSettings(t, db, `{"domains":["*.a.com"],"deniedDomains":[" ADMIN.A.COM ","*.INTERNAL.a.com","admin.a.com"]}`)

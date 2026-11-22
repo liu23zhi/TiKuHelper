@@ -4,7 +4,7 @@ import {
   buildScriptDomainFromFormat,
   buildScriptDomainForms,
   normalizeScriptDomainFormats,
-  isKnownPlatformRoot,
+  isBuiltinScriptHostReserved,
   parseScriptDomainFormat,
   splitScriptDomainForFormat,
   validateScriptDomainSlot,
@@ -127,12 +127,11 @@ test('split 是 build 的逆运算（UI 回填编辑态）', () => {
   assert.equal(splitScriptDomainForFormat('*.a.com', 'a.com'), null)
 })
 
-test('the known site-root rule uses normalized hostname, not a whole-domain or path-prefix ban', () => {
-  const site = 'console.example.test'
-  for (const address of ['https://TiKu.example.test.:8443/', 'https://console.example.test:443']) {
-    assert.equal(isKnownPlatformRoot(address, site), true, address)
+test('only built-in local addresses are blocked by public hints; site aliases are checked by the server', () => {
+  for (const address of ['https://LOCALHOST.:8443/', 'https://app.localhost/team', 'https://localhost.localdomain/team', 'https://127.123.45.67/team', 'https://0.0.0.0/team', 'https://[::1]/team', 'https://[::]/team', 'https://[::ffff:127.0.0.1]/team', 'https://[::ffff:0.0.0.0]/team']) {
+    assert.equal(isBuiltinScriptHostReserved(address), true, address)
   }
-  for (const address of ['https://alpha.example.test/', 'https://tikux.example.test/', 'https://alpha.tiku.example.test/', 'https://tiku.example.test/team', 'https://console.example.test/team', '']) {
-    assert.equal(isKnownPlatformRoot(address, site), false, address)
+  for (const address of ['https://TiKu.example.test.:8443/', 'https://console.example.test:443', 'https://alpha.example.test/', 'https://tikux.example.test/', 'https://alpha.tiku.example.test/', 'https://tiku.example.test/team', 'https://localhost.example.test/team', 'https://console.example.test/team', 'https://192.168.1.10/team', '']) {
+    assert.equal(isBuiltinScriptHostReserved(address), false, address)
   }
 })

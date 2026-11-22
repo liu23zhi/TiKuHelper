@@ -24,6 +24,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -153,6 +154,22 @@ func seedLegacy(p string) (map[string]any, error) {
 	}
 	return map[string]any{"ok": true, "operation": "seed-legacy", "legacyPlaintextSeeded": true, "userCount": 1}, nil
 }
+
+func seedGatewayHosts(p string) (err error) {
+	db, closeDB, err := openFixtureDB(p, false)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeDB()) }()
+	return db.Transaction(func(tx *gorm.DB) error {
+		if _, err := service.UpdateScriptDomainSettingsWithDB(tx, service.ScriptDomainSettings{Domains: []string{"*.example.test"}}); err != nil {
+			return err
+		}
+		// An assigned address remains dedicated even when its launcher is unavailable.
+		return tx.Create(&entity.UserScript{UserID: 1, Name: "gateway host fixture", ShortCode: "gatewayfixture", ShortEntryAddress: "https://a.example.test"}).Error
+	})
+}
+
 func inspectDatabase(p, kind string) (databaseObservation, error) {
 	report := databaseObservation{Operation: "verify-" + kind, ReadonlyInspection: true}
 	db, closeDB, err := openFixtureDB(p, true)
@@ -559,6 +576,11 @@ func run(args []string, out io.Writer) int {
 		return emit(report)
 	}
 	switch operation {
+	case "seed-gateway-hosts":
+		if err := seedGatewayHosts(*db); err != nil {
+			return fail(operation, err)
+		}
+		return emit(map[string]any{"ok": true, "operation": operation})
 	case "verify-new", "verify-legacy", "verify-development", "verify-local-setup":
 		report, err := verifyDatabase(*db, strings.TrimPrefix(operation, "verify-"))
 		if err != nil {

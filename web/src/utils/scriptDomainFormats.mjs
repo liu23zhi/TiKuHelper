@@ -15,15 +15,19 @@
 const FORMAT_WILDCARD = 'wildcard'
 const FORMAT_PATH = 'path'
 
-// Public hints only: additional deployment-owned hosts and the administrator's
-// private deny list are checked by the server, not disclosed by this predicate.
-export function isKnownPlatformRoot(address, consoleHostname = '') {
+// Public hints only: deployment aliases and the administrator's private deny
+// list are checked by the server. Local authorities are always reserved from
+// script allocation but remain valid WebUI/API hosts.
+export function isBuiltinScriptHostReserved(address) {
   if (!address) return false
   let url
   try { url = new URL(address) } catch { return false }
-  if (url.pathname !== '/') return false
-  const name = url.hostname.toLowerCase().replace(/\.$/, '')
-  return Boolean(name) && (name.split('.')[0] === 'tiku' || name === consoleHostname.toLowerCase().replace(/\.$/, ''))
+  const name = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  if (!name) return false
+  if (name === 'localhost' || name.endsWith('.localhost') || name === 'localhost.localdomain') return true
+  // URL normalizes mapped IPv4 to hex (127.0.0.1 → ::ffff:7f00:1).
+  return /^127\.\d+\.\d+\.\d+$/.test(name) || name === '0.0.0.0' || name === '::1' || name === '::'
+    || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(name) || name === '::ffff:0:0'
 }
 
 // 与 Go 的 validScriptDomainHost 同规则：至少两级、标签 [a-z0-9-]、不以 - 开头/结尾、

@@ -2,7 +2,9 @@
 #
 # 网关进程是容器 PID 1：Go 只监听容器内的 127.0.0.1:8061，Nginx 对外
 # 提供 8060/8680/9043。任一子进程异常退出都会结束容器，由 restart 策略恢复。
-# 证书可选：没有有效证书时保留 HTTP，9043 不监听；证书到位后自动启用 HTTPS。
+# 启动后可通过 http://localhost:8680 访问 WebUI/API；启用脚本泛域不会关闭此本机入口。
+# HTTPS 可选：首次没有有效配对证书时保留 HTTP，9043 不监听；证书到位后自动启用。
+# 证书来源暂时缺失或损坏时保留仍有效的私有快照，快照全部过期后关闭 HTTPS。
 #
 # 从旧版「Go + 独立 Nginx」升级时，先执行：
 #   docker compose up -d --build --remove-orphans
@@ -23,9 +25,9 @@ services:
     ports:
       # 兼容本机直接访问 API；只绑定回环地址，不暴露给局域网。
       - "127.0.0.1:8060:8060"
-      # HTTP 公网入口。脚本地址仍由服务端按 HTTPS 生成。
+      # HTTP 公网入口；本机可访问 http://localhost:8680。脚本地址仍由服务端按 HTTPS 生成。
       - "8680:8680"
-      # HTTPS 公网入口。仅在证书目录存在有效证书时实际监听。
+      # 可选 HTTPS 公网入口。仅在有有效证书/私钥配对快照时实际监听。
       - "9043:9043"
     environment:
       # 可选值只有 production / development；空值按 production 处理。

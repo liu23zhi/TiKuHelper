@@ -93,7 +93,13 @@ func TestDeploymentQRIsGatedByActualPublicAuthorityMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sql.Close() })
-	if err = db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+	if err = db.AutoMigrate(&entity.SystemSetting{}, &entity.UserScript{}, &entity.ScriptAddressReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Create(&entity.UserScript{ID: 1, ShortCode: "assigned-fixture", ShortEntryAddress: "https://a.example.test"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.UpdateScriptDomainSettingsWithDB(db, service.ScriptDomainSettings{Domains: []string{"*.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err = service.ConfigureSiteHosts([]string{"tiku.example.test"}); err != nil {
@@ -111,15 +117,15 @@ func TestDeploymentQRIsGatedByActualPublicAuthorityMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	registerDeploymentQRCode(r, p)
-	for _, host := range []string{"TIKU.Example.Test.:9043", "a.example.test:9043", "other.invalid:9043"} {
+	for _, host := range []string{"TIKU.Example.Test.:9043", "a.example.test:9043", "other.invalid:9043", "localhost:8680", "127.0.0.1:8680", "[::1]:8680"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			req := httptest.NewRequest(method, "/api/Wechat_qc_code", nil)
 			req.Host = host
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
-			want := 404
-			if host == "TIKU.Example.Test.:9043" {
-				want = 200
+			want := 200
+			if host == "a.example.test:9043" {
+				want = 404
 			}
 			if w.Code != want || ((w.Header().Get("Content-Type") == "image/jpeg") != (want == 200)) || (method == "HEAD" && w.Body.Len() != 0) || (method == "GET" && want == 200 && !bytes.Equal(img.Bytes(), w.Body.Bytes())) {
 				t.Fatalf("%s %s: code=%d bytes=%d", method, host, w.Code, w.Body.Len())

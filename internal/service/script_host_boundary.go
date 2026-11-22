@@ -38,17 +38,14 @@ func IsLocalSiteAuthority(authority string) bool {
 	h := normalizePublicScriptHost(normalizeScriptLauncherHost(authority))
 	return h == "localhost" || net.ParseIP(h).IsLoopback()
 }
-func hasDeclaredSiteNames() bool { h := siteHostConfig.Load(); return h != nil && len(*h) > 0 }
 
-// The platform owns root on its aliases and the tiku label. Non-root, explicitly
-// authorized historic paths on a shared site are not a grant of its hostname.
+// Explicit aliases and built-in local names retain their platform roots.
 func IsReservedScriptHostRoot(host, path string) bool {
 	if path != "" && path != "/" {
 		return false
 	}
 	host = normalizePublicScriptHost(host)
-	label, _, _ := strings.Cut(host, ".")
-	return label == "tiku" || declaredPlatformHost(host) || host == "localhost" || net.ParseIP(host).IsLoopback()
+	return declaredPlatformHost(host) || isBuiltinReservedScriptHostname(host)
 }
 
 type ScriptWebHostRole uint8
@@ -60,44 +57,81 @@ const (
 	StandaloneWebHost
 )
 
-// A namespace is derived from administrator-configured formats only. Host headers
-// are never evidence of ownership. An untouched, unconfigured single-site
-// installation keeps its historic origin behavior until a domain policy is set.
+// Only a dedicated address actually assigned to a script owns its hostname.
+// Domain formats and the script denylist do not reserve otherwise unused hosts
+// or prevent them from serving the ordinary site.
 func ScriptWebHostRoleWithDB(db *gorm.DB, authority string) (ScriptWebHostRole, error) {
 	canonical := normalizeScriptLauncherHost(authority)
 	if canonical == "" {
 		return RejectScriptWebHost, nil
 	}
 	host := normalizePublicScriptHost(canonical)
-	if declaredPlatformHost(host) {
+	if declaredPlatformHost(host) || isBuiltinReservedScriptHostname(host) {
 		return PlatformWebHost, nil
 	}
-	settings, err := GetScriptDomainSettingsWithDB(db)
+	if db == nil {
+		return RejectScriptWebHost, errors.New("数据库未初始化")
+	}
+	occupied, err := scriptWebHostOccupiedWithDB(db, canonical)
 	if err != nil {
 		return RejectScriptWebHost, err
 	}
-	formats := settings.Formats()
-	managedSubdomains := false
-	for _, f := range formats {
-		if !f.SlotIsPrefix() {
-			continue
+	if occupied {
+		return EntryOnlyWebHost, nil
+	}
+	return StandaloneWebHost, nil
+}
+
+// Occupancy is permanent routing metadata, independent of whether a script can
+// still launch. Never join reservations to live scripts or filter retired rows:
+// a replaced, deleted, disabled, expired or spent address must not expose WebUI.
+func scriptWebHostOccupiedWithDB(db *gorm.DB, authority string) (bool, error) {
+	host := normalizePublicScriptHost(authority)
+	keys := []string{shortEntryAddressKey(authority, "")}
+	if host != authority {
+		keys = append(keys, shortEntryAddressKey(host, ""))
+	}
+	fresh := db.Session(&gorm.Session{NewDB: true})
+	var reserved int64
+	if err := fresh.Model(&entity.ScriptAddressReservation{}).Where("address_key IN ?", keys).Count(&reserved).Error; err != nil {
+		return false, err
+	}
+	if reserved > 0 {
+		return true, nil
+	}
+	// Pre-reservation rows retain their original root addresses. Restrict the
+	// candidate query by root alias/locator or explicit short-address hostname,
+	// then normalize stored URLs to distinguish roots from shared path entries.
+	label, _, _ := strings.Cut(host, ".")
+	var roots []string
+	for _, scheme := range []string{"https://", "http://"} {
+		roots = append(roots, scheme+host, scheme+host+"/")
+	}
+	var scripts []entity.UserScript
+	err := fresh.Select("short_code", "base_domain", "scheme", "use_wildcard_domain", "launcher_locator", "launcher_bearer_enabled", "short_entry_address").
+		Where("use_wildcard_domain = ? AND (short_code = ? OR launcher_locator = ?)", true, label, label).
+		Or("short_entry_address IN ? OR short_entry_address LIKE ? OR short_entry_address LIKE ?", roots, "https://"+host+":%", "http://"+host+":%").
+		Find(&scripts).Error
+	if err != nil {
+		return false, err
+	}
+	rootMatches := func(address string) bool {
+		stored, path, _ := parseScriptReservedAddress(address)
+		return stored != "" && path == "" && normalizePublicScriptHost(stored) == host
+	}
+	for _, script := range scripts {
+		if rootMatches(BuildScriptCommandURL(script)) || rootMatches(script.ShortEntryAddress) {
+			return true, nil
 		}
-		managedSubdomains = true
-		if host == "tiku."+f.Host {
-			return PlatformWebHost, nil
+		// UUID launchers also retain a distinct short-code API origin.
+		if script.UseWildcardDomain && script.LauncherLocator != nil && script.LauncherBearerEnabled {
+			script.LauncherLocator = nil
+			if rootMatches(BuildScriptCommandURL(script)) {
+				return true, nil
+			}
 		}
 	}
-	// Existing path-only databases have no dedicated host namespace. Their
-	// console may be on an independent hostname: requiring a new alias before
-	// the administrator can sign in would strand such upgrades. Script access
-	// still goes through all previous denylist, ownership and ticket checks.
-	if !hasDeclaredSiteNames() && !managedSubdomains {
-		return StandaloneWebHost, nil
-	}
-	if IsLocalSiteAuthority(canonical) || settings.validateHostNotDenied(canonical) != nil {
-		return RejectScriptWebHost, nil
-	}
-	return EntryOnlyWebHost, nil
+	return false, nil
 }
 
 // ScriptCodeOwnsWebHostWithDB is only a router predicate; it never issues or

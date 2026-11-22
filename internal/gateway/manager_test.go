@@ -253,6 +253,63 @@ func TestManagerGeneratesEmbeddedBaseWithoutExternalConfigDirectory(t *testing.T
 	}
 }
 
+func TestManagerEnablesHTTPSOnlyAfterFindingValidCertificatePair(t *testing.T) {
+	now := time.Now()
+	_, cert, key := fixtureCertificate(t, []string{"gateway.example"}, now.Add(-time.Hour), now.Add(time.Hour), false)
+	_, _, unrelatedKey := fixtureCertificate(t, []string{"other.example"}, now.Add(-time.Hour), now.Add(time.Hour), false)
+	for _, tc := range []struct {
+		name  string
+		files map[string][]byte // A nil map leaves the source directory absent.
+	}{
+		{name: "missing directory"},
+		{name: "empty directory", files: map[string][]byte{}},
+		{name: "invalid certificate", files: map[string][]byte{"fullchain.pem": []byte("invalid certificate"), "privkey.key": key}},
+		{name: "certificate without key", files: map[string][]byte{"fullchain.pem": cert}},
+		{name: "key without certificate", files: map[string][]byte{"privkey.key": key}},
+		{name: "mismatched key", files: map[string][]byte{"fullchain.pem": cert, "privkey.key": unrelatedKey}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := filepath.Join(t.TempDir(), "ssl")
+			if tc.files != nil {
+				if err := os.Mkdir(source, 0700); err != nil {
+					t.Fatal(err)
+				}
+				for name, data := range tc.files {
+					writeFixture(t, source, name, data)
+				}
+			}
+			manager := &Manager{Root: t.TempDir(), CertificateDir: source, Check: func(string) error { return nil }}
+			refreshAndCheckListeners := func(wantTLS bool) {
+				t.Helper()
+				if changed, err := manager.Refresh(now); err != nil || !changed {
+					t.Fatalf("refresh with TLS=%v: changed=%v err=%v", wantTLS, changed, err)
+				}
+				data, err := os.ReadFile(filepath.Join(manager.activeDir, "servers.conf"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				servers := string(data)
+				for _, listener := range []string{"listen 8060 default_server;", "listen 8680 default_server;"} {
+					if !strings.Contains(servers, listener) {
+						t.Errorf("missing HTTP listener %q", listener)
+					}
+				}
+				if got := strings.Contains(servers, "listen 9043 ssl"); got != wantTLS {
+					t.Errorf("HTTPS listener present = %v, want %v", got, wantTLS)
+				}
+				if manager.TLSReady() != wantTLS {
+					t.Errorf("TLSReady = %v, want %v", manager.TLSReady(), wantTLS)
+				}
+			}
+
+			refreshAndCheckListeners(false)
+			writeFixture(t, source, "fullchain.pem", cert)
+			writeFixture(t, source, "privkey.key", key)
+			refreshAndCheckListeners(true)
+		})
+	}
+}
+
 func TestAllGatewayListenersForwardQRCodeAndOriginalHost(t *testing.T) {
 	p := Certificate{ID: "test"}
 	for _, servers := range []string{renderServers("/tmp/test", "/tmp/test/conf", Certificate{}, nil), renderServers("/tmp/test", "/tmp/test/conf", p, map[string]Certificate{"normal.example": p})} {

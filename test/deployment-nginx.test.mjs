@@ -271,9 +271,10 @@ test('production gateway starts a private real backend, preserves admin initiali
     timeout: 150000, env: { ...process.env, GOOS: 'linux', GOARCH: arch, CGO_ENABLED: '0' },
   }));
   const picture = join(directory, 'Wechat_qc_code.jpg'); await writeFile(picture, '');
+  const certs = join(directory, 'ssl'); await mkdir(certs);
   const marker = join(directory, 'fixture-marker'); const config = join(directory, 'config.yaml');
   await writeFile(marker, 'tikuhelper-s04-synthetic-only\n');
-  await writeFile(config, 'siteHosts: [tiku.example.test]\ndatabase:\n  path: data/fixture.db\napi: []\nlimit:\n  enable: false\n');
+  await writeFile(config, 'siteHosts: []\ndatabase:\n  path: data/fixture.db\napi: []\nlimit:\n  enable: false\n');
   for (const mode of ['environment', 'local']) {
     const name = `tiku-gateway-admin-${mode}-${process.pid}-${Date.now()}`;
     // The built-in S04 helper accepts only a marked synthetic data/fixture.db and compares bcrypt internally.
@@ -282,6 +283,7 @@ test('production gateway starts a private real backend, preserves admin initiali
       '--env', 'TIKU_APP_MODE=production', '--env', `TIKU_ADMIN_PASSWORD=${mode === 'environment' ? fixturePassword : ''}`,
       '--env', 'EXTENSION_UPDATE_ENABLED=false', '--env', 'EXTENSION_EDGE_ID=', '--env', 'EXTENSION_CHROME_ID=',
       '--tmpfs', '/app/data', '--mount', `type=bind,source=${config},target=/app/config.yaml,readonly`,
+      '--mount', `type=bind,source=${certs},target=/etc/nginx/ssl,readonly`,
       '--mount', `type=bind,source=${originProbe},target=/origin-probe,readonly`,
       '--mount', `type=bind,source=${picture},target=/usr/share/nginx/html/Wechat_qc_code.jpg,readonly`,
       '--mount', `type=bind,source=${marker},target=/app/.s04-fixture,readonly`,
@@ -295,14 +297,19 @@ test('production gateway starts a private real backend, preserves admin initiali
       assert.equal(ready(8060).status, 'ready');
       assert.match(exec(['/app/container-gateway', '--healthcheck']), /HTTP ready; HTTPS 未启用/);
       if (mode === 'environment') {
+        const seeded = JSON.parse(exec(['/fixture-probe', 'seed-gateway-hosts', '--db', '/app/data/fixture.db']));
+        assert.equal(seeded.ok, true);
         const generated = execute('docker', ['exec', name, '/origin-probe', 'qr-fixture'], { encoding: null });
         assert.equal(generated.status, 0); assert.ok(generated.stdout.length > 32);
         await writeFile(picture, generated.stdout);
         const expectedDigest = createHash('sha256').update(generated.stdout).digest('hex');
         const rows = JSON.parse(exec(['/origin-probe', 'host-matrix']));
-        assert.equal(rows.length, 12);
+        const hosts = ['localhost', '127.0.0.1', 'free.example.test', 'tiku.example.test', 'unknown.invalid', 'a.example.test'];
+        const routes = ['GET /', 'GET /api/public/register-status', 'GET /api/Wechat_qc_code', 'HEAD /api/Wechat_qc_code'];
+        const expectedRows = hosts.flatMap((host) => routes.map((route) => host + ':8680 ' + route));
+        assert.deepEqual(rows.map((r) => r.Host + ' ' + r.Method + ' ' + r.Path).sort(), expectedRows.sort());
         for (const r of rows) {
-          const normal = r.Host === 'tiku.example.test:8680';
+          const normal = r.Host !== 'a.example.test:8680';
           assert.equal(r.Status, normal ? 200 : 404, `${r.Host} ${r.Method} ${r.Path}`);
           if (normal && r.Path === '/') assert.equal(r.SPA, true);
           else if (normal && r.Path === '/api/public/register-status') assert.equal(r.JSON, true);
