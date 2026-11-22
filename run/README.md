@@ -5,8 +5,12 @@
 证书放进 `nginx/ssl/`（说明见该目录 README）。本部署文件不读取宿主机的 `${...}` 插值；可选参数直接编辑 `docker-compose.yml` 的空值，再执行：
 
 ```bash
-cd run && docker compose up -d --build
+cd run && ./start.sh up -d --build
 ```
+
+Windows PowerShell 使用 `.start.ps1 up -d --build`。两个启动脚本都会把参数原样转发给 `docker compose`，并以脚本所在的 `run/docker-compose.yml` 为基础配置。若 `run/Wechat_qc_code.jpg` 存在，脚本会在系统临时目录生成一次性的 Compose override，以只读方式映射到容器 `/usr/share/nginx/html/Wechat_qc_code.jpg`；图片不存在时不会生成可选映射，容器仍可正常启动。override 会在 Compose 退出、失败或脚本退出时清理，不会覆盖 `docker-compose.yml` 或删除用户文件。需要替换二维码时，直接替换 `run/Wechat_qc_code.jpg` 后重新执行启动脚本。
+
+二维码接口始终保留在内置 Nginx 配置中；未提供图片时 `/api/Wechat_qc_code` 返回未配置状态，不会导致容器启动失败。其他静态文件仍放入 `nginx/html/`。
 
 容器内 `/app/data` 是持久化目录：数据库须落在其中，否则重启即丢。只挂载这一个目录即可，不影响程序文件。
 
