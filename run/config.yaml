@@ -1,10 +1,12 @@
-# JWT_SECRET 环境变量优先；未配置时复用/生成数据库中的签名密钥。
-# 反向代理部署可通过 TRUSTED_PROXIES 配置可信代理网段。
+# jwtSecret 可选：至少 32 个 UTF-8 字节，没有最大长度或字符集限制，可使用特殊符号；
+# 首尾空白会裁剪。未配置时复用/生成数据库中的签名密钥。
+# 直接运行服务时 JWT_SECRET 环境变量优先；Compose 部署固定为空，不读取宿主环境插值。
+# 反向代理部署可通过 TRUSTED_PROXIES 或 trusted_proxies.txt 配置可信代理网段。
 limit:
   enable: true
   duration: 60
   requests: 120
-jwtSecret: "" # 可选，至少32字节；JWT_SECRET 环境变量优先
+jwtSecret: "" # 可选，至少32个UTF-8字节；无最大长度/字符集限制
 mysql: ""
 database:
   path: "data/tiku.db"

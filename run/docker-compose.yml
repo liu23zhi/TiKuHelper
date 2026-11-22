@@ -28,22 +28,26 @@ services:
       # HTTPS 公网入口。仅在证书目录存在有效证书时实际监听。
       - "9043:9043"
     environment:
-      # 不从宿主环境读取；空值按 production 处理。需要开发模式时直接修改本行。
+      # 可选值只有 production / development；空值按 production 处理。
+      # Compose 不读取宿主环境，需要开发模式时直接把本行改为 "development"。
       TIKU_APP_MODE: ""
-      # 不从宿主环境读取；空值由服务端生成并持久化随机 JWT 密钥。
-      # 生产环境如需固定密钥，请直接在本文件填写，不要依赖外部插值。
+      # 可选；空值由服务端生成并持久化随机 JWT 密钥。
+      # 手动填写时至少 32 个 UTF-8 字节，没有最大长度或字符集限制，可使用特殊符号。
+      # 首尾空白会被裁剪，YAML 特殊字符请保留引号；更换值会使旧 JWT 失效。
       JWT_SECRET: ""
-      # 不从宿主环境读取；空值使用本地初始化口令 123456。
-      # 首次登录后请通过容器内初始化命令修改管理员密码。
+      # 可选；空值使用本地初始化口令 123456。该公共口令不能直接登录 Web 管理员账号。
+      # 手动填写时最多 72 个 UTF-8 字节，可使用特殊符号；生产模式建议至少 8 个字符并含
+      # 大写、小写、数字、特殊字符。不符合强度时记录警告但仍启动，已有密码不会被重置。
       TIKU_ADMIN_PASSWORD: ""
-      # 保留现有客户端 IP 语义：空或 none 读取所有来源 XFF；具体列表补入本地/私网段。
+      # 可选；非空时优先使用逗号分隔的 IP/CIDR（也支持项目现有地址段写法）。
+      # 空值或 none 表示信任所有来源的 X-Forwarded-For；具体列表会额外补入本地/私网段。
       # HTTPS 协议头只信任显式列出的上游；Nginx 直接 TLS 请求始终识别为 HTTPS。
-      # 不从宿主环境读取；如有外层反向代理，请直接填写 IP/CIDR。
       TRUSTED_PROXIES: ""
-      # 不从宿主环境读取；空值表示不启用 trusted_proxies.txt。
-      # 如需启用挂载文件，请直接填写 /app/trusted_proxies.txt。
+      # 可选文件路径；空值仍尝试读取 /app/trusted_proxies.txt（工作目录默认路径）。
+      # 默认文件不存在或为空且 TRUSTED_PROXIES 为空时信任所有；明确填写的文件路径不存在，或文件含无效条目，则启动失败。
+      # 需要使用其它文件时直接填写容器内路径，不从宿主环境插值读取。
       TRUSTED_PROXIES_FILE: ""
-      # 数据库和日志时间统一使用上海时区；修改后需重建/重启容器才会生效。
+      # 固定上海时区，不通过宿主环境覆盖；修改后需重建/重启容器才会生效。
       TZ: Asia/Shanghai
     volumes:
       # 持久化 SQLite 数据库、上传内容、扩展缓存和系统设置；升级时不要加 -v。
@@ -52,7 +56,7 @@ services:
       - ./logs:/app/logs
       # 运行配置只读挂载；修改后按 README 说明重启或等待网关热加载。
       - ./config.yaml:/app/config.yaml:ro
-      # 代理来源名单只读挂载；只有设置 TRUSTED_PROXIES_FILE 才会主动读取它。
+      # 代理来源名单只读挂载；TRUSTED_PROXIES_FILE 为空时也会按默认路径主动读取。
       - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
       # Nginx 配置只读挂载；网关会生成候选配置并通过 nginx -t 后 reload。
       - ./nginx/conf.d:/etc/nginx/conf.d:ro

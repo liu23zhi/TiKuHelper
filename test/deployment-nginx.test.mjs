@@ -74,7 +74,12 @@ test('single-container Compose preserves mounts, ports, and graceful shutdown', 
     assert.ok(backend.volumes.some((mount) => mount.target === target && resolve(mount.source) === join(run, source)), target);
   }
   assert.deepEqual(backend.healthcheck.test, ['CMD', '/app/container-gateway', '--healthcheck']);
+  assert.equal(backend.environment.TIKU_APP_MODE, '');
+  assert.equal(backend.environment.JWT_SECRET, '');
+  assert.equal(backend.environment.TIKU_ADMIN_PASSWORD, '');
   assert.equal(backend.environment.TRUSTED_PROXIES, '');
+  assert.equal(backend.environment.TRUSTED_PROXIES_FILE, '');
+  assert.equal(backend.environment.TZ, 'Asia/Shanghai');
   assert.ok(!Object.keys(backend.environment).some((key) => key.startsWith('EXTENSION_')));
 });
 

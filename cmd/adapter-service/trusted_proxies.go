@@ -100,7 +100,8 @@ func loadTrustedProxiesLegacy() (trustedProxyConfig, error) {
 //	① 值为空，或值为 none
 //	     → 视为「没有输入」→ 信任所有来源（0.0.0.0/0 + ::/0）。
 //	       none 不再是「完全不信任」的特殊开关，它只是「我没配」的另一种写法，
-//	       与留空等价。这样 compose 里 TRUSTED_PROXIES: "" 或 "none" 都不会拒绝启动。
+//	       与留空等价。TRUSTED_PROXIES 为空时仍先读取 TRUSTED_PROXIES_FILE，
+//	       路径为空则读取工作目录下的 trusted_proxies.txt；文件不存在或为空才信任所有。
 //	② 值为具体 IP/CIDR
 //	     → 用户条目 + 前置「局域网 / 本地」默认段（见 defaultTrustedProxies）。
 //	       宿主机反代、Docker 网关、内网 Nginx 免配即通，
@@ -119,20 +120,19 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
 	source := trustedProxiesEnv
 	if raw == "" {
-		// 只有显式指定了 TRUSTED_PROXIES_FILE 才去读文件；
-		// 生产模式不隐式读取工作目录下的 trusted_proxies.txt。
+		// 空路径仍使用工作目录下的默认文件；文件不存在按空文件处理。
+		// 这样可以只挂载 trusted_proxies.txt，不必在 Compose 中再写路径。
 		path := strings.TrimSpace(os.Getenv(trustedProxiesFileEnv))
+		defaultPath := path == ""
 		if path == "" {
-			// ①-a 两个来源都空 → 信任所有来源。
-			return trustedProxyConfig{
-				List:            []string{trustAllProxiesIPv4, trustAllProxiesIPv6},
-				Source:          "",
-				ConfiguredCount: 0,
-			}, nil
+			path = trustedProxiesFileName
 		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return trustedProxyConfig{}, fmt.Errorf("cannot read explicit TRUSTED_PROXIES_FILE: %w", readErr)
+			if !defaultPath || !os.IsNotExist(readErr) {
+				return trustedProxyConfig{}, fmt.Errorf("cannot read TRUSTED_PROXIES_FILE: %w", readErr)
+			}
+			content = nil
 		}
 		raw, source = strings.TrimSpace(string(content)), path
 	}
