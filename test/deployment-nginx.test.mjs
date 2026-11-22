@@ -71,9 +71,10 @@ test('single-container Compose preserves mounts, ports, and graceful shutdown', 
     { host_ip: undefined, target: 8680, published: '8680' },
     { host_ip: undefined, target: 9043, published: '9043' },
   ]);
-  for (const [source, target] of [['data', '/app/data'], ['logs', '/app/logs'], ['config.yaml', '/app/config.yaml'], ['trusted_proxies.txt', '/app/trusted_proxies.txt'], ['nginx-extra', '/app/nginx-extra'], ['Wechat_qc_code.jpg', '/usr/share/nginx/html/Wechat_qc_code.jpg'], ['nginx/ssl', '/etc/nginx/ssl'], ['nginx/html', '/usr/share/nginx/html'], ['nginx/logs', '/var/log/nginx']]) {
+  for (const [source, target] of [['data', '/app/data'], ['logs', '/app/logs'], ['config.yaml', '/app/config.yaml'], ['trusted_proxies.txt', '/app/trusted_proxies.txt'], ['nginx/extra-config', '/app/nginx-extra'], ['nginx/ssl', '/etc/nginx/ssl'], ['nginx/html', '/usr/share/nginx/html'], ['nginx/logs', '/var/log/nginx']]) {
     assert.ok(backend.volumes.some((mount) => mount.target === target && resolve(mount.source) === join(run, source)), target);
   }
+  assert.equal(backend.volumes.some((mount) => mount.target === '/usr/share/nginx/html/Wechat_qc_code.jpg'), false, '二维码必须随 html 目录挂载，避免缺失单文件源被 Docker 创建为目录');
   assert.equal(backend.volumes.some((mount) => mount.target === '/etc/nginx/conf.d'), false);
   assert.deepEqual(backend.healthcheck.test, ['CMD', '/app/container-gateway', '--healthcheck']);
   assert.equal(backend.environment.TIKU_APP_MODE, '');

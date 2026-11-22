@@ -8,7 +8,7 @@
 cd run && docker compose up -d --build
 ```
 
-Compose 将 `./Wechat_qc_code.jpg` 只读挂载到 `/usr/share/nginx/html/Wechat_qc_code.jpg`。二维码与其他普通 API 一样由 Go 校验请求 Host；仅普通站可获取图片，脚本站和未知域名不暴露该资源。仅提供普通文件时返回 JPEG；未挂载、空缺或被 Docker 创建为目录时返回 404，不影响服务启动。
+Compose 将 `./nginx/html/` 目录只读挂载到 `/usr/share/nginx/html/`；可选二维码文件路径为 `./nginx/html/Wechat_qc_code.jpg`。二维码与其他普通 API 一样由 Go 校验请求 Host；仅普通站可获取图片，脚本站和未知域名不暴露该资源。文件缺失、为空或不是可读 JPEG 时返回 404，不影响服务启动，也不会因为缺少单文件挂载源而被 Docker 创建成目录。
 
 Nginx 始终向后端透传原始 Host，不直接回复图片，也无需重载网关来识别文件。替换绑定挂载文件后请确认容器仍见到新文件（宿主若原子替换单文件，需重建挂载）。
 

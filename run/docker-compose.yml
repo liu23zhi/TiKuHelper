@@ -60,13 +60,13 @@ services:
       - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
       # 可选 Nginx 扩展配置只读挂载；基础配置始终来自镜像内置模板。
       # 冲突或语法错误的单个文件会被记录并跳过，不影响基础入口。
-      - ./nginx-extra:/app/nginx-extra:ro
+      - ./nginx/extra-config:/app/nginx-extra:ro
       # 证书目录只读挂载，支持多个 PEM 证书/私钥，按 SAN 和公钥自动配对。
       - ./nginx/ssl:/etc/nginx/ssl:ro
       # 可选扫码图片等静态文件；没有文件时对应接口按应用逻辑返回。
       - ./nginx/html:/usr/share/nginx/html:ro
-      # 可选预置二维码；仅普通站由 Go 按原始 Host 校验后返回；缺失或目录时返回 404。
-      - ./Wechat_qc_code.jpg:/usr/share/nginx/html/Wechat_qc_code.jpg:ro
+      # 可选预置二维码；文件放在 ./nginx/html/Wechat_qc_code.jpg。
+      # 只挂载目录，文件缺失时不会触发 Docker 的单文件目录创建，也不影响启动。
       # Nginx 访问日志目录；证书、私钥和日志不会被打进镜像。
       - ./nginx/logs:/var/log/nginx
     healthcheck:
