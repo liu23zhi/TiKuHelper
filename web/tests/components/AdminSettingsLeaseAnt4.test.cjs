@@ -11,6 +11,7 @@ const Antd = require('ant-design-vue')
 const axios = require('axios')
 const Swal = require('sweetalert2')
 const user = require('../../src/utils/currentUser.js')
+const { buildResponsePayload } = require('../../src/utils/requestHelpers.mjs')
 const pending = [], wrappers = [], detections = [], confirmations = []
 const originalAdapter = axios.defaults.adapter, originalFire = Swal.fire
 axios.defaults.adapter = config => new Promise(resolve => pending.push({
@@ -19,7 +20,7 @@ axios.defaults.adapter = config => new Promise(resolve => pending.push({
 }))
 const apiPath = path.resolve(__dirname, '../../src/api/SensitiveImageApi.js')
 const api = new Module(apiPath); api.loaded = true
-api.exports = { manualDetectSensitiveImage: payload => new Promise(resolve => detections.push({ payload, resolve })) }
+api.exports = { manualDetectSensitiveImage: payload => new Promise((resolve, reject) => detections.push({ payload, resolve, reject })) }
 require.cache[apiPath] = api
 Swal.fire = options => new Promise(resolve => confirmations.push({ options, resolve }))
 const Cache = require('../../src/components/CacheRetentionSettings.vue')
@@ -171,5 +172,29 @@ test('sensitive detection confirmation, resource changes, late completions and i
   assert.match(wrapper.text(), /检测正常/); assert.equal(wrapper.emitted('detected').length, 1)
   await wrapper.setProps({ disabled: true }); await settle()
   assert.equal(wrapper.find('button').exists(), false); assert.equal(wrapper.vm.feedback, '')
+})
+test('sensitive detection displays precheck failure and only the trusted diagnostic number', async () => {
+  user.setStoredCurrentUser(admin(80013)); const wrapper = await mounted(Detect, { sha: 'a'.repeat(64) })
+  await wrapper.get('button').trigger('click'); await settle(); confirmations[0].resolve({ isConfirmed: true }); await settle()
+  const id = '1'.repeat(32)
+  detections[0].resolve(buildResponsePayload({ status: 404, headers: { 'x-request-id': id }, data: {
+    code: 'SENSITIVE_IMAGE_BYTES_UNAVAILABLE', message: 'FIXTURE_RAW_UPSTREAM_BODY', requestId: '2'.repeat(32),
+  } })); await settle()
+  assert.match(wrapper.get('[role="status"]').text(), /未找到图片原始字节.*未调用检测服务/)
+  assert.equal(wrapper.get('[data-request-diagnostic]').text(), id)
+  assert.doesNotMatch(wrapper.text(), /FIXTURE_RAW_UPSTREAM_BODY|22222222/)
+  assert.equal(detections.length, 1)
+  assert.equal(wrapper.emitted('detected'), undefined)
+})
+
+test('an uncertain detection result tells the admin to refresh without offering an automatic retry', async () => {
+  user.setStoredCurrentUser(admin(80014)); const wrapper = await mounted(Detect, { sha: 'b'.repeat(64) })
+  await wrapper.get('button').trigger('click'); await settle(); confirmations[0].resolve({ isConfirmed: true }); await settle()
+  detections[0].reject(Object.assign(new Error('FIXTURE_PRIVATE_TRANSPORT'), { code: 'UNKNOWN_OUTCOME' })); await settle()
+  assert.match(wrapper.get('[role="status"]').text(), /结果尚未确认.*刷新/)
+  assert.equal(wrapper.find('[data-request-diagnostic]').exists(), false)
+  assert.doesNotMatch(wrapper.text(), /FIXTURE_PRIVATE_TRANSPORT/)
+  assert.equal(detections.length, 1)
+  assert.equal(wrapper.vm.busy, false)
 })
 process.on('exit', () => { axios.defaults.adapter = originalAdapter; Swal.fire = originalFire })
