@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -99,7 +100,8 @@ func collectLoginBruteforceCandidates(db *gorm.DB, rule entity.RiskRule, now tim
 	if !db.Migrator().HasTable(entity.TableNameLoginFailureEvent) {
 		return nil, nil
 	}
-	windowStart, windowEnd := now.Add(-riskBruteforceWindow), now
+	windowEnd := now.In(logger.ShanghaiLocation())
+	windowStart := windowEnd.Add(-riskBruteforceWindow)
 	timeExpr := riskWindowColumnExpr(db, "created_at")
 
 	// 一次查询取窗口内全部失败明细，在 Go 侧做两个维度的聚合。
@@ -111,10 +113,12 @@ func collectLoginBruteforceCandidates(db *gorm.DB, rule entity.RiskRule, now tim
 		UserID   int32
 		ClientIP string
 		Username string
+		Scene    string
+		Reason   string
 	}
 	var rows []failureRow
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.LoginFailureEvent{}).
-		Select("user_id, client_ip, username").
+		Select("user_id, client_ip, username, scene, reason").
 		Where("client_ip <> ''").
 		// ⚠️ 与 R9 的**关键区别**：R9 没有这一行（它必须把 user_id=0 也算进去）。
 		// R2 在两个维度上都不按 user_id 过滤，但账号维度的分组键是 user_id，
@@ -135,6 +139,7 @@ func collectLoginBruteforceCandidates(db *gorm.DB, rule entity.RiskRule, now tim
 	accountOrder := make([]int32, 0, 8)
 	// ── 维度二：IP（全算，含 user_id=0）──
 	ipCounts := make(map[string]int, 8)
+	passwordCounts := make(map[string]int)
 	ipUsernames := make(map[string]map[string]struct{}, 8)
 	ipOrder := make([]string, 0, 8)
 
@@ -162,6 +167,10 @@ func collectLoginBruteforceCandidates(db *gorm.DB, rule entity.RiskRule, now tim
 				ipUsernames[ip] = make(map[string]struct{}, 4)
 			}
 			ipCounts[ip]++
+			if (row.Scene == entity.LoginFailureScenePassword || row.Scene == entity.LoginFailureSceneAdminPassword) &&
+				(row.Reason == entity.LoginFailureReasonBadPassword || row.Reason == entity.LoginFailureReasonUserNotFound) {
+				passwordCounts[ip]++
+			}
 			if username != "" {
 				ipUsernames[ip][username] = struct{}{}
 			}
@@ -184,8 +193,8 @@ func collectLoginBruteforceCandidates(db *gorm.DB, rule entity.RiskRule, now tim
 			sampleIPs = append(sampleIPs, ip)
 		}
 		sortStrings(sampleIPs)
-		subject := riskBehaviorSubject(rule.RuleID,
-			riskBruteforceKindAccount+":"+strconv.FormatInt(int64(userID), 10), windowStart)
+		// A moving window is evidence, not an identity. Including its start would defeat the configured cooldown.
+		subject := rule.RuleID + ":" + riskBruteforceKindAccount + ":" + strconv.FormatInt(int64(userID), 10)
 		detail, err := json.Marshal(map[string]any{
 			"ruleId":        rule.RuleID,
 			"subjectKey":    subject,
@@ -258,22 +267,29 @@ func collectLoginBruteforceCandidates(db *gorm.DB, rule entity.RiskRule, now tim
 			sampleUsernames = append(sampleUsernames, username)
 		}
 		sortStrings(sampleUsernames)
-		subject := riskBehaviorSubject(rule.RuleID, riskBruteforceKindIP+":"+ip, windowStart)
+		qualified := float64(passwordCounts[ip]) >= threshold
+		subject := rule.RuleID + ":" + riskBruteforceKindIP + ":" + ip
+		if qualified {
+			// A previous captcha-only warning must not suppress the first actionable alert.
+			subject += ":password"
+		}
 		detailMap := map[string]any{
-			"ruleId":        rule.RuleID,
-			"subjectKey":    subject,
-			"dimension":     riskBruteforceKindIP,
-			"ip":            ip,
-			"threshold":     threshold,
-			"value":         count,
-			"failCount":     count,
-			"accountCount":  len(ipUsernames[ip]),
-			"sampleUsers":   sampleUsernames,
-			"windowMinutes": int(riskBruteforceWindow / time.Minute),
-			"windowKind":    "rolling",
-			"windowStart":   windowStart.Format(time.RFC3339),
-			"windowEnd":     windowEnd.Format(time.RFC3339),
-			"evaluatedAt":   now.Format(time.RFC3339),
+			"ruleId":                   rule.RuleID,
+			"subjectKey":               subject,
+			"dimension":                riskBruteforceKindIP,
+			"passwordFailures":         passwordCounts[ip],
+			"passwordFailureQualified": qualified,
+			"ip":                       ip,
+			"threshold":                threshold,
+			"value":                    count,
+			"failCount":                count,
+			"accountCount":             len(ipUsernames[ip]),
+			"sampleUsers":              sampleUsernames,
+			"windowMinutes":            int(riskBruteforceWindow / time.Minute),
+			"windowKind":               "rolling",
+			"windowStart":              windowStart.Format(time.RFC3339),
+			"windowEnd":                windowEnd.Format(time.RFC3339),
+			"evaluatedAt":              now.Format(time.RFC3339),
 			"evidenceNote": "同一 IP 在 10 分钟滑动窗口内失败达到阈值次数（96 §2.1 R2）；" +
 				"user_id 不参与计数（假账号名也算该 IP 在爆破）；" +
 				"已跳过撞库形态的 IP（不同账号数已达 R9 阈值），那些由 credential_stuffing 覆盖",

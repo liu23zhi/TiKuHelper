@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
@@ -40,6 +41,17 @@ func SystemSettingDetail(c *gin.Context) {
 }
 
 func PublicRegisterStatus(c *gin.Context) {
+	publicRegisterStatus(c, false)
+}
+
+// PublicRegistrationBrowserStatus is only fetched by the registration form.
+// Ordinary page/login status reads do not receive an identifier.
+func PublicRegistrationBrowserStatus(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	publicRegisterStatus(c, true)
+}
+
+func publicRegisterStatus(c *gin.Context, registrationForm bool) {
 	settings, err := loadPublicAuthSettings()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -48,6 +60,9 @@ func PublicRegisterStatus(c *gin.Context) {
 		return
 	}
 
+	if registrationForm && settings.RegisterEnabled {
+		ensureRegistrationBrowser(c, time.Now())
+	}
 	c.JSON(http.StatusOK, settings)
 }
 

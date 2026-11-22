@@ -67,6 +67,7 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   { value: 'proxy_ip_login', label: '代理IP登录（需配 ASN 名单）' },
   // R5：同一 /24 段 1h 内自助注册 ≥3 个账号
   // ⚠️ label 写明「仅自助注册」与「/24」，因为管理员建号不计入、段粒度是 /24
+  { value: 'device_register_burst', label: '同一注册浏览器批量注册' },
   { value: 'register_burst', label: '注册突增（同 /24 段 · 仅自助注册）' },
   // R17：同一用户 7 天内对同一道题反复搜题
   // ⚠️ label 写明「搜题」而非「提交」——本仓数据源是 billing_records（搜题计费）
@@ -86,7 +87,7 @@ export const RISK_SEVERITY_META = Object.freeze({
 // 风控命中「什么都没做」的唯一可能结论（96 C1）：
 // 页面上任何位置都不提供「封禁 / 拒绝 / 改状态」按钮，处置必须去黑名单或封禁各自的页面。
 export const RISK_ADVISORY_NOTE =
-  '风控只产生告警记录与企业微信推送。命中后不会封禁账号、不会拒绝请求、不会修改任何用户状态；处置请到「黑名单管理」或其他对应页面人工执行。'
+  '默认仅记录并按通知设置推送。两项核心保护可选择自动临时封单 IP；范围封禁或永久封禁须由管理员在告警中确认。白名单和黑名单总开关仍然有效。'
 
 export function riskRuleLabel(ruleId, detail = '', rules = []) {
   const key = String(ruleId ?? '').trim()
@@ -330,53 +331,6 @@ export function readRiskThrownMessage(error, fallback) {
   return message || fallback
 }
 
-// ⚠️ 判据 ②「页面能改阈值并落库」在本轮**未实现，原因在后端而不是前端**（实测）：
-//
-//   controller/risk_admin.go 只有 5 个 handler —— RiskWarningList / RiskWarningDetail /
-//   RiskWecomSettings / UpdateRiskWecomSettings / TestRiskWecomWebhook，**没有任何**
-//   risk_rules 的读或写接口；阈值 `risk_rule_<ruleId>_threshold` 是 system_settings 的键，
-//   而 UpdateSystemSettingInput（service/system_setting.go）是固定 struct，没有该字段，
-//   也没有通用的 key/value 透传口。
-//
-// 所以前端**故意不提供**阈值输入框：加一个会打到不存在路由上的控件，表现为
-// 「能填、能点保存、没有任何反应」，比缺失更难排查（本仓「假钉子」的同族形态）。
-// 落地判据②需要后端补一对 handler + 两条路由，那超出本任务的可写范围
-// （禁碰 router.go、risk_admin.go 不在可写清单），已在汇报里给出原文给队长接线。
-//
-// ─────────────────────────────────────────────────────────────────────
-// 2026-11 更新：上述阻塞**已解除**。后端补齐了
-// GET/PUT/DELETE /risk/thresholds[/:key] 与 GET /risk/config + PUT/DELETE /risk/config/:key，
-// 页面已提供全部输入控件。上面这段保留为历史记录（它解释了为什么这个页面
-// 曾经「有面板没输入框」）。
-
-// ─────────────────────────────────────────────────────────────────────
-// 旧版规则管理只支持内置项；当前规则目录与 CRUD 由服务端白名单检测器驱动。
-//
-// 当前已支持受控类型的新建与管理。任意表达式/脚本仍不得由浏览器提交执行。
-//
-//  1. `risk_rules` 确实是数据库表（entity/risk.go 的 RiskRule），但它**不是规则的来源**：
-//     `loadRiskRules`（service/risk_alert.go:464）遍历的是
-//     `entity.DefaultRiskRules()` 这个**代码常量切片**，只把 DB 行当「覆盖值」用。
-//     它在 L478 用 `result := make(..., len(defaults))` 只按 defaults 迭代 ——
-//     表里多出来的行会被**直接丢弃**，不报错、不告警。所以往表里插一条新规则，
-//     判定链根本看不到它。
-//
-//  2. 判定逻辑是代码：`EvaluateDebtAlerts`（risk_alert.go:511）是一串硬编码的
-//     `if rule, ok := enabledRules[entity.RiskRuleIDXxx]; ok { collectXxxCandidates(...) }`。
-//     新增一条规则必须新写一个 `collectXxxCandidates` + 在 entity 里登记常量 +
-//     在 riskThresholdSpecs 里登记阈值 —— 三处都是代码改动，不是数据录入。
-//
-//  3. `SetRiskRuleEnabledWithDB` 走 `isKnownRiskRuleID` 白名单（risk_threshold.go:620），
-//     未知 ruleId 直接返回 ErrRiskRuleUnknown。即「新建的规则连启停都设不了」。
-//
-// 以上仅记录原实现问题；执行层接入 registry 后，数据库中的受支持类型规则会参与判定。
-// ─────────────────────────────────────────────────────────────────────
-
-// RISK_BUILTIN_RULE_NOTICE 是「规则集内置、不可在管理页新增」的用户可见说明。
-//
-// 为什么必须有这段文案：管理员看到「规则清单」一定会找「新建」按钮。
-// 没有按钮却没有解释，最容易被理解成「这功能忘了做/坏了」，然后是反复提工单。
-// 写明「新增需要代码改动 + 需要的是哪一种改动」既解释现状，也给出正确路径。
 // 非数值配置的 kind → 前端控件类型。
 //
 // 与后端 service.RiskConfigKind* 逐字对齐；未知 kind 必须**报错而不是猜**

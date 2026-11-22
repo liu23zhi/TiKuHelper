@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       - name: 配置 Go 环境
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -237,7 +237,7 @@ jobs:
           persist-credentials: false
 
       - name: 配置 Go 环境
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -245,7 +245,7 @@ jobs:
       # 前端只由 frontend 作业构建一次，这里复用它的 artifact，
       # 避免 8 个矩阵各自 npm ci + npm run build（那是 8×几分钟）。
       - name: 下载前端构建产物
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: 前端构建产物-${{ github.sha }}
           path: web/dist
@@ -348,7 +348,7 @@ jobs:
       # 而这不是代码问题 —— 是「CI 拿不到 gitignore 的二进制」这个结构性事实。
       # 所以正确做法是在 CI 里真把它造出来，而不是放宽 Dockerfile 的门槛。
       - name: 下载并放置 userexam-crypto.exe
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: userexam-crypto-exe-${{ github.sha }}
           path: tools/userexam-crypto/dist
@@ -611,7 +611,7 @@ jobs:
           persist-credentials: false
 
       - name: 配置 Go 环境
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true

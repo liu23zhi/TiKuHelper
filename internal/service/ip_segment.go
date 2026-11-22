@@ -373,6 +373,10 @@ func MissingIPSegmentsWithDB(db *gorm.DB, candidates []entity.IPSegment) ([]enti
 // 选择规则：命中多条时取**最窄**的那一条（end-begin 最小），即精度最高的段。
 // 同一地址可能同时落在 standard 的大段与 commercial 的小段里 —— 小段的信息更精确。
 func FindIPSegmentWithDB(db *gorm.DB, ip string) (*entity.IPSegment, error) {
+	return findIPSegmentWithSource(db, ip, false)
+}
+
+func findIPSegmentWithSource(db *gorm.DB, ip string, standardOnly bool) (*entity.IPSegment, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -381,23 +385,15 @@ func FindIPSegmentWithDB(db *gorm.DB, ip string) (*entity.IPSegment, error) {
 		// IPv6 / 非法地址 → 段表不覆盖，交给调用方走上游。
 		return nil, nil
 	}
-	var rows []entity.IPSegment
-	err := db.Session(&gorm.Session{NewDB: true}).
-		Where("begin_ip <= ? AND end_ip >= ?", value, value).
-		Limit(32).
-		Find(&rows).Error
-	if err != nil {
-		return nil, err
+	q := db.Session(&gorm.Session{NewDB: true}).Where("begin_ip <= ? AND end_ip >= ?", value, value)
+	if standardOnly {
+		q = q.Where("source IN ?", []string{"", "standard"})
 	}
-	if len(rows) == 0 {
-		return nil, nil
+	// Order first: an arbitrary LIMIT before comparing widths can miss the most specific match.
+	var row entity.IPSegment
+	result := q.Order("(end_ip - begin_ip) ASC, fetched_at DESC, id DESC").Limit(1).Find(&row)
+	if result.Error != nil || result.RowsAffected == 0 {
+		return nil, result.Error
 	}
-	best := rows[0]
-	bestWidth := best.EndIP - best.BeginIP
-	for _, row := range rows[1:] {
-		if width := row.EndIP - row.BeginIP; width < bestWidth {
-			best, bestWidth = row, width
-		}
-	}
-	return &best, nil
+	return &row, nil
 }

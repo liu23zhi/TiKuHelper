@@ -264,6 +264,13 @@ func normalizeBlacklistWechat(raw string, matchType string) (NormalizedBlacklist
 // 只支持 prefix 一种 match_type（与 46-*.md §2.1 的「region 固定 prefix」一致）：
 // 地区规则的本质就是「按层级前缀收窄」，不存在 exact/CIDR 的对应物。
 func normalizeBlacklistRegion(raw string, matchType string) (NormalizedBlacklistValue, error) {
+	if matchType == blacklistMatchRegionScope {
+		if _, err := parseExactRegionScope(raw); err != nil {
+			return NormalizedBlacklistValue{}, err
+		}
+		return NormalizedBlacklistValue{Kind: BlacklistKindRegion, Pattern: raw, MatchType: matchType,
+			ValueHash: BlacklistPatternHashHex(raw), ValueMasked: raw}, nil
+	}
 	if matchType != "" && matchType != BlacklistMatchPrefix {
 		return NormalizedBlacklistValue{}, fmt.Errorf("%w：地区只支持 prefix", ErrInvalidBlacklistMatchType)
 	}

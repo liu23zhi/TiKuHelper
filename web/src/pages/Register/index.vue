@@ -22,7 +22,7 @@
         <div class="form-header">
           <div>
             <h2 class="form-title">公开注册</h2>
-            <div class="form-subtitle">注册后将创建普通用户账号。</div>
+            <div class="form-subtitle">为识别同一浏览器的批量注册，本站会设置有效期 24 小时的注册专用 Cookie；禁用此 Cookie 不影响注册。</div>
           </div>
         </div>
 
@@ -453,7 +453,7 @@ export default defineComponent({
     })
     const loadPublicAuthSettings = async owner => {
       if (!isCurrent(owner)) return null
-      const res = await getPublicRegisterStatus()
+      const res = await getPublicRegisterStatus({ forRegistration: true })
       if (!isCurrent(owner)) return null
       if (res?.status === 200) {
         const data = res?.data || {}

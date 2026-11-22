@@ -18,6 +18,7 @@ const UserList = () => import(/* webpackChunkName: "route-user-list" */ '../page
 const ArchivedUsers = () => import(/* webpackChunkName: "route-archived-users" */ '../pages/ArchivedUsers/index.vue')
 const UserUsagePage = () => import(/* webpackChunkName: "route-user-usage-page" */ '../pages/UserUsage/index.vue')
 const LogList = () => import(/* webpackChunkName: "route-log-list" */ '../pages/LogList/index.vue')
+const ExtensionLogs = () => import(/* webpackChunkName: "route-extension-logs" */ '../pages/ExtensionLogs/index.vue')
 const SearchAccountConfig = () => import(/* webpackChunkName: "route-search-account-config" */ '../pages/SearchAccountConfig/index.vue')
 const AISearchConfig = () => import(/* webpackChunkName: "route-a-i-search-config" */ '../pages/AISearchConfig/index.vue')
 const SystemSettings = () => import(/* webpackChunkName: "route-system-settings" */ '../pages/SystemSettings/index.vue')
@@ -203,6 +204,11 @@ const routes = [
         path: 'loglist',
         name: 'loglist',
         component: LogList,
+      },
+      {
+        path: 'extension-logs',
+        name: 'extension-logs',
+        component: ExtensionLogs,
       },
       {
         path: 'search-account-config',
@@ -433,6 +439,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 已归档账号：列表里有账号快照与绑定记录，只能管理员看（task_doc/76 §3.2.3）。
   'archived-users',
   'loglist',
+  'extension-logs',
   'service-status-admin',
   // 充值记录（2026-11-19）：**管理员专属**。它是充值订单的运营视图
   // （改状态、发起退款），普通用户看自己的入账在「个人使用 → 账单流水」。

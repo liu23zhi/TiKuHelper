@@ -41,6 +41,7 @@ func TestRiskThresholdSpecsMatchEntityDefaults(t *testing.T) {
 		"login_bruteforce":          10,
 		"refund_abuse":              3,
 		"register_burst":            3,
+		"device_register_burst":     3,
 		"answer_pattern_repeat":     20,
 		// R10 proxy_ip_login 的 Threshold 是**占位值 1**（它的判据是 ASN 名单，
 		// 不是数值阈值）。它不进 riskThresholdSpecs，由 risk_proxy_asn_list 单独管理。
@@ -544,8 +545,8 @@ func TestRiskRuleStatesReflectConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("states: %v", err)
 	}
-	if len(states) != 17 {
-		t.Fatalf("规则数 = %d, want 17", len(states))
+	if len(states) != 18 {
+		t.Fatalf("规则数 = %d, want 18", len(states))
 	}
 	for _, state := range states {
 		if !state.Exists {

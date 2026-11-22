@@ -76,6 +76,7 @@ type BlacklistCIDRRule struct {
 // 为什么存解析后的字段而不是留原始 prefix：§2.4 的结论就是「不做字符串前缀匹配」——
 // 前缀匹配会把「云南XXX」这类脏值一起命中，也无法把「省」与「同名的市」区分开。
 type BlacklistRegionRule struct {
+	scope *BlacklistRegionLocation // strict four-level risk rule; nil for legacy rules
 	// Geo 是地区段（国家 / 省 / 市 任一层级比较）；空 = 不限。
 	Geo string
 	// City 是市级段；空 = 不限。
@@ -142,6 +143,11 @@ func newBlacklistSnapshot(now time.Time, enabled bool) *BlacklistSnapshot {
 	}
 }
 
+// A delayed or failed refresh must never extend a temporary IP or region block.
+func (r *BlacklistRule) activeAt(now time.Time) bool {
+	return r != nil && (r.ExpiresAt == nil || now.Before(*r.ExpiresAt))
+}
+
 // MatchIP 判定一个客户端 IP 是否命中（精确优先，再扫 CIDR）。
 //
 // 规范化只用 net.ParseIP：不做字符串前缀比较（46-*.md §1.1）。
@@ -159,11 +165,12 @@ func (s *BlacklistSnapshot) MatchIP(clientIP string) (BlacklistMatch, bool) {
 	if ip == nil {
 		return BlacklistMatch{}, false
 	}
-	if rule, ok := s.ipExact[ip.String()]; ok && rule != nil {
+	now := time.Now()
+	if rule := s.ipExact[ip.String()]; rule.activeAt(now) {
 		return rule.toMatch(), true
 	}
 	for _, cidrRule := range s.ipCIDR {
-		if cidrRule.Network != nil && cidrRule.Network.Contains(ip) {
+		if cidrRule.Network != nil && cidrRule.Network.Contains(ip) && cidrRule.Rule.activeAt(now) {
 			return cidrRule.Rule.toMatch(), true
 		}
 	}
@@ -383,6 +390,14 @@ func (s *BlacklistSnapshot) addRule(rule *BlacklistRule) bool {
 		//
 		// 保留「解析失败就跳过这一条」的性质：一条拼错的地名规则绝不能让整次加载失败
 		// （一条脏行 = 全站放开，是 fail-open 的反面）。
+		if rule.MatchType == blacklistMatchRegionScope {
+			scope, err := parseExactRegionScope(rule.Pattern)
+			if err != nil {
+				return false
+			}
+			s.region = append(s.region, BlacklistRegionRule{scope: &scope, Rule: rule})
+			return true
+		}
 		regionPattern, err := ParseBlacklistRegionPattern(rule.Pattern)
 		if err != nil {
 			logger.SysWarn(fmt.Sprintf("黑名单规则 %d 的地区模式 %q 无法解析，已跳过：%v", rule.EntryID, rule.Pattern, err))
