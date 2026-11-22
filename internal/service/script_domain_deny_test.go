@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
@@ -277,5 +278,140 @@ func TestScriptDomainDeniedRunningSessionStopsAndRestores(t *testing.T) {
 	}
 	if _, _, err := ResolveScriptRunSessionWithDB(db, "Bearer "+session.Token, "deny-running"); err != nil {
 		t.Fatalf("removing deny did not restore running session: %v", err)
+	}
+}
+
+func TestScriptDomainDeniedLegacyRootDoesNotDenyConcreteChild(t *testing.T) {
+	for _, operation := range []string{"create", "move", "entry-and-ticket"} {
+		t.Run(operation, func(t *testing.T) {
+			db, owner, script := seedScriptReleaseGuard(t)
+			if _, err := scriptDeniedSettings(t, db, `{"deniedDomains":["example.test","other.test"]}`); err != nil {
+				t.Fatal(err)
+			}
+			switch operation {
+			case "create":
+				created, err := CreateUserScriptWithDB(db, owner, CreateUserScriptInput{Name: "allowed child", VersionID: script.VersionID, BaseDomain: "example.test"})
+				if err != nil {
+					t.Fatalf("exact root deny must allow newly allocated child: %v", err)
+				}
+				if created.BaseDomain != "example.test" || !created.UseWildcardDomain {
+					t.Fatalf("legacy child creation changed address semantics: %+v", created.UserScript)
+				}
+			case "move":
+				moved, err := UpdateUserScriptWithDB(db, owner, script.ID, UpdateUserScriptInput{BaseDomain: "other.test"})
+				if err != nil || moved.BaseDomain != "other.test" {
+					t.Fatalf("exact root deny must allow moving to a concrete child: %v", err)
+				}
+				script = moved
+			}
+			host := script.ShortCode + "." + script.BaseDomain
+			if _, err := ResolvePublicScriptWithDB(db, host, ""); err != nil {
+				t.Errorf("root deny blocked an allowed legacy child entry %q: %v", host, err)
+			}
+			grant, err := IssueScriptExchangeTokenWithDB(db, owner, script.ID, 0)
+			if err != nil {
+				t.Fatalf("root deny blocked allowed child ticket: %v", err)
+			}
+			if _, err := ExchangeScriptTokenWithDB(db, script.ShortCode, grant.Token); err != nil {
+				t.Fatalf("root deny blocked allowed child exchange: %v", err)
+			}
+		})
+	}
+}
+
+func TestScriptDomainDeniedShortOriginPersistsThroughRunningSession(t *testing.T) {
+	for _, leased := range []bool{false, true} {
+		t.Run(map[bool]string{false: "run-download", true: "lease-heartbeat"}[leased], func(t *testing.T) {
+			db, owner, _, script := shortAuthorizationFixture(t)
+			if _, err := ConfigureScriptShortAuthorizationWithDB(db, owner, script.ID, ConfigureScriptShortAuthorizationInput{Enabled: true, Address: "muioi.com/short-run", DurationMinutes: 5}); err != nil {
+				t.Fatal(err)
+			}
+			_, grant, err := ConsumeScriptShortAuthorizationWithDB(db, "muioi.com", "/short-run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket, err := ExchangeScriptTokenWithDB(db, script.ShortCode, grant.Token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const identity = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+			var session ScriptRunSessionGrant
+			if leased {
+				session, err = ActivateLeasedScriptRunSessionWithDB(db, script.ShortCode, ticket.ActivationToken, identity, "127.0.0.1", 0)
+			} else {
+				session, err = ActivateScriptRunSessionWithDB(db, script.ShortCode, ticket.ActivationToken, identity)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(blocked bool) {
+				t.Helper()
+				_, stored, authErr := ResolveScriptRunSessionWithDB(db, "Bearer "+session.Token, identity, "127.0.0.1")
+				if (authErr != nil) != blocked || (authErr != nil && strings.Contains(authErr.Error(), "muioi.com")) {
+					t.Errorf("short origin auth blocked=%v: %v", blocked, authErr)
+				}
+				if authErr == nil {
+					wire, _ := json.Marshal(stored)
+					if strings.Contains(string(wire), "short-run") || strings.Contains(string(wire), "launchAddress") {
+						t.Errorf("run session JSON exposed launcher address: %s", wire)
+					}
+				}
+				if leased {
+					_, err = HeartbeatScriptRunSessionWithDB(db, script.ShortCode, "Bearer "+session.Token, identity, "127.0.0.1")
+				} else {
+					_, err = DownloadScriptVersionByRunSessionWithDB(db, script.ShortCode, "Bearer "+session.Token, identity)
+				}
+				if (err != nil) != blocked {
+					t.Errorf("short origin heartbeat/download blocked=%v: %v", blocked, err)
+				}
+			}
+			check(false)
+			if _, err := scriptDeniedSettings(t, db, `{"deniedDomains":["muioi.com"]}`); err != nil {
+				t.Fatal(err)
+			}
+			check(true)
+			if _, err := scriptDeniedSettings(t, db, `{"deniedDomains":[]}`); err != nil {
+				t.Fatal(err)
+			}
+			check(false)
+		})
+	}
+}
+
+func TestScriptDomainDeniedRunSessionMigrationKeepsExistingRows(t *testing.T) {
+	db := newScriptTestDB(t)
+	if db.Migrator().HasColumn(&entity.ScriptRunSession{}, "launch_address") {
+		if err := db.Migrator().DropColumn(&entity.ScriptRunSession{}, "launch_address"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activated := time.Now().Truncate(time.Second)
+	expires := activated.Add(time.Hour)
+	legacy := map[string]any{"id": 1, "script_id": 1, "user_id": 2, "access_token_id": 3, "token_hash": "existing-token-digest", "identity_hash": "existing-identity-digest", "activated_at": activated, "expires_at": expires}
+	if err := db.Table(entity.TableNameScriptRunSession).Create(legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := db.AutoMigrate(&entity.ScriptRunSession{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !db.Migrator().HasColumn(&entity.ScriptRunSession{}, "launch_address") {
+		t.Fatal("AutoMigrate did not add launch_address to existing sessions")
+	}
+	var stored struct {
+		ID            int64
+		UserID        int32
+		TokenHash     string
+		IdentityHash  string
+		LaunchAddress string
+		ActivatedAt   time.Time
+		ExpiresAt     time.Time
+	}
+	if err := db.Table(entity.TableNameScriptRunSession).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ID != 1 || stored.UserID != 2 || stored.TokenHash != "existing-token-digest" || stored.IdentityHash != "existing-identity-digest" || stored.LaunchAddress != "" || !stored.ActivatedAt.Equal(activated) || !stored.ExpiresAt.Equal(expires) {
+		t.Fatalf("session migration changed existing data: %+v", stored)
 	}
 }

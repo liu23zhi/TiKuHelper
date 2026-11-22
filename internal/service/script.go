@@ -362,7 +362,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 				return err
 			}
 		} else {
-			if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
+			if err := authorizationSettings.validateDomainAllowed(baseDomain); err != nil {
 				return err
 			}
 			useWildcard = defaultScriptUseWildcardWithDB(tx, baseDomain)
@@ -790,7 +790,7 @@ func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input Upda
 			if err := validateScriptBaseDomain(baseDomain); err != nil {
 				return err
 			}
-			if err := settings.validateDomain(baseDomain); err != nil {
+			if err := settings.validateDomainAllowed(baseDomain); err != nil {
 				return err
 			}
 			script.BaseDomain = baseDomain
@@ -1261,7 +1261,7 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 	if err != nil {
 		return entity.UserScript{}, err
 	}
-	if settings.validateHostNotDenied(host) != nil || settings.validateHostNotDenied(domain) != nil || !authorizeScriptPublicPath(settings.Formats(), domain, cleanPath) {
+	if settings.validateHostNotDenied(host) != nil || !authorizeScriptPublicPath(settings.Formats(), domain, cleanPath) {
 		return entity.UserScript{}, ErrScriptNotFound
 	}
 	return script, nil

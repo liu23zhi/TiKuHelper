@@ -129,6 +129,9 @@ type ScriptRunSession struct {
 	AccessTokenID int32  `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
 	TokenHash     string `gorm:"column:token_hash;type:char(64);not null;uniqueIndex" json:"-"`
 	IdentityHash  string `gorm:"column:identity_hash;type:char(64);not null" json:"-"`
+	// LaunchAddress retains a short entry's origin for immediate domain-policy
+	// rechecks. Historical sessions keep the empty default and use the launcher.
+	LaunchAddress string `gorm:"column:launch_address;type:varchar(512);not null;default:''" json:"-"`
 	// LeaseSlot is unique while a managed run owns the script. NULL preserves
 	// retired and historical sessions without making the old rows exclusive.
 	LeaseSlot       *int32     `gorm:"column:lease_slot;uniqueIndex" json:"-"`

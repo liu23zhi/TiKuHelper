@@ -184,7 +184,7 @@ func (settings ScriptDomainSettings) validateLauncherDomain(script entity.UserSc
 		return err
 	}
 	if script.LauncherLocator == nil {
-		return settings.validateDomain(script.BaseDomain)
+		return settings.validateDomainAllowed(script.BaseDomain)
 	}
 	formats := settings.Formats()
 	if len(formats) == 0 {
@@ -413,6 +413,13 @@ func (settings ScriptDomainSettings) validateDomain(domain string) error {
 	if err := settings.validateHostNotDenied(host); err != nil {
 		return err
 	}
+	return settings.validateDomainAllowed(host)
+}
+
+// Legacy BaseDomain is a template input, not the final public hostname. Its
+// allow check must not apply exact deny rules meant for the concrete address.
+func (settings ScriptDomainSettings) validateDomainAllowed(domain string) error {
+	host := normalizeScriptDomain(domain)
 	formats := settings.Formats()
 	if len(formats) == 0 {
 		return nil
