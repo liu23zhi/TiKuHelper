@@ -7,6 +7,7 @@ import (
 
 // Config 所有的配置文件
 type Config struct {
+	SiteHosts         []string             `yaml:"siteHosts" mapstructure:"siteHosts"`
 	SQPProxy          SQPProxyConfig       `yaml:"sqpProxy" mapstructure:"sqpProxy"`
 	Limit             LimitConfig          `yaml:"limit"`
 	API               []search.API         `yaml:"api"`

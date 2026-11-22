@@ -24,6 +24,8 @@ import (
 func SetAPIRouter(router *gin.Engine) {
 	router.Use(middleware.RequestCorrelation, middleware.CORS, middleware.SecurityHeaders)
 
+	registerDeploymentQRCode(router, "/usr/share/nginx/html/Wechat_qc_code.jpg")
+
 	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Auth, middleware.RequireAdmin, controller.Proxy)
 
 	apiRouter := router.Group("/api")

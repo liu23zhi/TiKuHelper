@@ -571,7 +571,7 @@ func ScriptBinaryDownload(c *gin.Context) {
 // ScriptPublicHostMiddleware handles the root of a wildcard host before the
 // embedded web app's static middleware gets a chance to serve index.html.
 func ScriptPublicHostMiddleware(c *gin.Context) {
-	if c.Request.Method == http.MethodGet && c.Request.URL.Path == "/" {
+	if !c.GetBool(platformRootKey) && c.Request.Method == http.MethodGet && c.Request.URL.Path == "/" {
 		if servePublicScriptBootstrap(c) {
 			c.Abort()
 			return
@@ -583,6 +583,9 @@ func ScriptPublicHostMiddleware(c *gin.Context) {
 // ScriptPublicPath is called from the web router's NoRoute handler for the
 // non-wildcard `/shortCode` form.
 func ScriptPublicPath(c *gin.Context) bool {
+	if c.GetBool(platformRootKey) && c.Request.URL.Path == "/" {
+		return false
+	}
 	// 两个 API 前缀都要排除（2026-11-14 改名 /adapter-service → /api）：
 	// 它们是接口路径，不是脚本短码。只排新前缀会让旧路径的未知请求被当成
 	// 短码去查库（多一次无谓查询，且可能命中一个同名短码）。
@@ -598,6 +601,9 @@ func ScriptPublicPath(c *gin.Context) bool {
 }
 
 func servePublicScriptBootstrap(c *gin.Context) bool {
+	if service.IsReservedScriptHostRoot(c.Request.Host, c.Request.URL.Path) {
+		return false
+	}
 	db := scriptDB()
 	if db == nil {
 		return false

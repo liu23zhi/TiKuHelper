@@ -111,6 +111,9 @@ func validateScriptShortAddressForUseWithDB(db *gorm.DB, address, fallbackHost s
 	if err != nil {
 		return "", "", err
 	}
+	if IsReservedScriptHostRoot(host, path) {
+		return "", "", fmt.Errorf("%w：主站域名保留，不能分配为脚本子域名", ErrScriptDomainDenied)
+	}
 	if err := settings.validateHostNotDenied(host); err != nil {
 		return "", "", err
 	}

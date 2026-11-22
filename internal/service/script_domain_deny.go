@@ -64,5 +64,8 @@ func (settings ScriptDomainSettings) validateAddressNotDenied(address string) er
 	if err != nil || parsed.Host == "" {
 		return ErrScriptDomainUnavailable
 	}
+	if IsReservedScriptHostRoot(parsed.Host, parsed.Path) {
+		return fmt.Errorf("%w：主站域名保留，不能分配为脚本子域名", ErrScriptDomainDenied)
+	}
 	return settings.validateHostNotDenied(parsed.Host)
 }
