@@ -727,6 +727,13 @@ func DownloadScriptVersion(c *gin.Context) {
 func writeScriptError(c *gin.Context, err error, fallback string) {
 	status, message := http.StatusInternalServerError, fallback
 	switch {
+	case errors.Is(err, service.ErrScriptDomainDenied):
+		value, _ := c.Get("user")
+		if user, ok := value.(*entity.User); ok && user != nil && user.ID > 0 {
+			status, message = http.StatusBadRequest, err.Error()
+		} else {
+			status, message = http.StatusNotFound, service.ErrScriptNotFound.Error()
+		}
 	case errors.Is(err, service.ErrScriptShortAddressInUse):
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptReservedPrefix), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):

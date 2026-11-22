@@ -422,6 +422,9 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		// Store only the locator. The owner view derives the purpose-separated
 		// launcher capability; a one-use exchange must never disclose it.
 		script.Instruction = BuildScriptCommandURL(script)
+		if err := authorizationSettings.validateAddressNotDenied(script.Instruction); err != nil {
+			return err
+		}
 		if err := checkScriptAddressAvailable(tx, script.Instruction, scriptAddressFull, 0); err != nil {
 			return err
 		}
@@ -770,6 +773,13 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 }
 
 func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input UpdateUserScriptInput, updates map[string]any) error {
+	if input.BaseDomain == "" && input.Scheme == "" && input.UseWildcardDomain == nil {
+		return nil
+	}
+	settings, err := GetScriptDomainSettingsWithDB(tx)
+	if err != nil {
+		return err
+	}
 	previous := BuildScriptCommandURL(script)
 	if input.BaseDomain != "" {
 		baseDomain := normalizeScriptDomain(input.BaseDomain)
@@ -780,7 +790,7 @@ func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input Upda
 			if err := validateScriptBaseDomain(baseDomain); err != nil {
 				return err
 			}
-			if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
+			if err := settings.validateDomain(baseDomain); err != nil {
 				return err
 			}
 			script.BaseDomain = baseDomain
@@ -801,6 +811,9 @@ func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input Upda
 	}
 	if input.BaseDomain != "" || input.Scheme != "" || input.UseWildcardDomain != nil {
 		address := BuildScriptCommandURL(script)
+		if err := settings.validateAddressNotDenied(address); err != nil {
+			return err
+		}
 		if _, _, previousKey := parseScriptReservedAddress(previous); previousKey != "" {
 			if _, _, key := parseScriptReservedAddress(address); key != previousKey {
 				if err := preservePreviousScriptAddress(tx, previous, scriptAddressFull, script.ID); err != nil {
@@ -905,7 +918,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := tx.Where("id = ? AND short_code = ? AND deleted_at IS NULL AND enabled = ?", grant.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
-		if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
+		if err := validateScriptLaunchActorWithDB(tx, script, grant.LaunchAddress); err != nil {
 			return err
 		}
 		if err := validateIssuedScriptAuthorization(script, grant, time.Now()); err != nil {
@@ -940,7 +953,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 			return err
 		}
 		activationExpiresAt := now.Add(ScriptExchangeTokenTTL)
-		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt, AuthorizationKind: grant.AuthorizationKind, AuthorizationGeneration: grant.AuthorizationGeneration}).Error; err != nil {
+		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt, LaunchAddress: grant.LaunchAddress, AuthorizationKind: grant.AuthorizationKind, AuthorizationGeneration: grant.AuthorizationGeneration}).Error; err != nil {
 			return err
 		}
 		launchOrigin := ScriptCommandOrigin(script)
@@ -974,8 +987,8 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 	return result, err
 }
 
-func validateScriptLaunchKeyWithDB(db *gorm.DB, script entity.UserScript) error {
-	if err := validateScriptLauncherDomainWithDB(db, script); err != nil {
+func validateScriptLaunchKeyWithDB(db *gorm.DB, script entity.UserScript, launchAddresses ...string) error {
+	if err := validateScriptLauncherDomainWithDB(db, script, launchAddresses...); err != nil {
 		return err
 	}
 	var key entity.AccessToken
@@ -988,8 +1001,8 @@ func validateScriptLaunchKeyWithDB(db *gorm.DB, script entity.UserScript) error 
 	return nil
 }
 
-func validateScriptLaunchActorWithDB(db *gorm.DB, script entity.UserScript) error {
-	if err := validateScriptLaunchKeyWithDB(db, script); err != nil {
+func validateScriptLaunchActorWithDB(db *gorm.DB, script entity.UserScript, launchAddresses ...string) error {
+	if err := validateScriptLaunchKeyWithDB(db, script, launchAddresses...); err != nil {
 		return err
 	}
 	var user entity.User
@@ -1244,11 +1257,11 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 	if domain == "" || !strings.EqualFold(host, scriptHost) {
 		return entity.UserScript{}, ErrScriptNotFound
 	}
-	rules, err := scriptDomainRulesWithDB(db)
+	settings, err := GetScriptDomainSettingsWithDB(db)
 	if err != nil {
 		return entity.UserScript{}, err
 	}
-	if !authorizeScriptPublicPath(rules, domain, cleanPath) {
+	if settings.validateHostNotDenied(host) != nil || settings.validateHostNotDenied(domain) != nil || !authorizeScriptPublicPath(settings.Formats(), domain, cleanPath) {
 		return entity.UserScript{}, ErrScriptNotFound
 	}
 	return script, nil

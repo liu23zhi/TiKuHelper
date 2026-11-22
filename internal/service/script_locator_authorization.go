@@ -11,6 +11,10 @@ import (
 )
 
 func rotateScriptLocatorInTx(tx *gorm.DB, script entity.UserScript) (string, error) {
+	settings, err := GetScriptDomainSettingsWithDB(tx)
+	if err != nil {
+		return "", err
+	}
 	if err := preservePreviousScriptAddress(tx, BuildScriptCommandURL(script), scriptAddressFull, script.ID); err != nil {
 		return "", err
 	}
@@ -23,6 +27,9 @@ func rotateScriptLocatorInTx(tx *gorm.DB, script entity.UserScript) (string, err
 		candidate := script
 		candidate.LauncherLocator = &value
 		address := BuildScriptCommandURL(candidate)
+		if err := settings.validateAddressNotDenied(address); err != nil {
+			return "", err
+		}
 		if err := checkScriptAddressAvailable(tx, address, scriptAddressFull, 0); err != nil {
 			if errors.Is(err, ErrScriptShortAddressInUse) {
 				continue

@@ -107,10 +107,14 @@ func validateScriptShortAddressForUseWithDB(db *gorm.DB, address, fallbackHost s
 			return "", "", ErrScriptShortAddressInvalid
 		}
 	}
-	formats, err := ScriptDomainFormatsWithDB(db)
+	settings, err := GetScriptDomainSettingsWithDB(db)
 	if err != nil {
 		return "", "", err
 	}
+	if err := settings.validateHostNotDenied(host); err != nil {
+		return "", "", err
+	}
+	formats := settings.Formats()
 	if len(formats) == 0 && path != "" && host == normalizeScriptLauncherHost(fallbackHost) {
 		return "https://" + host + path, "https://" + host, nil
 	}
@@ -148,7 +152,11 @@ func allocateScriptShortAddress(tx *gorm.DB, scriptID int32, input ConfigureScri
 	const entropyBytes = 16
 	const prefix = "s-"
 	origin := ScriptLauncherOrigin{Host: input.RequestHost, HTTPS: input.RequestHTTPS}
-	domain, wildcard, err := selectScriptAddressDomain(tx, input.DomainFormat, origin, len(prefix)+2*entropyBytes)
+	settings, err := GetScriptDomainSettingsWithDB(tx)
+	if err != nil {
+		return "", "", err
+	}
+	domain, wildcard, err := selectScriptAddressDomain(settings, input.DomainFormat, origin, len(prefix)+2*entropyBytes)
 	if err != nil {
 		return "", "", err
 	}
@@ -158,6 +166,9 @@ func allocateScriptShortAddress(tx *gorm.DB, scriptID int32, input ConfigureScri
 			return "", "", err
 		}
 		address := scriptAddressWithSlot(domain, prefix+hex.EncodeToString(secret[:]), wildcard)
+		if err := settings.validateAddressNotDenied(address); err != nil {
+			return "", "", err
+		}
 		// Automatic issuance always rotates the address, even for the same script.
 		if err := checkScriptAddressAvailable(tx, address, scriptAddressShort, 0); err != nil {
 			if errors.Is(err, ErrScriptShortAddressInUse) {

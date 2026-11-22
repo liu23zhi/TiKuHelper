@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"sort"
@@ -28,6 +29,7 @@ const ScriptDomainSettingsKey = "script_domain_settings"
 // 列表为空 = 不限制（保持既有语义：没配置过就不阻塞脚本创建）。
 type ScriptDomainSettings struct {
 	Domains               []string `json:"domains"`
+	DeniedDomains         []string `json:"deniedDomains"`
 	AllowFullNeverExpire  *bool    `json:"allowFullNeverExpire"`
 	AllowShortNeverExpire *bool    `json:"allowShortNeverExpire"`
 }
@@ -45,7 +47,11 @@ type ScriptLauncherOrigin struct {
 // generateScriptLauncherAddress uses an administrator-controlled template, or
 // the console host when the template list is empty.
 func generateScriptLauncherAddress(db *gorm.DB, requestedFormat string, origin ScriptLauncherOrigin) (string, *string, bool, error) {
-	domain, wildcard, err := selectScriptAddressDomain(db, requestedFormat, origin, 36)
+	settings, err := GetScriptDomainSettingsWithDB(db)
+	if err != nil {
+		return "", nil, false, err
+	}
+	domain, wildcard, err := selectScriptAddressDomain(settings, requestedFormat, origin, 36)
 	if err != nil {
 		return "", nil, false, err
 	}
@@ -55,7 +61,11 @@ func generateScriptLauncherAddress(db *gorm.DB, requestedFormat string, origin S
 			return "", nil, false, err
 		}
 		locator := id.String()
-		if err := checkScriptAddressAvailable(db, scriptAddressWithSlot(domain, locator, wildcard), scriptAddressFull, 0); err != nil {
+		address := scriptAddressWithSlot(domain, locator, wildcard)
+		if err := settings.validateAddressNotDenied(address); err != nil {
+			return "", nil, false, err
+		}
+		if err := checkScriptAddressAvailable(db, address, scriptAddressFull, 0); err != nil {
 			if errors.Is(err, ErrScriptShortAddressInUse) {
 				continue
 			}
@@ -66,11 +76,8 @@ func generateScriptLauncherAddress(db *gorm.DB, requestedFormat string, origin S
 	return "", nil, false, ErrScriptShortAddressInUse
 }
 
-func selectScriptAddressDomain(db *gorm.DB, requestedFormat string, origin ScriptLauncherOrigin, slotLength int) (string, bool, error) {
-	formats, err := ScriptDomainFormatsWithDB(db)
-	if err != nil {
-		return "", false, err
-	}
+func selectScriptAddressDomain(settings ScriptDomainSettings, requestedFormat string, origin ScriptLauncherOrigin, slotLength int) (string, bool, error) {
+	formats := settings.Formats()
 	format, specified, err := parseScriptDomainFormat(requestedFormat)
 	if err != nil {
 		return "", false, err
@@ -154,13 +161,34 @@ func scriptDomainEntryCovers(format ScriptDomainFormat, host, path string) bool 
 		(path != "" && scriptDomainPathCovers(format, host))
 }
 
-func validateScriptLauncherDomainWithDB(db *gorm.DB, script entity.UserScript) error {
-	if script.LauncherLocator == nil {
-		return ValidateScriptDomainWithDB(db, script.BaseDomain)
-	}
-	formats, err := ScriptDomainFormatsWithDB(db)
-	if err != nil || len(formats) == 0 {
+func validateScriptLauncherDomainWithDB(db *gorm.DB, script entity.UserScript, launchAddresses ...string) error {
+	settings, err := GetScriptDomainSettingsWithDB(db)
+	if err != nil {
 		return err
+	}
+	if err := settings.validateLauncherDomain(script); err != nil {
+		return err
+	}
+	for _, address := range launchAddresses {
+		if address != "" {
+			if err := settings.validateAddressNotDenied(address); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (settings ScriptDomainSettings) validateLauncherDomain(script entity.UserScript) error {
+	if err := settings.validateAddressNotDenied(BuildScriptCommandURL(script)); err != nil {
+		return err
+	}
+	if script.LauncherLocator == nil {
+		return settings.validateDomain(script.BaseDomain)
+	}
+	formats := settings.Formats()
+	if len(formats) == 0 {
+		return nil
 	}
 	address, err := url.Parse(BuildScriptCommandURL(script))
 	if err != nil {
@@ -206,6 +234,7 @@ func decodeScriptDomainSettings(value string) (ScriptDomainSettings, error) {
 		return ScriptDomainSettings{}, err
 	}
 	settings.Domains = normalizeScriptDomainList(stored.Domains)
+	settings.DeniedDomains = normalizeScriptDeniedDomains(stored.DeniedDomains)
 	if stored.AllowFullNeverExpire != nil {
 		settings.AllowFullNeverExpire = stored.AllowFullNeverExpire
 	}
@@ -219,6 +248,7 @@ func defaultScriptDomainSettings() ScriptDomainSettings {
 	allowFullNeverExpire, allowShortNeverExpire := true, false
 	return ScriptDomainSettings{
 		Domains:               []string{},
+		DeniedDomains:         []string{},
 		AllowFullNeverExpire:  &allowFullNeverExpire,
 		AllowShortNeverExpire: &allowShortNeverExpire,
 	}
@@ -232,12 +262,20 @@ func UpdateScriptDomainSettingsWithDB(db *gorm.DB, input ScriptDomainSettings) (
 	if db == nil {
 		return ScriptDomainSettings{}, errors.New("数据库未初始化")
 	}
-	for _, value := range input.Domains {
+	for index, value := range input.Domains {
 		if strings.TrimSpace(value) == "" {
 			continue
 		}
 		if err := validateScriptDomainEntry(value); err != nil {
-			return ScriptDomainSettings{}, err
+			return ScriptDomainSettings{}, fmt.Errorf("脚本可用域名第 %d 行 %q：%w", index+1, value, err)
+		}
+	}
+	for index, value := range input.DeniedDomains {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, err := parseScriptDeniedDomain(value); err != nil {
+			return ScriptDomainSettings{}, fmt.Errorf("禁止设置的域名第 %d 行：%w", index+1, err)
 		}
 	}
 	db = db.Session(&gorm.Session{NewDB: true})
@@ -257,6 +295,9 @@ func UpdateScriptDomainSettingsWithDB(db *gorm.DB, input ScriptDomainSettings) (
 		}
 		if input.Domains != nil {
 			current.Domains = normalizeScriptDomainList(input.Domains)
+		}
+		if input.DeniedDomains != nil {
+			current.DeniedDomains = normalizeScriptDeniedDomains(input.DeniedDomains)
 		}
 		if input.AllowFullNeverExpire != nil {
 			current.AllowFullNeverExpire = input.AllowFullNeverExpire
@@ -360,14 +401,22 @@ func normalizeScriptDomainList(values []string) []string {
 //   - `a.com/*` 覆盖主机恰好是 `a.com` 的脚本（路径部分由脚本绑定决定，
 //     不在这里判定 —— 创建脚本时还没分配具体路径）。
 func ValidateScriptDomainWithDB(db *gorm.DB, domain string) error {
-	formats, err := ScriptDomainFormatsWithDB(db)
+	settings, err := GetScriptDomainSettingsWithDB(db)
 	if err != nil {
 		return err
 	}
+	return settings.validateDomain(domain)
+}
+
+func (settings ScriptDomainSettings) validateDomain(domain string) error {
+	host := normalizeScriptDomain(domain)
+	if err := settings.validateHostNotDenied(host); err != nil {
+		return err
+	}
+	formats := settings.Formats()
 	if len(formats) == 0 {
 		return nil
 	}
-	host := normalizeScriptDomain(domain)
 	if host == "" {
 		return ErrScriptDomainUnavailable
 	}
