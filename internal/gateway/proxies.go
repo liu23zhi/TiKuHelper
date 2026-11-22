@@ -12,6 +12,8 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+
+	"github.com/itihey/tikuAdapter/internal/proxysource"
 )
 
 const trustAllProxiesIPv4 = "0.0.0.0/0"
@@ -21,6 +23,7 @@ var trustedProxyKeyPrefixes = []string{"trusted_proxies", "trustedproxies", "tru
 var defaultTrustedProxies = []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"}
 
 func ProxyConfig(raw string) (string, error) {
+	raw = proxysource.Clean(raw)
 	var explicit []string
 	if strings.TrimSpace(raw) != "" && !strings.EqualFold(strings.TrimSpace(raw), "none") {
 		entries, invalid := parseTrustedProxyEntries(raw)

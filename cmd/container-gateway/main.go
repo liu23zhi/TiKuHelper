@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/gateway"
+	"github.com/itihey/tikuAdapter/internal/proxysource"
 )
 
 const runtimeRoot = "/run/tiku-gateway"
@@ -40,19 +41,11 @@ func run(args []string) error {
 		command.Stderr = os.Stderr
 		return command.Run()
 	}
-	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
-	if raw == "" && strings.TrimSpace(os.Getenv("TRUSTED_PROXIES_FILE")) != "" {
-		data, err := os.ReadFile(os.Getenv("TRUSTED_PROXIES_FILE"))
-		if err != nil {
-			return fmt.Errorf("read TRUSTED_PROXIES_FILE: %w", err)
-		}
-		raw = string(data)
-	}
-	proxyConfig, err := gateway.ProxyConfig(raw)
+	proxyConfig, err := loadGatewayProxyConfig()
 	if err != nil {
 		return err
 	}
-	manager := &gateway.Manager{Root: runtimeRoot, CertificateDir: "/etc/nginx/ssl", ConfigDir: "/app/nginx-extra", QRCodePath: "/usr/share/nginx/html/Wechat_qc_code.jpg", ProxyConfig: proxyConfig, Report: func(s string) { log.Print(s) }}
+	manager := &gateway.Manager{Root: runtimeRoot, CertificateDir: "/etc/nginx/ssl", ConfigDir: "/app/nginx-extra", ProxyConfig: proxyConfig, Report: func(s string) { log.Print(s) }}
 	manager.PasswordProvider = gateway.NewDatabasePasswordProvider()
 	manager.Check = func(path string) error { return nginxCommand("-t", "-c", path) }
 	if _, err = manager.Refresh(time.Now()); err != nil {
@@ -78,6 +71,14 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer stop()
 	return supervise(ctx, backend, nginx, 3*time.Second, func() error { _, e := manager.Refresh(time.Now()); return e }, 10*time.Second)
+}
+
+func loadGatewayProxyConfig() (string, error) {
+	raw, _, err := proxysource.Read(os.Getenv("TRUSTED_PROXIES"), os.Getenv("TRUSTED_PROXIES_FILE"))
+	if err != nil {
+		return "", err
+	}
+	return gateway.ProxyConfig(raw)
 }
 
 func nginxCommand(args ...string) error {

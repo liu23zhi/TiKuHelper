@@ -130,37 +130,47 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
   const directory = await mkdtemp(join(tmpdir(), 'tiku-gateway-'));
   const name = `tiku-gateway-test-${process.pid}-${Date.now()}`;
   const extra = join(directory, 'extra'); const certs = join(directory, 'ssl');
+  const qr = join(directory, 'Wechat_qc_code.jpg'); await writeFile(qr, 'operator fixture, must not be served by Nginx');
   await mkdir(extra); await mkdir(certs);
   const fixture = join(directory, process.platform === 'win32' ? 'fixture.exe' : 'fixture');
   const backend = join(directory, 'backend');
-  successful(execute('go', ['build', '-o', fixture, './internal/gateway/testdata/probe']));
-  successful(execute('go', ['build', '-o', backend, './internal/gateway/testdata/probe'], { env: { ...process.env, GOOS: 'linux', GOARCH: 'amd64', CGO_ENABLED: '0' } }));
+  successful(execute('go', ['build', '-buildvcs=false', '-o', fixture, './internal/gateway/testdata/probe']));
+  successful(execute('go', ['build', '-buildvcs=false', '-o', backend, './internal/gateway/testdata/probe'], { env: { ...process.env, GOOS: 'linux', GOARCH: 'amd64', CGO_ENABLED: '0' } }));
   let running = false;
   let ports = [];
   const ownedPorts = [];
-  const readPorts = () => {
-    const binding = JSON.parse(successful(execute('docker', ['inspect', name])))[0].NetworkSettings.Ports;
-    ports = [8060, 8680, 9043].map((port) => Number(binding[`${port}/tcp`][0].HostPort));
+  const readPorts = async () => {
+    // Docker can acknowledge restart while the ephemeral loopback mappings are still being recreated.
+    const mapped = await eventually(() => {
+      const bindings = JSON.parse(successful(execute('docker', ['inspect', '--format', '{{json .NetworkSettings.Ports}}', name])));
+      return [8060, 8680, 9043].map((p) => {
+        const entry = bindings?.[`${p}/tcp`]?.find((b) => b.HostIp === '127.0.0.1');
+        assert.ok(entry && Number(entry.HostPort) > 0, `waiting for owned loopback binding: ${p}`);
+        return Number(entry.HostPort);
+      });
+    }, 'all three ephemeral gateway ports must be available', 60);
+    ports = mapped;
     ownedPorts.push(...ports.map((port, i) => [port, i === 2]));
   };
   t.after(async () => {
-    if (running) successful(execute('docker', ['rm', '-f', name]));
+    if (running) successful(execute('docker', ['rm', '-fv', name], { timeout: 90000 }));
     for (const [port, encrypted] of ownedPorts) {
       await assert.rejects(request(port, encrypted), 'owned temporary port must be released');
     }
     await rm(directory, { recursive: true, force: true });
   });
-  const start = (trusted) => {
-    successful(execute('docker', ['run', '-d', '--name', name, '--env', `TRUSTED_PROXIES=${trusted}`,
+  const start = async (trusted) => {
+    successful(execute('docker', ['run', '-d', '--pull=never', '--name', name, '--tmpfs', '/app/data', '--env', `TRUSTED_PROXIES=${trusted}`,
       '--mount', `type=bind,source=${extra},target=/app/nginx-extra,readonly`,
+      '--mount', `type=bind,source=${qr},target=/usr/share/nginx/html/Wechat_qc_code.jpg,readonly`,
       '--mount', `type=bind,source=${certs},target=/etc/nginx/ssl,readonly`,
       '--mount', `type=bind,source=${backend},target=/app/tiku-adapter,readonly`,
       '-p', '127.0.0.1::8060', '-p', '127.0.0.1::8680', '-p', '127.0.0.1::9043', image]));
     running = true;
-    readPorts();
+    await readPorts();
   };
   const certificate = (stem, names, before, after, serial, kind = 'ec') => successful(execute(fixture, ['cert', certs, stem, names, before, after, kind, String(serial)]));
-  start('none');
+  await start('none');
   try {
     await eventually(() => request(ports[0]), 'HTTP-only gateway start');
     assert.match(successful(execute('docker', ['exec', name, '/app/container-gateway', '--healthcheck'])), /HTTP ready; HTTPS 未启用/);
@@ -168,6 +178,12 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
     for (const port of ports.slice(0, 2)) {
       const data = await request(port, false, { Host: 'scripts.example:8680', 'X-Forwarded-For': '198.51.100.99, 203.0.113.7', 'X-Forwarded-Proto': 'https', Forwarded: 'for=spoof' });
       assert.equal(data.host, 'scripts.example:8680');
+      // Even a mounted QR is decided by the application's Host policy, never Nginx.
+      for (const host of ['ordinary.example:8680', 'short.example:8680', 'unknown.example:8680']) {
+        const seen = await request(port, false, { Host: host }, '/api/Wechat_qc_code');
+        assert.equal(seen.host, host);
+        t.diagnostic(`real HTTP: upstream received ${seen.host} for the mounted QR path`);
+      }
       assert.equal(data.headers['X-Forwarded-For'][0], '198.51.100.99');
       assert.equal(data.headers['X-Forwarded-Proto'][0], 'http');
       assert.equal(data.headers.Forwarded, undefined);
@@ -203,15 +219,15 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
     const access = successful(execute('docker', ['exec', name, 'cat', '/var/log/nginx/access.log']));
     assert.match(access, /\[public-entry\]/); assert.ok(!access.includes('/css/private-entry-probe'));
     // A restart retains container-local active.conf: startup must not reload a nonexistent master.
-    successful(execute('docker', ['restart', '--time', '25', name]));
-    readPorts();
+    successful(execute('docker', ['restart', '--time', '25', name], { timeout: 60000 }));
+    await readPorts();
     await eventually(() => request(ports[1]), 'restart with previous runtime state');
     // Explicit proxy peer trust applies to the original TCP peer, independently of XFF.
     const gateway = JSON.parse(successful(execute('docker', ['inspect', name])))[0].NetworkSettings.Networks.bridge.Gateway;
-    successful(execute('docker', ['rm', '-f', name])); running = false;
+    successful(execute('docker', ['rm', '-fv', name], { timeout: 90000 })); running = false;
     await rm(certs, { recursive: true }); await mkdir(certs);
     certificate('short-lived', 'expiry.example', '-1m', '10s', 44);
-    start(gateway);
+    await start(gateway);
     await eventually(() => request(ports[1]), 'gateway with explicit trusted peer');
     const forwarded = await request(ports[1], false, { 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '203.0.113.9' });
     assert.equal(forwarded.headers['X-Forwarded-Proto'][0], 'https');
@@ -232,37 +248,56 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
   }
 });
 
-test('production image starts the real backend against a fresh isolated database', { timeout: 90000 }, async (t) => {
+test('production gateway starts a private real backend, preserves admin initialization and writes both logs', { timeout: 180000 }, async (t) => {
   const image = process.env.TIKU_GATEWAY_TEST_IMAGE;
   if (!image) return t.skip('Set TIKU_GATEWAY_TEST_IMAGE to run real backend smoke');
   const directory = await mkdtemp(join(tmpdir(), 'tiku-gateway-backend-'));
-  const name = `tiku-gateway-backend-${process.pid}-${Date.now()}`;
-  const data = join(directory, 'data'); const certs = join(directory, 'ssl'); const config = join(directory, 'config.yaml');
-  await mkdir(data); await mkdir(certs);
-  await writeFile(config, 'database:\n  path: data/tiku.db\napi: []\nlimit:\n  enable: false\n');
-  let running = false; let port;
-  t.after(async () => {
-    if (running) successful(execute('docker', ['rm', '-f', name]));
-    if (port) await assert.rejects(request(port), 'real-backend temporary port must be released');
-    await rm(directory, { recursive: true, force: true });
-  });
-  successful(execute('docker', ['run', '-d', '--name', name,
-    '--env', 'TIKU_APP_MODE=production', '--env', 'TIKU_ADMIN_PASSWORD=GatewayFixturePassword246!',
-    '--env', 'TRUSTED_PROXIES=none', '--env', 'EXTENSION_UPDATE_ENABLED=false',
-    '--env', 'EXTENSION_EDGE_ID=', '--env', 'EXTENSION_CHROME_ID=',
-    '--mount', `type=bind,source=${data},target=/app/data`,
-    '--mount', `type=bind,source=${config},target=/app/config.yaml,readonly`,
-    '--mount', `type=bind,source=${certs},target=/etc/nginx/ssl,readonly`,
-    '-p', '127.0.0.1::8060', image]));
-  running = true;
-  port = Number(JSON.parse(successful(execute('docker', ['inspect', name])))[0].NetworkSettings.Ports['8060/tcp'][0].HostPort);
-  try {
-    await eventually(() => request(port, false, {}, '/readyz'), 'real backend readiness', 300);
-    assert.match(successful(execute('docker', ['exec', name, '/app/container-gateway', '--healthcheck'])), /HTTP ready; HTTPS 未启用/);
-    successful(execute('docker', ['exec', name, 'test', '-s', '/app/data/tiku.db']));
-    successful(execute('docker', ['stop', '--time', '25', name]));
-    assert.equal(successful(execute('docker', ['inspect', '--format', '{{.State.ExitCode}}', name])), '0');
-  } catch (error) {
-    const logs = execute('docker', ['logs', name]); error.message += `\nreal-backend logs:\n${logs.stdout}\n${logs.stderr}`; throw error;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const probe = join(directory, 'db-probe');
+  const arch = successful(execute('docker', ['image', 'inspect', '--format', '{{.Architecture}}', image]));
+  successful(execute('go', ['build', '-buildvcs=false', '-o', probe, './scripts/ci/s04-fixture'], {
+    timeout: 150000, env: { ...process.env, GOOS: 'linux', GOARCH: arch, CGO_ENABLED: '0' },
+  }));
+  const marker = join(directory, 'fixture-marker'); const config = join(directory, 'config.yaml');
+  await writeFile(marker, 'tikuhelper-s04-synthetic-only\n');
+  await writeFile(config, 'database:\n  path: data/fixture.db\napi: []\nlimit:\n  enable: false\n');
+  for (const mode of ['environment', 'local']) {
+    const name = `tiku-gateway-admin-${mode}-${process.pid}-${Date.now()}`;
+    // The built-in S04 helper accepts only a marked synthetic data/fixture.db and compares bcrypt internally.
+    const fixturePassword = 'S04-New-Fixture!2026';
+    successful(execute('docker', ['run', '-d', '--pull=never', '--network', 'none', '--name', name,
+      '--env', 'TIKU_APP_MODE=production', '--env', `TIKU_ADMIN_PASSWORD=${mode === 'environment' ? fixturePassword : ''}`,
+      '--env', 'EXTENSION_UPDATE_ENABLED=false', '--env', 'EXTENSION_EDGE_ID=', '--env', 'EXTENSION_CHROME_ID=',
+      '--tmpfs', '/app/data', '--mount', `type=bind,source=${config},target=/app/config.yaml,readonly`,
+      '--mount', `type=bind,source=${marker},target=/app/.s04-fixture,readonly`,
+      '--mount', `type=bind,source=${probe},target=/fixture-probe,readonly`,
+      '--mount', `type=bind,source=${join(run, 'trusted_proxies.txt')},target=/app/trusted_proxies.txt,readonly`, image]));
+    try {
+      assert.equal(successful(execute('docker', ['inspect', '--format', '{{.HostConfig.NetworkMode}}', name])), 'none');
+      const exec = (cmd, options = {}) => successful(execute('docker', ['exec', name, ...cmd], options));
+      const ready = (port) => JSON.parse(exec(['wget', '-qO-', `http://127.0.0.1:${port}/readyz`]));
+      await eventually(() => assert.equal(ready(8061).status, 'ready'), 'private standalone backend readiness', 200);
+      assert.equal(ready(8060).status, 'ready');
+      assert.match(exec(['/app/container-gateway', '--healthcheck']), /HTTP ready; HTTPS 未启用/);
+      const db = (operation) => {
+        const report = JSON.parse(exec(['/fixture-probe', operation, '--db', '/app/data/fixture.db']));
+        assert.equal(report.ok, true); assert.equal(report.quickCheck, 'ok'); assert.equal(report.userCount, 1);
+        assert.equal(report.expectedPasswordMatches, true); assert.equal(report.bcrypt, true);
+      };
+      if (mode === 'local') {
+        db('verify-local-setup');
+        const setup = execute('docker', ['exec', '-i', name, '/app/container-gateway', '--init-admin-password'],
+          { input: `123456\n${fixturePassword}\n${fixturePassword}\n` });
+        successful(setup); // The CLI intentionally writes prompts and its success message to stderr.
+        assert.match(setup.stderr, /管理员初始设置完成/);
+      }
+      db('verify-new');
+      exec(['sh', '-ec', 'test -s /var/log/nginx/access.log; grep -Fq "[public-entry]" /var/log/nginx/access.log; grep -q . /app/logs/Tiku*.txt']);
+      successful(execute('docker', ['stop', '--time', '25', name], { timeout: 60000 }));
+      assert.equal(successful(execute('docker', ['inspect', '--format', '{{.State.ExitCode}}', name])), '0');
+      t.diagnostic(`${mode}: standalone and gateway ready; admin bcrypt/local policy verified; app/Nginx logs nonempty; graceful exit 0`);
+    } finally {
+      successful(execute('docker', ['rm', '-fv', name], { timeout: 90000 }));
+    }
   }
 });

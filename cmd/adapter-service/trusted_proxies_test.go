@@ -318,3 +318,21 @@ func countEntry(list []string, target string) int {
 	}
 	return count
 }
+
+func TestProductionProxyShippedCommentsAreEmptyNotInvalid(t *testing.T) {
+	template, err := os.ReadFile("../../run/trusted_proxies.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	t.Setenv("TIKU_APP_MODE", "production")
+	t.Setenv(trustedProxiesEnv, "")
+	t.Setenv(trustedProxiesFileEnv, "")
+	if err = os.WriteFile(trustedProxiesFileName, template, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadTrustedProxies()
+	if err != nil || config.ConfiguredCount != 0 || !reflect.DeepEqual(config.List, []string{trustAllProxiesIPv4, trustAllProxiesIPv6}) {
+		t.Fatalf("config=%+v err=%v", config, err)
+	}
+}

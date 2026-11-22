@@ -8,9 +8,9 @@
 cd run && docker compose up -d --build
 ```
 
-Compose 始终声明只读挂载 `./Wechat_qc_code.jpg`。Docker 可能在宿主文件缺失时创建同名目录；网关会检查容器内路径是否为普通文件：只有文件存在时才生成 `/api/Wechat_qc_code` 路由，缺失或目录时不生成该路由，容器仍可正常启动。需要替换二维码时直接替换 `run/Wechat_qc_code.jpg`，再重建或重启容器。
+Compose 将 `./Wechat_qc_code.jpg` 只读挂载到 `/usr/share/nginx/html/Wechat_qc_code.jpg`。二维码与其他普通 API 一样由 Go 校验请求 Host；仅普通站可获取图片，脚本站和未知域名不暴露该资源。仅提供普通文件时返回 JPEG；未挂载、空缺或被 Docker 创建为目录时返回 404，不影响服务启动。
 
-二维码路由由内置 Nginx 模板按文件存在性生成；未提供图片时不会注册 `/api/Wechat_qc_code`，不会导致容器启动失败。其他静态文件仍放入 `nginx/html/`。
+Nginx 始终向后端透传原始 Host，不直接回复图片，也无需重载网关来识别文件。替换绑定挂载文件后请确认容器仍见到新文件（宿主若原子替换单文件，需重建挂载）。
 
 容器内 `/app/data` 是持久化目录：数据库须落在其中，否则重启即丢。只挂载这一个目录即可，不影响程序文件。
 

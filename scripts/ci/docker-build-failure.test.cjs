@@ -20,7 +20,7 @@ printf 'E02_STEP=%s\\n' "$step"
 case "$step" in
  'apk update') failure=41 ;;
  'apk upgrade') failure=42 ;;
- 'apk add --no-cache ca-certificates tzdata') failure=43 ;;
+ 'apk add --no-cache ca-certificates tzdata nginx') failure=43 ;;
  'update-ca-certificates') failure=44 ;;
  *) printf 'unexpected package command: %s\\n' "$step" >&2; exit 91 ;;
 esac
@@ -32,9 +32,9 @@ fi
 const cases=[
  {step:'apk update',status:41,stdout:'E02_STEP=apk update\n'},
  {step:'apk upgrade',status:42,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\n'},
- {step:'apk add --no-cache ca-certificates tzdata',status:43,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\nE02_STEP=apk add --no-cache ca-certificates tzdata\n'},
- {step:'update-ca-certificates',status:44,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\nE02_STEP=apk add --no-cache ca-certificates tzdata\nE02_STEP=update-ca-certificates\n'},
- {step:'none',status:0,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\nE02_STEP=apk add --no-cache ca-certificates tzdata\nE02_STEP=update-ca-certificates\n'}
+ {step:'apk add --no-cache ca-certificates tzdata nginx',status:43,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\nE02_STEP=apk add --no-cache ca-certificates tzdata nginx\n'},
+ {step:'update-ca-certificates',status:44,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\nE02_STEP=apk add --no-cache ca-certificates tzdata nginx\nE02_STEP=update-ca-certificates\n'},
+ {step:'none',status:0,stdout:'E02_STEP=apk update\nE02_STEP=apk upgrade\nE02_STEP=apk add --no-cache ca-certificates tzdata nginx\nE02_STEP=update-ca-certificates\n'}
 ]
 for(const input of cases) test(input.status?`runtime package RUN fails closed at ${input.step} without executing later steps`:'runtime package RUN succeeds when all required steps succeed',t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tiku-docker-failure-'))

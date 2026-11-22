@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -252,50 +253,17 @@ func TestManagerGeneratesEmbeddedBaseWithoutExternalConfigDirectory(t *testing.T
 	}
 }
 
-func TestManagerAddsQRCodeRouteOnlyForRegularFile(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		prepare func(string) error
-		want    bool
-	}{
-		{name: "missing", want: false},
-		{name: "directory", prepare: func(path string) error { return os.Mkdir(path, 0o755) }, want: false},
-		{name: "file", prepare: func(path string) error { return os.WriteFile(path, []byte("jpeg"), 0o644) }, want: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir, source := t.TempDir(), t.TempDir()
-			qr := filepath.Join(t.TempDir(), "Wechat_qc_code.jpg")
-			if tc.prepare != nil {
-				if err := tc.prepare(qr); err != nil {
-					t.Fatal(err)
-				}
-			}
-			manager := &Manager{Root: dir, CertificateDir: source, ConfigDir: filepath.Join(t.TempDir(), "missing"), QRCodePath: qr, Check: func(string) error { return nil }}
-			if _, err := manager.Refresh(time.Now()); err != nil {
-				t.Fatal(err)
-			}
-			active, err := os.ReadFile(filepath.Join(manager.activeDir, "servers.conf"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := strings.Contains(string(active), "location = /api/Wechat_qc_code")
-			if got != tc.want {
-				t.Fatalf("qr route=%v, want %v: %s", got, tc.want, active)
-			}
-			if tc.name == "missing" {
-				if err := os.WriteFile(qr, []byte("jpeg"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				changed, err := manager.Refresh(time.Now())
-				if err != nil || !changed {
-					t.Fatalf("adding QR file must trigger a new config: changed=%v err=%v", changed, err)
-				}
-				active, err = os.ReadFile(filepath.Join(manager.activeDir, "servers.conf"))
-				if err != nil || !strings.Contains(string(active), "location = /api/Wechat_qc_code") {
-					t.Fatalf("new QR file must enable the route: %v %s", err, active)
-				}
-			}
-		})
+func TestAllGatewayListenersForwardQRCodeAndOriginalHost(t *testing.T) {
+	p := Certificate{ID: "test"}
+	for _, servers := range []string{renderServers("/tmp/test", "/tmp/test/conf", Certificate{}, nil), renderServers("/tmp/test", "/tmp/test/conf", p, map[string]Certificate{"normal.example": p})} {
+		if strings.Contains(servers, "alias ") || strings.Contains(servers, "/api/Wechat_qc_code") ||
+			strings.Count(servers, "proxy_pass http://tiku_adapter;") != strings.Count(servers, "server {") {
+			t.Fatalf("all requests must reach backend host routing: %s", servers)
+		}
+	}
+	include, err := embeddedTemplate("tiku-proxy.inc")
+	if err != nil || !regexp.MustCompile(`(?m)^proxy_set_header\s+Host\s+\$http_host;`).Match(include) {
+		t.Fatalf("forward original Host: %v %s", err, include)
 	}
 }
 

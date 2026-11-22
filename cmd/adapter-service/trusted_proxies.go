@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/itihey/tikuAdapter/internal/proxysource"
 	"github.com/itihey/tikuAdapter/internal/registry"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
@@ -19,7 +20,7 @@ const (
 	// trustedProxiesFileEnv 可选：自定义 trusted_proxies.txt 的路径。
 	trustedProxiesFileEnv = "TRUSTED_PROXIES_FILE"
 	// trustedProxiesFileName 默认从工作目录读取该文件。
-	trustedProxiesFileName = "trusted_proxies.txt"
+	trustedProxiesFileName = proxysource.DefaultFile
 	// trustAllProxiesIPv4 / IPv6：未配置任何可信代理时的取值 —— 信任所有来源。
 	trustAllProxiesIPv4 = "0.0.0.0/0"
 	trustAllProxiesIPv6 = "::/0"
@@ -117,24 +118,9 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 	if mode == "development" {
 		return loadTrustedProxiesLegacy()
 	}
-	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
-	source := trustedProxiesEnv
-	if raw == "" {
-		// 空路径仍使用工作目录下的默认文件；文件不存在按空文件处理。
-		// 这样可以只挂载 trusted_proxies.txt，不必在 Compose 中再写路径。
-		path := strings.TrimSpace(os.Getenv(trustedProxiesFileEnv))
-		defaultPath := path == ""
-		if path == "" {
-			path = trustedProxiesFileName
-		}
-		content, readErr := os.ReadFile(path)
-		if readErr != nil {
-			if !defaultPath || !os.IsNotExist(readErr) {
-				return trustedProxyConfig{}, fmt.Errorf("cannot read TRUSTED_PROXIES_FILE: %w", readErr)
-			}
-			content = nil
-		}
-		raw, source = strings.TrimSpace(string(content)), path
+	raw, source, err := proxysource.Read(os.Getenv(trustedProxiesEnv), os.Getenv(trustedProxiesFileEnv))
+	if err != nil {
+		return trustedProxyConfig{}, err
 	}
 	if raw == "" || strings.EqualFold(raw, "none") {
 		// ①-b 值为 none（或文件里只有空白）→ 同样视为「没有输入」，信任所有来源。
@@ -449,7 +435,7 @@ func logTrustedProxies(config trustedProxyConfig) {
 	if len(config.Invalid) > 0 {
 		logger.SysWarn("可信代理里有无法解析的条目（已忽略）：" + strings.Join(config.Invalid, "、"))
 	}
-	if config.Source == "" {
+	if config.ConfiguredCount == 0 {
 		logger.SysWarn("未配置可信代理（TRUSTED_PROXIES / trusted_proxies.txt 均为空）：将读取所有来源的 X-Forwarded-For，如需收紧请设置其中之一")
 		return
 	}
