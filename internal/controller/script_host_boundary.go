@@ -90,6 +90,11 @@ func scriptHostBoundary(db *gorm.DB, entry func(*gin.Context) bool) gin.HandlerF
 			return
 		}
 		switch route {
+		case scriptLaunchResolvePath:
+			if c.Request.Method == http.MethodPost {
+				c.Next()
+				return
+			}
 		case "/api/script-command/:shortCode/exchange", "/api/script-command/:shortCode/bootstrap", "/api/script-command/:shortCode/exchange-script", "/api/script-command/:shortCode/activate", "/api/script-command/:shortCode/heartbeat", "/api/script-command/:shortCode/file", "/api/scripts/:shortCode/bootstrap", "/api/scripts/command/:shortCode/exchange":
 			ok, e := service.ScriptCodeOwnsWebHostWithDB(db, c.Request.Host, c.Param("shortCode"))
 			if e != nil {

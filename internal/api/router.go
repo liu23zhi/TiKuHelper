@@ -126,6 +126,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/scripts/:id/exchange-token", controller.Auth, controller.IssueScriptExchangeToken)
 	apiRouter.POST("/scripts/:id/token", controller.Auth, controller.IssueScriptExchangeToken)
 	apiRouter.POST("/script-command/:shortCode/exchange", controller.ExchangeScriptToken)
+	apiRouter.POST("/script-launch/resolve", controller.ResolveScriptLaunch)
 	apiRouter.GET("/script-command/:shortCode/bootstrap", controller.ScriptBootstrap)
 	apiRouter.GET("/script-command/:shortCode/exchange-script", controller.ScriptExchangeScript)
 	apiRouter.POST("/script-command/:shortCode/activate", controller.ActivateScriptRunSession)
