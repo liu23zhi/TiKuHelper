@@ -36,7 +36,7 @@ func newDeviceAdminControllerTestDB(t *testing.T, withRevocationColumns bool) *g
 
 	db := newUserControllerTestDB(t)
 	if err := db.AutoMigrate(&entity.BlacklistEntry{}, &entity.BlacklistHit{},
-		&entity.AccountDeviceBinding{}); err != nil {
+		&entity.AccountDeviceBinding{}, &entity.DeviceLifecycleLock{}); err != nil {
 		t.Fatalf("migrate device admin tables: %v", err)
 	}
 	if withRevocationColumns {

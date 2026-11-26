@@ -22,14 +22,14 @@ import {
 
 test('deviceStatusText 覆盖三态且未知状态原样返回', () => {
   assert.equal(deviceStatusText('active'), '使用中')
-  assert.equal(deviceStatusText('revoked'), '已解绑')
-  assert.equal(deviceStatusText('banned'), '封禁中')
+  assert.equal(deviceStatusText('revoked'), '已移除')
+  assert.equal(deviceStatusText('banned'), '已拉黑')
   // 未知状态原样返回：后端加新态时显示原文才能让人去查，显示「未知」等于删线索。
   assert.equal(deviceStatusText('frozen'), 'frozen')
   assert.equal(deviceStatusText(''), '—')
   assert.equal(deviceStatusText(null), '—')
   // 大小写与空白要吃掉（后端稳定返回小写，但历史数据不一定）。
-  assert.equal(deviceStatusText('  BANNED '), '封禁中')
+  assert.equal(deviceStatusText('  BANNED '), '已拉黑')
 })
 
 test('deviceStatusColor 与 DEVICE_STATUS_ROWS 一一对应', () => {

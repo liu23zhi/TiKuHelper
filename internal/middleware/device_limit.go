@@ -139,6 +139,13 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			deviceLimitReject(c, blocked)
 			return
 		}
+		// Script leases are independently authorized. Even an unlimited account
+		// cannot turn a script request header into an ordinary binding.
+		if scriptSession {
+			c.Next()
+			return
+		}
+
 		// ══════════ 第 0 步：limit == 0（不限）→ 直接放行 ══════════
 		//
 		// 必须在「无头检查」之前（141 §9.2）：4 个种子等级的 device_limit 默认全为 0，
@@ -159,15 +166,6 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			// 141 §9.4：豁免 ≠ 不登记。带 device 头时异步登记一次（fail-open），
 			// 让管理员在「设备管理」页仍能看到这些账号的设备；不带头的请求无从登记。
 			deviceLimitRegisterUnlimited(db, userID, c.GetHeader(DeviceIDHeader), tokenID, c.ClientIP())
-			c.Next()
-			return
-		}
-
-		// ══════════ 第 1 步：脚本请求 → 放行 ══════════
-		//
-		// 用户原话：「考试脚本不受到设备数量影响」（137 §5.2）。考试脚本是
-		// 一次性运行会话，不参与设备池。
-		if scriptSession {
 			c.Next()
 			return
 		}
@@ -222,19 +220,14 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 				// 判定已放行、只是这一笔没写进去：fail-open（同 RegisterDevice 的契约）。
 				logger.SysLog("设备登记失败（fail-open，不影响本次请求）：userID=" +
 					formatDeviceLimitUserID(userID) + " err=" + logger.RedactSecrets(err.Error()))
-			} else if !registered.Allowed &&
-				registered.Reason == service.DevicePoolReasonDeviceIDConflict {
-				// 冲突是**确定性的拒绝**，不是「写失败」：必须让客户端知道要换 ID。
-				//
-				// 这里刻意不调 controller.WriteDeviceConflict：controller 包的
-				// search.go / tiku.go 都 import 了 middleware，反向 import 会成环。
-				// 响应体取自 service.DeviceConflictDecisionBody（controller 那个函数
-				// 用的也是它），所以 code/message 与「唯一发出点」逐字一致。
-				body := service.DeviceConflictDecisionBody()
-				c.AbortWithStatusJSON(http.StatusConflict, gin.H{
-					"code":    body["code"],
-					"message": body["message"],
-				})
+			} else if !registered.Allowed {
+				if registered.Reason == service.DevicePoolReasonDeviceIDConflict {
+					body := service.DeviceConflictDecisionBody()
+					c.AbortWithStatusJSON(http.StatusConflict, gin.H{"code": body["code"], "message": body["message"]})
+				} else {
+					// A block or capacity change may have committed since the first check.
+					deviceLimitReject(c, registered)
+				}
 				return
 			}
 		}

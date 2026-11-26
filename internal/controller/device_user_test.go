@@ -60,7 +60,7 @@ func newDeviceUserTestDB(t *testing.T, withA1Columns bool) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 	if err := db.AutoMigrate(&entity.User{}, &entity.UserLevel{},
-		&entity.AccountDeviceBinding{}, &entity.UserDeviceBlock{}); err != nil {
+		&entity.AccountDeviceBinding{}, &entity.UserDeviceBlock{}, &entity.BlacklistEntry{}, &entity.Log{}, &entity.DeviceLifecycleLock{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 	// users.level_id 不在生成文件里（由 registry 的显式 ALTER 补），这里照做。
@@ -205,8 +205,8 @@ func TestUserDeviceDeleteOnlyRemovesOwnRevokedBinding(t *testing.T) {
 	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", revokedID).Count(&count).Error; err != nil {
 		t.Fatalf("count deleted binding: %v", err)
 	}
-	if count != 0 {
-		t.Fatal("已移除设备删除后不应保留绑定行")
+	if count != 1 {
+		t.Fatal("清理展示后必须保留原始绑定行")
 	}
 
 	active, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", activeID), nil)
@@ -254,7 +254,7 @@ func TestUserDeviceDeletePreservesBindingBlockedBeforeDeleteStatement(t *testing
 	now := time.Now()
 	id := seedDeviceUserBinding(t, db, owner.ID, "race-block", "旧设备", now, "user_removed", &now)
 	called := false
-	if err := db.Callback().Delete().Before("gorm:delete").Register("test:block-before-delete", func(tx *gorm.DB) {
+	if err := db.Callback().Update().Before("gorm:update").Register("test:block-before-history-update", func(tx *gorm.DB) {
 		if called {
 			return
 		}
@@ -634,7 +634,7 @@ func TestDeviceUserRemoveBlocksCrossTenantAccess(t *testing.T) {
 
 // ─────────────────────── A2-4 + 红线 3 ───────────────────────
 
-// TestDeviceUserBlockWritesIndependentTable：拉黑写独立表，且**不动绑定行**（红线 3）。
+// TestDeviceUserBlockWritesIndependentTable：独立规则和撤销绑定同时到位。
 //
 // 断言三件事，各自对应一种实现错误：
 //  1. user_device_blocks 多一行（而不是在绑定行上写 revoked_reason）；
@@ -671,7 +671,7 @@ func TestDeviceUserBlockWritesIndependentTable(t *testing.T) {
 		t.Fatalf("拉黑原因必须落库，实际 %q", blocks[0].Reason)
 	}
 
-	// 红线 3：绑定行不得被撤销（撤销会释放槽位，语义完全不同）。
+	// 拉黑保留独立规则，但必须立即撤销当前绑定来释放槽位。
 	var stored struct {
 		RevokedAt     *time.Time
 		RevokedReason string
@@ -681,8 +681,8 @@ func TestDeviceUserBlockWritesIndependentTable(t *testing.T) {
 		Where("id = ?", bindingID).Take(&stored).Error; err != nil {
 		t.Fatalf("read binding state: %v", err)
 	}
-	if stored.RevokedAt != nil || stored.RevokedReason != "" {
-		t.Fatalf("拉黑不得改写绑定行的撤销字段：revokedAt=%v reason=%q",
+	if stored.RevokedAt == nil || stored.RevokedReason != "user_blocked" {
+		t.Fatalf("拉黑必须撤销绑定并记录原因：revokedAt=%v reason=%q",
 			stored.RevokedAt, stored.RevokedReason)
 	}
 

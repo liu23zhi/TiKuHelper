@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -17,18 +18,31 @@ func TestAdminDeviceDeleteRequiresRevokedBindingAndPreservesBan(t *testing.T) {
 	row := seedDeviceAdminBinding(t, db, actor.ID, "exe:delete-banned")
 	router := deviceAdminTestRouter(&actor)
 	path := fmt.Sprintf("/api/admin/devices/%d", row.ID)
-	if response := deviceAdminRequest(router, http.MethodDelete, path, ""); response.Code != http.StatusConflict {
-		t.Fatalf("active binding deleted: %d %s", response.Code, response.Body)
+	checkConflict := func(path string) {
+		t.Helper()
+		response := deviceAdminRequest(router, http.MethodDelete, path, "")
+		var body map[string]string
+		if response.Code != http.StatusConflict || json.Unmarshal(response.Body.Bytes(), &body) != nil ||
+			len(body) != 1 || body["message"] != "只能删除已移除且未拉黑的设备历史" {
+			t.Errorf("expected one complete 409 JSON response: %d %s", response.Code, response.Body)
+		}
 	}
+	checkConflict(path)
 	if _, err := service.BanDevice(db, service.DeviceBanRequest{DeviceID: row.DeviceID, Reason: "test", CreatedBy: actor.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if response := deviceAdminRequest(router, http.MethodDelete, path, ""); response.Code != http.StatusOK {
-		t.Fatalf("revoked deletion failed: %d %s", response.Code, response.Body)
+	checkConflict(path)
+	if err := db.AutoMigrate(&entity.UserDeviceBlock{}); err != nil {
+		t.Fatal(err)
 	}
+	personal := seedDeviceAdminBinding(t, db, actor.ID, "exe:delete-account-blocked")
+	if _, err := service.BlockAccountDevice(db, personal.ID, service.DeviceHistoryActor{UserID: actor.ID}, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	checkConflict(fmt.Sprintf("/api/admin/devices/%d", personal.ID))
 	var count int64
-	if err := db.Model(&entity.AccountDeviceBinding{}).Where("id = ?", row.ID).Count(&count).Error; err != nil || count != 0 {
-		t.Fatalf("binding retained: %d %v", count, err)
+	if err := db.Model(&entity.AccountDeviceBinding{}).Where("id = ?", row.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("blacklisted binding lost: %d %v", count, err)
 	}
 	bans, err := service.LoadActiveDeviceBansWithDB(db, []string{row.DeviceID}, time.Now())
 	if err != nil || len(bans) != 1 {
