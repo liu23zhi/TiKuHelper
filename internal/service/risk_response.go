@@ -151,17 +151,23 @@ func responseExpiry(at time.Time, minutes int) *time.Time {
 // Only create ordinary blacklist entries. Existing external bans and deliberately disabled rows
 // are never overwritten; an explicitly extended or renewed lease keeps the original creator/reason.
 func placeResponseEntry(tx *gorm.DB, d entity.RiskWarningResponse, kind, matchType string) (entity.RiskWarningResponse, bool, error) {
-	n, err := NormalizeBlacklistValue(kind, d.Target, matchType)
+	var n NormalizedBlacklistValue
+	var err error
+	if kind == BlacklistKindIP && matchType == blacklistMatchIPv4Range && d.ActorID == 0 && d.Action == "segment" {
+		n, err = normalizeAutomaticBlacklistIPv4Range(d.Target)
+	} else {
+		n, err = NormalizeBlacklistValue(kind, d.Target, matchType)
+	}
 	if err != nil {
 		return d, false, err
 	}
 	var entry entity.BlacklistEntry
 	find := func() error {
-		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("kind = ? AND value_hash = ? AND match_type = ?", kind, n.ValueHash, matchType).Take(&entry).Error
+		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("kind = ? AND value_hash = ? AND match_type = ?", n.Kind, n.ValueHash, n.MatchType).Take(&entry).Error
 	}
 	err = find()
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		entry, err = CreateBlacklistEntryWithDB(tx, CreateBlacklistEntryInput{Kind: kind, Pattern: n.Pattern, MatchType: matchType, Reason: d.Reason, Enabled: true, CreatedBy: d.ActorID})
+		entry, err = createNormalizedBlacklistEntryWithDB(tx, CreateBlacklistEntryInput{Reason: d.Reason, Enabled: true, CreatedBy: d.ActorID}, n)
 		if err == nil {
 			// INSERT has acquired the unique key. Date the lease only now: any
 			// wait for a concurrent writer cannot consume its TTL before publication.

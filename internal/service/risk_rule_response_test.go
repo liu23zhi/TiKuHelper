@@ -226,3 +226,83 @@ func TestRiskRuleSegmentEvidenceRequiresConsistentBounds(t *testing.T) {
 	}
 	t.Log("trusted segment cache can be reused; sample mismatch, inconsistent boundaries, and tied conflicting ranges are rejected")
 }
+
+func TestRiskRuleSegmentRejectsContradictoryStoredEvidence(t *testing.T) {
+	const ip, lo, hi = "192.0.2.49", "192.0.2.46", "192.0.2.53"
+	for _, tc := range []struct {
+		name, raw          string
+		derived, wantBlock bool
+	}{
+		{"exact matching normalized IP", `{"ip":"::ffff:192.0.2.49","beginip":"192.0.2.46","endip":"192.0.2.53"}`, false, true},
+		{"exact different IP inside same range", `{"ip":"192.0.2.50","beginip":"192.0.2.46","endip":"192.0.2.53"}`, false, false},
+		{"exact duplicate contradictory IP", `{"ip":"198.51.100.71","ip":"192.0.2.49","beginip":"192.0.2.46","endip":"192.0.2.53"}`, false, false},
+		{"exact explicitly malformed IP", `{"ip":null,"beginip":"192.0.2.46","endip":"192.0.2.53"}`, false, false},
+		{"projected matching", `{"ip":"192.0.2.49","beginip":"192.0.2.46","endip":"192.0.2.53"}`, true, true},
+		{"historic projection conflicting IP", `{"ip":"198.51.100.71","beginip":"192.0.2.46","endip":"192.0.2.53"}`, true, false},
+		{"historic projection conflicting endpoints", `{"ip":"192.0.2.49","beginip":"192.0.2.47","endip":"192.0.2.53"}`, true, false},
+	} {
+		for _, mode := range []string{riskRuleTemporary, riskRulePermanent} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				db := responseTestDB(t)
+				setBlacklistEnabled(t, db, "true")
+				hit := ip
+				if tc.derived {
+					// bypass the writer to reproduce an existing legacy projected row
+					hit = "192.0.2.48"
+					begin, _ := ipv4ToUint32(lo)
+					end, _ := ipv4ToUint32(hi)
+					if err := db.Create(&entity.IPSegment{BeginIP: begin, EndIP: end, BeginText: lo, EndText: hi,
+						SampleIP: ip, Source: "standard", RawJSON: tc.raw}).Error; err != nil {
+						t.Fatal(err)
+					}
+				} else if err := db.Create(&entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: ip, Source: "standard", RawJSON: tc.raw}).Error; err != nil {
+					t.Fatal(err)
+				}
+				w := responseTestWarning(t, db, entity.RiskRuleIDDeviceRegisterBurst, hit, "registration_browser", "single")
+				minutes := 15
+				if mode == riskRulePermanent {
+					minutes = 0
+				}
+				if err := respondToNewWarning(db, ruleResponseFixture(mode, "segment", minutes), &w); err != nil {
+					t.Fatal(err)
+				}
+				var receipt entity.RiskWarningResponse
+				if err := db.Where("warning_id = ?", w.ID).Take(&receipt).Error; err != nil {
+					t.Fatal(err)
+				}
+				var entries int64
+				if err := db.Model(&entity.BlacklistEntry{}).Count(&entries).Error; err != nil {
+					t.Fatal(err)
+				}
+				if tc.wantBlock {
+					if receipt.Status != "applied" || entries != 1 || receipt.Target != lo+"-"+hi ||
+						(receipt.ExpiresAt == nil) != (mode == riskRulePermanent) {
+						t.Fatalf("unexpected enforcement %d: %+v", entries, receipt)
+					}
+				} else if receipt.Status != "skipped" || receipt.OutcomeCode != "segment_untrusted" || receipt.EntryID != 0 || entries != 0 {
+					t.Fatalf("rejected evidence wrote a ban %d: %+v", entries, receipt)
+				}
+			})
+		}
+	}
+}
+
+func TestRiskRuleAutomaticRangePreservesGenericWriterContract(t *testing.T) {
+	db := responseTestDB(t)
+	for _, match := range []string{"range", " RANGE "} {
+		_, err := CreateBlacklistEntryWithDB(db, CreateBlacklistEntryInput{Kind: BlacklistKindIP, MatchType: match, Pattern: "192.0.2.46-192.0.2.53",
+			Reason: "synthetic generic writer", Enabled: true, CreatedBy: 7})
+		if !errors.Is(err, ErrInvalidBlacklistMatchType) {
+			t.Fatalf("generic writer accepted newly private match type %q: %v", match, err)
+		}
+	}
+	for _, tc := range []struct{ match, target string }{
+		{"exact", "192.0.2.40"}, {"cidr", "198.51.100.32/29"}, {"prefix", "203.0.113."},
+	} {
+		_, err := CreateBlacklistEntryWithDB(db, CreateBlacklistEntryInput{Kind: BlacklistKindIP, MatchType: tc.match, Pattern: tc.target,
+			Reason: "synthetic legacy writer", Enabled: true, CreatedBy: 7})
+		if err != nil {
+			t.Fatalf("legacy %s rejected: %v", tc.match, err)
+		}
+	}
+}

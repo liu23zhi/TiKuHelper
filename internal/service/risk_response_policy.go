@@ -34,8 +34,22 @@ type RiskResponsePolicy struct {
 func validRiskResponsePolicy(mode string, minutes int) bool {
 	return (mode == "notify" || mode == "temp_ip") && minutes >= 1 && minutes <= riskResponseAutoMaxMinutes
 }
+func defaultLegacyRiskResponsePolicy() RiskResponsePolicy {
+	return RiskResponsePolicy{Mode: "notify", DurationMinutes: 30}
+}
+
+// Decode over the historical defaults: omission (rather than an explicit
+// invalid duration) used to enable a 30-minute temporary single-IP policy.
+func decodeLegacyRiskResponsePolicy(raw string) (RiskResponsePolicy, error) {
+	p := defaultLegacyRiskResponsePolicy()
+	if err := json.Unmarshal([]byte(raw), &p); err != nil || !validRiskResponsePolicy(p.Mode, p.DurationMinutes) {
+		return RiskResponsePolicy{}, fmt.Errorf("风控处置策略配置损坏")
+	}
+	return p, nil
+}
+
 func GetRiskResponsePolicy(db *gorm.DB, detector string) (RiskResponsePolicy, error) {
-	p := RiskResponsePolicy{Mode: "notify", DurationMinutes: 30}
+	p := defaultLegacyRiskResponsePolicy()
 	if !riskResponseDetector(detector) {
 		return p, invalidRiskResponse("该检测器不支持网络处置")
 	}
@@ -44,8 +58,9 @@ func GetRiskResponsePolicy(db *gorm.DB, detector string) (RiskResponsePolicy, er
 		return p, err
 	}
 	if found {
-		if err := json.Unmarshal([]byte(setting.Value), &p); err != nil || !validRiskResponsePolicy(p.Mode, p.DurationMinutes) {
-			return RiskResponsePolicy{}, fmt.Errorf("风控处置策略配置损坏")
+		p, err = decodeLegacyRiskResponsePolicy(setting.Value)
+		if err != nil {
+			return p, err
 		}
 	}
 	p.BlacklistEnabled = GetBlacklistEnabledWithDB(db)

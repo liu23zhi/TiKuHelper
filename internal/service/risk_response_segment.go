@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"net/netip"
 	"strings"
 
@@ -19,6 +20,16 @@ func parseBlacklistIPv4Range(raw string) (blacklistIPv4Range, bool) {
 		return blacklistIPv4Range{}, false
 	}
 	return blacklistIPv4Range{lo, hi}, true
+}
+
+func normalizeAutomaticBlacklistIPv4Range(raw string) (NormalizedBlacklistValue, error) {
+	bounds, ok := parseBlacklistIPv4Range(raw)
+	if !ok {
+		return NormalizedBlacklistValue{}, ErrInvalidBlacklistPattern
+	}
+	pattern := bounds.String()
+	return NormalizedBlacklistValue{Kind: BlacklistKindIP, Pattern: pattern, MatchType: blacklistMatchIPv4Range,
+		ValueHash: BlacklistPatternHashHex(pattern), ValueMasked: MaskBlacklistValue(BlacklistKindIP, pattern, blacklistMatchIPv4Range)}, nil
 }
 
 func (r blacklistIPv4Range) String() string { return r.Begin.String() + "-" + r.End.String() }
@@ -44,8 +55,14 @@ func autoEvidenceSegment(db *gorm.DB, ip string) (string, string) {
 		}
 		var found string
 		for _, row := range rows {
-			info := parseIPInfoRawJSON(row.RawJSON)
-			bounds, ok := parseBlacklistIPv4Range(info.BeginIP + "-" + info.EndIP)
+			evidence, usable := decodeIPSegmentRawEvidence(row.RawJSON)
+			var begin, end string
+			if !usable || !sameIPv4SegmentAddress(row.LookupKey, ip) ||
+				json.Unmarshal(evidence.BeginIP, &begin) != nil || json.Unmarshal(evidence.EndIP, &end) != nil ||
+				!evidence.matches(row.LookupKey, begin, end) {
+				return "", "segment_untrusted"
+			}
+			bounds, ok := parseBlacklistIPv4Range(begin + "-" + end)
 			got := bounds.String()
 			if !ok || !bounds.contains(addr) || (found != "" && found != got) {
 				return "", "segment_untrusted"
@@ -62,20 +79,28 @@ func autoEvidenceSegment(db *gorm.DB, ip string) (string, string) {
 	v, _ := ipv4ToUint32(ip)
 	candidates := db.Model(&entity.IPSegment{}).Where("begin_ip <= ? AND end_ip >= ? AND source IN ?", v, v, []string{"", "standard"}).Session(&gorm.Session{})
 	var rows []entity.IPSegment
-	if err := candidates.Select("begin_ip, end_ip, begin_text, end_text, sample_ip").
+	if err := candidates.Select("begin_ip, end_ip, begin_text, end_text, sample_ip, raw_json").
 		Where("(end_ip - begin_ip) = (?)", candidates.Select("MIN(end_ip - begin_ip)")).Find(&rows).Error; err != nil {
 		return "", "segment_lookup_failed"
 	}
 	var found string
 	for _, row := range rows {
 		bounds, ok := parseBlacklistIPv4Range(row.BeginText + "-" + row.EndText)
-		sample, sampleErr := netip.ParseAddr(row.SampleIP)
+		sample, sampleErr := netip.ParseAddr(strings.TrimSpace(row.SampleIP))
 		rawLo, _ := ipv4ToUint32(row.BeginText)
 		rawHi, _ := ipv4ToUint32(row.EndText)
 		got := bounds.String()
-		if !ok || !bounds.contains(addr) || sampleErr != nil || !bounds.contains(sample) ||
+		if !ok || !bounds.contains(addr) || sampleErr != nil || sample.Zone() != "" || !bounds.contains(sample) ||
 			rawLo != row.BeginIP || rawHi != row.EndIP || (found != "" && found != got) {
 			return "", "segment_untrusted"
+		}
+		// Previously projected rows may already contain contradictory raw data.
+		// Their numeric/text columns alone cannot make that evidence trustworthy.
+		if strings.TrimSpace(row.RawJSON) != "" {
+			evidence, usable := decodeIPSegmentRawEvidence(row.RawJSON)
+			if !usable || !evidence.matches(row.SampleIP, row.BeginText, row.EndText) {
+				return "", "segment_untrusted"
+			}
 		}
 		found = got
 	}

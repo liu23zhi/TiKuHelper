@@ -172,3 +172,58 @@ func TestMariaDBRiskRuleAutomaticSegmentRevoke(t *testing.T) {
 	}
 	t.Log("MariaDB exact-range auto action wrote ownership timestamp; revoke disabled only that entry and replay did not recreate it")
 }
+
+func TestRiskRulePolicyLegacyDurationDefaultsSQLite(t *testing.T) {
+	checkLegacyRiskRuleDurationDefaults(t, newRiskMigrationTestDB)
+}
+
+func TestMariaDBRiskRulePolicyLegacyDurationDefaults(t *testing.T) {
+	checkLegacyRiskRuleDurationDefaults(t, mysqlTestFreshDB)
+}
+
+func checkLegacyRiskRuleDurationDefaults(t *testing.T, freshDB func(*testing.T) *gorm.DB) {
+	t.Helper()
+	for _, tc := range []struct {
+		name, setting, mode, scope string
+		minutes                    int
+	}{
+		{"omitted", `{"mode":"temp_ip"}`, "temporary", "ip", 30},
+		{"explicit", `{"mode":"temp_ip","durationMinutes":27}`, "temporary", "ip", 27},
+		{"zero is invalid", `{"mode":"temp_ip","durationMinutes":0}`, "notify", "", 0},
+		{"out of bounds is invalid", `{"mode":"temp_ip","durationMinutes":1441}`, "notify", "", 0},
+		{"wrong type is malformed", `{"mode":"temp_ip","durationMinutes":"30"}`, "notify", "", 0},
+		{"malformed JSON", `{"mode":"temp_ip"`, "notify", "", 0},
+		{"empty mode stays notify", `{"durationMinutes":27}`, "notify", "", 0},
+		{"notify stays notify", `{"mode":"notify"}`, "notify", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := freshDB(t)
+			if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+				t.Fatal(err)
+			}
+			const kind = entity.RiskRuleIDLoginBruteforce
+			if err := db.Create(&entity.SystemSetting{Key: "risk_response_" + kind, Value: tc.setting}).Error; err != nil {
+				t.Fatal(err)
+			}
+			for pass := 1; pass <= 2; pass++ {
+				if err := EnsureRiskSchema(db); err != nil {
+					t.Fatal(err)
+				}
+				rules, err := service.ListRiskRules(db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var actual service.RiskRuleResponsePolicy
+				for _, rule := range rules {
+					if rule.RuleID == kind {
+						actual = rule.ResponsePolicy
+						break
+					}
+				}
+				if actual.Mode != tc.mode || actual.Scope != tc.scope || actual.DurationMinutes != tc.minutes {
+					t.Fatalf("startup=%d legacy=%s migrated=%+v", pass, tc.setting, actual)
+				}
+			}
+		})
+	}
+}

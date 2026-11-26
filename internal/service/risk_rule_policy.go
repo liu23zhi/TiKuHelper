@@ -76,9 +76,11 @@ func MigrateLegacyRiskRulePolicies(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		var legacy RiskResponsePolicy
-		if !found || json.Unmarshal([]byte(setting.Value), &legacy) != nil ||
-			legacy.Mode != "temp_ip" || !validRiskResponsePolicy(legacy.Mode, legacy.DurationMinutes) {
+		if !found {
+			continue
+		}
+		legacy, err := decodeLegacyRiskResponsePolicy(setting.Value)
+		if err != nil || legacy.Mode != "temp_ip" {
 			continue
 		}
 		p := RiskRuleResponsePolicy{Mode: riskRuleTemporary, Scope: "ip", DurationMinutes: legacy.DurationMinutes}

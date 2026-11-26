@@ -160,12 +160,6 @@ func normalizeBlacklistIP(raw string, matchType string) (NormalizedBlacklistValu
 
 	var pattern string
 	switch matchType {
-	case blacklistMatchIPv4Range:
-		bounds, ok := parseBlacklistIPv4Range(value)
-		if !ok {
-			return NormalizedBlacklistValue{}, ErrInvalidBlacklistPattern
-		}
-		pattern = bounds.String()
 	case BlacklistMatchExact:
 		ip := net.ParseIP(value)
 		if ip == nil {
@@ -390,7 +384,7 @@ type CreateBlacklistEntryInput struct {
 	CreatedBy int32
 }
 
-// CreateBlacklistEntryWithDB 是**新建黑名单规则的唯一入口**。
+// CreateBlacklistEntryWithDB 是管理端和导入的新建黑名单规则入口。
 //
 // 它做三件事，缺一不可：
 //
@@ -418,6 +412,11 @@ func CreateBlacklistEntryWithDB(db *gorm.DB, input CreateBlacklistEntryInput) (e
 	if err != nil {
 		return entity.BlacklistEntry{}, err
 	}
+	return createNormalizedBlacklistEntryWithDB(db, input, normalized)
+}
+
+// Keep public input validation separate from the private risk range writer.
+func createNormalizedBlacklistEntryWithDB(db *gorm.DB, input CreateBlacklistEntryInput, normalized NormalizedBlacklistValue) (entity.BlacklistEntry, error) {
 	reason := strings.TrimSpace(input.Reason)
 	if reason == "" {
 		// 46-*.md §2.1：拉黑原因必填，运营要能解释。
