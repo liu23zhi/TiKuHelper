@@ -73,7 +73,7 @@ func TestAgreementPlatformOriginWithProductionHostBoundary(t *testing.T) {
 	if e := registry.EnsureAgreementSchema(db); e != nil {
 		t.Fatal(e)
 	}
-	if e := service.ConfigureSiteHosts([]string{"console.fixture.test"}); e != nil {
+	if e := service.ConfigureSiteHosts([]string{"platform.example.test"}); e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = service.ConfigureSiteHosts(nil) })
@@ -101,11 +101,16 @@ func TestAgreementPlatformOriginWithProductionHostBoundary(t *testing.T) {
 	for _, test := range []struct {
 		host     string
 		get, opt int
-	}{{"console.fixture.test", 200, 204}, {"dedicated.fixture.test", 404, 404}, {"unlisted.fixture.test", 404, 404}} {
+	}{
+		{"platform.example.test", 200, 204}, {"PLATFORM.Example.Test.:443", 200, 204},
+		{"dedicated.fixture.test", 404, 404}, {"unlisted.fixture.test", 404, 404},
+		{"localhost", 404, 404}, {"alias.localhost", 404, 404}, {"127.0.0.1", 404, 404},
+		{"[::1]", 404, 404}, {"0.0.0.0", 404, 404}, {"[::]", 404, 404},
+	} {
 		for _, method := range []string{"GET", "OPTIONS"} {
 			q := httptest.NewRequest(method, "https://"+test.host+"/api/agreements/current", nil)
-			q.Header.Set("Origin", "https://console.fixture.test")
-			q.Header.Set("X-Forwarded-Host", "console.fixture.test")
+			q.Header.Set("Origin", "https://platform.example.test")
+			q.Header.Set("X-Forwarded-Host", "platform.example.test")
 			q.Header.Set("Access-Control-Request-Method", "GET")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, q)
@@ -124,6 +129,20 @@ func TestAgreementPlatformOriginWithProductionHostBoundary(t *testing.T) {
 			}
 		}
 	}
+	if e := service.ConfigureSiteHosts(nil); e != nil {
+		t.Fatal(e)
+	}
+	for _, method := range []string{"GET", "OPTIONS"} {
+		req := httptest.NewRequest(method, "https://platform.example.test/api/agreements/current", nil)
+		req.Header.Set("Origin", "https://platform.example.test")
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != 404 || w.Header().Get("Access-Control-Allow-Headers") != "" {
+			t.Fatalf("empty siteHosts %s got %d", method, w.Code)
+		}
+	}
+
 }
 
 func TestAgreementRateReceiptAuditUseOneVerifiedIP(t *testing.T) {

@@ -29,8 +29,14 @@ func scriptHostBoundary(db *gorm.DB, entry func(*gin.Context) bool) gin.HandlerF
 				return
 			}
 		}
-		role, err := service.ScriptWebHostRoleWithDB(db, c.Request.Host)
 		reject := func() { c.Header("Cache-Control", "no-store"); c.AbortWithStatus(http.StatusNotFound) }
+		// Apply before address probes and CORS: the legacy platform role also
+		// includes implicit local aliases that cannot receive agreement credentials.
+		if agreementRoute(c.Request.URL.Path) && !service.IsConfiguredSiteAuthority(c.Request.Host) {
+			reject()
+			return
+		}
+		role, err := service.ScriptWebHostRoleWithDB(db, c.Request.Host)
 		if err != nil {
 			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
