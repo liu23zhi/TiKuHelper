@@ -1,7 +1,7 @@
 const { test, afterEach } = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path'), Module = require('node:module')
-require('../helpers/vue-dom.cjs')
+const { setDocumentURL } = require('../helpers/vue-dom.cjs')
 for (const name of ['HTMLInputElement', 'HTMLButtonElement', 'HTMLTextAreaElement']) global[name] = window[name]
 const { mount, flushPromises } = require('@vue/test-utils')
 const { h, nextTick } = require('vue')
@@ -259,21 +259,44 @@ test('a stored short address outside changed rules remains visible until an expl
   assert.equal(state.authorizationAddress, 'https://new.example.test')
 })
 
-test('empty allowed formats retain the same-site custom path fallback and reject invalid slots', async () => {
+test('empty allowed formats retain the same-site custom path fallback and reject invalid slots', async t => {
+  const previousURL = window.location.href
+  t.after(() => setDocumentURL(previousURL))
+  setDocumentURL('https://console.example.test/adapter/scripts')
+  domainFormatsFixture = []
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  assert.equal(state.shortAuthorizationForm.domainFormat, 'console.example.test/*')
+  const input = document.querySelector('[data-script-short-address]')
+  for (const slot of ['', '../bad', 'bad?key=value', 'https://elsewhere.test/run', 'two//parts']) {
+    input.value = slot; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+    assert.equal(state.authorizationAddress, '', slot)
+    await state.saveShortAuthorization(true); await settle()
+    assert.match(document.querySelector('.ant-modal .form-error[role="alert"]').textContent, /请填写有效的 HTTPS 短地址/)
+    assert.equal(shortWrites.length, 0, slot)
+  }
+  input.value = 'team/run'; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+  assert.equal(document.querySelector('[data-script-short-preview] code').textContent, 'https://console.example.test/team/run')
+  const operation = state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 1)
+  assert.equal(shortWrites[0].id, 7)
+  assert.deepEqual(shortWrites[0].payload, { enabled: true, address: 'https://console.example.test/team/run', durationMinutes: 5, startsAt: null, maxUses: 1 })
+  shortWrites[0].resolve(okay({ status: 'active', address: 'https://console.example.test/team/run' })); await operation
+  assert.equal(state.rows[0].shortAuthorization.address, 'https://console.example.test/team/run')
+})
+
+test('empty allowed formats cannot allocate a non-root short address on localhost', async () => {
   domainFormatsFixture = []
   const { state } = await open(admin, 'self')
   state.openShortAuthorization(state.rows[0]); await settle()
   assert.equal(state.shortAuthorizationForm.domainFormat, 'localhost/*')
-  for (const slot of ['', '../bad', 'bad?key=value', 'https://elsewhere.test/run', 'two//parts']) {
-    state.setShortAuthorizationField('slot', slot)
-    await state.saveShortAuthorization(true)
-    assert.equal(shortWrites.length, 0, slot)
-  }
   const input = document.querySelector('[data-script-short-address]')
   input.value = 'team/run'; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
-  const operation = state.saveShortAuthorization(true)
-  assert.equal(shortWrites[0].payload.address, 'https://localhost/team/run')
-  shortWrites[0].resolve(okay({ status: 'active', address: shortWrites[0].payload.address })); await operation
+  assert.equal(document.querySelector('[data-script-short-preview] code').textContent, 'https://localhost/team/run')
+  assert.match(document.querySelector('.ant-modal .form-error[role="alert"]').textContent, /localhost、回环地址和未指定地址不能分配给脚本，但仍可用于访问 WebUI\/API。/)
+  await state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 0, 'a built-in hostname restriction applies to non-root paths too')
+  assert.equal(input.disabled, false)
 })
 
 test('reserved path prefixes from the service and fallback are rejected immediately without disabling editing', async () => {
@@ -299,7 +322,7 @@ test('reserved path prefixes from the service and fallback are rejected immediat
   shortWrites[0].resolve(okay({ status: 'active', address: shortWrites[0].payload.address })); await operation
 })
 
-test('a wildcard formatted site root is protected before saving, without claiming ordinary paths', async () => {
+test('a server-reserved wildcard root cannot be saved, without claiming ordinary paths', async () => {
   domainFormatsFixture = ['*.example.test', 'tiku.example.test/*']
   const { state } = await open(admin, 'self')
   state.openShortAuthorization(state.rows[0]); await settle()
@@ -307,9 +330,17 @@ test('a wildcard formatted site root is protected before saving, without claimin
   const input = document.querySelector('[data-script-short-address]')
   input.value = 'TiKu'; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
   assert.equal(document.querySelector('[data-script-short-preview] code').textContent, 'https://tiku.example.test')
-  assert.match(document.querySelector('.ant-modal .form-error[role="alert"]')?.textContent || '', /主站.*保留|保留.*主站/)
-  await state.saveShortAuthorization(true)
-  assert.equal(shortWrites.length, 0, 'the platform root never enters the save transport')
+  assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]'), null, 'the format list does not expose siteHosts')
+  const reserved = state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 1, 'the service decides whether this root is reserved')
+  assert.equal(shortWrites[0].id, 7)
+  assert.equal(shortWrites[0].payload.address, 'https://tiku.example.test')
+  const denial = '脚本域名不在管理员允许的列表中：域名禁止用于脚本：主站域名保留，不能分配为脚本子域名'
+  shortWrites[0].resolve({ status: 400, data: { message: denial } }); await reserved; await settle()
+  assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]').textContent, denial)
+  assert.equal(state.rows[0].shortAuthorization, undefined, 'a rejected address is not saved in the script record')
+  assert.equal(state.shortAuthorizationForm.domainFormat, '*.example.test')
+  assert.equal(input.value, 'TiKu')
   assert.equal(input.disabled, false)
   input.value = 'alpha'; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
   assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]'), null)
@@ -317,7 +348,25 @@ test('a wildcard formatted site root is protected before saving, without claimin
   state.setShortAuthorizationField('domainFormat', 'tiku.example.test/*')
   state.setShortAuthorizationField('slot', 'team'); await settle()
   assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]'), null, 'a nonreserved path is still server-validated independently')
-  assert.equal(shortWrites.length, 0)
+  const pathSave = state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 2)
+  assert.equal(shortWrites[1].payload.address, 'https://tiku.example.test/team')
+  shortWrites[1].resolve(okay({ status: 'active', address: 'https://tiku.example.test/team' })); await pathSave
+  assert.equal(state.rows[0].shortAuthorization.address, 'https://tiku.example.test/team')
+})
+
+test('an undeclared tiku root under an allowed wildcard can be saved if the service accepts it', async () => {
+  domainFormatsFixture = ['*.example.test', 'tiku.example.test/*']
+  const { state } = await open(admin, 'self')
+  state.openShortAuthorization(state.rows[0]); await settle()
+  const input = document.querySelector('[data-script-short-address]')
+  input.value = 'tiku'; input.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+  assert.equal(document.querySelector('.ant-modal .form-error[role="alert"]'), null)
+  const operation = state.saveShortAuthorization(true)
+  assert.equal(shortWrites.length, 1)
+  assert.equal(shortWrites[0].payload.address, 'https://tiku.example.test')
+  shortWrites[0].resolve(okay({ status: 'active', address: 'https://tiku.example.test' })); await operation
+  assert.equal(state.rows[0].shortAuthorization.address, 'https://tiku.example.test')
 })
 
 test('reserved and occupied server errors keep the selected short address format and slot editable', async () => {
