@@ -324,45 +324,58 @@ func UserDevices(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法读取设备列表"})
 		return
 	}
+	var view gin.H
+	asOf := time.Now()
+	if err := service.ReadDeviceHistorySnapshot(db, func(tx *gorm.DB) error {
+		var err error
+		view, err = deviceUserHistoryView(tx, operator.ID, asOf)
+		return err
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备列表失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": view})
+}
+
+func deviceUserHistoryView(db *gorm.DB, userID int32, asOf time.Time) (gin.H, error) {
 	if !db.Migrator().HasTable(entity.TableNameAccountDeviceBinding) {
 		// 表还没迁移好：设备池本身也处于「不限制」的降级态，
 		// 这里返回空列表而不是 503 —— 用户看到「还没有设备」是对的。
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		return gin.H{
 			"devices":     []deviceUserDeviceItem{},
 			"total":       0,
 			"active":      0,
 			"removed":     0,
 			"blocked":     0,
 			"schemaReady": false,
-		}})
-		return
+		}, nil
 	}
 
 	state := deviceUserReadColumnState(db)
-	blocks, err := deviceUserLoadBlocks(db, operator.ID)
+	blocks, err := deviceUserLoadBlocks(db, userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备拉黑记录失败"})
-		return
+		return nil, err
 	}
 
 	var rows []deviceUserBindingRow
 	if err := service.VisibleDeviceHistory(db, db.Table(entity.TableNameAccountDeviceBinding)).
 		Select(deviceUserBindingSelect(state)).
-		Where("user_id = ?", operator.ID).
+		Where("user_id = ?", userID).
 		Order(deviceUserListOrder(state)).
 		Find(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备列表失败"})
-		return
+		return nil, err
 	}
 
-	keys := make([]string, 0, len(rows))
+	keys := make([]string, 0, len(rows)+len(blocks))
 	for _, row := range rows {
 		keys = append(keys, row.DeviceID)
 	}
-	globalBans, err := service.LoadActiveDeviceBansWithDB(db, keys, time.Now())
+	for deviceID := range blocks {
+		keys = append(keys, deviceID)
+	}
+	globalBans, err := service.LoadActiveDeviceBansWithDB(db, keys, asOf)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备拉黑记录失败"})
-		return
+		return nil, err
 	}
 	historyAvailable := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "history_hidden_at")
 	canBlock := state.hasRevoked && deviceUserBlocksTableAvailable(db)
@@ -405,15 +418,21 @@ func UserDevices(c *gin.Context) {
 		if seen[deviceID] {
 			continue
 		}
+		_, global := globalBans[service.NormalizeBlacklistDeviceID(deviceID)]
+		blockID := block.ID
+		if global {
+			blockID = 0
+		}
 		orphans = append(orphans, deviceUserDeviceItem{
-			ID:         0,
-			DeviceID:   deviceID,
-			Status:     deviceUserStatusBlocked,
-			StatusText: deviceUserStatusText(deviceUserStatusBlocked),
-			Blocked:    true,
-			BlockID:    block.ID,
-			BlockOnly:  true,
-			Removable:  false,
+			ID:              0,
+			DeviceID:        deviceID,
+			Status:          deviceUserStatusBlocked,
+			StatusText:      deviceUserStatusText(deviceUserStatusBlocked),
+			Blocked:         true,
+			BlockID:         blockID,
+			GloballyBlocked: global,
+			BlockOnly:       true,
+			Removable:       false,
 		})
 		blocked++
 	}
@@ -421,14 +440,14 @@ func UserDevices(c *gin.Context) {
 	sortDeviceUserItems(orphans)
 	devices = append(devices, orphans...)
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	return gin.H{
 		"devices":     devices,
 		"total":       len(devices),
 		"active":      active,
 		"removed":     removed,
 		"blocked":     blocked,
 		"schemaReady": true,
-	}})
+	}, nil
 }
 
 // UserDeviceDelete 删除本人已移除的设备历史记录。

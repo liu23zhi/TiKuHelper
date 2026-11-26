@@ -10,6 +10,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 设备粒度黑名单 + 设备管理员端服务层（137-设备体系设计-授权与黑名单.md §3.4 / §5.1 / §8.2）。
@@ -940,7 +941,16 @@ func loadUsernamesWithDB(db *gorm.DB, userIDs []int32) (map[int32]string, error)
 //  3. 幂等：已经是撤销状态的行不重复写（否则会把首次撤销时间戳覆盖掉）。
 //
 // 返回解绑后的行（含 username），供前端原地更新而不必整页重载。
+// UnbindDeviceBindingWithDB is the domain-level unbind without an HTTP actor.
 func UnbindDeviceBindingWithDB(db *gorm.DB, id int64, now time.Time) (AdminDeviceItem, error) {
+	return unbindDeviceBinding(db, id, now, nil)
+}
+
+func UnbindDeviceBindingAsAdmin(db *gorm.DB, id int64, now time.Time, actor DeviceHistoryActor) (AdminDeviceItem, error) {
+	return unbindDeviceBinding(db, id, now, &actor)
+}
+
+func unbindDeviceBinding(db *gorm.DB, id int64, now time.Time, actor *DeviceHistoryActor) (AdminDeviceItem, error) {
 	if db == nil {
 		return AdminDeviceItem{}, ErrBlacklistCacheNoDatabase
 	}
@@ -957,39 +967,39 @@ func UnbindDeviceBindingWithDB(db *gorm.DB, id int64, now time.Time) (AdminDevic
 		now = time.Now()
 	}
 
+	first, err := findDeviceHistoryBinding(db, id, 0)
+	if err != nil {
+		return AdminDeviceItem{}, err
+	}
 	var row adminDeviceBindingRow
-	if err := deviceAdminSession(db).Table(entity.TableNameAccountDeviceBinding).
-		Select("id, user_id, device_id, COALESCE(device_label, '') AS device_label, COALESCE(owner_kind, '') AS owner_kind, first_seen_at, last_seen_at, revoked_at, COALESCE(revoked_reason, '') AS revoked_reason").
-		Where("id = ?", id).
-		Scan(&row).Error; err != nil {
-		return AdminDeviceItem{}, fmt.Errorf("查询设备绑定失败：%w", err)
-	}
-	if row.ID == 0 {
-		return AdminDeviceItem{}, ErrDeviceBindingNotFound
-	}
-	if row.RevokedAt == nil {
-		res := deviceAdminSession(db).Model(&entity.AccountDeviceBinding{}).
-			Where("id = ? AND revoked_at IS NULL", id).
-			Updates(map[string]any{
-				"revoked_at":     now,
-				"revoked_reason": DeviceBindingRevokedReasonAdminUnbound,
-			})
-		if res.Error != nil {
-			return AdminDeviceItem{}, fmt.Errorf("强制解绑失败：%w", res.Error)
-		}
-		if res.RowsAffected > 0 {
-			row.RevokedAt = &now
-			row.RevokedReason = DeviceBindingRevokedReasonAdminUnbound
-		} else {
-			// 并发：另一个请求刚撤销了它。重新读回真实状态，不假装成功。
-			var reread adminDeviceBindingRow
-			if err := deviceAdminSession(db).Table(entity.TableNameAccountDeviceBinding).
-				Select("id, revoked_at, COALESCE(revoked_reason, '') AS revoked_reason").
-				Where("id = ?", id).Scan(&reread).Error; err == nil && reread.ID != 0 {
-				row.RevokedAt = reread.RevokedAt
-				row.RevokedReason = reread.RevokedReason
+	err = withDeviceLifecycleWrite(db, NormalizeDevicePoolDeviceID(first.DeviceID), func(tx *gorm.DB) error {
+		if err := VisibleDeviceHistory(tx, deviceAdminSession(tx).Table(entity.TableNameAccountDeviceBinding)).
+			Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeviceBindingNotFound
 			}
+			return err
 		}
+		if row.RevokedAt != nil {
+			return nil
+		}
+		res := tx.Model(&entity.AccountDeviceBinding{}).Where("id = ? AND revoked_at IS NULL", id).
+			UpdateColumns(map[string]any{"revoked_at": now, "revoked_reason": DeviceBindingRevokedReasonAdminUnbound})
+		if res.Error != nil {
+			return res.Error
+		}
+		saved, err := findDeviceHistoryBinding(tx, id, 0)
+		if err != nil {
+			return err
+		}
+		row.RevokedAt, row.RevokedReason = saved.RevokedAt, saved.RevokedReason
+		if res.RowsAffected == 1 && actor != nil {
+			return deviceRevocationAudit(tx, *actor, 2, "强制解绑设备", saved, saved.RevokedReason)
+		}
+		return nil
+	})
+	if err != nil {
+		return AdminDeviceItem{}, fmt.Errorf("强制解绑失败：%w", err)
 	}
 
 	names, nameErr := loadUsernamesWithDB(db, []int32{row.UserID})

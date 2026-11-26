@@ -10,6 +10,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 设备池上限判定（121 §4.9 / 107 Q15-Q17 / 137 设备体系设计）。
@@ -894,7 +895,8 @@ func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, opt
 	updates := map[string]any{
 		"last_seen_at": now,
 	}
-	if devicePoolRevokedColumnAvailable(db) {
+	hasRevocation := devicePoolRevokedColumnAvailable(db)
+	if hasRevocation {
 		// 必须**同时**清两列（137 §7.1）：只清 revoked_at 时 revoked_reason
 		// 仍是 idle_10d/user_removed，展示层与排障会读到矛盾的「未撤销但有撤销原因」。
 		updates["revoked_at"] = nil
@@ -936,14 +938,39 @@ func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, opt
 		updates["last_ip"] = clientIP
 	}
 
-	result := session.Model(&entity.AccountDeviceBinding{}).
-		Where("user_id = ? AND device_id = ?", userID, normalized).
-		Updates(updates)
-	if result.Error != nil {
-		return decision, result.Error
+	updateExisting := func() (bool, error) {
+		query := func() *gorm.DB {
+			return session.Model(&entity.AccountDeviceBinding{}).Where("user_id = ? AND device_id = ?", userID, normalized)
+		}
+		update := query()
+		if hasRevocation {
+			update = update.Where("revoked_at IS NULL")
+		}
+		res := update.Updates(updates)
+		if res.Error != nil || res.RowsAffected > 0 || !hasRevocation {
+			return res.RowsAffected > 0, res.Error
+		}
+
+		// Do not erase a reason on rebind until the recorded revocation
+		// survives in the independent audit. The common active update above
+		// does not pay this read; the row lock also orders the idle worker.
+		var existing deviceHistoryBinding
+		err := query().Select("id, user_id, device_id, revoked_at, revoked_reason").
+			Clauses(clause.Locking{Strength: "UPDATE"}).Take(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if err := preserveDeviceRevocation(db, existing); err != nil {
+			return false, err
+		}
+		return true, query().Where("id = ?", existing.ID).Updates(updates).Error
 	}
-	if result.RowsAffected > 0 {
-		return decision, nil
+	updated, err := updateExisting()
+	if err != nil || updated {
+		return decision, err
 	}
 
 	// ② 行不存在：首次登记。FirstSeenAt 只在这里写一次。
@@ -988,14 +1015,8 @@ func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, opt
 	if err := session.Model(&entity.AccountDeviceBinding{}).Create(createValues).Error; err != nil {
 		// 并发首次登记：另一个请求刚插入了同一行。这不是错误，
 		// 再走一次 UPDATE 把 last_seen_at 刷新即可（语义与成功分支一致）。
-		retry := session.Model(&entity.AccountDeviceBinding{}).
-			Where("user_id = ? AND device_id = ?", userID, normalized).
-			Updates(updates)
-		if retry.Error != nil {
-			return decision, retry.Error
-		}
-		if retry.RowsAffected > 0 {
-			return decision, nil
+		if updated, retryErr := updateExisting(); retryErr != nil || updated {
+			return decision, retryErr
 		}
 		return decision, err
 	}

@@ -165,18 +165,11 @@ func AdminDeviceUnbind(c *gin.Context) {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	item, err := service.UnbindDeviceBindingWithDB(db, id, time.Now())
+	item, err := service.UnbindDeviceBindingAsAdmin(db, id, time.Now(), deviceHistoryActor(operator))
 	if err != nil {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	recordAccountAudit(c, &operator, "device", 2, "强制解绑设备", map[string]any{
-		"bindingId":    item.ID,
-		"userId":       item.UserID,
-		"deviceId":     item.DeviceID,
-		"revokedAt":    item.RevokedAt,
-		"revokeReason": item.RevokedReason,
-	})
 	c.JSON(http.StatusOK, item)
 }
 

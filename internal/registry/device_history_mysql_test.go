@@ -171,3 +171,95 @@ func TestMariaDBDeviceHistorySerializesWithSeparateConnection(t *testing.T) {
 		t.Fatal("competing writer did not resume after lock release")
 	}
 }
+
+func TestMariaDBDeviceHistorySnapshotOverReadCommitted(t *testing.T) {
+	reader := mysqlTestFreshDB(t)
+	mustAutoMigrate(t, reader, &entity.SystemSetting{}, &entity.Log{}, &entity.BlacklistEntry{})
+	if err := ensureAccountDeviceBindingsSchema(reader); err != nil {
+		t.Fatal(err)
+	}
+	// Override this test connection only. The service must explicitly request
+	// a repeatable read for listing, regardless of the server/session default.
+	if err := reader.Exec("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED").Error; err != nil {
+		t.Fatal(err)
+	}
+	writer := openMariaDBTestDB(t, mysqlTestDSN(t))
+	row := entity.AccountDeviceBinding{UserID: 701, DeviceID: "extension:read-committed-fixture", LastSeenAt: time.Now()}
+	if err := writer.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	var ownRules int64
+	var before, afterConcurrent entity.AccountDeviceBinding
+	err := service.ReadDeviceHistorySnapshot(reader, func(tx *gorm.DB) error {
+		if err := tx.Model(&entity.UserDeviceBlock{}).Where("user_id = ?", row.UserID).Count(&ownRules).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&before, row.ID).Error; err != nil {
+			return err
+		}
+		if _, err := service.BlockAccountDevice(writer, row.ID, service.DeviceHistoryActor{UserID: row.UserID}, "fixture"); err != nil {
+			return err
+		}
+		return tx.First(&afterConcurrent, row.ID).Error
+	})
+	if err != nil || ownRules != 0 || before.RevokedAt != nil || afterConcurrent.RevokedAt != nil {
+		t.Fatalf("MariaDB read-committed leaked mixed history: rules=%d before=%v after=%v err=%v", ownRules, before.RevokedAt, afterConcurrent.RevokedAt, err)
+	}
+	var fresh entity.AccountDeviceBinding
+	if err := reader.First(&fresh, row.ID).Error; err != nil || fresh.RevokedAt == nil {
+		t.Fatalf("expected fresh query to see the committed revocation: %+v %v", fresh, err)
+	}
+}
+
+func TestMariaDBDeviceHistoryAuditsStoredRevocationBeforeRebind(t *testing.T) {
+	db := mysqlTestFreshDB(t)
+	mustAutoMigrate(t, db, &entity.SystemSetting{}, &entity.User{}, &entity.UserLevel{}, &entity.Log{}, &entity.BlacklistEntry{})
+	if err := db.Exec("ALTER TABLE users ADD COLUMN level_id INT NOT NULL DEFAULT 0").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureAccountDeviceBindingsSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	admin := service.DeviceHistoryActor{UserID: 702, Username: "fixture-admin"}
+	target := entity.AccountDeviceBinding{UserID: 703, DeviceID: "extension:fixture-admin-audit", LastSeenAt: time.Now()}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 11, 21, 1, 2, 3, 456789123, time.UTC)
+	for range 2 {
+		if _, err := service.UnbindDeviceBindingAsAdmin(db, target.ID, when, admin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.First(&target, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.RevokedAt == nil {
+		t.Fatal("missing persisted admin transition")
+	}
+
+	legacy := entity.AccountDeviceBinding{UserID: target.UserID, DeviceID: "extension:fixture-legacy-audit",
+		LastSeenAt: when.Add(-time.Hour), RevokedAt: &when, RevokedReason: "idle_timeout"}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&legacy, legacy.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []entity.AccountDeviceBinding{target, legacy} {
+		decision, err := service.RegisterDevice(db, row.UserID, row.DeviceID)
+		if err != nil || !decision.Allowed {
+			t.Fatalf("rebind: %+v %v", decision, err)
+		}
+	}
+	var logs []entity.Log
+	if err := db.Order("id").Find(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 || logs[0].UserID != admin.UserID || logs[1].UserID != 0 ||
+		!strings.Contains(logs[0].NewAnswer, target.RevokedAt.UTC().Format(time.RFC3339Nano)) ||
+		!strings.Contains(logs[1].NewAnswer, legacy.RevokedAt.UTC().Format(time.RFC3339Nano)) ||
+		!strings.Contains(logs[1].NewAnswer, "idle_timeout") {
+		t.Fatalf("lost or duplicated audit for stored MariaDB transitions: %+v", logs)
+	}
+}

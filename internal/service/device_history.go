@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"hash/fnv"
 	"strconv"
@@ -39,6 +40,16 @@ func withDeviceLifecycleWrite(db *gorm.DB, deviceID string, fn func(*gorm.DB) er
 		}
 		return fn(tx)
 	})
+}
+
+// ReadDeviceHistorySnapshot keeps the rules and the binding version from one
+// read snapshot. MariaDB may be configured for READ COMMITTED, so request
+// repeatable reads explicitly for this transaction. SQLite has snapshot reads.
+func ReadDeviceHistorySnapshot(db *gorm.DB, read func(*gorm.DB) error) error {
+	if db.Dialector.Name() == "mysql" {
+		return db.Transaction(read, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	}
+	return db.Transaction(read)
 }
 
 func hasDeviceHistoryColumn(db *gorm.DB) bool {
@@ -103,6 +114,49 @@ func deviceHistoryAudit(tx *gorm.DB, actor DeviceHistoryActor, action int32, des
 			"name": MaskBlacklistDeviceID(row.DeviceID), "remark": remark,
 		},
 	})
+}
+
+func deviceRevocationAuditKey(row deviceHistoryBinding) string {
+	return "device-revoke:" + strconv.FormatInt(row.ID, 10) + ":" +
+		BlacklistPatternHashHex(row.RevokedAt.UTC().Format(time.RFC3339Nano)+"\x00"+row.RevokedReason)
+}
+
+func deviceRevocationAudit(tx *gorm.DB, actor DeviceHistoryActor, action int32, description string, row deviceHistoryBinding, remark string) error {
+	if row.RevokedAt == nil {
+		return errors.New("设备撤销审计缺少已保存的撤销时间")
+	}
+	scope := "binding_revocation"
+	if actor.UserID == 0 {
+		scope = "legacy_revocation"
+	}
+	return WriteAccountAuditWithDB(tx, AccountAuditEvent{
+		UserID: actor.UserID, Username: actor.Username, Module: "device", Action: action,
+		Description: description, CorrelationID: deviceRevocationAuditKey(row),
+		Result: map[string]any{
+			"targetUserId": row.UserID, "requestId": strconv.FormatInt(row.ID, 10),
+			"name": MaskBlacklistDeviceID(row.DeviceID), "remark": remark, "method": row.RevokedReason,
+			"scope": scope, "revokedAt": row.RevokedAt.UTC().Format(time.RFC3339Nano),
+		},
+	})
+}
+
+// preserveDeviceRevocation archives only facts still present on an old
+// binding, before rebind clears them. New transition audits use the same key
+// (derived from database-stored time), so they are not copied or rewritten.
+func preserveDeviceRevocation(tx *gorm.DB, row deviceHistoryBinding) error {
+	if row.RevokedAt == nil || row.RevokedReason == "" {
+		return nil
+	}
+	var existing int64
+	if err := tx.Model(&entity.Log{}).
+		Where("module = ? AND correlation_id = ?", "device", deviceRevocationAuditKey(row)).
+		Count(&existing).Error; err != nil {
+		return err
+	}
+	if existing != 0 {
+		return nil
+	}
+	return deviceRevocationAudit(tx, DeviceHistoryActor{}, 2, "保全历史设备撤销证据", row, row.RevokedReason)
 }
 
 // ClearDeviceHistory is idempotent while the record remains removed. A concurrent
@@ -211,6 +265,13 @@ func BlockAccountDevice(db *gorm.DB, id int64, actor DeviceHistoryActor, reason 
 		if !created && result.RowsAffected == 0 {
 			return nil
 		}
+		if result.RowsAffected != 0 {
+			saved, err := findDeviceHistoryBinding(tx, id, actor.UserID)
+			if err != nil {
+				return err
+			}
+			return deviceRevocationAudit(tx, actor, 3, "拉黑账号设备", saved, stored.Reason)
+		}
 		return deviceHistoryAudit(tx, actor, 3, "拉黑账号设备", row, stored.Reason)
 	})
 	return stored, err
@@ -264,7 +325,12 @@ func RemoveAccountDevice(db *gorm.DB, id int64, actor DeviceHistoryActor) (entit
 			already = true
 			return nil
 		}
-		return deviceHistoryAudit(tx, actor, 2, "移除账号设备", row, result.RevokedReason)
+		saved, err := findDeviceHistoryBinding(tx, id, actor.UserID)
+		if err != nil {
+			return err
+		}
+		result.RevokedAt = saved.RevokedAt
+		return deviceRevocationAudit(tx, actor, 2, "移除账号设备", saved, result.RevokedReason)
 	})
 	return result, already, err
 }

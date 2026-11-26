@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"gorm.io/gorm"
+	gormlog "gorm.io/gorm/logger"
 )
 
 func TestDeviceHistoryAccountBlockRevokesOnlyOwnBindingAndPreventsRebind(t *testing.T) {
@@ -236,5 +240,198 @@ func TestDeviceHistoryLegacyAccountBlockCannotSilentlyResumeOnUnblock(t *testing
 	}
 	if usedWhileBlocked != 0 || usedAfterUnblock != 0 || row.RevokedAt == nil || !row.RevokedAt.Equal(created) {
 		t.Fatalf("legacy block/unblock silently resumes a binding: blocked slots=%d after unblock=%d revoke=%v", usedWhileBlocked, usedAfterUnblock, row.RevokedAt)
+	}
+}
+
+func TestDeviceHistoryAdminUnbindWritesOneAttributedAuditBeforeRebind(t *testing.T) {
+	db := newDeviceAdminControllerTestDB(t, true)
+	installDeviceAdminTestDB(t, db)
+	admin := seedDeviceAdminActor(t, db, 740, "fixture-history-admin")
+	row := seedDeviceAdminBinding(t, db, 741, "extension:review-audit-fixture")
+	router := deviceAdminTestRouter(&admin)
+	path := fmt.Sprintf("/api/admin/devices/%d/unbind", row.ID)
+	for range 2 {
+		res := deviceAdminRequest(router, http.MethodPost, path, "")
+		if res.Code != http.StatusOK {
+			t.Fatalf("admin unbind: %d %s", res.Code, res.Body)
+		}
+	}
+	if decision, err := service.RegisterDevice(db, row.UserID, row.DeviceID); err != nil || !decision.Allowed {
+		t.Fatalf("normal allowed rebind: %+v %v", decision, err)
+	}
+	var logs []entity.Log
+	if err := db.Where("module = ?", "device").Find(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		for _, log := range logs {
+			t.Logf("actor=%d outcome=%s", log.UserID, log.NewAnswer)
+		}
+		t.Fatalf("only one successful actual unbind is audited; got %d", len(logs))
+	}
+	var outcome struct {
+		TargetUserID int32
+		RequestID    string
+		Remark       string
+		RevokedAt    time.Time
+	}
+	if err := json.Unmarshal([]byte(logs[0].NewAnswer), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if logs[0].UserID != admin.ID || logs[0].Username != admin.Username ||
+		outcome.TargetUserID != row.UserID || outcome.RequestID != fmt.Sprint(row.ID) || outcome.Remark != "admin_unbound" ||
+		outcome.RevokedAt.IsZero() || strings.Contains(logs[0].NewAnswer, row.DeviceID) {
+		t.Fatalf("audit missing actor, target binding, reason or time, or leaking raw identifier: owner=%d outcome=%s",
+			logs[0].UserID, logs[0].NewAnswer)
+	}
+}
+
+func TestDeviceHistoryAdminUnbindRollsBackWhenAuditCannotCommit(t *testing.T) {
+	db := newDeviceAdminControllerTestDB(t, true)
+	installDeviceAdminTestDB(t, db)
+	admin := seedDeviceAdminActor(t, db, 742, "fixture-audit-failure-admin")
+	row := seedDeviceAdminBinding(t, db, 743, "extension:fixture-admin-audit-failure")
+	if err := db.Callback().Create().Before("gorm:create").Register("test:fail-device-audit", func(tx *gorm.DB) {
+		if tx.Statement.Table == entity.TableNameLog {
+			tx.AddError(fmt.Errorf("synthetic device audit write failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := deviceAdminRequest(deviceAdminTestRouter(&admin), http.MethodPost, fmt.Sprintf("/api/admin/devices/%d/unbind", row.ID), "")
+	var latest entity.AccountDeviceBinding
+	if err := db.First(&latest, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&entity.Log{}).Where("module = ?", "device").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != http.StatusInternalServerError || latest.RevokedAt != nil || count != 0 {
+		t.Fatalf("unaudited unbind left state: status=%d revoked=%v successful audits=%d", res.Code, latest.RevokedAt, count)
+	}
+}
+
+func TestDeviceHistoryRebindPreservesLegacyRevocationWithoutInventingActor(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "fixture-legacy-evidence", 0, -1)
+	reason := "idle_timeout"
+	stamp := time.Date(2026, 11, 20, 1, 2, 3, 0, time.UTC)
+	deviceID := "extension:fixture-legacy-audit"
+	id := seedDeviceUserBinding(t, db, owner.ID, deviceID, "", stamp.Add(-time.Hour), reason, &stamp)
+	// Older opaque entries must not be rewritten or used to manufacture an actor.
+	if err := db.Create(&entity.Log{UserID: 333, Module: "device", Description: "legacy opaque", NewAnswer: "{}", CreateTime: stamp}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		decision, err := service.RegisterDevice(db, owner.ID, deviceID)
+		if err != nil || !decision.Allowed {
+			t.Fatalf("rebind: %+v %v", decision, err)
+		}
+	}
+	var logs []entity.Log
+	if err := db.Where("module = ?", "device").Order("id").Find(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 || logs[0].NewAnswer != "{}" || logs[1].UserID != 0 || logs[1].Username != "" ||
+		!strings.Contains(logs[1].NewAnswer, fmt.Sprintf("\"requestId\":\"%d\"", id)) ||
+		!strings.Contains(logs[1].NewAnswer, stamp.Format(time.RFC3339)) || !strings.Contains(logs[1].NewAnswer, reason) {
+		t.Fatalf("legacy evidence omitted, rewritten, or actor invented: %+v", logs)
+	}
+}
+
+func TestDeviceHistoryUserListUsesOneSnapshotAcrossConcurrentBans(t *testing.T) {
+	for _, scope := range []string{"account", "global"} {
+		t.Run(scope, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			open := func() *gorm.DB {
+				db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: gormlog.Default.LogMode(gormlog.Silent)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sqlDB, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { sqlDB.Close() })
+				return db
+			}
+			reader, writer := open(), open()
+			if err := writer.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.AutoMigrate(&entity.AccountDeviceBinding{}, &entity.UserDeviceBlock{}, &entity.DeviceLifecycleLock{}, &entity.BlacklistEntry{}, &entity.Log{}); err != nil {
+				t.Fatal(err)
+			}
+			previous := deviceUserDBOverride
+			deviceUserDBOverride = reader
+			t.Cleanup(func() { deviceUserDBOverride = previous })
+			owner := &entity.User{ID: 911, Username: "snapshot-owner"}
+			deviceID := "extension:fixture-snapshot"
+			id := seedDeviceUserBinding(t, writer, owner.ID, deviceID, "", time.Now(), "", nil)
+			seedDeviceUserBinding(t, writer, 912, "extension:other-account", "", time.Now(), "", nil)
+			interleaved := false
+			cut := entity.TableNameUserDeviceBlock
+			if scope == "global" {
+				cut = entity.TableNameAccountDeviceBinding
+			}
+			if err := reader.Callback().Query().After("gorm:query").Register("test:commit-between-history-reads", func(tx *gorm.DB) {
+				if interleaved || tx.Statement.Table != cut {
+					return
+				}
+				interleaved = true
+				var err error
+				if scope == "global" {
+					_, err = service.BanDevice(writer, service.DeviceBanRequest{DeviceID: deviceID, Reason: "fixture"})
+				} else {
+					_, err = service.BlockAccountDevice(writer, id, service.DeviceHistoryActor{UserID: owner.ID}, "fixture")
+				}
+				if err != nil {
+					t.Errorf("fixture writer failed: %v", err)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			router := deviceUserRouter(owner)
+			query := "/api/user/devices?userId=912"
+			pre, snapshot := doDeviceUser(t, router, http.MethodGet, query, nil)
+			items := deviceUserItems(t, snapshot)
+			if pre.Code != http.StatusOK || !interleaved || len(items) != 1 || items[0]["id"] != float64(id) ||
+				items[0]["status"] != "active" || items[0]["revokedAt"] != nil || items[0]["deletable"] != false ||
+				snapshot.Data["active"] != float64(1) || snapshot.Data["removed"] != float64(0) || snapshot.Data["blocked"] != float64(0) {
+				t.Fatalf("mixed states or owner scope leaked within the original snapshot: %d %s", pre.Code, pre.Body)
+			}
+			post, final := doDeviceUser(t, router, http.MethodGet, query, nil)
+			items = deviceUserItems(t, final)
+			if post.Code != http.StatusOK || len(items) != 1 || items[0]["status"] != "blocked" || items[0]["revokedAt"] == nil ||
+				items[0]["deletable"] != false || final.Data["active"] != float64(0) || final.Data["blocked"] != float64(1) {
+				t.Fatalf("next request did not see committed block: %d %s", post.Code, post.Body)
+			}
+		})
+	}
+}
+
+func TestDeviceHistoryRebindRetainsOriginalWithdrawalWhenAuditCannotCommit(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "fixture-legacy-write-fails", 0, -1)
+	when := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	deviceID := "extension:fixture-legacy-audit-failure"
+	id := seedDeviceUserBinding(t, db, owner.ID, deviceID, "", when, "idle_timeout", &when)
+	if err := db.Callback().Create().Before("gorm:create").Register("test:fail-legacy-audit", func(tx *gorm.DB) {
+		if tx.Statement.Table == entity.TableNameLog {
+			tx.AddError(fmt.Errorf("synthetic archive failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegisterDevice(db, owner.ID, deviceID); err == nil {
+		t.Fatal("legacy details must not be erased when their audit fails")
+	}
+	var row entity.AccountDeviceBinding
+	if err := db.First(&row, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.RevokedAt == nil || !row.RevokedAt.Equal(when) || row.RevokedReason != "idle_timeout" || !row.LastSeenAt.Equal(when) {
+		t.Fatalf("failed rebind altered legacy facts: %+v", row)
 	}
 }
