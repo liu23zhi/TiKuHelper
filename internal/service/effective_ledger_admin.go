@@ -134,7 +134,7 @@ func CorrectEffectiveLedger(db *gorm.DB, actor entity.User, uid int32, input Eff
 		current := p.Totals.ConsumptionTotal
 		if src.Kind == "order" {
 			current = p.Totals.RechargeTotal
-			if p.unallocatedMicros != 0 {
+			if p.unallocatedMicros != 0 || src.Uncertain || p.Totals.Issues["refund_without_exact_order_allocation"] > 0 {
 				return ErrLedgerInput
 			}
 		}

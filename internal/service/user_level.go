@@ -125,7 +125,16 @@ func userLevelSchemaAvailable(db *gorm.DB) bool {
 // ComputeUserLevelTotalsWithDB is the same replay used by the personal and
 // admin summaries; no wallet initial balance or guessed legacy attribution.
 func ComputeUserLevelTotalsWithDB(db *gorm.DB, userID int32) (UserLevelTotals, error) {
-	p, err := replayEffectiveLedger(db, userID)
+	if db == nil || userID <= 0 {
+		return UserLevelTotals{}, ErrLedgerInput
+	}
+	var p effectiveProjection
+	read := func(tx *gorm.DB) error { var err error; p, err = replayEffectiveLedger(tx, userID); return err }
+	if _, inTx := db.Statement.ConnPool.(gorm.TxCommitter); inTx {
+		err := read(db)
+		return p.Totals, err
+	}
+	err := userLevelSession(db).Transaction(read)
 	return p.Totals, err
 }
 
@@ -218,6 +227,15 @@ func EvaluateUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLev
 	current, err := CurrentUserLevelIDWithDB(db, userID)
 	if err != nil {
 		return UserLevelChangeResult{}, err
+	}
+	// Never turn an unexplained historical row into an automatic demotion.
+	// Missing optional tables in pre-migration deployments remain explicitly
+	// reported. Ambiguous legacy settlements remain held for review.
+	if totals.RequiresReview() {
+		result.Evaluated = false
+		result.FromLevelID = current
+		result.ToLevelID = current
+		return result, nil
 	}
 	result.FromLevelID = current
 	result.ToLevelID = targetID
@@ -556,6 +574,7 @@ func ReevaluateAllUserLevelsWithDB(db *gorm.DB, limit int, trigger string) (proc
 
 // UserLevelSummary 是「用户当前等级」的下发结构（个人中心 / 用户列表用）。
 type UserLevelSummary struct {
+	LevelReviewPending  bool            `json:"levelReviewPending,omitempty"`
 	Ledger              UserLevelTotals `json:"ledger"`
 	LevelID             int32           `json:"levelId"`
 	Name                string          `json:"name"`
@@ -632,10 +651,11 @@ func GetUserLevelSummaryWithDB(db *gorm.DB, userID int32) (UserLevelSummary, err
 		return UserLevelSummary{}, err
 	}
 	summary := UserLevelSummary{
-		Ledger:           totals,
-		LevelID:          levelID,
-		RechargeTotal:    totals.RechargeTotal,
-		ConsumptionTotal: totals.ConsumptionTotal,
+		LevelReviewPending: totals.RequiresReview(),
+		Ledger:             totals,
+		LevelID:            levelID,
+		RechargeTotal:      totals.RechargeTotal,
+		ConsumptionTotal:   totals.ConsumptionTotal,
 	}
 	if levelID <= 0 {
 		return summary, nil

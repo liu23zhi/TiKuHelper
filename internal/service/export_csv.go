@@ -670,35 +670,44 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 				return nil, err
 			}
 			out := make([][]string, 0, len(rows))
-			for _, row := range rows {
-				ledger, err := ComputeUserLevelTotalsWithDB(db, row.ID)
+			for start := 0; start < len(rows); start += 200 {
+				chunk := rows[start:min(start+200, len(rows))]
+				ids := make([]int32, len(chunk))
+				for i, r := range chunk {
+					ids[i] = r.ID
+				}
+				var batch ledgerBatch
+				err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error { var err error; batch, err = replayEffectiveBatch(tx, ids); return err })
 				if err != nil {
 					return nil, err
 				}
-				issues, err := json.Marshal(ledger.Issues)
-				if err != nil {
-					return nil, err
+				for _, row := range chunk {
+					ledger := batch[row.ID].Totals
+					issues, err := json.Marshal(ledger.Issues)
+					if err != nil {
+						return nil, err
+					}
+					phone, wechat := "", ""
+					if row.Phone != nil {
+						phone = *row.Phone
+					}
+					if row.WechatID != nil {
+						wechat = *row.WechatID
+					}
+					out = append(out, []string{
+						strconv.FormatInt(int64(row.ID), 10),
+						row.Username,
+						row.Status,
+						row.Role,
+						formatExportFloat(row.Balance),
+						formatExportFloat(row.GiftBalance),
+						phone,
+						wechat,
+						formatExportTime(row.CreatedAt),
+						formatExportTimePtr(row.LastLoginAt),
+						formatExportFloat(ledger.HistoricalRecharge), formatExportFloat(ledger.RechargeTotal), formatExportFloat(ledger.HistoricalConsumption), formatExportFloat(ledger.ConsumptionTotal), string(issues),
+					})
 				}
-				phone, wechat := "", ""
-				if row.Phone != nil {
-					phone = *row.Phone
-				}
-				if row.WechatID != nil {
-					wechat = *row.WechatID
-				}
-				out = append(out, []string{
-					strconv.FormatInt(int64(row.ID), 10),
-					row.Username,
-					row.Status,
-					row.Role,
-					formatExportFloat(row.Balance),
-					formatExportFloat(row.GiftBalance),
-					phone,
-					wechat,
-					formatExportTime(row.CreatedAt),
-					formatExportTimePtr(row.LastLoginAt),
-					formatExportFloat(ledger.HistoricalRecharge), formatExportFloat(ledger.RechargeTotal), formatExportFloat(ledger.HistoricalConsumption), formatExportFloat(ledger.ConsumptionTotal), string(issues),
-				})
 			}
 			return out, nil
 		},

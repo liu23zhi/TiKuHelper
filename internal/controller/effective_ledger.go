@@ -35,6 +35,24 @@ func EffectiveLedger(c *gin.Context) {
 		}
 		data, err = service.ReviewEffectiveLedger(userLevelDB(c), actor, int32(id), int32(cursor))
 	}
+	writeEffectiveLedgerResult(c, data, err)
+}
+
+func EffectiveLedgerRebuild(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	actor, _ := currentOperator(c)
+	var in service.EffectiveRebuildInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(400, gin.H{"message": "重建参数错误"})
+		return
+	}
+	data, err := service.RebuildEffectiveLevels(userLevelDB(c), actor, in)
+	writeEffectiveLedgerResult(c, data, err)
+}
+func writeEffectiveLedgerResult(c *gin.Context, data any, err error) {
+
 	if err != nil {
 		status, msg := 500, "读取或保存有效金额失败"
 		switch {

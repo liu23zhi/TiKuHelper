@@ -364,6 +364,12 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 	if err := db.Create(&refund).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&entity.TicketRefundLedger{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.TicketRefundLedger{RefundID: refund.ID, UserID: 23, Kind: "consume", AmountMicros: 500000000}).Error; err != nil {
+		t.Fatal(err)
+	}
 	// 订单状态必须仍是 paid —— 否则这条用例就退化成「改状态」的假场景。
 	var fresh entity.RechargeOrder
 	if err := db.First(&fresh, orderID).Error; err != nil {

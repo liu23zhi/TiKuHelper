@@ -292,7 +292,7 @@
               </a-col>
             </a-row>
 
-            <p v-if="userLevelSummary?.ledger?.issues" role="status">部分历史记录缺少完整凭据，所列有效额仅含可确认部分。</p>
+            <p v-if="userLevelSummary?.ledger?.issues" role="status">部分历史记录缺少完整凭据，所列有效额仅含可确认部分。<span v-if="userLevelSummary.levelReviewPending">等级待核，暂保留原等级。</span></p>
             <!-- 下一档门槛与差额。
                  没有档位数据时 nextLevelRequirement.available === false，
                  这里如实显示原因，**不编造门槛数字**（63 号 U-03 红线）。 -->

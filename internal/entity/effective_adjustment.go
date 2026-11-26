@@ -18,3 +18,18 @@ type EffectiveAdjustment struct {
 	RefundIDs      string    `gorm:"type:text" json:"refundIds"`
 	CreatedAt      time.Time `json:"createdAt"`
 }
+
+// EffectiveRebuildAudit records explicit operator-approved batches. It never
+// materializes a synthetic payment, refund, bill, or opening balance.
+type EffectiveRebuildAudit struct {
+	ID         int64     `gorm:"primaryKey" json:"id"`
+	OperatorID int32     `gorm:"not null" json:"operatorId"`
+	AfterID    int32     `gorm:"not null" json:"afterId"`
+	NextID     int32     `gorm:"not null" json:"nextId"`
+	Examined   int       `gorm:"not null" json:"examined"`
+	Changed    int       `gorm:"not null" json:"changed"`
+	Skipped    int       `gorm:"not null" json:"skipped"`
+	Digest     string    `gorm:"type:char(64);not null" json:"digest"`
+	Reason     string    `gorm:"type:varchar(255);not null" json:"reason"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
