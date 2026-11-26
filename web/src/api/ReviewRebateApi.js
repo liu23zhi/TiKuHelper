@@ -138,11 +138,19 @@ export function scoreReviewRebateClaim(id) {
   return request({ errorFeedback: 'local', url: `${adminBase}/claims/${value}/score`, method: 'post' })
 }
 
-// 截图回显地址。
-// 截图落在服务端私有目录，**没有可直连的静态 URL**；这个地址必须带管理员凭据访问，
-// 非管理员拿到 403。列表里的 screenshotUrl 已经是这个地址，直接用即可。
-export function reviewRebateScreenshotUrl(id) {
+// 只允许当前记录的规范同源路径，不把后端返回的任意地址交给带凭据的客户端。
+export function getReviewRebateScreenshot(id, listedUrl, signal) {
   const value = Number(id)
-  if (!Number.isInteger(value) || value <= 0) return ''
-  return `${adminBase}/claims/${value}/screenshot`
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2147483647) return null
+  const url = `${adminBase}/claims/${value}/screenshot`
+  if (listedUrl !== url) return null
+  return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    url,
+    method: 'get',
+    responseType: 'blob',
+    timeout: 20_000,
+    signal,
+  })
 }
