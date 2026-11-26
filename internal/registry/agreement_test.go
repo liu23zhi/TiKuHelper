@@ -47,3 +47,43 @@ func TestAgreementMigrationProtectsPublishedVersions(t *testing.T) {
 		t.Fatalf("unexpected constraint: %v", e)
 	}
 }
+
+// Index-bearing string columns must stay bounded in SQLite's declared DDL.
+// The SQLite-to-MariaDB migrator cannot safely map TEXT unique keys.
+func TestAgreementMigrationKeepsIndexStringBounds(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = raw.Close() })
+	if err := EnsureAgreementSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	for tab, want := range map[string]map[string]string{
+		"agreement_releases": {"version": "varchar(48)"},
+		"agreement_devices":  {"id": "varchar(36)", "secret_hash": "varchar(64)"},
+		"agreement_consents": {"device_id": "varchar(36)"},
+	} {
+		var cols []struct {
+			Name string
+			Type string
+		}
+		if err := db.Raw("PRAGMA table_info(" + tab + ")").Scan(&cols).Error; err != nil {
+			t.Fatal(err)
+		}
+		seen := make(map[string]string, len(cols))
+		for _, c := range cols {
+			seen[c.Name] = strings.ToLower(c.Type)
+		}
+		for column, expected := range want {
+			if actual := seen[column]; actual != expected {
+				t.Errorf("%s.%s declared as %q, want %q for portable uniqueness", tab, column, actual, expected)
+			}
+		}
+	}
+}
