@@ -20,6 +20,13 @@ globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.windo
 const computedStyle = dom.window.getComputedStyle.bind(dom.window)
 dom.window.getComputedStyle = element => computedStyle(element)
 
+// jsdom computes the SweetAlert2 durations but never runs the animations or
+// emits their end events. Disable only its default popup motion so the real
+// close path removes the overlay, clears aria-hidden, and restores focus.
+const popupMotionStyle = document.createElement('style')
+popupMotionStyle.textContent = '.swal2-popup.swal2-show, .swal2-popup.swal2-hide { animation-duration: 0s; transition-duration: 0s; }'
+document.head.appendChild(popupMotionStyle)
+
 let width = 1440
 let systemDark = false
 let reducedMotion = false
@@ -108,4 +115,4 @@ const { config } = require('@vue/test-utils')
 for (const name of ['ConsolePageHeading', 'ConsolePanel', 'ConsoleSummaryGrid', 'ConsoleTableShell']) {
   config.global.components[name] = require(path.join(webRoot, 'src/components', name + '.vue'))
 }
-module.exports = { setViewport, setSystemDark, setReducedMotion, listenerCount }
+module.exports = { setViewport, setSystemDark, setReducedMotion, listenerCount, setDocumentURL: url => dom.reconfigure({ url }) }

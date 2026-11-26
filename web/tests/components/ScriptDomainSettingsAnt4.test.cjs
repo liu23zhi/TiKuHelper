@@ -69,9 +69,12 @@ test('domain settings load the administrator deny list with exact and wildcard g
   assert.equal(denyInput(page).element.value, 'api.a.com\n*.internal.a.com')
   assert.equal(denyInput(page).element.disabled, false)
   assert.equal(saveButton(page).element.disabled, true)
-  assert.match(page.text(), /留空时使用当前站点/)
-  assert.match(page.text(), /禁止规则优先/)
-  assert.match(page.text(), /已有命令立即生效/)
+  assert.match(page.text(), /留空时使用当前站点的非根路径。/)
+  const guide = denyInput(page).element.closest('.denied-domain-field').textContent
+  assert.match(guide, /每行填写完整域名或最左通配域名，不含协议、端口或路径。/)
+  assert.match(guide, /\*\.internal\.example\.test 只匹配它的子域名。/)
+  assert.match(guide, /禁止规则仅限制脚本，优先于可用规则，两份列表可交叠。/)
+  assert.match(guide, /保存后对新命令和已有命令立即生效。/)
   const label = page.find(`label[for="${denyInput(page).attributes('id')}"]`)
   assert.equal(label.text(), '禁止设置的域名')
   assert.match(denyInput(page).attributes('placeholder'), /api\.example\.test[\s\S]*\*\.internal\.example\.test/)
@@ -189,14 +192,15 @@ test('ordinary script views cannot read, display or save administrator domain se
   assert.equal(writes.length, 0)
 })
 
-test('clearing custom prohibitions does not advertise the platform root as available', async () => {
+test('clearing custom prohibitions does not lift configured site roots or built-in host protections', async () => {
   saved.deniedDomains = []
   const { page } = await open()
-  assert.equal(denyInput(page).element.value, '')
-  const guide = denyInput(page).element.closest('.denied-domain-field').textContent
-  assert.match(guide, /tiku\.example\.test/)
-  assert.match(guide, /API/)
-  assert.match(guide, /保留/)
+  const input = denyInput(page).element
+  assert.equal(input.value, '')
+  const guide = input.closest('.denied-domain-field').textContent
+  assert.match(guide, /可在此禁止脚本使用该域名，或通过部署配置 siteHosts 保留它的根地址。/)
+  assert.match(guide, /localhost、其子域名、localhost\.localdomain、回环 IP 和未指定 IP 内置禁止用于脚本，仍可访问管理界面与常规 API。/)
+  assert.match(page.text(), /未被脚本占用的主机名仍可访问管理界面与常规 API；已占用的独立脚本主机名只提供脚本入口。/)
   assert.doesNotMatch(guide, /留空表示不禁止/)
 })
 
