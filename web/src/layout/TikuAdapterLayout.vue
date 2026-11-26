@@ -121,6 +121,7 @@ export default {
       // 已归档账号管理（task_doc/76 §3.2.3）：非管理员不仅看不到菜单项，
       // 直接敲 URL 也进不来（canAccessRoute 在这里就 false）。
       '/archived-users',
+      '/agreement-admin',
       '/search-account-config', '/ai-search-config', '/ocr-cache', '/system-settings', '/extension-updates',
       '/ip-location-cache', '/phone-location-cache',
       // 等级与充值阶梯（94-*.md §2 C1/C2）：门槛配置即设备上限口径，仅管理员可进。
