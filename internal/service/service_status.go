@@ -3,10 +3,10 @@ package service
 import (
 	"errors"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
-	"github.com/itihey/tikuAdapter/internal/diagnostics"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 )
 
@@ -50,9 +50,12 @@ type StatusPoint struct {
 	AvgLatencyMs int64 `json:"avgLatencyMs"`
 
 	// Internal observation metadata is not part of either public projection.
-	sampledAt time.Time
-	latency   statusLatencyTally
-	process   *StatusProcessPoint
+	sampledAt       time.Time
+	searchSampledAt time.Time
+	latency         statusLatencyTally
+	process         *StatusProcessPoint
+	eventOnly       bool
+	requestUnknown  bool
 
 	// Endpoints 是该分钟按接口族（search / other）分桶的聚合值（138 §4.2）。
 	//
@@ -65,6 +68,10 @@ type StatusPoint struct {
 }
 
 // StatusFailure 是失败原因的分类枚举。
+// PeriodicallyObserved distinguishes an actual sampler tick from a minute
+// evidenced solely by completed requests. Legacy public site traffic uses ticks only.
+func (p StatusPoint) PeriodicallyObserved() bool { return !p.eventOnly && !p.requestUnknown }
+
 type StatusFailure int
 
 const (
@@ -220,9 +227,6 @@ type StatusFailureRecorder struct {
 	counters StatusCounters
 }
 
-// DefaultServiceStatusFailures 是进程内默认的失败归类记录器。
-var DefaultServiceStatusFailures = &StatusFailureRecorder{}
-
 // Observe 记录一次失败归类。None 不计数。
 func (r *StatusFailureRecorder) Observe(kind StatusFailure) {
 	if kind == StatusFailureNone {
@@ -230,15 +234,19 @@ func (r *StatusFailureRecorder) Observe(kind StatusFailure) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	observeStatusFailure(&r.counters, kind)
+}
+
+func observeStatusFailure(counters *StatusCounters, kind StatusFailure) {
 	switch kind {
 	case StatusFailureTimeout:
-		r.counters.TimeoutFailures++
+		counters.TimeoutFailures++
 	case StatusFailureAuth:
-		r.counters.AuthFailures++
+		counters.AuthFailures++
 	case StatusFailureQuota:
-		r.counters.QuotaFailures++
-	default:
-		r.counters.UpstreamFailures++
+		counters.QuotaFailures++
+	case StatusFailureUpstream:
+		counters.UpstreamFailures++
 	}
 }
 
@@ -254,32 +262,13 @@ func (r *StatusFailureRecorder) Snapshot() StatusCounters {
 // 重启归零是明确接受的：见上方 ServiceStatusRing 注释的第 1 条理由（114 §3.5）。
 var DefaultServiceStatusRing = NewServiceStatusRing()
 
-// defaultServiceStatusCounters 从既有基础设施取累计计数：
-// 请求总量/失败量来自 diagnostics.Collector（HTTP 中间件已在记账），
-// 失败四分类来自 DefaultServiceStatusFailures（业务侧调用 ClassifyServiceStatusFailure 后记账）。
-// 返回的是**单调累计值**，由采样器做差得到每分钟增量。
-func defaultServiceStatusCounters() StatusCounters {
-	snapshot := diagnostics.Default.Snapshot()
-	failures := DefaultServiceStatusFailures.Snapshot()
-	return StatusCounters{
-		TotalRequests:      snapshot.HTTP.Total,
-		FailedRequests:     snapshot.HTTP.Failed,
-		UpstreamFailures:   failures.UpstreamFailures,
-		TimeoutFailures:    failures.TimeoutFailures,
-		AuthFailures:       failures.AuthFailures,
-		QuotaFailures:      failures.QuotaFailures,
-		LatencyCount:       snapshot.HTTP.LatencyCount,
-		LatencyTotalMillis: snapshot.HTTP.LatencyTotalMillis,
-	}
-}
-
-// NewDefaultServiceStatusSampler 构造绑定默认缓冲与默认计数源的采样器。
-//
-// 分桶计数源是 DefaultServiceStatusEndpoints（HTTP 中间件在已有记账点顺手多记一次）。
+// NewDefaultServiceStatusSampler uses the same completed HTTP observations
+// for total, outcomes, endpoint families and latency. The diagnostics collector
+// retains its separate started/in-flight semantics.
 func NewDefaultServiceStatusSampler() *ServiceStatusSampler {
 	return NewServiceStatusSamplerWithSources(DefaultServiceStatusRing, time.Now, ServiceStatusSources{
-		Requests: defaultServiceStatusCounters, Endpoints: defaultServiceStatusEndpointCounters,
-		Process: readServiceStatusProcess,
+		Completions: DefaultServiceStatusEndpoints,
+		Process:     readServiceStatusProcess,
 	})
 }
 
@@ -287,7 +276,7 @@ func NewDefaultServiceStatusSampler() *ServiceStatusSampler {
 //
 // 为什么不是每分钟 tick 一次：自然分钟边界可能在 tick 之后很久才到，
 // 每秒采样能把「翻页」的检测粒度压到 1 秒内，且聚合仍是按分钟（114 §3.6 N4-k）。
-// 每秒只做固定计数器差；管理员进程诊断每个实际采样分钟只读一次。
+// 每秒更新当前分钟的覆盖；管理员进程诊断每个实际采样分钟只读一次。
 func StartServiceStatusSampling(sampler *ServiceStatusSampler, stop <-chan struct{}) {
 	if sampler == nil {
 		return
@@ -296,8 +285,7 @@ func StartServiceStatusSampling(sampler *ServiceStatusSampler, stop <-chan struc
 }
 
 // ClassifyServiceStatusFailure 把一次请求错误归到失败原因上。
-// 调用方应同时调用 DefaultServiceStatusFailures.Observe 与 diagnostics 的计数，
-// 这样 StatusPoint 的四个失败分类才有数据。
+// 只在终态错误来源已知时使用；请求的其余计数在 transport 完成时一次写入。
 func ClassifyServiceStatusFailure(err error) StatusFailure {
 	if err == nil {
 		return StatusFailureNone
@@ -315,6 +303,21 @@ func ClassifyServiceStatusFailure(err error) StatusFailure {
 	}
 }
 
+// ClassifyServiceStatusHTTPStatus recognizes only explicit terminal semantics.
+// A generic 4xx/5xx is still a failed request but need not have a cause category.
+func ClassifyServiceStatusHTTPStatus(status int) StatusFailure {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return StatusFailureAuth
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return StatusFailureTimeout
+	case http.StatusPaymentRequired, http.StatusTooManyRequests:
+		return StatusFailureQuota
+	default:
+		return StatusFailureNone
+	}
+}
+
 func isTimeoutError(err error) bool {
 	if errors.Is(err, uapi.ErrTimeout) {
 		return true
@@ -329,8 +332,8 @@ func isTimeoutError(err error) bool {
 // ServiceStatusSampler 按自然分钟把增量流量聚合成一个 StatusPoint。
 //
 // 采样语义（114 §3.6 N4-k）：自然分钟边界，不是「每 60 秒滑一次」。
-// 每次 Sample 先读累计计数、与上次做差，再判断分钟是否翻页；翻页时把上一分钟
-// 封存进环形缓冲（含确实采到的零请求分钟；中断期间没有点，不主动补齐）。
+// Sample records duration-independent coverage at each tick; production
+// traffic is joined from completed observations in their actual minute.
 type ServiceStatusSampler struct {
 	ring      *ServiceStatusRing
 	now       func() time.Time
@@ -342,6 +345,7 @@ type ServiceStatusSampler struct {
 	// 保留 nil 分支是为了不让既有三参数调用方（含测试）被迫改造。
 	readEndpoints func() ServiceStatusEndpointCounters
 	readProcess   func() StatusProcessMetrics
+	completions   *ServiceStatusEndpointRecorder
 
 	mu            sync.Mutex
 	last          StatusCounters
@@ -367,9 +371,10 @@ func NewServiceStatusSamplerWithEndpoints(ring *ServiceStatusRing, now func() ti
 
 // ServiceStatusSources defines the independent observation sources.
 type ServiceStatusSources struct {
-	Requests  func() StatusCounters
-	Endpoints func() ServiceStatusEndpointCounters
-	Process   func() StatusProcessMetrics
+	Requests    func() StatusCounters
+	Endpoints   func() ServiceStatusEndpointCounters
+	Process     func() StatusProcessMetrics
+	Completions *ServiceStatusEndpointRecorder // Time-stamped source; takes precedence over counters.
 }
 
 func NewServiceStatusSamplerWithSources(ring *ServiceStatusRing, now func() time.Time, sources ServiceStatusSources) *ServiceStatusSampler {
@@ -384,7 +389,7 @@ func NewServiceStatusSamplerWithSources(ring *ServiceStatusRing, now func() time
 	}
 	return &ServiceStatusSampler{
 		ring: ring, now: now, startedAt: now().Round(0), read: sources.Requests,
-		readEndpoints: sources.Endpoints, readProcess: sources.Process,
+		readEndpoints: sources.Endpoints, readProcess: sources.Process, completions: sources.Completions,
 	}
 }
 
@@ -410,17 +415,7 @@ func (s *ServiceStatusSampler) Sample() StatusPoint {
 		return s.pending
 	}
 	minute := serviceStatusMinute(at)
-	current := s.read()
-	delta := diffStatusCounters(s.last, current)
-	s.last = current
-	// 分桶做差：与全局计数器同一时刻、同一口径。
-	var endpointDelta ServiceStatusEndpointCounters
-	sampled := s.readEndpoints != nil
-	if sampled {
-		currentEndpoints := s.readEndpoints()
-		endpointDelta = endpointCountersDelta(s.lastEndpoints, currentEndpoints)
-		s.lastEndpoints = currentEndpoints
-	}
+	discontinuous := s.hasPending && minute > s.pending.Minute+1
 	if !s.hasPending || s.pending.Minute != minute {
 		s.sealLocked()
 		s.pending = StatusPoint{Minute: minute}
@@ -430,11 +425,40 @@ func (s *ServiceStatusSampler) Sample() StatusPoint {
 		}
 	}
 	s.pending.sampledAt = at
+	if s.completions != nil {
+		// A real tick establishes coverage, not an invented completed request.
+		s.pending.Endpoints.Search.Samples = 1
+		s.pending.Endpoints.Other.Samples = 1
+		s.pending.searchSampledAt = at
+		events := s.completions.completedBetween(minute, minute, at)
+		if len(events) != 0 {
+			return withStatusCompletions(s.pending, events[0])
+		}
+		return s.pending
+	}
+
+	// Compatibility for an untimed cumulative source. A delta spanning
+	// skipped minutes has no trustworthy attribution, even on the resume tick.
+	current := s.read()
+	delta := diffStatusCounters(s.last, current)
+	s.last = current
+	var endpointDelta ServiceStatusEndpointCounters
+	sampled := s.readEndpoints != nil
+	if sampled {
+		currentEndpoints := s.readEndpoints()
+		endpointDelta = endpointCountersDelta(s.lastEndpoints, currentEndpoints)
+		s.lastEndpoints = currentEndpoints
+	}
+	s.pending.requestUnknown = discontinuous &&
+		(delta != (StatusCounters{}) || endpointDelta != (ServiceStatusEndpointCounters{}))
+	if s.pending.requestUnknown {
+		return s.pending
+	}
 	applyStatusDelta(&s.pending, delta)
-	// sampled 传到点上：它决定该分钟两个桶的 Samples 是否为 1。
-	// 没有分桶计数源时 sampled=false ⇒ 点里 samples 恒 0 ⇒ 前端显灰（正确语义：
-	// 「没有采样数据」，而不是「采样到了 0 请求」）。
 	applyEndpointDelta(&s.pending, endpointDelta, sampled)
+	if sampled {
+		s.pending.searchSampledAt = at
+	}
 	s.pending.latency.addDelta(delta)
 	s.pending.AvgLatencyMs = s.pending.latency.average()
 	return s.pending
@@ -462,11 +486,18 @@ type ServiceStatusSnapshot struct {
 	LatestSearchSampleAt time.Time
 	Points               []StatusPoint
 	Summary              ServiceStatusSummary
+	processPoints        []StatusProcessPoint
 }
 
 func (s *ServiceStatusSampler) Snapshot() ServiceStatusSnapshot {
 	s.mu.Lock()
-	asOf := s.now().UTC()
+	var asOf time.Time
+	var events []statusCompletionMinute
+	if s.completions != nil {
+		asOf, events = s.completions.completionSnapshot(s.startedAt, s.now)
+	} else {
+		asOf = s.now().UTC()
+	}
 	points := s.ring.Points()
 	if s.hasPending {
 		if last := len(points) - 1; last >= 0 && points[last].Minute == s.pending.Minute {
@@ -475,27 +506,52 @@ func (s *ServiceStatusSampler) Snapshot() ServiceStatusSnapshot {
 			points = append(points, s.pending)
 		}
 	}
-	s.mu.Unlock()
-
 	start := max(serviceStatusMinute(s.startedAt), serviceStatusMinute(asOf)-ServiceStatusSlots+1)
 	end := serviceStatusMinute(asOf)
+	s.mu.Unlock()
+
 	history := points[:0]
-	result := ServiceStatusSnapshot{AsOf: asOf.UTC(), RestartedAt: s.startedAt}
+	result := ServiceStatusSnapshot{
+		AsOf: asOf, RestartedAt: s.startedAt, processPoints: make([]StatusProcessPoint, 0, len(points)),
+	}
 	for _, point := range points {
 		if point.Minute < start || point.Minute > end || point.sampledAt.After(asOf) {
 			continue
 		}
-		history = append(history, point)
+		if point.process != nil {
+			result.processPoints = append(result.processPoints, *point.process)
+		}
+		if !point.requestUnknown {
+			history = append(history, point)
+		}
+	}
+	if len(events) > 0 {
+		history = mergeStatusCompletions(history, events)
+	}
+	for _, point := range history {
 		if point.sampledAt.After(result.LatestSampleAt) {
 			result.LatestSampleAt = point.sampledAt.UTC()
 		}
-		if point.Endpoints.Search.Samples > 0 && point.sampledAt.After(result.LatestSearchSampleAt) {
-			result.LatestSearchSampleAt = point.sampledAt.UTC()
+		if point.searchSampledAt.After(result.LatestSearchSampleAt) {
+			result.LatestSearchSampleAt = point.searchSampledAt.UTC()
 		}
 	}
 	result.Points = history
 	result.Summary = summarizeServiceStatusAt(history, end, ServiceStatusWindowMinutes)
 	return result
+}
+
+// LegacyTrafficSummary preserves the scope of public site-wide aggregate
+// compatibility fields. Previously unseen completion-only minutes are used by
+// the dedicated search and admin views, not to expand the legacy site view.
+func (s ServiceStatusSnapshot) LegacyTrafficSummary() ServiceStatusSummary {
+	legacy := make([]StatusPoint, 0, len(s.Points))
+	for _, point := range s.Points {
+		if point.PeriodicallyObserved() && point.TotalRequests > 0 {
+			legacy = append(legacy, point)
+		}
+	}
+	return summarizeServiceStatusAt(legacy, serviceStatusMinute(s.AsOf), ServiceStatusWindowMinutes)
 }
 
 func serviceStatusMinute(at time.Time) int64 {

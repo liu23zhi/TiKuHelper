@@ -45,11 +45,5 @@ func readServiceStatusProcess() StatusProcessMetrics {
 // ProcessPoints explicitly projects real, timestamped admin-only observations.
 // Never copy today's runtime snapshot into empty slots of the retained history.
 func (s ServiceStatusSnapshot) ProcessPoints() []StatusProcessPoint {
-	points := make([]StatusProcessPoint, 0, len(s.Points))
-	for _, point := range s.Points {
-		if point.process != nil {
-			points = append(points, *point.process)
-		}
-	}
-	return points
+	return s.processPoints
 }

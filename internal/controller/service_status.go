@@ -125,7 +125,7 @@ func GetServiceStatusSummary(c *gin.Context) {
 // buildServiceStatusSummaryResponse 把采样器状态压成摘要。抽出来供测试注入采样器。
 func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) serviceStatusSummaryResponse {
 	snapshot := sampler.Snapshot()
-	summary := snapshot.Summary
+	summary := snapshot.LegacyTrafficSummary()
 	return serviceStatusSummaryResponse{
 		SchemaVersion: 1,
 		Status:        summary.Status,
@@ -157,8 +157,8 @@ func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) se
 		// 都不得出现 "failedRequests"，含分桶内。该用例同时反向断言种子带着非零失败数，
 		// 所以它不会是空断言。
 		Endpoints: publicEndpoints{
-			Search: toPublicEndpointCounters(summary.Endpoints.Search),
-			Other:  legacyPublicOtherCounters(snapshot),
+			Search: toPublicEndpointCounters(snapshot.Summary.Endpoints.Search),
+			Other:  toPublicEndpointCounters(summary.Endpoints.Other),
 		},
 	}
 }
@@ -189,23 +189,10 @@ func serviceStatusOptionalTime(at time.Time) *time.Time {
 	return &at
 }
 
-// Legacy Other.Samples also keeps its requestful-only coverage; explicit
-// zero-request coverage belongs to the dedicated search projection.
-func legacyPublicOtherCounters(snapshot service.ServiceStatusSnapshot) publicEndpointCounters {
-	other := toPublicEndpointCounters(snapshot.Summary.Endpoints.Other)
-	other.Samples = 0
-	for _, point := range snapshot.Points {
-		if point.TotalRequests > 0 {
-			other.Samples += point.Endpoints.Other.Samples
-		}
-	}
-	return other
-}
-
 func legacyServiceStatusRetained(points []service.StatusPoint) int {
 	retained := 0
 	for _, point := range points {
-		if point.TotalRequests > 0 {
+		if point.PeriodicallyObserved() && point.TotalRequests > 0 {
 			retained++
 		}
 	}
@@ -341,7 +328,7 @@ func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) ser
 	search := make([]publicStatusPoint, 0, len(snapshot.Points))
 	for _, point := range snapshot.Points {
 		// Preserve legacy all-site requestful-only history; no new all-site coverage.
-		if point.TotalRequests > 0 {
+		if point.PeriodicallyObserved() && point.TotalRequests > 0 {
 			public = append(public, publicStatusPoint{
 				Minute:          point.Minute,
 				TotalRequests:   point.TotalRequests,
@@ -368,7 +355,7 @@ func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) ser
 		// 口径与摘要端点完全一致（直接取同一个 summary.Endpoints），不另算一套。
 		Endpoints: publicEndpoints{
 			Search: toPublicEndpointCounters(snapshot.Summary.Endpoints.Search),
-			Other:  legacyPublicOtherCounters(snapshot),
+			Other:  toPublicEndpointCounters(snapshot.LegacyTrafficSummary().Endpoints.Other),
 		},
 		Capacity:       service.ServiceStatusSlots,
 		Retained:       len(public),

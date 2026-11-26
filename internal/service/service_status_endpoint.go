@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 // 本文件只放「按接口族分桶」的固定枚举与内存计数器（task_doc/138 §4.2 / §4.2.1）。
@@ -137,8 +138,9 @@ type ServiceStatusEndpointCounters struct {
 // 只增不减、定长内存（两个 StatusCounters）、无动态标签 —— 与 diagnostics 的
 // 内存礼仪一致。
 type ServiceStatusEndpointRecorder struct {
-	mu       sync.Mutex
-	counters ServiceStatusEndpointCounters
+	mu        sync.Mutex
+	counters  ServiceStatusEndpointCounters
+	completed [ServiceStatusSlots]statusCompletionMinute
 }
 
 // DefaultServiceStatusEndpoints 是进程内默认的分桶计数记录器。
@@ -152,22 +154,53 @@ var DefaultServiceStatusEndpoints = &ServiceStatusEndpointRecorder{}
 // status >= 400 计为失败（与 diagnostics 的 HTTP 计数口径一致）。
 // latencyMillis 为负时按 0 处理（时钟回退）。
 func (r *ServiceStatusEndpointRecorder) ObserveEndpoint(route string, status int, latencyMillis int64) {
+	r.ObserveCompletion(route, status, latencyMillis, StatusFailureNone, time.Now())
+}
+
+// ObserveCompletion records one terminal response at its actual completion time.
+// No path, status code or identity is retained in the minute ring.
+func (r *ServiceStatusEndpointRecorder) ObserveCompletion(route string, status int, latencyMillis int64, failure StatusFailure, at time.Time) {
 	if r == nil {
 		return
 	}
-	if latencyMillis < 0 {
-		latencyMillis = 0
-	}
 	kind := ClassifyEndpoint(route)
+	at = at.Round(0)
+	minute := serviceStatusMinute(at)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	counters := r.bucketLocked(kind)
+	recordStatusCompletion(r.bucketLocked(kind), status, latencyMillis, failure)
+	if minute < 0 {
+		return
+	}
+	slot := &r.completed[minute%ServiceStatusSlots]
+	if slot.minute > minute {
+		return // A delayed completion must not overwrite a newer ring slot.
+	}
+	if slot.minute != minute {
+		*slot = statusCompletionMinute{minute: minute}
+	}
+	recordStatusCompletion(&slot.all, status, latencyMillis, failure)
+	bucket := &slot.endpoints.Other
+	if kind == EndpointSearch {
+		bucket = &slot.endpoints.Search
+		if at.After(slot.latestSearch) {
+			slot.latestSearch = at
+		}
+	}
+	recordStatusCompletion(bucket, status, latencyMillis, failure)
+	if at.After(slot.latest) {
+		slot.latest = at
+	}
+}
+
+func recordStatusCompletion(counters *StatusCounters, status int, latencyMillis int64, failure StatusFailure) {
 	counters.TotalRequests++
 	if status >= 400 {
 		counters.FailedRequests++
+		observeStatusFailure(counters, failure)
 	}
 	counters.LatencyCount++
-	counters.LatencyTotalMillis += uint64(latencyMillis)
+	counters.LatencyTotalMillis += uint64(max(latencyMillis, 0))
 }
 
 // bucketLocked 返回指定桶的指针。调用方必须持锁。
@@ -200,9 +233,9 @@ func ObserveServiceStatusEndpoint(route string, status int, latencyMillis int64)
 	DefaultServiceStatusEndpoints.ObserveEndpoint(route, status, latencyMillis)
 }
 
-// defaultServiceStatusEndpointCounters 从默认记录器取分桶累计计数。
-func defaultServiceStatusEndpointCounters() ServiceStatusEndpointCounters {
-	return DefaultServiceStatusEndpoints.Snapshot()
+// ObserveServiceStatusCompletion is used only at the transport completion boundary.
+func ObserveServiceStatusCompletion(route string, status int, latencyMillis int64, failure StatusFailure, at time.Time) {
+	DefaultServiceStatusEndpoints.ObserveCompletion(route, status, latencyMillis, failure, at)
 }
 
 // endpointCountersDelta 把分桶累计值做差成分钟增量。

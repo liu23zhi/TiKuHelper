@@ -21,17 +21,16 @@ func TestServiceStatusProviderWindowPrivacyAndProcessHistory(t *testing.T) {
 	fixed := time.Date(2026, 11, 27, 13, 4, 30, 123000000, time.FixedZone("fixture UTC+8", 8*3600))
 	var mu sync.Mutex
 	now := fixed.Add(-26 * time.Hour)
-	var counts service.StatusCounters
-	var endpoints service.ServiceStatusEndpointCounters
+	var recorder *service.ServiceStatusEndpointRecorder
 	processReads := 0
 	newSampler := func() *service.ServiceStatusSampler {
+		recorder = &service.ServiceStatusEndpointRecorder{}
 		return service.NewServiceStatusSamplerWithSources(nil, func() time.Time {
 			mu.Lock()
 			defer mu.Unlock()
 			return now
 		}, service.ServiceStatusSources{
-			Requests:  func() service.StatusCounters { return counts },
-			Endpoints: func() service.ServiceStatusEndpointCounters { return endpoints },
+			Completions: recorder,
 			Process: func() service.StatusProcessMetrics {
 				processReads++
 				return service.StatusProcessMetrics{
@@ -54,21 +53,24 @@ func TestServiceStatusProviderWindowPrivacyAndProcessHistory(t *testing.T) {
 	setClock := func(at time.Time) { mu.Lock(); now = at; mu.Unlock() }
 	sample := func(offset int, search, failed, searchMillis, other, otherMillis uint64) {
 		setClock(at(offset))
-		for i, delta := range []service.StatusCounters{
-			{TotalRequests: search, FailedRequests: failed, LatencyCount: search, LatencyTotalMillis: searchMillis},
-			{TotalRequests: other, LatencyCount: other, LatencyTotalMillis: otherMillis},
-		} {
-			bucket := []*service.StatusCounters{&endpoints.Search, &endpoints.Other}[i]
-			bucket.TotalRequests += delta.TotalRequests
-			bucket.FailedRequests += delta.FailedRequests
-			bucket.LatencyCount += delta.LatencyCount
-			bucket.LatencyTotalMillis += delta.LatencyTotalMillis
+		for i := range search {
+			status, failure := 200, service.StatusFailureNone
+			if i < failed {
+				status, failure = 504, service.StatusFailureTimeout
+			}
+			latency := int64(0)
+			if i == 0 {
+				latency = int64(searchMillis)
+			}
+			recorder.ObserveCompletion("/api/search/tasks", status, latency, failure, at(offset))
 		}
-		counts.TotalRequests += search + other
-		counts.FailedRequests += failed
-		counts.TimeoutFailures += failed
-		counts.LatencyCount += search + other
-		counts.LatencyTotalMillis += searchMillis + otherMillis
+		for i := range other {
+			latency := int64(0)
+			if i == 0 {
+				latency = int64(otherMillis)
+			}
+			recorder.ObserveCompletion("/api/owned-fixture-other", 200, latency, service.StatusFailureNone, at(offset))
+		}
 		sampler.Sample()
 	}
 
