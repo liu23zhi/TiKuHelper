@@ -46,6 +46,8 @@ const (
 	plainDir   = "client/Browser_extensions"
 	browserDir = plainDir + "/Multi-browser_mode"
 	examDir    = "client/Exam_Client_Injection"
+
+	stagingPrefix = ".segment-"
 )
 
 type Policy struct {
@@ -256,6 +258,61 @@ func (s *Store) segmentDirs() ([]string, error) {
 	return dirs, nil
 }
 
+// recoverStaging runs only while rebuilding the index under s.mu. Under the
+// store's single-writer contract no writer can still be using these paths.
+// The legacy directory never used a staging file and is excluded by the caller.
+func (s *Store) recoverStaging(dir string, entries []os.DirEntry) error {
+	var root *os.Root
+	for _, entry := range entries {
+		// The pinned Go CreateTemp generates canonical decimal uint32 suffixes.
+		// Only this reserved namespace inside the managed layouts belongs to us.
+		suffix, ok := strings.CutPrefix(entry.Name(), stagingPrefix)
+		if !ok || !entry.Type().IsRegular() {
+			continue
+		}
+		id, err := strconv.ParseUint(suffix, 10, 32)
+		if err != nil || suffix != strconv.FormatUint(id, 10) {
+			continue
+		}
+		if root == nil {
+			root, err = os.OpenRoot(s.dir)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			defer root.Close()
+			// Do not reclaim anything reached via a linked destination or ancestor.
+			var prefix string
+			for _, part := range strings.Split(dir, string(filepath.Separator)) {
+				prefix = filepath.Join(prefix, part)
+				fi, err := root.Lstat(prefix)
+				if errors.Is(err, os.ErrNotExist) || (err == nil && !fi.IsDir()) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+			}
+		}
+		name := filepath.Join(dir, entry.Name())
+		fi, err := root.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode().IsRegular() {
+			if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Store) load() error {
 	if s.files != nil {
 		return nil
@@ -271,6 +328,11 @@ func (s *Store) load() error {
 		ls, err := os.ReadDir(filepath.Join(s.dir, dir))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+		if dir != legacyDir {
+			if err := s.recoverStaging(dir, ls); err != nil {
+				return err
+			}
 		}
 		for _, it := range ls {
 			m := segmentRE.FindStringSubmatch(it.Name())
@@ -557,7 +619,7 @@ func createSegment(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".segment-*")
+	f, err := os.CreateTemp(dir, stagingPrefix+"*")
 	if err != nil {
 		return err
 	}
