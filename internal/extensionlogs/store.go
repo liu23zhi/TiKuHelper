@@ -27,14 +27,26 @@ var (
 	ErrPolicy    = errors.New("invalid retention policy")
 	ErrDisabled  = errors.New("extension logging is disabled")
 	ErrLaunch    = errors.New("start signal required")
+	errPending   = errors.New("too many pending diagnostic launches")
 	versionRE    = regexp.MustCompile(`^(dev|[0-9]{1,6}(\.[0-9]{1,6}){1,3})$`)
 	deviceRE     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 	launchRE     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
-	fileDeviceRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	fileDeviceRE = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+	hostHashRE   = regexp.MustCompile(`^h[0-9a-f]{64}$`)
 	segmentRE    = regexp.MustCompile(`^([0-9]{19})_u[0-9]{1,10}(_m(extension|native_browser|native_exam))?_d[A-Za-z0-9_-]{1,65}(_b[A-Za-z0-9_-]{1,65})?_s[0-9a-f-]{36}\.jsonl$`)
 )
 
-const MaxBatch = 50
+const (
+	MaxBatch = 50
+
+	pendingLimit = 4096
+	pendingTTL   = time.Hour
+
+	legacyDir  = "extension"
+	plainDir   = "client/Browser_extensions"
+	browserDir = plainDir + "/Multi-browser_mode"
+	examDir    = "client/Exam_Client_Injection"
+)
 
 type Policy struct {
 	Enabled       bool `json:"enabled"`
@@ -152,7 +164,7 @@ func (m Session) key(owner int32) sessionKey {
 }
 
 type segment struct {
-	name              string
+	name              string // path relative to the logs root
 	key               sessionKey
 	first, last, size int64
 	began, updated    time.Time
@@ -167,16 +179,20 @@ type Store struct {
 	latest     map[sessionKey]*segment
 	total, seq int64
 	nextSweep  time.Time
+	// A start signal does not count as a diagnostic event or survive restart.
+	pending map[sessionKey]time.Time
 }
 
+// New accepts the logs root, containing both the legacy extension directory
+// (including its policy) and the three client destinations.
 func New(dir string) *Store {
-	return &Store{dir: dir, now: time.Now, segmentBytes: 4 << 20, unitBytes: 1_000_000_000}
+	return &Store{dir: dir, now: time.Now, segmentBytes: 4 << 20, unitBytes: 1_000_000_000, pending: make(map[sessionKey]time.Time)}
 }
 
-var Default = New(filepath.Join("logs", "extension"))
+var Default = New("logs")
 
 func (s *Store) policy() (Policy, error) {
-	raw, err := os.ReadFile(filepath.Join(s.dir, "settings.json"))
+	raw, err := os.ReadFile(filepath.Join(s.dir, legacyDir, "settings.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return Policy{true, 7, 10}, nil
 	}
@@ -199,10 +215,10 @@ func (s *Store) SetPolicy(p Policy) error {
 	if err := s.load(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.dir, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.dir, legacyDir), 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(s.dir, ".settings-*")
+	f, err := os.CreateTemp(filepath.Join(s.dir, legacyDir), ".settings-*")
 	if err != nil {
 		return err
 	}
@@ -215,63 +231,90 @@ func (s *Store) SetPolicy(p Policy) error {
 	if c != nil {
 		return c
 	}
-	if err = os.Rename(f.Name(), filepath.Join(s.dir, "settings.json")); err != nil {
+	if err = os.Rename(f.Name(), filepath.Join(s.dir, legacyDir, "settings.json")); err != nil {
 		return err
+	}
+	if !p.Enabled {
+		clear(s.pending)
 	}
 	return s.prune(p, s.now().UTC(), 0, true)
 }
+
+// Only the three managed layouts and the old flat directory are scanned. A
+// generated or hashed host slug is a single path component, never a pathname.
+func (s *Store) segmentDirs() ([]string, error) {
+	dirs := []string{legacyDir, filepath.FromSlash(plainDir), filepath.FromSlash(examDir)}
+	hosts, err := os.ReadDir(filepath.Join(s.dir, browserDir))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, it := range hosts {
+		if it.IsDir() && (fileDeviceRE.MatchString(it.Name()) || hostHashRE.MatchString(it.Name())) {
+			dirs = append(dirs, filepath.Join(browserDir, it.Name()))
+		}
+	}
+	return dirs, nil
+}
+
 func (s *Store) load() error {
 	if s.files != nil {
 		return nil
 	}
-	ls, err := os.ReadDir(s.dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	dirs, err := s.segmentDirs()
+	if err != nil {
 		return err
 	}
 	files := map[string]*segment{}
 	latest := map[sessionKey]*segment{}
 	var total, seq int64
-	for _, it := range ls {
-		m := segmentRE.FindStringSubmatch(it.Name())
-		if m == nil || !it.Type().IsRegular() {
-			continue
-		}
-		fi, err := it.Info()
-		if err != nil {
+	for _, dir := range dirs {
+		ls, err := os.ReadDir(filepath.Join(s.dir, dir))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if fi.Size() == 0 {
-			continue
-		}
-		path := filepath.Join(s.dir, it.Name())
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		first, _, err := rowAt(f, 0, 0, fi.Size())
-		if err != nil {
+		for _, it := range ls {
+			m := segmentRE.FindStringSubmatch(it.Name())
+			if m == nil || !it.Type().IsRegular() {
+				continue
+			}
+			fi, err := it.Info()
+			if err != nil {
+				return err
+			}
+			if fi.Size() == 0 {
+				continue
+			}
+			name := filepath.Join(dir, it.Name())
+			f, err := os.Open(filepath.Join(s.dir, name))
+			if err != nil {
+				return err
+			}
+			first, _, err := rowAt(f, 0, 0, fi.Size())
+			if err != nil {
+				f.Close()
+				return err
+			}
+			last, _, err := rowAt(f, fi.Size()-1, 0, fi.Size())
 			f.Close()
-			return err
+			if err != nil {
+				return err
+			}
+			stamp, _ := strconv.ParseInt(m[1], 10, 64)
+			key := first.Session.key(first.UserID)
+			if !first.Session.valid() || first.UserID <= 0 || first.Seq != stamp || last.Seq < first.Seq || !last.Session.valid() || last.Session.key(last.UserID) != key ||
+				(dir != legacyDir && name != key.segmentName(stamp)) {
+				return errors.New("inconsistent diagnostic segment")
+			}
+			x := &segment{name, key, first.Seq, last.Seq, fi.Size(), first.ReceivedAt, last.ReceivedAt}
+			files[x.name] = x
+			if cur := latest[key]; cur == nil || cur.last < x.last {
+				latest[key] = x
+			}
+			if x.last > seq {
+				seq = x.last
+			}
+			total += x.size
 		}
-		last, _, err := rowAt(f, fi.Size()-1, 0, fi.Size())
-		f.Close()
-		if err != nil {
-			return err
-		}
-		stamp, _ := strconv.ParseInt(m[1], 10, 64)
-		if !first.Session.valid() || first.UserID <= 0 || first.Seq != stamp || last.Seq < first.Seq || !last.Session.valid() || last.Session.key(last.UserID) != first.Session.key(first.UserID) {
-			return errors.New("inconsistent diagnostic segment")
-		}
-		key := first.Session.key(first.UserID)
-		x := &segment{it.Name(), key, first.Seq, last.Seq, fi.Size(), first.ReceivedAt, last.ReceivedAt}
-		files[x.name] = x
-		if cur := latest[key]; cur == nil || cur.last < x.last {
-			latest[key] = x
-		}
-		if x.last > seq {
-			seq = x.last
-		}
-		total += x.size
 	}
 	s.files, s.latest, s.seq, s.total = files, latest, seq, total
 	return nil
@@ -329,6 +372,10 @@ func (s *Store) prune(p Policy, now time.Time, incoming int64, force bool) error
 		if err := os.Remove(filepath.Join(s.dir, x.name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if x.key.mode == ModeBrowser && filepath.Dir(x.name) != legacyDir {
+			// A host directory with no remaining segments need not be retained.
+			_ = os.Remove(filepath.Join(s.dir, filepath.Dir(x.name)))
+		}
 		s.total -= x.size
 		delete(s.files, x.name)
 		if s.latest[x.key] == x {
@@ -348,7 +395,13 @@ func (s *Store) Sweep() error {
 	if err != nil {
 		return err
 	}
-	return s.prune(p, s.now().UTC(), 0, true)
+	now := s.now().UTC()
+	if p.Enabled {
+		s.expirePending(now)
+	} else {
+		clear(s.pending)
+	}
+	return s.prune(p, now, 0, true)
 }
 func (s *Store) RunCleanup(ctx context.Context, onError func(error)) {
 	go func() {
@@ -367,25 +420,38 @@ func (s *Store) RunCleanup(ctx context.Context, onError func(error)) {
 	}()
 }
 func deviceSlug(id string) string {
+	// Keep UUIDs readable. Hash other legal identities so none can contain
+	// the underscore delimiters separating fields in a segment name.
 	if fileDeviceRE.MatchString(id) {
 		return id
 	}
 	return fmt.Sprintf("h%x", sha256.Sum256([]byte(id)))
 }
+func (k sessionKey) segmentName(first int64) string {
+	dir, browser := plainDir, ""
+	switch k.mode {
+	case ModeBrowser:
+		dir = filepath.Join(browserDir, deviceSlug(k.device))
+		browser = "_b" + deviceSlug(k.browser)
+	case ModeExam:
+		dir = examDir
+	}
+	name := fmt.Sprintf("%019d_u%d_m%s_d%s%s_s%s.jsonl", first, k.owner, k.mode, deviceSlug(k.device), browser, k.launch)
+	return filepath.Join(dir, name)
+}
+
+func (s *Store) expirePending(now time.Time) {
+	for key, expiry := range s.pending {
+		if !now.Before(expiry) {
+			delete(s.pending, key)
+		}
+	}
+}
+
 func (s *Store) Start(owner int32, meta Session) (bool, error) {
 	if owner <= 0 || !meta.valid() {
 		return false, ErrBatch
 	}
-	return s.write(owner, meta, nil, true)
-}
-func (s *Store) Append(owner int32, b Batch) error {
-	if owner <= 0 || !b.valid() {
-		return ErrBatch
-	}
-	_, err := s.write(owner, b.Session, b.Entries, false)
-	return err
-}
-func (s *Store) write(owner int32, meta Session, entries []Entry, signal bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, err := s.policy()
@@ -399,21 +465,52 @@ func (s *Store) write(owner int32, meta Session, entries []Entry, signal bool) (
 		return false, err
 	}
 	now := s.now().UTC()
-	meta.LaunchID = strings.ToLower(meta.LaunchID)
-	meta.Mode = EffectiveMode(meta.Mode)
 	key := meta.key(owner)
-	if err = s.prune(p, now, 0, false); err != nil {
-		return false, err
+	if x := s.latest[key]; x != nil && x.updated.After(now.AddDate(0, 0, -p.RetentionDays)) {
+		return false, nil
 	}
-	if signal {
-		if s.latest[key] != nil {
-			return false, nil
+	if now.Before(s.pending[key]) {
+		return false, nil
+	}
+	if len(s.pending) >= pendingLimit {
+		s.expirePending(now)
+		if len(s.pending) >= pendingLimit {
+			return false, errPending
 		}
-		entries = []Entry{{Time: now, Level: "info", Event: "session.start"}}
-	} else if s.latest[key] == nil {
-		return false, ErrLaunch
 	}
-	// Unique arrival sequence survives restarts, so pagination is stable across interleaved devices.
+	s.pending[key] = now.Add(pendingTTL)
+	return true, nil
+}
+
+func (s *Store) Append(owner int32, b Batch) error {
+	if owner <= 0 || !b.valid() {
+		return ErrBatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, err := s.policy()
+	if err != nil {
+		return err
+	}
+	if !p.Enabled {
+		return ErrDisabled
+	}
+	if err = s.load(); err != nil {
+		return err
+	}
+	now := s.now().UTC()
+	key := b.Session.key(owner)
+	if err := s.prune(p, now, 0, false); err != nil {
+		return err
+	}
+	if s.latest[key] == nil && !now.Before(s.pending[key]) {
+		delete(s.pending, key)
+		return ErrLaunch
+	}
+	meta := b.Session
+	meta.LaunchID = key.launch
+	meta.Mode = key.mode
+	// Preserve the unique arrival sequence and cursor order across restarts.
 	seq := now.UnixNano()
 	if seq <= s.seq {
 		seq = s.seq + 1
@@ -421,52 +518,79 @@ func (s *Store) write(owner int32, meta Session, entries []Entry, signal bool) (
 	first := seq
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	for _, entry := range entries {
+	for _, entry := range b.Entries {
 		entry.Time = entry.Time.UTC()
 		if err = enc.Encode(Record{entry, meta, now, owner, seq}); err != nil {
-			return false, err
+			return err
 		}
 		seq++
 	}
 	n := int64(buf.Len())
 	if err = s.prune(p, now, n, false); err != nil {
-		return false, err
+		return err
 	}
 	x := s.latest[key]
-	if x == nil || x.size+n > s.segmentBytes || now.Sub(x.began) >= time.Hour {
-		browser := ""
-		if meta.Mode == ModeBrowser {
-			browser = "_b" + deviceSlug(meta.BrowserID)
+	if x == nil || filepath.Dir(x.name) == legacyDir || x.size+n > s.segmentBytes || now.Sub(x.began) >= time.Hour {
+		// Keep old files readable in place; an existing legacy launch can append
+		// without another signal, but all newly published segments use the new layout.
+		x = &segment{name: key.segmentName(first), key: key, first: first, began: now}
+		if err = createSegment(filepath.Join(s.dir, x.name), buf.Bytes()); err != nil {
+			return err
 		}
-		name := fmt.Sprintf("%019d_u%d_m%s_d%s%s_s%s.jsonl", first, owner, meta.Mode, deviceSlug(meta.DeviceID), browser, meta.LaunchID)
-		x = &segment{name: name, key: key, first: first, began: now}
+	} else if err = s.appendSegment(x, buf.Bytes()); err != nil {
+		return err
 	}
-	if err = os.MkdirAll(s.dir, 0700); err != nil {
-		return false, err
-	}
-	f, err := os.OpenFile(filepath.Join(s.dir, x.name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return false, err
-	}
-	w, err := f.Write(buf.Bytes())
-	if err != nil { // retain the last complete record if a write fails part way through
-		_ = f.Truncate(x.size)
-		_ = f.Close()
-		return false, err
-	}
-	cerr := f.Close()
-	if cerr != nil {
-		s.files = nil
-		return false, cerr
-	}
-	x.size += int64(w)
+	x.size += n
 	x.updated = now
 	x.last = seq - 1
 	s.seq = x.last
-	s.total += int64(w)
+	s.total += n
 	s.files[x.name] = x
 	s.latest[key] = x
-	return true, nil
+	delete(s.pending, key)
+	return nil
+}
+
+// A final .jsonl name never exposes an empty file or an incomplete first batch.
+func createSegment(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".segment-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), path)
+}
+
+// Append one batch under the store lock, rolling back any partial write. No
+// O_CREATE: a vanished indexed path must not silently acquire a new first row.
+func (s *Store) appendSegment(x *segment, data []byte) error {
+	f, err := os.OpenFile(filepath.Join(s.dir, x.name), os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err != nil {
+		_ = f.Truncate(x.size)
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		s.files = nil
+	}
+	return err
 }
 
 // exclusiveEnd finds the byte boundary before an arrival cursor without scanning the file from the beginning.

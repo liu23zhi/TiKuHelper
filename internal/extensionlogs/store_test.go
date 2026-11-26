@@ -44,13 +44,19 @@ func TestFileStoreSessionsPolicyPagingAndExpiry(t *testing.T) {
 	start(21, a, true)
 	other := testSession("historic:device.02", launchA)
 	start(17, other, true)
+	if e = st.Append(21, testBatch(a, now, "extension.ready")); e != nil {
+		t.Fatal(e)
+	}
+	if e = st.Append(17, testBatch(other, now, "extension.ready")); e != nil {
+		t.Fatal(e)
+	}
 	if e = st.Append(17, testBatch(a, now, "settings.saved")); e != nil {
 		t.Fatal(e)
 	}
 	if e = st.Append(17, testBatch(b, now, "network.offline")); e != nil {
 		t.Fatal(e)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	files := diagnosticFiles(t, dir)
 	if len(files) != 4 {
 		t.Fatalf("expected four separate user/device/launch files, got %d", len(files))
 	}
@@ -70,7 +76,7 @@ func TestFileStoreSessionsPolicyPagingAndExpiry(t *testing.T) {
 		t.Fatal(e)
 	}
 	page, e = st.Read("", 10, Filter{UserID: 17, DeviceID: a.DeviceID, LaunchID: a.LaunchID})
-	if e != nil || len(page.Entries) != 3 || page.Entries[0].Event != "sync.success" || page.Entries[2].Event != "session.start" {
+	if e != nil || len(page.Entries) != 2 || page.Entries[0].Event != "sync.success" || page.Entries[1].Event != "settings.saved" {
 		t.Fatalf("specific launch after restart: %+v %v", page, e)
 	}
 	if _, e = st.Read("invalid", 10, Filter{}); e != ErrCursor {
@@ -100,7 +106,7 @@ func TestFileStoreSessionsPolicyPagingAndExpiry(t *testing.T) {
 	if e = st.Sweep(); e != nil {
 		t.Fatal(e)
 	}
-	if lst, _ := filepath.Glob(filepath.Join(dir, "*.jsonl")); len(lst) != 0 {
+	if lst := diagnosticFiles(t, dir); len(lst) != 0 {
 		t.Fatal("expired log retained")
 	}
 	if _, e = os.Stat(filepath.Join(dir, "unrelated.log")); e != nil {
@@ -127,7 +133,7 @@ func TestCapacityAndUnexpectedInput(t *testing.T) {
 		}
 	}
 	var bytes int64
-	fs, _ := filepath.Glob(filepath.Join(st.dir, "*.jsonl"))
+	fs := diagnosticFiles(t, st.dir)
 	for _, f := range fs {
 		info, e := os.Stat(f)
 		if e != nil {
@@ -139,7 +145,7 @@ func TestCapacityAndUnexpectedInput(t *testing.T) {
 		t.Fatalf("capacity exceeded %d", bytes)
 	}
 	page, e := st.Read("", 100, Filter{})
-	if e != nil || len(page.Entries) == 0 || len(page.Entries) >= 24 || page.Entries[0].UserID != 12 {
+	if e != nil || len(page.Entries) == 0 || len(page.Entries) >= 12 || page.Entries[0].UserID != 12 {
 		t.Fatalf("eviction %d %v", len(page.Entries), e)
 	}
 	for _, s := range []Session{testSession("../bad", launchA), testSession("abc", "not-a-launch"), {Version: "invalid-version", DeviceID: "abc", LaunchID: launchA}} {
@@ -175,17 +181,13 @@ func TestStableCursorWhenASecondLaunchAppends(t *testing.T) {
 	}
 	expected := total - 1
 	cursor := ""
-	starts := 0
 	for {
 		page, e := st.Read(cursor, 53, Filter{UserID: 12, DeviceID: "fixture"})
 		if e != nil {
 			t.Fatal(e)
 		}
 		for _, r := range page.Entries {
-			if r.Event == "session.start" {
-				starts++
-				continue
-			}
+
 			if r.Count == nil || int(*r.Count) != expected {
 				t.Fatalf("sequence gap near %d", expected)
 			}
@@ -201,8 +203,8 @@ func TestStableCursorWhenASecondLaunchAppends(t *testing.T) {
 		}
 		cursor = page.Next
 	}
-	if expected != -1 || starts != 2 {
-		t.Fatal(expected, starts)
+	if expected != -1 {
+		t.Fatal(expected)
 	}
 }
 
@@ -229,8 +231,8 @@ func TestModesAndBrowserInstancesSeparateLaunchFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
-	if err != nil || len(files) != 5 {
+	files := diagnosticFiles(t, dir)
+	if len(files) != 5 {
 		t.Fatal("each account/mode/device/browser/launch requires its own file")
 	}
 	for _, p := range files {
@@ -246,6 +248,16 @@ func TestModesAndBrowserInstancesSeparateLaunchFiles(t *testing.T) {
 		if _, ok := sample["mode"]; !ok {
 			t.Fatal("new rows must explicitly record the mode")
 		}
+		wantDir := filepath.Join(dir, "client", "Browser_extensions")
+		switch sample["mode"] {
+		case ModeBrowser:
+			wantDir = filepath.Join(wantDir, "Multi-browser_mode", key)
+		case ModeExam:
+			wantDir = filepath.Join(dir, "client", "Exam_Client_Injection")
+		}
+		if filepath.Dir(p) != wantDir {
+			t.Fatalf("mode %s written to %s, want %s", sample["mode"], p, wantDir)
+		}
 		_, hasBrowser := sample["browser_id"]
 		if hasBrowser != (sample["mode"] == "native_browser") {
 			t.Fatal("browser_id not confined to browser logs")
@@ -260,11 +272,14 @@ func TestModesAndBrowserInstancesSeparateLaunchFiles(t *testing.T) {
 }
 func TestLegacyLogPolicyEnableDefault(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "extension"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		raw     string
 		enabled bool
 	}{{`{"retention_days":8,"max_gb":2}`, true}, {`{"enabled":false,"retention_days":8,"max_gb":2}`, false}} {
-		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.raw), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "extension", "settings.json"), []byte(tc.raw), 0600); err != nil {
 			t.Fatal(err)
 		}
 		p, err := New(dir).Policy()
@@ -278,7 +293,10 @@ func TestPreModeFilesRemainExtensionOnlyAfterColdReopen(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
 	seq := now.UnixNano()
-	old := filepath.Join(dir, fmt.Sprintf("%019d_u33_dlegacy-device_s%s.jsonl", seq, launchA))
+	if err := os.Mkdir(filepath.Join(dir, "extension"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, "extension", fmt.Sprintf("%019d_u33_dlegacy-device_s%s.jsonl", seq, launchA))
 	fixture := map[string]any{"version": "1.2.3", "device_id": "legacy-device", "launch_id": launchA, "time": now, "received_at": now, "level": "info", "event": "session.start", "seq": strconv.FormatInt(seq, 10), "user_id": 33}
 	row, err := json.Marshal(fixture)
 	if err != nil {
@@ -301,10 +319,19 @@ func TestPreModeFilesRemainExtensionOnlyAfterColdReopen(t *testing.T) {
 	if fresh, err := st.Start(33, browser); err != nil || !fresh {
 		t.Fatal("browser namespace could not start separately")
 	}
+	if err := st.Append(33, testBatch(plain, now, "settings.saved")); err != nil {
+		t.Fatalf("pre-upgrade launch could not continue without a new start: %v", err)
+	}
+	if err := st.Append(33, testBatch(browser, now, "sync.success")); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(old); err != nil || !bytes.Equal(content, append(row, '\n')) {
+		t.Fatalf("legacy file was rewritten: %v", err)
+	}
 	st = New(dir)
 	page, err := st.Read("", 20, Filter{UserID: 33, Mode: ModeExtension})
-	if err != nil || len(page.Entries) != 1 || page.Entries[0].Mode != ModeExtension || page.Entries[0].BrowserID != "" {
-		t.Fatal("old record not readable as ordinary extension")
+	if err != nil || len(page.Entries) != 2 || page.Entries[1].Event != "session.start" || page.Entries[1].Mode != ModeExtension || page.Entries[1].BrowserID != "" || page.Entries[0].Event != "settings.saved" {
+		t.Fatalf("dual-read lost old or new records: %+v %v", page, err)
 	}
 	page, err = st.Read("", 20, Filter{UserID: 33, Mode: ModeBrowser, BrowserID: browser.BrowserID})
 	if err != nil || len(page.Entries) != 1 || page.Entries[0].Mode != ModeBrowser || page.Entries[0].BrowserID != browser.BrowserID {
