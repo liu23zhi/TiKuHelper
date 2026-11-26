@@ -734,6 +734,10 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate system settings fail: %w", err))
 	}
+	if err := runStartupMigration("ensureAgreementSchema", func() error { return EnsureAgreementSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare agreement schema fail: %w", err))
+		return nil
+	}
 	// Historical invalid quota must never be silently converted to unlimited.
 	preserveDisabledInvalidQuota := false
 	if err := runStartupMigration("ensureAccessTokenQuotaLimitData", func() error {

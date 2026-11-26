@@ -71,6 +71,22 @@ func SetAPIRouter(router *gin.Engine) {
 	// 方向与黑名单的 fail-open 相反 —— 拿不到规则时凭空给出豁免是错的。
 	apiRouter.Use(middleware.WhitelistIP())
 
+	apiRouter.POST("/agreements/devices", controller.EnrollAgreementDevice)
+	apiRouter.GET("/agreements/current", controller.CurrentAgreement)
+	apiRouter.GET("/agreements/status", controller.AgreementDeviceStatus)
+	apiRouter.POST("/agreements/consents", controller.SubmitAgreement)
+	adminAgreements := apiRouter.Group("/admin/agreements", controller.Auth, middleware.RequireAdmin)
+	adminAgreements.GET("/drafts", controller.AgreementDrafts)
+	adminAgreements.POST("/drafts", controller.CreateAgreementDraft)
+	adminAgreements.POST("/drafts/batch-delete", controller.BatchDeleteAgreementDrafts)
+	adminAgreements.GET("/drafts/:id", controller.AgreementDraftPreview)
+	adminAgreements.PUT("/drafts/:id", controller.EditAgreementDraft)
+	adminAgreements.DELETE("/drafts/:id", controller.RemoveAgreementDraft)
+	adminAgreements.POST("/drafts/:id/publish", controller.PublishAgreementDraft)
+	adminAgreements.GET("/releases", controller.AgreementHistory)
+	adminAgreements.GET("/releases/:id", controller.AgreementReleaseDetail)
+	adminAgreements.GET("/records", controller.AgreementAuditRecords)
+
 	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
 	// EXE uploads need a larger multipart envelope than ordinary API requests.
 	scriptUploadRouter := router.Group("/api/script-versions")
