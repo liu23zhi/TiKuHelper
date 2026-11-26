@@ -180,8 +180,8 @@ func TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders(t *testing.T) {
 		}
 	}
 	bills := []entity.BillingRecord{
-		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 5},
-		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 7.5},
+		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 5, BalanceBefore: 5, BalanceAfter: 0},
+		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 7.5, BalanceBefore: 7.5, BalanceAfter: 0},
 		{UserID: 21, Type: rechargeBillingRecordType, Amount: 100},                // 收入，不算消费
 		{UserID: 21, Type: rechargePromotionBillingRecordType, Amount: 20},        // 收入，不算消费
 		{UserID: 21, Type: RegistrationBonusClawbackBillingRecordType, Amount: 3}, // 撤回赠金，不是消费
@@ -220,7 +220,7 @@ func TestEvaluateUserLevelUpgradesAndWritesOneHistoryRow(t *testing.T) {
 
 	// 先造到「够 rank 3」的账单。
 	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 22, OrderNo: "o-22", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid})
-	if err := db.Create(&entity.BillingRecord{UserID: 22, Type: normalSearchBillingRecordType, Amount: 120}).Error; err != nil {
+	if err := db.Create(&entity.BillingRecord{UserID: 22, Type: normalSearchBillingRecordType, Amount: 120, BalanceBefore: 120, BalanceAfter: 0}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,7 +263,7 @@ func TestRefreshUserLevelSummaryRepairsStaleLevelAndPersistsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 822, OrderNo: "stale-level-822", Amount: 296.5, Status: rechargeOrderStatusPaid})
-	if err := db.Create(&entity.BillingRecord{UserID: 822, Type: normalSearchBillingRecordType, Amount: 15.158586}).Error; err != nil {
+	if err := db.Create(&entity.BillingRecord{UserID: 822, Type: normalSearchBillingRecordType, Amount: 15.158586, BalanceBefore: 15.158586, BalanceAfter: 0}).Error; err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {

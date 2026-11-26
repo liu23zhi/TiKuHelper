@@ -19,7 +19,7 @@ func TestEffectiveLedgerHTTPRejectsForeignSourceAndDemotedAdmin(t *testing.T) {
 	if err := db.Create(&[]entity.User{admin, owner, other}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&[]entity.BillingRecord{{ID: 10, UserID: 2, Type: "normal_search", Amount: 3}, {ID: 11, UserID: 3, Type: "normal_search", Amount: 3}}).Error; err != nil {
+	if err := db.Create(&[]entity.BillingRecord{{ID: 10, UserID: 2, Type: "normal_search", Amount: 3, BalanceBefore: 3, BalanceAfter: 0}, {ID: 11, UserID: 3, Type: "normal_search", Amount: 3, BalanceBefore: 3, BalanceAfter: 0}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	request := func(method, body string, actor *entity.User) int {

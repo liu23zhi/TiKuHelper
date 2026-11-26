@@ -79,11 +79,11 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 		if !tx.Migrator().HasTable(&entity.BillingRecord{}) {
 			return nil
 		}
-		q := tx.Model(&entity.BillingRecord{}).Select("id,amount").Where("user_id = ? AND amount > 0 AND TRIM(type) IN ? AND ("+chargeOriginSQL+")=0", uid, []string{normalSearchBillingRecordType, ScriptActivationPurchaseBillingType})
+		q := billProjectionQuery(tx, uid)
 		if beforeBill > 0 {
 			q = q.Where("id < ?", beforeBill)
 		}
-		var bs []entity.BillingRecord
+		var bs []effectiveBillRow
 		const page = 30
 		if err := q.Order("id DESC").Limit(page + 1).Find(&bs).Error; err != nil {
 			return err
@@ -93,7 +93,7 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 			result.NextBill = bs[page-1].ID
 		}
 		for _, b := range bs {
-			s := effectiveSource{Kind: "bill", ID: b.ID, Gross: b.Amount}
+			s := effectiveSource{Kind: "bill", ID: b.ID, Gross: b.Amount, Debited: b.Debited}
 			p.apply(&s)
 			result.Sources = append(result.Sources, s)
 		}

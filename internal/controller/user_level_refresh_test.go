@@ -95,7 +95,7 @@ func TestUserLevelCurrentRepairsStaleSummaryAndReportsPersistenceFailures(t *tes
 			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "recharge", Amount: order.Amount, RequestID: order.OrderNo, RelatedOrderID: order.ID}).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "normal_search", Amount: 15.158586}).Error; err != nil {
+			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "normal_search", Amount: 15.158586, BalanceBefore: 15.158586, BalanceAfter: 0}).Error; err != nil {
 				t.Fatal(err)
 			}
 			expectedStatus := http.StatusOK

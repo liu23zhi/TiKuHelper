@@ -14,12 +14,12 @@
         <label>原始来源
           <select v-model="chosen" :disabled="busy" @change="resetDraft">
             <option value="">选择订单或扣款账单</option>
-            <option v-for="s in review.sources" :key="keyOf(s)" :value="keyOf(s)" :disabled="s.uncertain">{{ s.kind === 'order' ? '充值订单' : '消费账单' }} #{{ s.id }} · 有效 ¥ {{ s.effective }} {{ s.uncertain ? '（实退本金待核）' : '' }}</option>
+            <option v-for="s in review.sources" :key="keyOf(s)" :value="keyOf(s)" :disabled="s.uncertain">{{ s.kind === 'order' ? '充值订单' : '消费账单' }} #{{ s.id }} · 有效 ¥ {{ s.effective }} {{ s.uncertain ? '（金额凭据待核）' : '' }}</option>
           </select>
         </label>
         <button v-if="review.nextBill" type="button" :disabled="busy" @click="read(review.nextBill)">更早的账单</button>
         <template v-if="source">
-          <p>原额 ¥ {{ source.gross }} · 已退 ¥ {{ source.refunded }} · 当前来源贡献 ¥ {{ source.effective }}<span v-if="source.refundIds?.length"> · 退款单 #{{ source.refundIds.join('、#') }}</span></p>
+          <p>原额 ¥ {{ source.gross }} <span v-if="source.debited != null">· 已实扣 ¥ {{ source.debited }}</span> · 已退 ¥ {{ source.refunded }} · 当前来源贡献 ¥ {{ source.effective }}<span v-if="source.refundIds?.length"> · 退款单 #{{ source.refundIds.join('、#') }}</span></p>
           <label>修正后{{ source.kind === 'order' ? '有效充值' : '有效消费' }}总额（元）<input v-model.trim="amount" inputmode="decimal" :disabled="busy"></label>
           <label>修正原因<input v-model.trim="reason" maxlength="255" :disabled="busy"></label>
           <button type="button" :disabled="busy || !reason || !amount" @click="save">单独保存本次账务修正</button>
@@ -42,7 +42,7 @@ const keyOf=s=>s.kind+':'+s.id
 const source=computed(()=>review.value?.sources?.find(s=>keyOf(s)===chosen.value))
 const original=()=>source.value?.kind==='order'?review.value.totals.rechargeTotal:review.value.totals.consumptionTotal
 const resetDraft=()=>{amount.value=source.value?String(original()):'';reason.value=''}
-const labels={order_without_credit_proof:'订单缺少到账凭据',operator_refund_mark:'订单存在人工退款标记',settled_refund_without_consume_receipt:'已结算退款缺少本金核销流水',refund_without_exact_order_allocation:'退款无法精确分摊到订单',refund_without_credited_order:'退款找不到已到账订单',refund_wrong_owner_receipt:'退款与本金核销归属不一致',refund_state_conflict:'退款主单与明细状态不一致',refund_exceeds_order_principal:'退款超出订单本金',unmatched_recharge_credit:'充值账单缺少匹配订单',billing_table_unavailable:'缺少账单表',order_table_unavailable:'缺少订单表',refund_table_unavailable:'缺少退款表'}
+const labels={order_without_credit_proof:'订单缺少到账凭据',operator_refund_mark:'订单存在人工退款标记',settled_refund_without_consume_receipt:'已结算退款缺少本金核销流水',refund_without_exact_order_allocation:'退款无法精确分摊到订单',refund_without_credited_order:'退款找不到已到账订单',refund_wrong_owner_receipt:'退款与本金核销归属不一致',refund_state_conflict:'退款主单与明细状态不一致',charge_without_exact_debit:'支出缺少与面额相符的实扣凭据',refund_exceeds_order_principal:'退款超出订单本金',unmatched_recharge_credit:'充值账单缺少匹配订单',billing_table_unavailable:'缺少账单表',order_table_unavailable:'缺少订单表',refund_table_unavailable:'缺少退款表'}
 const issueLabel=k=>labels[k]||k.replace('unclassified_billing_type:','未识别的历史账单类型：')
 const path=()=>'/api/admin/users/'+props.userId+'/effective-ledger'
 async function requestData(options){

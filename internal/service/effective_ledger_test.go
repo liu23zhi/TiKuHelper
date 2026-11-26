@@ -13,7 +13,7 @@ func TestEffectiveLedgerOnlyConfirmedServiceCharges(t *testing.T) {
 	db := newUserLevelTestDB(t)
 	rows := []entity.BillingRecord{
 		{Type: "normal_search", Amount: 2, GiftCharged: 2},
-		{Type: ScriptActivationPurchaseBillingType, Amount: 3},
+		{Type: ScriptActivationPurchaseBillingType, Amount: 3, BalanceBefore: 10, BalanceAfter: 7},
 		{Type: "normal_search", Amount: 4, RequestID: "tool-test-001", Provider: "ai", QuestionText: "[AI工具测试]"},
 		{Type: scriptReservationBillingRecordType, Amount: 10}, {Type: scriptRefundBillingRecordType, Amount: 10},
 		{Type: AdminGrantBillingRecordType, Amount: 20}, {Type: AdminGrantReversalBillingRecordType, Amount: 18},
@@ -215,7 +215,7 @@ func TestEffectiveRebuildPreviewCursorAuditAndStaleRefusal(t *testing.T) {
 	}
 	input.ApplyDigest = preview.Digest
 	input.Reason = "核对后更新"
-	if err := db.Create(&entity.BillingRecord{UserID: 2, Type: "normal_search", Amount: 1}).Error; err != nil {
+	if err := db.Create(&entity.BillingRecord{UserID: 2, Type: "normal_search", Amount: 1, GiftCharged: 1}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RebuildEffectiveLevels(db, admin, input); !errors.Is(err, ErrLedgerStale) {
@@ -360,5 +360,25 @@ func TestEffectiveRebuildRollsBackWholeBatchOnFailedEntitlementWrite(t *testing.
 		if e := db.Model(model).Count(&n).Error; e != nil || n != 0 {
 			t.Fatalf("partial audit: %d %v", n, e)
 		}
+	}
+}
+
+func TestEffectiveConsumptionRequiresActualDebitAndMicros(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	rows := []entity.BillingRecord{
+		{UserID: 7, Type: "normal_search", Amount: .0000007, GiftCharged: .000001},
+		{UserID: 7, Type: "normal_search", Amount: .0000007, PrincipalCharged: .000001},
+		{UserID: 7, Type: "normal_search", Amount: .0000007, GiftCharged: .000001},
+		{UserID: 7, Type: "normal_search", Amount: 3, BalanceBefore: 13, BalanceAfter: 10},
+		{UserID: 7, Type: "normal_search", Amount: 7},                                       // legacy amount without a debit
+		{UserID: 7, Type: "normal_search", Amount: 10, BalanceBefore: 15, BalanceAfter: 10}, // debit/quote conflict
+		{UserID: 7, Type: "normal_search", Amount: 2, AccessTokenID: 19, UnitPriceSnapshot: "v1 script_mode=escrow script_multiplier=1.000000 script_base_amount=2.00000000 script_charge_amount=2.000000"},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := ComputeUserLevelTotalsWithDB(db, 7)
+	if err != nil || got.ConsumptionTotal != 5.000003 || got.Issues["charge_without_exact_debit"] != 2 {
+		t.Fatalf("actual debit total = %+v want 5.000003 + 2 unknown, %v", got, err)
 	}
 }

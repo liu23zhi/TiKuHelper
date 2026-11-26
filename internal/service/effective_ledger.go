@@ -21,14 +21,15 @@ type UserLevelTotals struct {
 }
 
 type effectiveSource struct {
-	Uncertain bool    `json:"uncertain,omitempty"`
-	Kind      string  `json:"kind"`
-	ID        int32   `json:"id"`
-	Gross     float64 `json:"gross"`
-	Refunded  float64 `json:"refunded"`
-	RefundIDs []int64 `json:"refundIds,omitempty"`
-	Net       float64 `json:"net"`
-	Effective float64 `json:"effective"`
+	Debited   *float64 `json:"debited,omitempty"`
+	Uncertain bool     `json:"uncertain,omitempty"`
+	Kind      string   `json:"kind"`
+	ID        int32    `json:"id"`
+	Gross     float64  `json:"gross"`
+	Refunded  float64  `json:"refunded"`
+	RefundIDs []int64  `json:"refundIds,omitempty"`
+	Net       float64  `json:"net"`
+	Effective float64  `json:"effective"`
 }
 type ledgerKey struct {
 	kind string
@@ -49,6 +50,14 @@ func (p *effectiveProjection) issue(k string, n int64) {
 }
 func (p *effectiveProjection) apply(s *effectiveSource) {
 	s.Net = util.RoundMoney(max(0, s.Gross-s.Refunded))
+	if s.Kind == "bill" {
+		if s.Debited == nil {
+			s.Net = 0
+			s.Uncertain = true
+		} else {
+			s.Net = *s.Debited
+		}
+	}
 	s.Effective = util.RoundMoney(max(0, s.Net-float64(p.discounts[ledgerKey{s.Kind, s.ID}])/1e6))
 }
 
@@ -276,15 +285,43 @@ const chargeOriginSQL = "CASE WHEN access_token_id = 0 AND request_id LIKE 'tool
 func confirmedCharge(kind string, diag bool) bool {
 	return !diag && (kind == normalSearchBillingRecordType || kind == ScriptActivationPurchaseBillingType)
 }
+
+// Amount is the eight-decimal quote. Wallet bucket deltas are the six-decimal
+// posted charge. In legacy wallets the principal before/after delta is usable
+// if it corroborates the billed amount. Escrow settlements commit the priced
+// per-line amount in the same transaction, even when no wallet bucket moves.
+func effectiveDebitSQL(db *gorm.DB) string {
+	split := ""
+	if db.Migrator().HasColumn(&entity.BillingRecord{}, "gift_charged") && db.Migrator().HasColumn(&entity.BillingRecord{}, "principal_charged") {
+		split = " WHEN gift_charged < 0 OR principal_charged < 0 THEN NULL WHEN gift_charged + principal_charged > 0 THEN ROUND(gift_charged + principal_charged,6)"
+	}
+	debit := "(CASE WHEN access_token_id > 0 AND INSTR(unit_price_snapshot,' script_mode=escrow script_multiplier=') > 0 THEN ROUND(amount,6)" + split + " WHEN balance_before > balance_after THEN ROUND(balance_before-balance_after,6) ELSE NULL END)"
+	// Each of two buckets rounds its own before/after boundary. A larger
+	// discrepancy is not attributable to rounding; flag it rather than guess.
+	return "(CASE WHEN ABS(" + debit + " - amount) <= 0.00000201 THEN " + debit + " ELSE NULL END)"
+}
+
+type effectiveBillRow struct {
+	ID      int32
+	Amount  float64
+	Debited *float64
+}
+
+func billProjectionQuery(db *gorm.DB, uid int32) *gorm.DB {
+	return db.Model(&entity.BillingRecord{}).Select("id,amount,"+effectiveDebitSQL(db)+" AS debited").Where("user_id = ? AND amount > 0 AND TRIM(type) IN ? AND ("+chargeOriginSQL+")=0", uid, []string{normalSearchBillingRecordType, ScriptActivationPurchaseBillingType})
+}
+
 func (batch ledgerBatch) readCharges(db *gorm.DB, ids []int32) error {
 	var groups []struct {
-		UserID     int32
-		Kind       string
-		Diagnostic int
-		N          int64
-		Amount     float64
+		UserID          int32
+		Kind            string
+		Diagnostic      int
+		N               int64
+		Amount, Debited float64
+		Proven          int64
 	}
-	if err := db.Model(&entity.BillingRecord{}).Select("user_id, TRIM(type) AS kind,"+chargeOriginSQL+" AS diagnostic, COUNT(*) AS n, SUM(amount) AS amount").Where("user_id IN ? AND amount > 0", ids).Group("user_id, TRIM(type)," + chargeOriginSQL).Scan(&groups).Error; err != nil {
+	debit := effectiveDebitSQL(db)
+	if err := db.Model(&entity.BillingRecord{}).Select("user_id, TRIM(type) AS kind,"+chargeOriginSQL+" AS diagnostic, COUNT(*) AS n, SUM(amount) AS amount, COALESCE(SUM("+debit+"),0) AS debited,COUNT("+debit+") AS proven").Where("user_id IN ? AND amount > 0", ids).Group("user_id, TRIM(type)," + chargeOriginSQL).Scan(&groups).Error; err != nil {
 		return err
 	}
 	known := map[string]bool{AdminGrantBillingRecordType: true, AdminGrantReversalBillingRecordType: true, "test": true}
@@ -297,7 +334,8 @@ func (batch ledgerBatch) readCharges(db *gorm.DB, ids []int32) error {
 		case confirmedCharge(g.Kind, false):
 			p.Totals.HistoricalConsumption += g.Amount
 			if confirmedCharge(g.Kind, g.Diagnostic != 0) {
-				p.Totals.ConsumptionTotal += g.Amount
+				p.Totals.ConsumptionTotal += g.Debited
+				p.issue("charge_without_exact_debit", g.N-g.Proven)
 			}
 		case g.Kind == scriptReservationBillingRecordType:
 			p.Totals.HistoricalConsumption += g.Amount
@@ -318,14 +356,14 @@ func (batch ledgerBatch) readCharges(db *gorm.DB, ids []int32) error {
 }
 
 func (p *effectiveProjection) billSource(db *gorm.DB, uid, id int32) (*effectiveSource, error) {
-	var b entity.BillingRecord
-	if err := db.Select("id,type,amount,access_token_id,request_id").Where("id = ? AND user_id = ?", id, uid).Take(&b).Error; err != nil {
+	var b effectiveBillRow
+	if err := billProjectionQuery(db, uid).Where("id = ?", id).Take(&b).Error; err != nil {
 		return nil, err
 	}
-	if b.Amount <= 0 || !confirmedCharge(strings.TrimSpace(b.Type), b.AccessTokenID == 0 && strings.HasPrefix(b.RequestID, "tool-test-")) {
+	if b.Debited == nil {
 		return nil, ErrLedgerInput
 	}
-	s := &effectiveSource{Kind: "bill", ID: b.ID, Gross: b.Amount}
+	s := &effectiveSource{Kind: "bill", ID: b.ID, Gross: b.Amount, Debited: b.Debited}
 	p.apply(s)
 	return s, nil
 }
