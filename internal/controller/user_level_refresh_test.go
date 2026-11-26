@@ -88,6 +88,13 @@ func TestUserLevelCurrentRepairsStaleSummaryAndReportsPersistenceFailures(t *tes
 			if err := db.Create(&entity.RechargeOrder{UserID: owner.ID, OrderNo: "stale-level-296.5", PaymentProvider: "synthetic", Status: "paid", Amount: 296.5}).Error; err != nil {
 				t.Fatal(err)
 			}
+			var order entity.RechargeOrder
+			if err := db.Where("user_id = ?", owner.ID).Take(&order).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "recharge", Amount: order.Amount, RequestID: order.OrderNo, RelatedOrderID: order.ID}).Error; err != nil {
+				t.Fatal(err)
+			}
 			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "normal_search", Amount: 15.158586}).Error; err != nil {
 				t.Fatal(err)
 			}

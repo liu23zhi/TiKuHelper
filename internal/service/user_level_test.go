@@ -45,6 +45,21 @@ func newUserLevelTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// Match the immutable credit written by a successful callback; a status alone is not a receipt.
+func seedLevelCredit(t *testing.T, db *gorm.DB, o entity.RechargeOrder) {
+	t.Helper()
+	if err := db.Create(&entity.BillingRecord{UserID: o.UserID, Type: "recharge", Amount: o.Amount, RequestID: o.OrderNo, RelatedOrderID: o.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+func seedLevelPaidOrder(t *testing.T, db *gorm.DB, o entity.RechargeOrder) {
+	t.Helper()
+	if err := db.Create(&o).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLevelCredit(t, db, o)
+}
+
 // seedUserLevel / seedLevel 造一个用户 / 一个等级。返回 ID。
 func seedLevelUser(t *testing.T, db *gorm.DB, id int32) {
 	t.Helper()
@@ -156,6 +171,10 @@ func TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders(t *testing.T) {
 		{UserID: 21, OrderNo: "pending-1", PaymentProvider: "fixture", Amount: 999, Status: rechargeOrderStatusPending},
 	}
 	for _, order := range orders {
+		if order.Status == rechargeOrderStatusPaid {
+			seedLevelPaidOrder(t, db, order)
+			continue
+		}
 		if err := db.Create(&order).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -200,9 +219,7 @@ func TestEvaluateUserLevelUpgradesAndWritesOneHistoryRow(t *testing.T) {
 	senior := mustCreateLevel(t, db, entity.UserLevel{Name: "资深", Rank: 3, Enabled: true, MinRechargeTotal: 500, MinConsumptionTotal: 100})
 
 	// 先造到「够 rank 3」的账单。
-	if err := db.Create(&entity.RechargeOrder{UserID: 22, OrderNo: "o-22", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid}).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 22, OrderNo: "o-22", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid})
 	if err := db.Create(&entity.BillingRecord{UserID: 22, Type: normalSearchBillingRecordType, Amount: 120}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -245,9 +262,7 @@ func TestRefreshUserLevelSummaryRepairsStaleLevelAndPersistsOnce(t *testing.T) {
 	if err := db.Table(entity.TableNameUser).Where("id = ?", 822).Update("level_id", basic.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&entity.RechargeOrder{UserID: 822, OrderNo: "stale-level-822", Amount: 296.5, Status: rechargeOrderStatusPaid}).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 822, OrderNo: "stale-level-822", Amount: 296.5, Status: rechargeOrderStatusPaid})
 	if err := db.Create(&entity.BillingRecord{UserID: 822, Type: normalSearchBillingRecordType, Amount: 15.158586}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -275,9 +290,7 @@ func TestRefreshUserLevelSummaryAppliesChangedThresholds(t *testing.T) {
 	seedLevelUser(t, db, 823)
 	basic := mustCreateLevel(t, db, entity.UserLevel{Name: "基础会员", Rank: 1, Enabled: true})
 	advanced := mustCreateLevel(t, db, entity.UserLevel{Name: "进阶会员", Rank: 2, Enabled: true, MinRechargeTotal: 500})
-	if err := db.Create(&entity.RechargeOrder{UserID: 823, OrderNo: "threshold-change-823", Amount: 200, Status: rechargeOrderStatusPaid}).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 823, OrderNo: "threshold-change-823", Amount: 200, Status: rechargeOrderStatusPaid})
 	if _, err := EvaluateUserLevelWithDB(db, 823, entity.UserLevelTriggerRecharge); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +345,8 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 
 	orderID := int32(1)
 	order := entity.RechargeOrder{UserID: 23, OrderNo: "o-23", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid}
-	if err := db.Create(&order).Error; err != nil {
+	seedLevelPaidOrder(t, db, order)
+	if err := db.Where("order_no = ?", order.OrderNo).Take(&order).Error; err != nil {
 		t.Fatal(err)
 	}
 	orderID = order.ID

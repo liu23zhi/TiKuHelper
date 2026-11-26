@@ -48,6 +48,9 @@ func ensureUserLevelSchema(db *gorm.DB) error {
 		// 加列无从谈起，建出来的等级表也没有落点。
 		return nil
 	}
+	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}); err != nil {
+		return fmt.Errorf("create effective ledger audit: %w", err)
+	}
 	if err := db.AutoMigrate(&entity.UserLevel{}); err != nil {
 		return fmt.Errorf("create user_levels fail: %w", err)
 	}

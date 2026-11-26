@@ -122,86 +122,11 @@ func userLevelSchemaAvailable(db *gorm.DB) bool {
 
 // ─────────────────────── 口径计算 ───────────────────────
 
-// UserLevelTotals 是判定用的两个口径值。
-type UserLevelTotals struct {
-	RechargeTotal    float64 `json:"rechargeTotal"`
-	ConsumptionTotal float64 `json:"consumptionTotal"`
-}
-
-// ComputeUserLevelTotalsWithDB 计算某用户的累计充值额与累计消费额。
-//
-// 累计充值 = status=paid 的金额之和 **减去已成功的退款额**（见下）。
-//
-// 为什么必须显式减退款：本仓退款**不改订单状态**。ticket_refund 流程只动
-// wallet 与 ticket_refunds / ticket_refund_ledgers，recharge_orders.status
-// 仍是 paid（实测全仓无任何非测试代码写 `status=refunded`）。
-// 如果只按 status=paid 求和，退款后累计充值不会回落，Q75-6「退款自动降级」
-// 就是一句空话 —— 这是「看起来在测、实际测不出」的典型形态，
-// 所以这里用 ticket_refunds 的 succeeded + approved_cents 做减法。
-//
-// 累计消费与账单消费汇总一致，排除收入、余额调整及赠金撤回等非消费流水。
+// ComputeUserLevelTotalsWithDB is the same replay used by the personal and
+// admin summaries; no wallet initial balance or guessed legacy attribution.
 func ComputeUserLevelTotalsWithDB(db *gorm.DB, userID int32) (UserLevelTotals, error) {
-	if db == nil || userID <= 0 {
-		return UserLevelTotals{}, nil
-	}
-	session := userLevelSession(db)
-	var totals UserLevelTotals
-
-	if db.Migrator().HasTable(entity.TableNameRechargeOrder) {
-		var recharge float64
-		if err := session.Model(&entity.RechargeOrder{}).
-			Where("user_id = ? AND status = ?", userID, rechargeOrderStatusPaid).
-			Select("COALESCE(SUM(amount), 0)").
-			Scan(&recharge).Error; err != nil {
-			return UserLevelTotals{}, err
-		}
-		totals.RechargeTotal = util.RoundMoney(recharge)
-	}
-
-	// 已出钱的退款要从累计充值里扣掉（表不存在时视为 0，不阻断）。
-	if db.Migrator().HasTable("ticket_refunds") {
-		var refundedCents int64
-		if err := session.Table("ticket_refunds").
-			Where("user_id = ? AND status = ?", userID, userLevelRefundCompletedStatus).
-			Select("COALESCE(SUM(approved_cents), 0)").
-			Scan(&refundedCents).Error; err != nil {
-			return UserLevelTotals{}, err
-		}
-		if db.Migrator().HasTable(&entity.TicketRefundOrderLine{}) {
-			var partialCents int64
-			if err := session.Model(&entity.TicketRefundOrderLine{}).
-				Joins("JOIN ticket_refunds ON ticket_refunds.id = ticket_refund_order_lines.refund_id").
-				Where("ticket_refunds.user_id = ? AND ticket_refunds.status <> ? AND ticket_refund_order_lines.status = ?",
-					userID, entity.TicketRefundStatusSucceeded, entity.TicketRefundStatusSucceeded).
-				Select("COALESCE(SUM(ticket_refund_order_lines.cents), 0)").Scan(&partialCents).Error; err != nil {
-				return UserLevelTotals{}, err
-			}
-			refundedCents += partialCents
-		}
-		if refundedCents > 0 {
-			// approved_cents 是「分」，换回元再扣。下限 0：超额退款不可能发生
-			// （退款额受订单实付与钱包余额双重约束），但真出现时宁可定为 0
-			// 也不要给出负的累计充值 —— 负值会让「取最高达标级」选中最低级，
-			// 而「0」至少语义清楚：这用户没有净充值。
-			refunded := util.RoundMoney(float64(refundedCents) / 100)
-			totals.RechargeTotal = util.RoundMoney(totals.RechargeTotal - refunded)
-			if totals.RechargeTotal < 0 {
-				totals.RechargeTotal = 0
-			}
-		}
-	}
-
-	if db.Migrator().HasTable(entity.TableNameBillingRecord) {
-		var consumption float64
-		if err := session.Model(&entity.BillingRecord{}).
-			Where("user_id = ? AND TRIM(type) NOT IN ?", userID, nonConsumptionBillingRecordTypes).
-			Select("COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0)").
-			Scan(&consumption).Error; err != nil {
-			return UserLevelTotals{}, err
-		}
-		totals.ConsumptionTotal = util.RoundMoney(consumption)
-	}
-	return totals, nil
+	p, err := replayEffectiveLedger(db, userID)
+	return p.Totals, err
 }
 
 // CurrentUserLevelIDWithDB 读 users.level_id（0 = 无等级 / 未评估）。
@@ -631,14 +556,15 @@ func ReevaluateAllUserLevelsWithDB(db *gorm.DB, limit int, trigger string) (proc
 
 // UserLevelSummary 是「用户当前等级」的下发结构（个人中心 / 用户列表用）。
 type UserLevelSummary struct {
-	LevelID             int32   `json:"levelId"`
-	Name                string  `json:"name"`
-	Rank                int32   `json:"rank"`
-	DeviceLimit         int32   `json:"deviceLimit"`
-	MinRechargeTotal    float64 `json:"minRechargeTotal"`
-	MinConsumptionTotal float64 `json:"minConsumptionTotal"`
-	RechargeTotal       float64 `json:"rechargeTotal"`
-	ConsumptionTotal    float64 `json:"consumptionTotal"`
+	Ledger              UserLevelTotals `json:"ledger"`
+	LevelID             int32           `json:"levelId"`
+	Name                string          `json:"name"`
+	Rank                int32           `json:"rank"`
+	DeviceLimit         int32           `json:"deviceLimit"`
+	MinRechargeTotal    float64         `json:"minRechargeTotal"`
+	MinConsumptionTotal float64         `json:"minConsumptionTotal"`
+	RechargeTotal       float64         `json:"rechargeTotal"`
+	ConsumptionTotal    float64         `json:"consumptionTotal"`
 }
 
 // ReconcileUserLevelWithDB 在账务事务提交后重评等级。与钱包写入使用同一用户行锁，
@@ -706,6 +632,7 @@ func GetUserLevelSummaryWithDB(db *gorm.DB, userID int32) (UserLevelSummary, err
 		return UserLevelSummary{}, err
 	}
 	summary := UserLevelSummary{
+		Ledger:           totals,
 		LevelID:          levelID,
 		RechargeTotal:    totals.RechargeTotal,
 		ConsumptionTotal: totals.ConsumptionTotal,
