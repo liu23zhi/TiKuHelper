@@ -223,7 +223,7 @@
                 <a-tag v-if="scorerLabel(record)" :color="scorerColor(record)" class="scorer-tag">{{ scorerLabel(record) }}</a-tag>
               </span>
               <span v-else-if="column.key === 'agentConfidence'" :class="{ 'is-low-confidence': isLowConfidence(record) }">
-                {{ formatConfidence(record.agentConfidence) }}
+                {{ formatConfidence(record) }}
                 <a-tag v-if="isLowConfidence(record)" color="orange" class="low-tag">低于门槛</a-tag>
               </span>
               <span v-else-if="column.key === 'matchedRule'">{{ record.matchedRuleId ?? '—' }}</span>
@@ -346,7 +346,7 @@
             <span class="note-cell">{{ decisionRecord.agentRationale || '—' }}</span>
           </a-descriptions-item>
           <a-descriptions-item label="置信度">
-            <span :class="{ 'is-low-confidence': isLowConfidence(decisionRecord) }">{{ formatConfidence(decisionRecord.agentConfidence) }}</span>
+            <span :class="{ 'is-low-confidence': isLowConfidence(decisionRecord) }">{{ formatConfidence(decisionRecord) }}</span>
             <a-tag v-if="isLowConfidence(decisionRecord)" color="orange" class="low-tag">低于门槛</a-tag>
           </a-descriptions-item>
           <a-descriptions-item label="命中规则">{{ decisionRecord.matchedRuleId ?? '—' }}</a-descriptions-item>
@@ -418,6 +418,11 @@ const CLAIM_STATUS = {
   limit_reached: { label: '超出上限', color: 'orange' },
 }
 const REVIEWABLE = ['submitted', 'scraping', 'scored', 'pending_review']
+// 这些状态由评分写入；批准/拒绝等终态也可来自未评分记录，不能作评分证据。
+const SCORE_RESULT_STATUSES = ['scored', 'pending_review', 'below_threshold']
+const scorerKind = record => String(record?.agentScorer || '').trim().toLowerCase()
+const hasRecordedAgentScore = record => ['agent', 'stub'].includes(scorerKind(record))
+  || SCORE_RESULT_STATUSES.includes(String(record?.status || '').trim().toLowerCase())
 
 function readNonnegativeNumber(value) {
   if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null
@@ -613,8 +618,9 @@ export default {
       const amount = readNonnegativeNumber(value)
       return amount === null ? '—' : `¥ ${formatMoneyValue(amount)}`
     }
-    const formatConfidence = value => {
-      const confidence = readNonnegativeNumber(value)
+    const formatConfidence = record => {
+      if (!hasRecordedAgentScore(record)) return '—'
+      const confidence = readNonnegativeNumber(record?.agentConfidence)
       return confidence === null ? '—' : confidence.toFixed(2)
     }
     const formatDateTime = value => {
@@ -633,6 +639,7 @@ export default {
       return '—'
     }
     const buildAgentScore = record => {
+      if (!hasRecordedAgentScore(record)) return '—'
       const stars = readNonnegativeNumber(record?.agentStars)
       const score = readNonnegativeNumber(record?.agentContentScore)
       if (stars === null && score === null) return '—'
@@ -646,7 +653,8 @@ export default {
     // 于是照样点批准。这里的分数是由截图 SHA-256 哈希派生出来的 5 星，
     // 模型从未看过截图，把它当核验结论等于凭空发钱。
     const scorerLabel = record => {
-      const kind = String(record?.agentScorer || '').trim().toLowerCase()
+      if (!hasRecordedAgentScore(record)) return ''
+      const kind = scorerKind(record)
       if (kind === 'agent') return ''
       if (kind === 'stub') return '占位分数 · 非模型产出，不可作为核验依据'
       return record?.agentStars ? '来源未知' : ''
@@ -659,7 +667,7 @@ export default {
     // 「低于门槛」标签用的就是 Ant Design 的 orange（warning 语义），
     // 自造新色值会让同一页出现两个不同的警告色。
     function scorerColor(record) {
-      const kind = String(record?.agentScorer || '').trim().toLowerCase()
+      const kind = scorerKind(record)
       return kind === 'stub' ? 'orange' : 'default'
     }
     function claimStatusLabel(value) {
@@ -674,6 +682,7 @@ export default {
       return REVIEWABLE.includes(String(record?.status || '').trim().toLowerCase())
     }
     function isLowConfidence(record) {
+      if (!hasRecordedAgentScore(record)) return false
       const confidence = readNonnegativeNumber(record?.agentConfidence)
       const threshold = minConfidence.value
       return confidence !== null && threshold !== null && confidence < threshold
