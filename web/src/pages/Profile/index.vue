@@ -32,7 +32,6 @@
             :aria-controls="fieldId('balance-details')" :aria-labelledby="fieldId('balance-label')"
             :aria-describedby="fieldId('balance-value') + ' ' + fieldId('balance-hint')"
             @focus="onBalanceFocus" @blur="closeBalanceDetails" @click="toggleBalanceDetails"
-            @keydown.esc.stop.prevent="closeBalanceDetails"
           >
             <span :id="fieldId('balance-label')" class="summary-label">账户余额合计</span>
             <span :id="fieldId('balance-value')" data-profile-private class="summary-value" aria-live="polite">{{ balanceDisplay.total }}</span>
@@ -401,9 +400,27 @@ export default defineComponent({
     const balanceDetailsOpen = ref(false), balanceDetails = ref(null)
     const balanceDisplay = computed(() => buildProfileBalanceDisplay(currentUser.value,
       loading.value ? 'loading' : profileError.value ? 'failed' : profileReady.value ? 'ready' : 'loading'))
-    const closeBalanceDetails = () => { balanceDetailsOpen.value = false }
+    let balanceEscapeDocument = null
+    const onBalanceEscape = event => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      const root = profileRoot.value
+      const target = event.target
+      if (!root || (target !== root.ownerDocument.body && !root.contains(target))) return
+      // A dialog may render inside Profile. Let it handle its own dismissal.
+      if (target?.closest?.('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]')) return
+      closeBalanceDetails()
+    }
+    const closeBalanceDetails = () => {
+      balanceDetailsOpen.value = false
+      balanceEscapeDocument?.removeEventListener('keydown', onBalanceEscape)
+      balanceEscapeDocument = null
+    }
     const openBalanceDetails = () => {
+      if (balanceDetailsOpen.value) return
       balanceDetailsOpen.value = true
+      // Hover can open the details without bringing focus to the trigger.
+      balanceEscapeDocument = profileRoot.value?.ownerDocument
+      balanceEscapeDocument?.addEventListener('keydown', onBalanceEscape)
       nextTick(() => {
         if (!balanceDetailsOpen.value || !balanceDetails.value) return
         // Keep the in-flow panel inside the visible screen, including mobile
