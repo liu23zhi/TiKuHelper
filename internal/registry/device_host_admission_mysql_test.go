@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +140,74 @@ func testMariaDBHostLastAccountSlot(t *testing.T, firstExplicit, secondExplicit,
 		if err := db.Model(&entity.Log{}).Where("module = ? AND description = ?", "device", "保全历史设备撤销证据").Count(&audit).Error; err != nil || audit != 1 {
 			t.Fatalf("required preserved removal audit missing: %d %v", audit, err)
 		}
+	}
+}
+
+func TestMariaDBDeviceHostAdmissionRequiresExactStoredIdentity(t *testing.T) {
+	db := mysqlTestFreshDB(t)
+	mustAutoMigrate(t, db, &entity.SystemSetting{}, &entity.User{}, &entity.UserLevel{}, &entity.Log{}, &entity.BlacklistEntry{}, &entity.UserBan{}, &entity.AccessToken{})
+	for _, sql := range []string{
+		"ALTER TABLE users ADD COLUMN level_id INT NOT NULL DEFAULT 0",
+		"ALTER TABLE users ADD COLUMN device_limit_override INT NOT NULL DEFAULT -1",
+	} {
+		if err := db.Exec(sql).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ensureAccountDeviceBindingsSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	owner := entity.User{Username: "exact-host-fixture", Status: "enabled"}
+	if err := db.Create(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	token := entity.AccessToken{UserID: owner.ID, Name: "fixture", Status: "enabled", TokenHash: "test-exact-key"}
+	if err := db.Create(&token).Error; err != nil {
+		t.Fatal(err)
+	}
+	var collation string
+	if err := db.Raw("SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='account_device_bindings' AND COLUMN_NAME='device_id'").Scan(&collation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(collation, "_ci") {
+		t.Fatalf("fixture must reproduce a case-insensitive collation, got %s", collation)
+	}
+	t.Logf("device_id collation: %s", collation)
+	auth := service.AccessTokenAuthContext{User: owner, AccessToken: token}
+	const original, alias = "exe:Review-A", "exe:Review-a"
+	echo, decision, err := service.AdmitDeviceHost(db, auth, original, "fixture-original", "192.0.2.1")
+	if err != nil || !decision.Allowed || echo != original {
+		t.Fatalf("actual initial binding: %q %+v %v", echo, decision, err)
+	}
+	if err := service.ReportDeviceSessionCount(db, owner.ID, original, 3, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var before, after entity.AccountDeviceBinding
+	if err := db.Where("user_id = ? AND BINARY device_id = BINARY ?", owner.ID, original).Take(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, decision, err = service.AdmitDeviceHost(db, auth, alias, "fixture-alias", "192.0.2.2")
+	if err := db.First(&after, before.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var aliasMatches, locks int64
+	if err := db.Model(&entity.AccountDeviceBinding{}).Where("user_id = ? AND BINARY device_id = BINARY ?", owner.ID, alias).Count(&aliasMatches).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&entity.DeviceLifecycleLock{}).Count(&locks).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || decision.Allowed || decision.Reason != service.DevicePoolReasonDeviceIDConflict ||
+		aliasMatches != 0 || locks != 1 || !reflect.DeepEqual(before, after) {
+		t.Fatalf("case-alias must 409 without modifying existing row: allowed=%t reason=%q exact_alias=%d locks=%d unchanged=%t err=%v",
+			decision.Allowed, decision.Reason, aliasMatches, locks, reflect.DeepEqual(before, after), err)
+	}
+	// Exact idempotency still permits reusing its own legitimate key.
+	echo, decision, err = service.AdmitDeviceHost(db, auth, original, "fixture-other-start", "")
+	if err != nil || !decision.Allowed || echo != original {
+		t.Fatalf("exact retry: %q %+v %v", echo, decision, err)
+	}
+	if err := db.First(&after, before.ID).Error; err != nil || after.SessionCount != 3 {
+		t.Fatalf("exact retry lost its heartbeat: %d %v", after.SessionCount, err)
 	}
 }

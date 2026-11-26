@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -77,8 +78,14 @@ func hostAdmissionChild(t *testing.T) bool {
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "HOST_ADMISSION_FIXTURE_CHILD=1", "SQL_DSN=", "JWT_SECRET=HostAdmissionContractSynthetic246!ABC",
 		"TIKU_ADMIN_PASSWORD=HostAdmissionFixture246!", "TIKU_APP_MODE=production", "EXTENSION_UPDATE_ENABLED=false", "EXTENSION_EDGE_ID=", "EXTENSION_CHROME_ID=")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("isolated real host route: %v\n%s", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "commit_failed_http=") {
+			t.Log(strings.TrimSpace(line))
+		}
 	}
 	return false
 }
@@ -400,5 +407,129 @@ func TestHostAdmissionRebindDoesNotSucceedOrEraseHistoryWhenWriteFails(t *testin
 	if !failedWrite || out.Code != http.StatusServiceUnavailable || after.RevokedAt == nil || !after.RevokedAt.Equal(stamp) ||
 		after.RevokedReason != "idle_timeout" || after.SessionCount != 4 || audit != 0 {
 		t.Fatalf("write error must roll back registration, legacy audit and heartbeat: fired=%v response=%d row=%+v audit=%d", failedWrite, out.Code, after, audit)
+	}
+}
+
+func TestHostAdmissionOrdinaryCredentialForms(t *testing.T) {
+	if !hostAdmissionChild(t) {
+		return
+	}
+	r, db := newHostAdmissionRouter(t)
+	const id = int32(1591)
+	const key = "ordinary-format-fixture"
+	seedHostAccount(t, db, id, key, 4)
+	var user entity.User
+	if e := db.First(&user, id).Error; e != nil {
+		t.Fatal(e)
+	}
+	jwt, e := service.IssueUserLoginJWTWithDB(db, &user, "192.0.2.19", "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	path := "/api/user/device-admission"
+	for i, form := range []string{"Bearer " + key, "Basic " + key, key} {
+		out := hostFixtureRequest(r, "POST", path, form, "", fmt.Sprintf("{\"deviceId\":\"fixture-%d\",\"clientInstance\":\"local\"}", i))
+		if out.Code != 200 {
+			t.Fatalf("supported format[%d] status=%d", i, out.Code)
+		}
+	}
+	probes := []struct {
+		kind, auth, script, cookie string
+		want                       int
+	}{{"jwt", "Bearer " + jwt, "", "", 401}, {"cookie", "", "", jwt, 401}, {"script header", "Basic " + key, "synthetic-only", "", 403}}
+	for _, p := range probes {
+		req := httptest.NewRequest("POST", path, strings.NewReader("{\"deviceId\":\"fixture-unused\",\"clientInstance\":\"local\"}"))
+		req.Header.Set("Authorization", p.auth)
+		if p.cookie != "" {
+			req.AddCookie(&http.Cookie{Name: "tiku_token", Value: p.cookie})
+		}
+		if p.script != "" {
+			req.Header.Set("X-Script-Token", p.script)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != p.want {
+			t.Fatalf("%s status=%d", p.kind, w.Code)
+		}
+	}
+	var rows []entity.AccountDeviceBinding
+	if e := db.Where("user_id=?", id).Find(&rows).Error; e != nil || len(rows) != 3 {
+		t.Fatalf("unexpected registered count=%d err=%v", len(rows), e)
+	}
+	h := sha256.Sum256([]byte(key))
+	var tok entity.AccessToken
+	if e := db.Where("token_hash=?", hex.EncodeToString(h[:])).Take(&tok).Error; e != nil {
+		t.Fatal(e)
+	}
+	for _, b := range rows {
+		if b.UserID != id || b.TokenID != tok.ID || b.OwnerKind != "token" || b.SessionCount != 0 {
+			t.Fatal("bad trusted attribution or session count")
+		}
+	}
+	var c int64
+	for _, m := range []any{&entity.ScriptRunSession{}, &entity.BillingRecord{}} {
+		if e := db.Model(m).Count(&c).Error; e != nil || c != 0 {
+			t.Fatal("unrelated rows")
+		}
+	}
+	data, _ := json.Marshal(map[string]any{"accepted_forms": 3, "committed_bindings": len(rows), "jwt": 401, "cookie": 401, "script_header": 403})
+	t.Log(string(data))
+}
+
+func TestHostAdmissionRealCommitFailureLeavesNoUncommittedStateAndPoolRecovers(t *testing.T) {
+	if !hostAdmissionChild(t) {
+		return
+	}
+	router, db := newHostAdmissionRouter(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make reuse of the physical connection deterministic. This is a
+	// fixture setting only, not an application pool change.
+	pool.SetMaxOpenConns(1)
+	seedHostAccount(t, db, 1592, "fixture-commit", 1)
+	for _, q := range []string{
+		"PRAGMA foreign_keys=ON",
+		"CREATE TABLE review_parent(id INTEGER PRIMARY KEY)",
+		"CREATE TABLE review_deferred(id INTEGER, FOREIGN KEY(id) REFERENCES review_parent(id) DEFERRABLE INITIALLY DEFERRED)",
+		"CREATE TRIGGER review_after_valid_insert AFTER INSERT ON account_device_bindings WHEN NEW.device_id='fixture-commit-device' BEGIN INSERT INTO review_deferred(id) VALUES (919191); END",
+	} {
+		if err := db.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const auth = "Bearer fixture-commit"
+	const path = "/api/user/device-admission"
+	failed := hostFixtureRequest(router, http.MethodPost, path, auth, "", `{"deviceId":"fixture-commit-device","clientInstance":"test-owned"}`)
+	var poolCount int64
+	if err := db.Model(&entity.AccountDeviceBinding{}).Where("user_id=1592").Count(&poolCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	var database struct{ File string }
+	if err := db.Raw("PRAGMA database_list").Scan(&database).Error; err != nil || database.File == "" {
+		t.Fatal("missing SQLite fixture path")
+	}
+	independent, err := sql.Open("sqlite", database.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer independent.Close()
+	var before, after, deferredCount int64
+	if err := independent.QueryRow("SELECT COUNT(*) FROM account_device_bindings WHERE user_id=1592").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	next := hostFixtureRequest(router, http.MethodPost, path, auth, "", `{"deviceId":"fixture-healthy","clientInstance":"test-owned"}`)
+	if err := independent.QueryRow("SELECT COUNT(*) FROM account_device_bindings WHERE user_id=1592 AND device_id='fixture-healthy'").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if err := independent.QueryRow("SELECT COUNT(*) FROM review_deferred").Scan(&deferredCount); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("commit_failed_http=%d former_pool_rows=%d independent_before=%d healthy_retry_http=%d healthy_committed=%d deferred=%d",
+		failed.Code, poolCount, before, next.Code, after, deferredCount)
+	if failed.Code != 503 || poolCount != 0 || before != 0 || next.Code != 200 || after != 1 || deferredCount != 0 {
+		t.Fatal("failed commit must leave no binding or deferred row and the next valid request must succeed")
 	}
 }

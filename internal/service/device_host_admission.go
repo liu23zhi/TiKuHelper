@@ -38,7 +38,11 @@ func withDeviceRegistrationWrite(db *gorm.DB, userID int32, deviceID string, str
 		return ErrDeviceHostUnavailable
 	}
 
-	return withDeviceLifecycleWrite(db, deviceID, func(tx *gorm.DB) error {
+	var transact deviceTransaction
+	if strict && db.Dialector.Name() == "sqlite" {
+		transact = withSQLiteHostTransaction
+	}
+	return withDeviceLifecycleWriteUsing(db, deviceID, transact, func(tx *gorm.DB) error {
 		if isMySQL && hasUserTable {
 			var owner struct{ ID int32 }
 			err := devicePoolSession(tx).Table(entity.TableNameUser).
@@ -162,6 +166,19 @@ func inspectHostAdmission(db *gorm.DB, userID int32, deviceID, instance string) 
 		return DevicePoolDecision{Reason: DevicePoolReasonUserBlocked, Used: DevicePoolUsedUnknown, Message: "你已拉黑该设备"}, nil
 	}
 
+	// A MariaDB collation-equivalent value can hit the same-account unique
+	// index without being the requested device identifier. Reject that collision
+	// while the account lock is still held, before touching either binding.
+	var stored struct{ DeviceID string }
+	err = devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
+		Select("device_id").Where("user_id = ? AND device_id = ?", userID, deviceID).Take(&stored).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return DevicePoolDecision{}, err
+	}
+	if err == nil && stored.DeviceID != deviceID {
+		return DevicePoolDecision{Reason: DevicePoolReasonDeviceIDConflict, Used: DevicePoolUsedUnknown, Message: DeviceConflictMessage}, nil
+	}
+
 	_, bound, err := activeDeviceBindingID(db, userID, deviceID)
 	if err != nil {
 		return DevicePoolDecision{}, err
@@ -207,11 +224,15 @@ func persistAdmittedHost(db *gorm.DB, userID int32, deviceID, instance, clientIP
 	}); err != nil {
 		return err
 	}
-	_, bound, err := activeDeviceBindingID(db, userID, deviceID)
-	if err != nil {
+	// Explicit success can only name an effective binding with the exact
+	// normalized identifier. Do not let a broad storage collation prove it.
+	query := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
+		Select("device_id").Where("user_id = ? AND device_id = ?", userID, deviceID)
+	var stored struct{ DeviceID string }
+	if err := ActiveOrdinaryDeviceBindings(db, query).Take(&stored).Error; err != nil {
 		return err
 	}
-	if !bound {
+	if stored.DeviceID != deviceID {
 		return ErrDeviceHostUnavailable
 	}
 	return nil
