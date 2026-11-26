@@ -1,6 +1,8 @@
 package service
 
 import (
+	"time"
+
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 )
@@ -14,11 +16,17 @@ type PortraitInsight struct {
 
 func fillPortraitInventory(db *gorm.DB, scope PortraitScope, portrait *UserPortrait) error {
 	portrait.Insights = make([]PortraitInsight, 0, 5)
+	if deviceBindingSchemaReady(db) {
+		insight, err := buildPortraitDeviceInsight(db, scope.UserID)
+		if err != nil {
+			return err
+		}
+		portrait.Insights = append(portrait.Insights, insight)
+	}
 	for _, spec := range []struct {
 		key, title, table, column string
 		labels                    map[string]string
 	}{
-		{"devices", "设备绑定状态", entity.TableNameAccountDeviceBinding, "CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END", map[string]string{"active": "使用中", "revoked": "已移除"}},
 		{"tokens", "访问令牌状态", entity.TableNameAccessToken, "status", map[string]string{"enabled": "启用", "disabled": "停用"}},
 		{"recharges", "充值订单状态", entity.TableNameRechargeOrder, "status", map[string]string{"paid": "已支付", "pending": "未支付", "closed": "已关闭", "refunded": "已退款"}},
 		{"refunds", "退款办理状态", "ticket_refunds", "status", map[string]string{"pending_review": "待审核", "frozen": "已审核", "processing": "处理中", "succeeded": "已退款", "rejected": "已驳回", "failed": "失败", "partially_succeeded": "部分退款成功"}},
@@ -53,4 +61,25 @@ func fillPortraitInventory(db *gorm.DB, scope PortraitScope, portrait *UserPortr
 		portrait.Insights = append(portrait.Insights, insight)
 	}
 	return nil
+}
+
+func buildPortraitDeviceInsight(db *gorm.DB, userID int32) (PortraitInsight, error) {
+	query := VisibleDeviceHistory(db, db.Session(&gorm.Session{NewDB: true}).Table(entity.TableNameAccountDeviceBinding))
+	if userID > 0 {
+		query = query.Where("user_id = ?", userID)
+	}
+	statusExpr, statusArgs := adminDeviceStatusSQL(db, deviceRevocationColumnsAvailable(db), time.Now())
+	rows, err := countAdminDeviceStatuses(query.Order("count DESC, device_status ASC"), statusExpr, statusArgs)
+	if err != nil {
+		return PortraitInsight{}, err
+	}
+	insight := PortraitInsight{Key: "devices", Title: "设备绑定状态", Items: make([]PortraitSourceSlice, 0, len(rows))}
+	labels := map[string]string{
+		AdminDeviceStatusActive: "使用中", AdminDeviceStatusRevoked: "已移除", AdminDeviceStatusBanned: "已拉黑",
+	}
+	for _, row := range rows {
+		insight.Total += row.Count
+		insight.Items = append(insight.Items, PortraitSourceSlice{Source: row.Status, Label: labels[row.Status], Count: row.Count})
+	}
+	return insight, nil
 }

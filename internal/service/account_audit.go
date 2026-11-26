@@ -36,6 +36,7 @@ func accountAuditFields(fields map[string]any) map[string]any {
 		// 额度周期重置（P14）：只有 epoch / baseline / 历史累计三个数字，
 		// 没有任何凭据字段，可以进审计快照。
 		"epoch": true, "baselineAmount": true, "totalAmountUsed": true, "quotaEpoch": true,
+		"revokedAt": true,
 	}
 	result := make(map[string]any)
 	for key, value := range fields {

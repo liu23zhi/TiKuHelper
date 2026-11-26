@@ -47,7 +47,7 @@ func newDevicePoolTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 	if err := db.AutoMigrate(&entity.User{}, &entity.UserLevel{}, &entity.AccountDeviceBinding{},
-		&entity.UserDeviceBlock{}, &entity.BlacklistEntry{}, &entity.SystemSetting{}); err != nil {
+		&entity.UserDeviceBlock{}, &entity.BlacklistEntry{}, &entity.SystemSetting{}, &entity.Log{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	// users.level_id 走显式 ALTER（生成文件里没有该字段，见 registry 的注释）。

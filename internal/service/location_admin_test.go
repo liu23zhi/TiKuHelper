@@ -542,3 +542,64 @@ func TestDeleteLocationCacheBatchSupportsExplicitAndFilteredAllSelection(t *test
 		t.Fatalf("expected remaining row to be deleted by filtered all selection, got deleted=%d err=%v", deleted, err)
 	}
 }
+
+func TestVisibleDeviceHistoryUsesAuthorizedLocationResolverWithoutRefreshingOldCache(t *testing.T) {
+	// Public-looking fixture literals go only to the substituted loopback service.
+	const publicFixture = "11.22.33.44"
+	const privateFixture = "192.168.40.18"
+	var upstreamCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		if r.URL.Query().Get("ip") != publicFixture {
+			t.Errorf("unexpected address passed to substituted upstream")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ip":"11.22.33.44","region":"合成归属地","isp":"合成网络"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "fixture-uapi-key")
+	db := newLocationTestDB(t)
+	if err := db.AutoMigrate(&entity.AccountDeviceBinding{}); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-time.Hour)
+	binding := entity.AccountDeviceBinding{UserID: 37, DeviceID: "fixture-device", FirstIP: privateFixture, LastIP: publicFixture, RevokedAt: &when}
+	if err := db.Create(&binding).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := entity.User{ID: binding.UserID}
+	input := []string{privateFixture, publicFixture}
+	if _, err := ResolveOwnLocationIPsWithDB(db, entity.User{ID: 38}, input); err != ErrLocationForbidden || upstreamCalls.Load() != 0 {
+		t.Fatalf("cross-account location request was not rejected before lookup: %v", err)
+	}
+	ips, err := ResolveOwnLocationIPsWithDB(db, owner, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := LocationQueryOptions{UAPIKey: "fixture-uapi-key"}
+	locations, err := LookupIPLocationsDetailedWithDB(db, ips, options)
+	if err != nil || locations[privateFixture].Address != "私有地址" || locations[publicFixture].Address != "合成归属地 合成网络" || upstreamCalls.Load() != 1 {
+		t.Fatalf("missing address lookup must use existing upstream and synthesize private IP locally: %+v %v calls=%d", locations, err, upstreamCalls.Load())
+	}
+	if err := db.Model(&entity.LocationCache{}).Where("lookup_key = ?", publicFixture).
+		Updates(map[string]any{"fetched_at": time.Now().AddDate(-10, 0, 0), "address": "已保存的历史归属地", "raw_json": "{}"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	locations, err = LookupIPLocationsDetailedWithDB(db, ips, options)
+	if err != nil || locations[publicFixture].Address != "已保存的历史归属地" || upstreamCalls.Load() != 1 {
+		t.Fatalf("old stored location must follow existing non-expiring read policy: %+v %v calls=%d", locations, err, upstreamCalls.Load())
+	}
+	if _, err := ManualLookupLocationCacheWithDB(db, entity.LocationKindIP, publicFixture, options); err != nil {
+		t.Fatal(err)
+	}
+	locations, err = LookupIPLocationsDetailedWithDB(db, ips, options)
+	if err != nil || locations[publicFixture].Address != "合成归属地 合成网络" || upstreamCalls.Load() != 2 {
+		t.Fatalf("explicit authorized refresh must replace the saved value: %+v %v calls=%d", locations, err, upstreamCalls.Load())
+	}
+	if err := db.Model(&binding).UpdateColumn("history_hidden_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveOwnLocationIPsWithDB(db, owner, input); err != ErrLocationForbidden || upstreamCalls.Load() != 2 {
+		t.Fatalf("removed display must not grant device-only lookups: %v calls=%d", err, upstreamCalls.Load())
+	}
+}

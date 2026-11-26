@@ -15,7 +15,15 @@ axios.defaults.adapter = async config => {
   let data = {}
   if (config.url.endsWith('/script-activation-codes')) data = { items: [{ id: 1, codeMask: '****e35a', status: 'unused' }], total: 1 }
   else if (config.url.endsWith('/script-activation-codes/1')) data = { code: { id: 1, code: 'TKA-' + 'a'.repeat(32), status: 'unused' }, usages: [] }
-  else if (config.url === '/api/admin/devices') data = { data: [{ id: 1, userId: 3, deviceId: 'fixture-device', status: 'revoked', revokedAt: '2026-11-21T00:00:00Z' }], total: 1 }
+  else if (config.url === '/api/admin/devices') data = {
+    data: [
+      { id: 1, userId: 3, deviceId: 'fixture-device', status: 'revoked', revokedAt: '2026-11-21T00:00:00Z',
+        deletable: true, lastIp: '192.168.31.10', lastSeenAt: '2026-11-21T01:02:03Z' },
+      { id: 2, userId: 3, deviceId: 'banned-fixture', status: 'banned', accountBlocked: true, revokedAt: '2026-11-20T00:00:00Z' },
+    ],
+    total: 2, active: 0, removed: 1, blocked: 1,
+  }
+  else if (config.url.endsWith('/uapi/ipinfo')) data = { data: { '192.168.31.10': { address: '私有地址' } } }
   else if (config.url.endsWith('/portrait')) data = { scope: 'user', targetUserId: 3, totals: {}, base: { userId: 3, username: 'fixture-user' }, insights: [{ key: 'devices', title: '设备绑定状态', total: 0, items: [] }] }
   return { config, data, status: 200, headers: {} }
 }
@@ -47,7 +55,24 @@ test('embedded device management keeps target scope and all administrator action
   const wrapper = await open(Devices, { userId: 3, embedded: true }, 'user-list')
   const query = calls.find(c => c.url === '/api/admin/devices')
   assert.equal(query.params.userId, '3')
-  for (const action of ['封禁', '删除记录']) assert.ok(wrapper.findAll('button').some(b => b.text().replace(/\s/g, '') === action), action)
+  const removed = wrapper.findAll('tbody tr').find(row => row.text().includes('fixture-device'))
+  const blocked = wrapper.findAll('tbody tr').find(row => row.text().includes('banned-fixture'))
+  assert.match(wrapper.text(), /使用中 0 · 已移除 1 · 已拉黑 1/)
+  assert.match(removed.text(), /已移除/)
+  assert.match(removed.text(), /未记录/)
+  assert.match(removed.text(), /192.168.31.10\s*（私有地址）/)
+  assert.match(removed.text(), /2026-11-21 09:02:03/)
+  assert.match(blocked.text(), /已拉黑/)
+  const action = (row, name) => row.findAll('button').find(button => button.text().replace(/\s/g, '') === name)
+  assert.ok(action(removed, '删除记录'))
+  assert.equal(action(blocked, '删除记录'), undefined)
+  assert.ok(action(removed, '全局拉黑'))
+  await action(removed, '全局拉黑').trigger('click'); await settle()
+  const modal = document.querySelector('.ant-modal')
+  assert.match(modal.textContent, /影响使用这台设备的所有账号/)
+  assert.match(modal.textContent, /2026-11-21 09:02:03/)
+  assert.equal(modal.querySelector('input').value, 'fixture-device')
+  assert.deepEqual(calls.find(c => c.url.endsWith('/uapi/ipinfo')).params, { ips: '192.168.31.10' })
   assert.doesNotMatch(wrapper.text(), /数据导入导出/)
 })
 test('the shared portrait view loads the requested user and displays the same inventory charts', async () => {

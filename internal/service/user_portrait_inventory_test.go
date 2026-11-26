@@ -50,3 +50,52 @@ func TestPortraitInventoryUsesTheSameScopeForLiveAndArchivedUsers(t *testing.T) 
 		t.Fatal("archived profile lost its history")
 	}
 }
+
+func TestDeviceHistoryPortraitMatchesVisibleAdminRows(t *testing.T) {
+	db := newDevicePoolTestDB(t)
+	const uid int32 = 9863
+	actor := DeviceHistoryActor{UserID: uid}
+	hidden := seedDeviceBinding(t, db, uid, "extension:fixture-hide", true)
+	seedDeviceBinding(t, db, uid, "extension:fixture-active", false)
+	seedDeviceBinding(t, db, uid, "extension:fixture-removed", true)
+	personal := seedDeviceBinding(t, db, uid, "extension:fixture-personal-ban", false)
+	global := seedDeviceBinding(t, db, uid, "extension:fixture-global-ban", false)
+	seedDeviceBinding(t, db, uid+1, "extension:fixture-unrelated", false)
+	if _, err := ClearDeviceHistory(db, hidden.ID, uid, actor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BlockAccountDevice(db, personal.ID, actor, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BanDevice(db, DeviceBanRequest{DeviceID: global.DeviceID, Reason: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{UserID: uid}, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var portrait UserPortrait
+	if err := fillPortraitInventory(db, PortraitScope{UserID: uid}, &portrait); err != nil {
+		t.Fatal(err)
+	}
+	for _, insight := range portrait.Insights {
+		if insight.Key != "devices" {
+			continue
+		}
+		var counts = map[string]int64{}
+		for _, item := range insight.Items {
+			counts[item.Label] = item.Count
+		}
+		if list.Total != 4 || list.Active != 1 || list.Removed != 1 || list.Blocked != 2 ||
+			insight.Total != list.Total || counts["使用中"] != list.Active ||
+			counts["已移除"] != list.Removed || counts["已拉黑"] != list.Blocked {
+			t.Fatalf("device page / portrait disagree: list=%d/%d/%d/%d portrait=%d/%+v", list.Total, list.Active, list.Removed, list.Blocked, insight.Total, counts)
+		}
+		var retained entity.AccountDeviceBinding
+		if err := db.First(&retained, hidden.ID).Error; err != nil || retained.HistoryHiddenAt == nil || retained.RevokedAt == nil {
+			t.Fatalf("underlying evidence was lost: %+v %v", retained, err)
+		}
+		return
+	}
+	t.Fatal("device insights missing")
+}
