@@ -269,29 +269,30 @@
                   <div class="level-metric-label">当前等级</div>
                   <!-- 无等级时给明确文案（helper 保证），不留空白。 -->
                   <div data-user-usage-current-level class="level-metric-value">{{ currentLevelText }}</div>
-                  <div class="level-metric-hint">等级由累计充值与累计消费共同决定。</div>
+                  <div class="level-metric-hint">等级由有效充值与有效消费共同决定。</div>
                 </div>
               </a-col>
               <a-col :xs="24" :md="12" :lg="9">
                 <div class="level-metric">
-                  <div class="level-metric-label">{{ levelRechargeMetric.label }}</div>
+                  <div class="level-metric-label">当前有效充值</div>
                   <div data-user-usage-recharge-total class="level-metric-value">
                     ¥ {{ formatLevelMetric(levelRechargeMetric.value) }}
                   </div>
-                  <div class="level-metric-hint">已成功支付的充值总额，扣除已成功退款金额。</div>
+                  <div class="level-metric-hint">历史累计到账本金：¥ {{ formatLevelMetric(userLevelSummary?.ledger?.historicalRecharge) }}</div>
                 </div>
               </a-col>
               <a-col :xs="24" :md="12" :lg="9">
                 <div class="level-metric">
-                  <div class="level-metric-label">{{ levelConsumptionMetric.label }}</div>
+                  <div class="level-metric-label">当前有效消费</div>
                   <div data-user-usage-consumption-total class="level-metric-value">
                     ¥ {{ formatLevelMetric(levelConsumptionMetric.value) }}
                   </div>
-                  <div class="level-metric-hint">实际消费支出合计，不含余额调整、赠金撤回等。</div>
+                  <div class="level-metric-hint">历史累计支出：¥ {{ formatLevelMetric(userLevelSummary?.ledger?.historicalConsumption) }}</div>
                 </div>
               </a-col>
             </a-row>
 
+            <p v-if="userLevelSummary?.ledger?.issues" role="status">部分历史记录缺少完整凭据，所列有效额仅含可确认部分。</p>
             <!-- 下一档门槛与差额。
                  没有档位数据时 nextLevelRequirement.available === false，
                  这里如实显示原因，**不编造门槛数字**（63 号 U-03 红线）。 -->
@@ -896,7 +897,7 @@ export default defineComponent({
       pageRefreshing,
       // 等级提升 Tab（T-26）
       usageTabs, activeUsageTab, levelLoading, levelLoaded, levelLoadError,
-      currentLevelText, levelRechargeMetric, levelConsumptionMetric, nextLevelRequirement, formatLevelMetric,
+      userLevelSummary, currentLevelText, levelRechargeMetric, levelConsumptionMetric, nextLevelRequirement, formatLevelMetric,
       // 等级一览表（138 §1.2 / B1-1）：全部启用等级 + 每行两个差额。
       levelOverviewRows, levelOverviewColumns, formatLevelOverviewThreshold, formatLevelOverviewStatus,
       levelOverviewHasLevels: computed(() => levelOverview.value.hasLevels),
