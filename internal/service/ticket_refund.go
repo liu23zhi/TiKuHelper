@@ -1061,6 +1061,12 @@ func changeTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, mutate f
 			}
 			return err
 		}
+		// A successful line can affect entitlement while its siblings are still
+		// pending, before finalization touches the wallet. Serialize these writes
+		// with the same owner row as credits, debits, corrections and rebuilds.
+		if err := lockEffectiveOwner(tx, row.UserID); err != nil {
+			return err
+		}
 		return mutate(tx, &row)
 	})
 	if err != nil {
@@ -1071,8 +1077,8 @@ func changeTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, mutate f
 	// 会把账务事务的失败面扩大（壳工单写失败会让打款回滚，那是最不该发生的事）。
 	// 因此这里尽力而为，失败只记日志，下一次迁移或回填会修正。
 	syncTicketRefundShellStatusInTx(db, row)
-	if row.Status == TicketRefundStatusSucceeded || row.Status == TicketRefundStatusPartial {
-		// 只有实际退款成功才减少累计充值；评级失败不能撤销已完成的打款。
+	if row.Status == TicketRefundStatusSucceeded || row.Status == TicketRefundStatusPartial || row.Status == TicketRefundStatusProcessing || row.Status == TicketRefundStatusUnknown {
+		// Allocated lines may already have settled while a sibling is processing or unknown. Replaying unchanged facts is idempotent.
 		if _, levelErr := ReconcileUserLevelWithDB(db, row.UserID, entity.UserLevelTriggerRefund); levelErr != nil {
 			logger.SysWarn(fmt.Sprintf("退款后等级重评失败（不影响退款）userId=%d: %v", row.UserID, levelErr))
 		}

@@ -196,6 +196,9 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/admin/user-levels/reevaluate", controller.Auth, middleware.RequireAdmin, controller.UserLevelReevaluate)
 	apiRouter.PUT("/admin/user-levels/:id", controller.Auth, middleware.RequireAdmin, controller.UserLevelUpdate)
 	apiRouter.DELETE("/admin/user-levels/:id", controller.Auth, middleware.RequireAdmin, controller.UserLevelDelete)
+	apiRouter.POST("/admin/effective-ledger/rebuild", controller.Auth, middleware.RequireAdmin, controller.EffectiveLedgerRebuild)
+	apiRouter.GET("/admin/users/:id/effective-ledger", controller.Auth, middleware.RequireAdmin, controller.EffectiveLedger)
+	apiRouter.POST("/admin/users/:id/effective-ledger", controller.Auth, middleware.RequireAdmin, controller.EffectiveLedger)
 	apiRouter.GET("/user/level", controller.Auth, controller.UserLevelCurrent)
 
 	// 充值阶梯赠送的可配置档位（Q75-2，94-*.md §2 C2）。

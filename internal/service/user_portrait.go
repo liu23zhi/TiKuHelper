@@ -141,20 +141,21 @@ type PortraitTotals struct {
 
 // PortraitBase 是单用户画像的「基础」栏（整体画像下为 nil）。
 type PortraitBase struct {
-	UserID          int32      `json:"userId"`
-	Username        string     `json:"username"`
-	Nickname        string     `json:"nickname"`
-	Role            string     `json:"role"`
-	Status          string     `json:"status"`
-	Balance         float64    `json:"balance"`
-	GiftBalance     float64    `json:"giftBalance"`
-	RegisterSource  string     `json:"registerSource"`
-	RegisterIP      string     `json:"registerIp"`
-	RegisterRegion  string     `json:"registerRegion"`
-	LastLoginIP     string     `json:"lastLoginIp"`
-	LastLoginRegion string     `json:"lastLoginRegion"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	LastLoginAt     *time.Time `json:"lastLoginAt"`
+	Ledger          UserLevelTotals `json:"ledger"`
+	UserID          int32           `json:"userId"`
+	Username        string          `json:"username"`
+	Nickname        string          `json:"nickname"`
+	Role            string          `json:"role"`
+	Status          string          `json:"status"`
+	Balance         float64         `json:"balance"`
+	GiftBalance     float64         `json:"giftBalance"`
+	RegisterSource  string          `json:"registerSource"`
+	RegisterIP      string          `json:"registerIp"`
+	RegisterRegion  string          `json:"registerRegion"`
+	LastLoginIP     string          `json:"lastLoginIp"`
+	LastLoginRegion string          `json:"lastLoginRegion"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	LastLoginAt     *time.Time      `json:"lastLoginAt"`
 }
 
 // UserPortrait 是两个接口（整体 / 单用户）共用的响应体。
@@ -379,6 +380,10 @@ func BuildUserPortraitWithDB(db *gorm.DB, scope PortraitScope) (UserPortrait, er
 			return UserPortrait{}, err
 		}
 		portrait.Base = buildPortraitBase(db, user)
+		portrait.Base.Ledger, err = ComputeUserLevelTotalsWithDB(db, user.ID)
+		if err != nil {
+			return UserPortrait{}, err
+		}
 	}
 
 	if portrait.Scope == PortraitScopeOverall {

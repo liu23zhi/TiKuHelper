@@ -21,6 +21,7 @@ const LogList = () => import(/* webpackChunkName: "route-log-list" */ '../pages/
 const ExtensionLogs = () => import(/* webpackChunkName: "route-extension-logs" */ '../pages/ExtensionLogs/index.vue')
 const SearchAccountConfig = () => import(/* webpackChunkName: "route-search-account-config" */ '../pages/SearchAccountConfig/index.vue')
 const AISearchConfig = () => import(/* webpackChunkName: "route-a-i-search-config" */ '../pages/AISearchConfig/index.vue')
+const AgreementAdmin = () => import(/* webpackChunkName: "route-agreement-admin" */ '../pages/AgreementAdmin/index.vue')
 const SystemSettings = () => import(/* webpackChunkName: "route-system-settings" */ '../pages/SystemSettings/index.vue')
 const ReferralInvites = () => import('../pages/ReferralInvites/index.vue')
 const AccessTokenManagement = () => import(/* webpackChunkName: "route-access-token-management" */ '../pages/AccessTokenManagement/index.vue')
@@ -262,6 +263,11 @@ const routes = [
         component: ExtensionUpdates,
       },
       {
+        path: 'agreement-admin',
+        name: 'agreement-admin',
+        component: AgreementAdmin,
+      },
+      {
         path: 'system-settings',
         name: 'system-settings',
         component: SystemSettings,
@@ -450,6 +456,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'ai-search-config',
   'ocr-cache',
   'user-exam-tool',
+  'agreement-admin',
   'system-settings',
   'extension-updates',
   'location-cache',

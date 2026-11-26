@@ -14,7 +14,7 @@ import (
 
 func seedControllerUserLevels(t *testing.T, db *gorm.DB, userID int32, minRecharge, minConsumption float64) (entity.UserLevel, entity.UserLevel) {
 	t.Helper()
-	if err := db.AutoMigrate(&entity.UserLevel{}, &entity.UserLevelHistory{}); err != nil {
+	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.BillingRecord{}, &entity.UserLevel{}, &entity.UserLevelHistory{}); err != nil {
 		t.Fatal(err)
 	}
 	if !db.Migrator().HasColumn(entity.TableNameUser, "level_id") {
@@ -88,7 +88,14 @@ func TestUserLevelCurrentRepairsStaleSummaryAndReportsPersistenceFailures(t *tes
 			if err := db.Create(&entity.RechargeOrder{UserID: owner.ID, OrderNo: "stale-level-296.5", PaymentProvider: "synthetic", Status: "paid", Amount: 296.5}).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "normal_search", Amount: 15.158586}).Error; err != nil {
+			var order entity.RechargeOrder
+			if err := db.Where("user_id = ?", owner.ID).Take(&order).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "recharge", Amount: order.Amount, RequestID: order.OrderNo, RelatedOrderID: order.ID}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&entity.BillingRecord{UserID: owner.ID, Type: "normal_search", Amount: 15.158586, BalanceBefore: 15.158586, BalanceAfter: 0}).Error; err != nil {
 				t.Fatal(err)
 			}
 			expectedStatus := http.StatusOK

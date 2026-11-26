@@ -45,6 +45,21 @@ func newUserLevelTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// Match the immutable credit written by a successful callback; a status alone is not a receipt.
+func seedLevelCredit(t *testing.T, db *gorm.DB, o entity.RechargeOrder) {
+	t.Helper()
+	if err := db.Create(&entity.BillingRecord{UserID: o.UserID, Type: "recharge", Amount: o.Amount, RequestID: o.OrderNo, RelatedOrderID: o.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+func seedLevelPaidOrder(t *testing.T, db *gorm.DB, o entity.RechargeOrder) {
+	t.Helper()
+	if err := db.Create(&o).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLevelCredit(t, db, o)
+}
+
 // seedUserLevel / seedLevel 造一个用户 / 一个等级。返回 ID。
 func seedLevelUser(t *testing.T, db *gorm.DB, id int32) {
 	t.Helper()
@@ -156,13 +171,17 @@ func TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders(t *testing.T) {
 		{UserID: 21, OrderNo: "pending-1", PaymentProvider: "fixture", Amount: 999, Status: rechargeOrderStatusPending},
 	}
 	for _, order := range orders {
+		if order.Status == rechargeOrderStatusPaid {
+			seedLevelPaidOrder(t, db, order)
+			continue
+		}
 		if err := db.Create(&order).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 	bills := []entity.BillingRecord{
-		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 5},
-		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 7.5},
+		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 5, BalanceBefore: 5, BalanceAfter: 0},
+		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 7.5, BalanceBefore: 7.5, BalanceAfter: 0},
 		{UserID: 21, Type: rechargeBillingRecordType, Amount: 100},                // 收入，不算消费
 		{UserID: 21, Type: rechargePromotionBillingRecordType, Amount: 20},        // 收入，不算消费
 		{UserID: 21, Type: RegistrationBonusClawbackBillingRecordType, Amount: 3}, // 撤回赠金，不是消费
@@ -200,10 +219,8 @@ func TestEvaluateUserLevelUpgradesAndWritesOneHistoryRow(t *testing.T) {
 	senior := mustCreateLevel(t, db, entity.UserLevel{Name: "资深", Rank: 3, Enabled: true, MinRechargeTotal: 500, MinConsumptionTotal: 100})
 
 	// 先造到「够 rank 3」的账单。
-	if err := db.Create(&entity.RechargeOrder{UserID: 22, OrderNo: "o-22", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&entity.BillingRecord{UserID: 22, Type: normalSearchBillingRecordType, Amount: 120}).Error; err != nil {
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 22, OrderNo: "o-22", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid})
+	if err := db.Create(&entity.BillingRecord{UserID: 22, Type: normalSearchBillingRecordType, Amount: 120, BalanceBefore: 120, BalanceAfter: 0}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -245,10 +262,8 @@ func TestRefreshUserLevelSummaryRepairsStaleLevelAndPersistsOnce(t *testing.T) {
 	if err := db.Table(entity.TableNameUser).Where("id = ?", 822).Update("level_id", basic.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&entity.RechargeOrder{UserID: 822, OrderNo: "stale-level-822", Amount: 296.5, Status: rechargeOrderStatusPaid}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&entity.BillingRecord{UserID: 822, Type: normalSearchBillingRecordType, Amount: 15.158586}).Error; err != nil {
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 822, OrderNo: "stale-level-822", Amount: 296.5, Status: rechargeOrderStatusPaid})
+	if err := db.Create(&entity.BillingRecord{UserID: 822, Type: normalSearchBillingRecordType, Amount: 15.158586, BalanceBefore: 15.158586, BalanceAfter: 0}).Error; err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -275,9 +290,7 @@ func TestRefreshUserLevelSummaryAppliesChangedThresholds(t *testing.T) {
 	seedLevelUser(t, db, 823)
 	basic := mustCreateLevel(t, db, entity.UserLevel{Name: "基础会员", Rank: 1, Enabled: true})
 	advanced := mustCreateLevel(t, db, entity.UserLevel{Name: "进阶会员", Rank: 2, Enabled: true, MinRechargeTotal: 500})
-	if err := db.Create(&entity.RechargeOrder{UserID: 823, OrderNo: "threshold-change-823", Amount: 200, Status: rechargeOrderStatusPaid}).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 823, OrderNo: "threshold-change-823", Amount: 200, Status: rechargeOrderStatusPaid})
 	if _, err := EvaluateUserLevelWithDB(db, 823, entity.UserLevelTriggerRecharge); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +345,8 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 
 	orderID := int32(1)
 	order := entity.RechargeOrder{UserID: 23, OrderNo: "o-23", PaymentProvider: "fixture", Amount: 600, Status: rechargeOrderStatusPaid}
-	if err := db.Create(&order).Error; err != nil {
+	seedLevelPaidOrder(t, db, order)
+	if err := db.Where("order_no = ?", order.OrderNo).Take(&order).Error; err != nil {
 		t.Fatal(err)
 	}
 	orderID = order.ID
@@ -348,6 +362,12 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 		OrderPaidCents: 60000, RefundNo: "refund-23", OrderNo: order.OrderNo,
 	}
 	if err := db.Create(&refund).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&entity.TicketRefundLedger{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.TicketRefundLedger{RefundID: refund.ID, UserID: 23, Kind: "consume", AmountMicros: 500000000}).Error; err != nil {
 		t.Fatal(err)
 	}
 	// 订单状态必须仍是 paid —— 否则这条用例就退化成「改状态」的假场景。
@@ -372,7 +392,7 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 		t.Fatalf("users.level_id = %d, want %d after refund", levelID, basic.ID)
 	}
 
-	// 未出钱的退款（processing）不得算作已退：等级不能再动。
+	// Contradictory display status does not reverse an already journaled debit.
 	if err := db.Model(&entity.TicketRefund{}).Where("id = ?", refund.ID).Update("status", "processing").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -380,8 +400,8 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if totals.RechargeTotal != 600 {
-		t.Fatalf("non-succeeded refund must not reduce recharge total, got %v", totals.RechargeTotal)
+	if totals.RechargeTotal != 100 || !totals.RequiresReview() {
+		t.Fatalf("status conflict must retain the proven debit and mark review, got %+v", totals)
 	}
 }
 

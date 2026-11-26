@@ -109,26 +109,13 @@ func UserLevelDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
-// UserLevelReevaluate 手动重评一批用户的等级（管理员改门槛后触发）。
-//
-//	POST /adapter-service/admin/user-levels/reevaluate
-//	{"limit":200}
+// The legacy URL remains authenticated and discoverable. An old empty/limit-only
+// request is never implicit approval to migrate a cohort under new ledger rules.
 func UserLevelReevaluate(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	var input struct {
-		Limit int `json:"limit"`
-	}
-	// 允许空 body（等价 limit=默认值）。
-	_ = c.ShouldBindJSON(&input)
-	processed, changed, err := service.ReevaluateAllUserLevelsWithDB(
-		userLevelDB(c), input.Limit, "manual")
-	if err != nil {
-		writeUserLevelFailure(c, err, "重新评估等级失败")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"processed": processed, "changed": changed})
+	c.JSON(http.StatusPreconditionRequired, gin.H{"code": "EFFECTIVE_REBUILD_PREVIEW_REQUIRED", "message": "请先预览有效金额重评，再提交摘要和原因。", "next": "/api/admin/effective-ledger/rebuild"})
 }
 
 // UserLevelCurrent 返回**当前登录用户**自己的等级摘要（个人中心用，非管理员专属）。
@@ -165,6 +152,8 @@ func classifyUserLevelError(err error) int {
 		return http.StatusOK
 	}
 	switch {
+	case errors.Is(err, service.ErrLedgerRange), errors.Is(err, service.ErrLedgerPrecision):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, service.ErrUserLevelSchemaUnavailable),
 		errors.Is(err, service.ErrRechargePromotionTierSchemaUnavailable):
 		// 表还没建好：既不是参数错也不是「记录不存在」，用 503 让前端提示「数据表未就绪」。
@@ -194,7 +183,7 @@ func writeUserLevelFailure(c *gin.Context, err error, fallback string) {
 	status := classifyUserLevelError(err)
 	message := fallback
 	switch status {
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable:
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable, http.StatusUnprocessableEntity:
 		message = err.Error()
 	}
 	c.JSON(status, gin.H{"message": message})

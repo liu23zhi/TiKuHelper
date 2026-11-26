@@ -39,7 +39,9 @@ const (
 //
 // Threshold 为 0 表示「该维度不设门槛」，不是「必须为 0」。
 type UserLevel struct {
-	ID int32 `gorm:"primaryKey;autoIncrement" json:"id"`
+	MinRechargeExact    string `gorm:"-" json:"minRechargeExact,omitempty"`
+	MinConsumptionExact string `gorm:"-" json:"minConsumptionExact,omitempty"`
+	ID                  int32  `gorm:"primaryKey;autoIncrement" json:"id"`
 	// Name 是展示名（如「基础会员」）。允许重名之外的任何中文名，但不允许空。
 	Name string `gorm:"column:name;type:varchar(64);not null;default:''" json:"name"`
 	// Rank 决定高低，**必须唯一**：两个同级 rank 会让「取最高达标级」变得不确定。
@@ -81,17 +83,19 @@ func (*UserLevel) TableName() string { return TableNameUserLevel }
 // 「from→to + trigger」只会落一行，重复触发靠库层唯一索引挡住，
 // 事务重试或并发请求都不会写出双份流水。
 type UserLevelHistory struct {
-	ID          int32  `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID      int32  `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
-	FromLevelID int32  `gorm:"column:from_level_id;type:int;not null;default:0" json:"fromLevelId"`
-	ToLevelID   int32  `gorm:"column:to_level_id;type:int;not null;default:0" json:"toLevelId"`
-	Trigger     string `gorm:"column:trigger;type:varchar(16);not null;default:''" json:"trigger"`
+	RechargeExact    string `gorm:"type:varchar(64);not null;default:''" json:"rechargeExact,omitempty"`
+	ConsumptionExact string `gorm:"type:varchar(64);not null;default:''" json:"consumptionExact,omitempty"`
+	ID               int32  `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID           int32  `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
+	FromLevelID      int32  `gorm:"column:from_level_id;type:int;not null;default:0" json:"fromLevelId"`
+	ToLevelID        int32  `gorm:"column:to_level_id;type:int;not null;default:0" json:"toLevelId"`
+	Trigger          string `gorm:"column:trigger;type:varchar(16);not null;default:''" json:"trigger"`
 	// EventKey 形如 level:<userID>:<from>-<to>:<trigger>。
 	EventKey string `gorm:"column:event_key;type:varchar(128);not null;default:'';uniqueIndex:idx_user_level_history_event" json:"eventKey"`
 	// RechargeTotal / ConsumptionTotal 记录判定当时的两个口径值，
 	// 事后可以回答「为什么他当时是 3 级」而不必重算历史账单。
-	RechargeTotal    float64   `gorm:"column:recharge_total;type:decimal(18,6);not null;default:0" json:"rechargeTotal"`
-	ConsumptionTotal float64   `gorm:"column:consumption_total;type:decimal(18,6);not null;default:0" json:"consumptionTotal"`
+	RechargeTotal    float64   `gorm:"column:recharge_total;type:decimal(38,6);not null;default:0" json:"rechargeTotal"`
+	ConsumptionTotal float64   `gorm:"column:consumption_total;type:decimal(38,6);not null;default:0" json:"consumptionTotal"`
 	Remark           string    `gorm:"column:remark;type:varchar(255);not null;default:''" json:"remark"`
 	CreatedAt        time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 }

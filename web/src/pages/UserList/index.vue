@@ -243,6 +243,7 @@
       cancel-text="取消"
       :confirm-loading="submitLoading"
     >
+      <EffectiveLedgerEditor v-if="visible && isEditing && canManageUsers" :key="formState.id" :user-id="formState.id" />
       <section v-if="hasUnsubmittedSavedEdit" data-user-edit-saved-draft class="page-alert" role="status">
         <a-alert type="info" show-icon message="提交的用户资料已保存，当前修改尚未提交。" />
       </section>
@@ -626,6 +627,7 @@ import { getAdminDevices } from '@/api/DeviceAdminApi';
 import { getUserPortrait } from '@/api/UserPortraitApi';
 import UserPortrait from '@/pages/UserPortrait/index.vue';
 import DeviceAdmin from '@/pages/DeviceAdmin/index.vue';
+import EffectiveLedgerEditor from '@/components/EffectiveLedgerEditor.vue';
 import UserAccountSummary from '@/components/UserAccountSummary.vue';
 import {
   submitImportTask, submitExportTask, listAsyncTasks, fetchImportTemplate,
@@ -1378,7 +1380,7 @@ function resetWechatResolveState() {
 
 export default defineComponent({
   name: 'UserList',
-  components: { MainlandPhoneInput, TableColumnSettings, RequestFailureAlert, DownloadOutlined, UploadOutlined, UserPortrait, DeviceAdmin, UserAccountSummary },
+  components: { EffectiveLedgerEditor, MainlandPhoneInput, TableColumnSettings, RequestFailureAlert, DownloadOutlined, UploadOutlined, UserPortrait, DeviceAdmin, UserAccountSummary },
   setup() {
     // Stable UI-only IDs keep labels unique across dialogs and sibling UserList instances.
     const fieldIdPrefix = `user-list-${useId()}`

@@ -10,7 +10,7 @@ import (
 
 func seedUserLevelTriggerFixture(t *testing.T, db *gorm.DB, userID int32, minRecharge, minConsumption float64) (entity.UserLevel, entity.UserLevel) {
 	t.Helper()
-	if err := db.AutoMigrate(&entity.UserLevel{}, &entity.UserLevelHistory{}); err != nil {
+	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.BillingRecord{}, &entity.UserLevel{}, &entity.UserLevelHistory{}); err != nil {
 		t.Fatal(err)
 	}
 	if !db.Migrator().HasColumn(entity.TableNameUser, "level_id") {
@@ -36,6 +36,10 @@ func TestTicketRefundSuccessReevaluatesPersistedUserLevel(t *testing.T) {
 			db, owner, _, admin := newTicketRefundCoreTestDB(t)
 			basic, advanced := seedUserLevelTriggerFixture(t, db, owner.ID, 40, 0)
 			order := seedTicketRefundOrder(t, db, 1, owner.ID, "paid", time.Now().Add(-time.Hour), 50.25, true)
+			if err := db.AutoMigrate(&entity.BillingRecord{}); err != nil {
+				t.Fatal(err)
+			}
+			seedLevelCredit(t, db, order)
 			if _, err := ReconcileUserLevelWithDB(db, owner.ID, entity.UserLevelTriggerRecharge); err != nil {
 				t.Fatal(err)
 			}
@@ -101,7 +105,7 @@ func TestScriptActivationPurchaseReevaluatesPersistedUserLevel(t *testing.T) {
 	}
 }
 
-func TestLegacyScriptReservationReevaluatesPersistedUserLevel(t *testing.T) {
+func TestLegacyScriptReservationDoesNotUpgradeUserLevel(t *testing.T) {
 	db := newScriptTestDB(t)
 	owner := entity.User{Username: "reservation-level-owner", Role: "user", Status: "enabled", Balance: 20}
 	bindSyntheticScriptOwner(&owner)
@@ -111,7 +115,7 @@ func TestLegacyScriptReservationReevaluatesPersistedUserLevel(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, advanced := seedUserLevelTriggerFixture(t, db, owner.ID, 0, ScriptReservationFee)
+	basic, _ := seedUserLevelTriggerFixture(t, db, owner.ID, 0, ScriptReservationFee)
 	version, err := UploadScriptVersionWithDB(db, admin, "2026.11", "answer.exe", []byte("MZsynthetic"))
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +123,7 @@ func TestLegacyScriptReservationReevaluatesPersistedUserLevel(t *testing.T) {
 	if _, err := CreateUserScriptWithDB(db, owner, CreateUserScriptInput{Name: "level reservation", VersionID: version.ID, BaseDomain: "a.com"}); err != nil {
 		t.Fatal(err)
 	}
-	if saved, err := CurrentUserLevelIDWithDB(db, owner.ID); err != nil || saved != advanced.ID {
-		t.Fatalf("legacy reservation consumption must persist upgraded level: %d %v", saved, err)
+	if saved, err := CurrentUserLevelIDWithDB(db, owner.ID); err != nil || saved != basic.ID {
+		t.Fatalf("refundable reservation must not upgrade the level: %d %v", saved, err)
 	}
 }

@@ -136,6 +136,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
   { key: 'extension-logs', label: '扩展诊断日志', icon: FileTextOutlined },
+  { key: 'agreement-admin', label: '用户协议管理', icon: FileTextOutlined },
   // 充值记录：**仅管理员**。它是充值订单的运营视图（含改状态、退款入口），
   // 普通用户看的是「个人使用 → 账单流水」（自己的消费与入账明细）。
   // 2026-11-19 修正：它原先同时出现在用户菜单里，两侧共用同一个 key，

@@ -11,6 +11,12 @@ export const MONEY_DECIMALS = 6;
 
 /** 把金额格式化为「最多 6 位小数、去尾零」的纯数字字符串（不带货币符号）。 */
 export function formatMoneyValue(value) {
+  // Decimal strings from the ledger are authoritative; Number loses adjacent
+  // micros for large but legal DECIMAL(18,6) values.
+  if (typeof value === 'string' && /^-?\d+\.\d{6}$/.test(value)) {
+    const exact = value.replace(/0+$/, '').replace(/\.$/, '');
+    return exact === '-0' ? '0' : exact;
+  }
   const amount = Number(value);
   if (!Number.isFinite(amount)) {
     return '0';

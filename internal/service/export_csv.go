@@ -662,6 +662,7 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 			maskedColumn("wechat_id", MaskExportWechatID),
 			exportColumn("created_at"),
 			exportColumn("last_login_at"),
+			exportColumn("historical_recharge"), exportColumn("effective_recharge"), exportColumn("historical_consumption"), exportColumn("effective_consumption"), exportColumn("effective_ledger_issues"), exportColumn("confirmed_unallocated_refund"), exportColumn("unconfirmed_refund_upper_bound"),
 		},
 		load: func(db *gorm.DB, limit int) ([][]string, error) {
 			rows := make([]entity.User, 0, 128)
@@ -669,26 +670,44 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 				return nil, err
 			}
 			out := make([][]string, 0, len(rows))
-			for _, row := range rows {
-				phone, wechat := "", ""
-				if row.Phone != nil {
-					phone = *row.Phone
+			for start := 0; start < len(rows); start += 200 {
+				chunk := rows[start:min(start+200, len(rows))]
+				ids := make([]int32, len(chunk))
+				for i, r := range chunk {
+					ids[i] = r.ID
 				}
-				if row.WechatID != nil {
-					wechat = *row.WechatID
+				var batch ledgerBatch
+				err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error { var err error; batch, err = replayEffectiveBatch(tx, ids); return err })
+				if err != nil {
+					return nil, err
 				}
-				out = append(out, []string{
-					strconv.FormatInt(int64(row.ID), 10),
-					row.Username,
-					row.Status,
-					row.Role,
-					formatExportFloat(row.Balance),
-					formatExportFloat(row.GiftBalance),
-					phone,
-					wechat,
-					formatExportTime(row.CreatedAt),
-					formatExportTimePtr(row.LastLoginAt),
-				})
+				for _, row := range chunk {
+					ledger := batch[row.ID].Totals
+					issues, err := json.Marshal(ledger.Issues)
+					if err != nil {
+						return nil, err
+					}
+					phone, wechat := "", ""
+					if row.Phone != nil {
+						phone = *row.Phone
+					}
+					if row.WechatID != nil {
+						wechat = *row.WechatID
+					}
+					out = append(out, []string{
+						strconv.FormatInt(int64(row.ID), 10),
+						row.Username,
+						row.Status,
+						row.Role,
+						formatExportFloat(row.Balance),
+						formatExportFloat(row.GiftBalance),
+						phone,
+						wechat,
+						formatExportTime(row.CreatedAt),
+						formatExportTimePtr(row.LastLoginAt),
+						ledger.Exact.HistoricalRecharge, ledger.Exact.Recharge, ledger.Exact.HistoricalConsumption, ledger.Exact.Consumption, string(issues), ledger.Exact.ConfirmedUnallocatedRefund, ledger.Exact.RefundEstimateUpper,
+					})
+				}
 			}
 			return out, nil
 		},
