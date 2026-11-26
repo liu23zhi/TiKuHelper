@@ -103,6 +103,8 @@ type EndpointCounters struct {
 	// AvgLatencyMs 是该桶内的平均耗时；请求数为 0 时保持 0。
 	AvgLatencyMs int64 `json:"avgLatencyMs"`
 
+	latency statusLatencyTally
+
 	// Samples 是该桶「被采样到」的分钟数 —— **判有没有数据的唯一依据**。
 	//
 	// 不能用 TotalRequests == 0 判断，因为两件事在数值上完全同形：
@@ -240,43 +242,50 @@ func applyEndpointBucket(target *EndpointCounters, delta StatusCounters, sampled
 	if success := total - failed; success > 0 {
 		target.SuccessRequests = saturatingInt64Add(target.SuccessRequests, success)
 	}
+	target.latency.addDelta(delta)
+	target.AvgLatencyMs = target.latency.average()
 	// 点的 Samples 是 0/1 标记：本分钟是否被采样。窗口聚合时按分钟相加。
 	if sampled {
 		target.Samples = 1
 	}
 }
 
-// endpointLatencyAccumulator 按请求数加权累加平均耗时。
-//
-// 为什么不直接对点里的 AvgLatencyMs 取算术平均：每点的请求数不同，算术平均会
-// 让「1 个请求的 3000ms」压过「1000 个请求的 30ms」。全局计数器用的是加权口径，
-// 分桶必须同口径，否则两个数字互相矛盾。
-type endpointLatencyAccumulator struct {
-	weightedSum int64
-	weight      int64
+// statusLatencyTally keeps the original sample count and sum across minutes:
+// weighting truncated per-minute averages by request total can lose both
+// measured zero-duration requests and the fractional remainder.
+type statusLatencyTally struct {
+	total int64
+	count int64
 }
 
-func (a *endpointLatencyAccumulator) add(average, weight int64) {
-	if average <= 0 || weight <= 0 {
-		return
+func (t *statusLatencyTally) addDelta(delta StatusCounters) {
+	if delta.LatencyCount > 0 {
+		t.total = saturatingInt64Add(t.total, toInt64(delta.LatencyTotalMillis))
+		t.count = saturatingInt64Add(t.count, toInt64(delta.LatencyCount))
 	}
-	a.weightedSum = saturatingInt64Add(a.weightedSum, saturatingInt64Mul(average, weight))
-	a.weight = saturatingInt64Add(a.weight, weight)
 }
 
-func (a *endpointLatencyAccumulator) average() int64 {
-	if a.weight <= 0 {
+func (t *statusLatencyTally) merge(point statusLatencyTally, average, requests int64) {
+	// Explicit StatusPoint fixtures can provide only an average.
+	if point.count == 0 && average > 0 && requests > 0 {
+		point = statusLatencyTally{total: saturatingInt64Mul(average, requests), count: requests}
+	}
+	t.total = saturatingInt64Add(t.total, point.total)
+	t.count = saturatingInt64Add(t.count, point.count)
+}
+
+func (t statusLatencyTally) average() int64 {
+	if t.count == 0 {
 		return 0
 	}
-	return a.weightedSum / a.weight
+	return t.total / t.count
 }
 
-// mergeEndpointBucket 把一个分钟点并进窗口聚合，耗时走加权累加器。
-func mergeEndpointBucket(target *EndpointCounters, point EndpointCounters, latency *endpointLatencyAccumulator) {
+func mergeEndpointBucket(target *EndpointCounters, point EndpointCounters) {
 	target.TotalRequests = saturatingInt64Add(target.TotalRequests, point.TotalRequests)
 	target.SuccessRequests = saturatingInt64Add(target.SuccessRequests, point.SuccessRequests)
 	target.FailedRequests = saturatingInt64Add(target.FailedRequests, point.FailedRequests)
-	latency.add(point.AvgLatencyMs, point.TotalRequests)
+	target.latency.merge(point.latency, point.AvgLatencyMs, point.TotalRequests)
 }
 
 // summarizeEndpointCounters 把分钟点聚合成分桶摘要（138 §4.2.2）。
@@ -292,13 +301,12 @@ func mergeEndpointBucket(target *EndpointCounters, point EndpointCounters, laten
 // 138 §4.2.2 的示例也是这个口径（windowMinutes=5 而 samples=12）。
 func summarizeEndpointCounters(all, window []StatusPoint) StatusCountersByEndpoint {
 	var result StatusCountersByEndpoint
-	var searchLatency, otherLatency endpointLatencyAccumulator
 	for _, point := range window {
-		mergeEndpointBucket(&result.Search, point.Endpoints.Search, &searchLatency)
-		mergeEndpointBucket(&result.Other, point.Endpoints.Other, &otherLatency)
+		mergeEndpointBucket(&result.Search, point.Endpoints.Search)
+		mergeEndpointBucket(&result.Other, point.Endpoints.Other)
 	}
-	result.Search.AvgLatencyMs = searchLatency.average()
-	result.Other.AvgLatencyMs = otherLatency.average()
+	result.Search.AvgLatencyMs = result.Search.latency.average()
+	result.Other.AvgLatencyMs = result.Other.latency.average()
 
 	// samples 取各点自带的 Samples 字段（而不是重新用 TotalRequests>0 推），
 	// 这样「该桶在这一分钟被采样到」这件事只有一个来源，不会两处漂移。

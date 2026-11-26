@@ -19,14 +19,17 @@ import (
 // 摘要端点给出「搜题接口现在好不好」，序列端点给出「什么时候开始不好的」，
 // 只给一边就会出现「曲线显示异常但我看不出是哪个接口族」或者相反。
 type serviceStatusResponse struct {
-	SchemaVersion int                          `json:"schemaVersion"`
-	Status        string                       `json:"status"`
-	WindowMinutes int                          `json:"windowMinutes"`
-	Points        []service.StatusPoint        `json:"points"`
-	Summary       service.ServiceStatusSummary `json:"summary"`
-	Capacity      int                          `json:"capacity"`
-	Retained      int                          `json:"retained"`
-	RestartedAt   string                       `json:"restartedAt"`
+	SchemaVersion  int                          `json:"schemaVersion"`
+	Status         string                       `json:"status"`
+	WindowMinutes  int                          `json:"windowMinutes"`
+	Points         []service.StatusPoint        `json:"points"`
+	ProcessPoints  []service.StatusProcessPoint `json:"processPoints"`
+	Summary        service.ServiceStatusSummary `json:"summary"`
+	Capacity       int                          `json:"capacity"`
+	Retained       int                          `json:"retained"`
+	RestartedAt    string                       `json:"restartedAt"`
+	AsOf           time.Time                    `json:"asOf"`
+	LatestSampleAt *time.Time                   `json:"latestSampleAt"`
 }
 
 // defaultServiceStatusSampler 是进程内默认采样器。用 sync.OnceValue 惰性构造，
@@ -87,11 +90,13 @@ type serviceStatusSummaryResponse struct {
 	// 失败数 = totalRequests - successRequests，给了是冗余；但显式给出等于告诉用户
 	// 「这里有个失败率指标值得盯」，而「搜题桶全失败」直接就是攻击指纹。
 	// 需要失败数的场景（运维排障）走 admin 端点 /admin/service-status，那里是全字段。
-	AvgLatencyMs  int64  `json:"avgLatencyMs"`
-	WindowMinutes int    `json:"windowMinutes"`
-	Retained      int    `json:"retained"`
-	Capacity      int    `json:"capacity"`
-	RestartedAt   string `json:"restartedAt"`
+	AvgLatencyMs   int64      `json:"avgLatencyMs"`
+	WindowMinutes  int        `json:"windowMinutes"`
+	Retained       int        `json:"retained"`
+	Capacity       int        `json:"capacity"`
+	RestartedAt    string     `json:"restartedAt"`
+	AsOf           time.Time  `json:"asOf"`
+	LatestSampleAt *time.Time `json:"latestSampleAt"`
 
 	// Endpoints 是按接口族分桶的聚合（138 §4.2.2 / S4）。
 	//
@@ -119,11 +124,11 @@ func GetServiceStatusSummary(c *gin.Context) {
 
 // buildServiceStatusSummaryResponse 把采样器状态压成摘要。抽出来供测试注入采样器。
 func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) serviceStatusSummaryResponse {
-	full := buildServiceStatusResponse(sampler)
-	summary := full.Summary
+	snapshot := sampler.Snapshot()
+	summary := snapshot.Summary
 	return serviceStatusSummaryResponse{
-		SchemaVersion: full.SchemaVersion,
-		Status:        full.Status,
+		SchemaVersion: 1,
+		Status:        summary.Status,
 		SuccessRate:   summary.SuccessRate,
 		// 「有没有算得出成功率的数据」= 窗口内至少有一个请求。
 		// 用 TotalRequests 判而不是用 SuccessRate!=0 判：全失败时 SuccessRate 也是 0，
@@ -132,10 +137,12 @@ func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) se
 		TotalRequests:        summary.TotalRequests,
 		SuccessRequests:      summary.SuccessRequests,
 		AvgLatencyMs:         summary.AvgLatencyMs,
-		WindowMinutes:        full.WindowMinutes,
-		Retained:             full.Retained,
-		Capacity:             full.Capacity,
-		RestartedAt:          full.RestartedAt,
+		WindowMinutes:        summary.WindowMinutes,
+		Retained:             legacyServiceStatusRetained(snapshot.Points),
+		Capacity:             service.ServiceStatusSlots,
+		RestartedAt:          snapshot.RestartedAt.Format(time.RFC3339),
+		AsOf:                 snapshot.AsOf,
+		LatestSampleAt:       serviceStatusOptionalTime(snapshot.LatestSearchSampleAt),
 		// 分桶必须是**脱敏**版本（publicEndpoints），不能直接用 service.StatusCountersByEndpoint。
 		//
 		// ⚠️ 2026-11-15 修：原来这里写的是 `Endpoints: summary.Endpoints`（service 层全字段结构），
@@ -151,7 +158,7 @@ func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) se
 		// 所以它不会是空断言。
 		Endpoints: publicEndpoints{
 			Search: toPublicEndpointCounters(summary.Endpoints.Search),
-			Other:  toPublicEndpointCounters(summary.Endpoints.Other),
+			Other:  legacyPublicOtherCounters(snapshot),
 		},
 	}
 }
@@ -159,18 +166,50 @@ func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) se
 // buildServiceStatusResponse 把采样器状态转成响应体。抽出来是为了让测试能注入
 // 独立采样器，不去动进程级单例。
 func buildServiceStatusResponse(sampler *service.ServiceStatusSampler) serviceStatusResponse {
-	points := sampler.Points()
-	summary := sampler.Summary()
+	snapshot := sampler.Snapshot()
 	return serviceStatusResponse{
-		SchemaVersion: 1,
-		Status:        summary.Status,
-		WindowMinutes: summary.WindowMinutes,
-		Points:        points,
-		Summary:       summary,
-		Capacity:      service.DefaultServiceStatusRing.Capacity(),
-		Retained:      len(points),
-		RestartedAt:   sampler.StartedAt().Format(time.RFC3339),
+		SchemaVersion:  1,
+		Status:         snapshot.Summary.Status,
+		WindowMinutes:  snapshot.Summary.WindowMinutes,
+		Points:         snapshot.Points,
+		ProcessPoints:  snapshot.ProcessPoints(),
+		Summary:        snapshot.Summary,
+		Capacity:       service.ServiceStatusSlots,
+		Retained:       len(snapshot.Points),
+		RestartedAt:    snapshot.RestartedAt.Format(time.RFC3339),
+		AsOf:           snapshot.AsOf,
+		LatestSampleAt: serviceStatusOptionalTime(snapshot.LatestSampleAt),
 	}
+}
+
+func serviceStatusOptionalTime(at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
+	}
+	return &at
+}
+
+// Legacy Other.Samples also keeps its requestful-only coverage; explicit
+// zero-request coverage belongs to the dedicated search projection.
+func legacyPublicOtherCounters(snapshot service.ServiceStatusSnapshot) publicEndpointCounters {
+	other := toPublicEndpointCounters(snapshot.Summary.Endpoints.Other)
+	other.Samples = 0
+	for _, point := range snapshot.Points {
+		if point.TotalRequests > 0 {
+			other.Samples += point.Endpoints.Other.Samples
+		}
+	}
+	return other
+}
+
+func legacyServiceStatusRetained(points []service.StatusPoint) int {
+	retained := 0
+	for _, point := range points {
+		if point.TotalRequests > 0 {
+			retained++
+		}
+	}
+	return retained
 }
 
 // publicStatusPoint 是面向普通用户的**脱敏**分钟点。
@@ -264,13 +303,15 @@ func toPublicEndpointCounters(bucket service.EndpointCounters) publicEndpointCou
 // 两条序列共用 publicStatusPoint 的显式字段白名单，只返回绘图所需的分钟、
 // 总数、成功数和延迟，不带失败分类、路由或其他管理员字段。
 type serviceStatusSeriesResponse struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	Points        []publicStatusPoint `json:"points"`
-	SearchPoints  []publicStatusPoint `json:"searchPoints"`
-	Endpoints     publicEndpoints     `json:"endpoints"`
-	Capacity      int                 `json:"capacity"`
-	Retained      int                 `json:"retained"`
-	RestartedAt   string              `json:"restartedAt"`
+	SchemaVersion  int                 `json:"schemaVersion"`
+	Points         []publicStatusPoint `json:"points"`
+	SearchPoints   []publicStatusPoint `json:"searchPoints"`
+	Endpoints      publicEndpoints     `json:"endpoints"`
+	Capacity       int                 `json:"capacity"`
+	Retained       int                 `json:"retained"`
+	RestartedAt    string              `json:"restartedAt"`
+	AsOf           time.Time           `json:"asOf"`
+	LatestSampleAt *time.Time          `json:"latestSampleAt"`
 }
 
 // GetServiceStatusSeries 返回**脱敏后的**逐分钟序列，供普通用户绘制曲线。
@@ -295,24 +336,28 @@ func GetServiceStatusSeries(c *gin.Context) {
 // 不补 1440 个零点 —— 补零会让前端画出一条「全站零流量」的假曲线，
 // 与「服务没起来」在视觉上完全同形。
 func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) serviceStatusSeriesResponse {
-	points := sampler.Points()
-	summary := sampler.Summary()
-	public := make([]publicStatusPoint, 0, len(points))
-	search := make([]publicStatusPoint, 0, len(points))
-	for _, point := range points {
-		public = append(public, publicStatusPoint{
-			Minute:          point.Minute,
-			TotalRequests:   point.TotalRequests,
-			SuccessRequests: point.SuccessRequests,
-			AvgLatencyMs:    point.AvgLatencyMs,
-			// 失败四分类与 FailedRequests 刻意不拷贝 —— 见 publicStatusPoint 的注释。
-		})
-		search = append(search, publicStatusPoint{
-			Minute:          point.Minute,
-			TotalRequests:   point.Endpoints.Search.TotalRequests,
-			SuccessRequests: point.Endpoints.Search.SuccessRequests,
-			AvgLatencyMs:    point.Endpoints.Search.AvgLatencyMs,
-		})
+	snapshot := sampler.Snapshot()
+	public := make([]publicStatusPoint, 0, len(snapshot.Points))
+	search := make([]publicStatusPoint, 0, len(snapshot.Points))
+	for _, point := range snapshot.Points {
+		// Preserve legacy all-site requestful-only history; no new all-site coverage.
+		if point.TotalRequests > 0 {
+			public = append(public, publicStatusPoint{
+				Minute:          point.Minute,
+				TotalRequests:   point.TotalRequests,
+				SuccessRequests: point.SuccessRequests,
+				AvgLatencyMs:    point.AvgLatencyMs,
+			})
+		}
+		// Include a zero only when the search source was actually sampled.
+		if bucket := point.Endpoints.Search; bucket.Samples > 0 {
+			search = append(search, publicStatusPoint{
+				Minute:          point.Minute,
+				TotalRequests:   bucket.TotalRequests,
+				SuccessRequests: bucket.SuccessRequests,
+				AvgLatencyMs:    bucket.AvgLatencyMs,
+			})
+		}
 	}
 	return serviceStatusSeriesResponse{
 		SchemaVersion: 1,
@@ -322,11 +367,13 @@ func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) ser
 		// 与「摘要说搜题正常但曲线全红」这两种矛盾就没人能解。
 		// 口径与摘要端点完全一致（直接取同一个 summary.Endpoints），不另算一套。
 		Endpoints: publicEndpoints{
-			Search: toPublicEndpointCounters(summary.Endpoints.Search),
-			Other:  toPublicEndpointCounters(summary.Endpoints.Other),
+			Search: toPublicEndpointCounters(snapshot.Summary.Endpoints.Search),
+			Other:  legacyPublicOtherCounters(snapshot),
 		},
-		Capacity:    service.DefaultServiceStatusRing.Capacity(),
-		Retained:    len(public),
-		RestartedAt: sampler.StartedAt().Format(time.RFC3339),
+		Capacity:       service.ServiceStatusSlots,
+		Retained:       len(public),
+		RestartedAt:    snapshot.RestartedAt.Format(time.RFC3339),
+		AsOf:           snapshot.AsOf,
+		LatestSampleAt: serviceStatusOptionalTime(snapshot.LatestSearchSampleAt),
 	}
 }
