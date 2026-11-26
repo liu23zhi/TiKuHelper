@@ -30,6 +30,13 @@ type AgreementStatus struct {
 	Version         string `json:"version"`
 	DeviceID        string `json:"deviceId"`
 	NeedsAcceptance bool   `json:"needsAcceptance"`
+	ContentHash     string `json:"content_hash"`
+}
+
+// AgreementContentHash hashes the exact UTF-8 body of a published release.
+func AgreementContentHash(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s AgreementStore) SaveDraft(id, rev int64, content entity.AgreementContent) (d entity.AgreementDraft, err error) {
@@ -206,7 +213,7 @@ func (s AgreementStore) Status(c AgreementCredentials) (out AgreementStatus, err
 		if e = tx.Model(&entity.AgreementConsent{}).Where("release_id = ? AND device_id = ?", r.ID, d.ID).Count(&n).Error; e != nil {
 			return e
 		}
-		out = AgreementStatus{Version: r.Version, DeviceID: d.ID, NeedsAcceptance: n == 0}
+		out = AgreementStatus{Version: r.Version, DeviceID: d.ID, NeedsAcceptance: n == 0, ContentHash: AgreementContentHash(r.Body)}
 		return nil
 	})
 	return
