@@ -783,7 +783,7 @@ func TestAdminDeviceListStatusFilter(t *testing.T) {
 		device string
 	}{
 		{AdminDeviceStatusActive, 1, "exe:active000001"},
-		{AdminDeviceStatusRevoked, 2, ""}, // 被封禁那行的绑定也被撤销了（D12）
+		{AdminDeviceStatusRevoked, 1, "exe:revoked00001"}, // 拉黑状态优先，不重复归为已移除。
 		{AdminDeviceStatusBanned, 1, "exe:banned000001"},
 		{"", 3, ""},
 	}

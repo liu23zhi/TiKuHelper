@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -77,28 +76,10 @@ func AdminDeviceDelete(c *gin.Context) {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	var row entity.AccountDeviceBinding
-	if err := db.Where("id = ?", id).First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = service.ErrDeviceBindingNotFound
-		}
+	if _, err := service.ClearDeviceHistory(db, id, 0, deviceHistoryActor(operator)); err != nil {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	if row.RevokedAt == nil {
-		c.JSON(http.StatusConflict, gin.H{"message": "请先解绑设备，再删除记录"})
-		return
-	}
-	result := db.Where("id = ? AND revoked_at IS NOT NULL", id).Delete(&entity.AccountDeviceBinding{})
-	if result.Error != nil {
-		writeDeviceAdminError(c, result.Error)
-		return
-	}
-	if result.RowsAffected != 1 {
-		c.JSON(http.StatusConflict, gin.H{"message": "设备状态已变化，请刷新后重试"})
-		return
-	}
-	recordAccountAudit(c, &operator, "device", 4, "删除设备绑定记录", map[string]any{"bindingId": id, "userId": row.UserID, "deviceId": row.DeviceID})
 	c.JSON(http.StatusOK, gin.H{"id": id, "deleted": true})
 }
 
@@ -274,24 +255,19 @@ func AdminDeviceBan(c *gin.Context) {
 		writeDeviceAdminError(c, err)
 		return
 	}
+	actor := deviceHistoryActor(operator)
 	result, err := service.BanDevice(db, service.DeviceBanRequest{
-		DeviceID:  input.DeviceID,
-		Reason:    input.Reason,
-		ExpiresAt: expiresAt,
-		CreatedBy: operator.ID,
+		DeviceID:   input.DeviceID,
+		Reason:     input.Reason,
+		ExpiresAt:  expiresAt,
+		CreatedBy:  operator.ID,
+		AuditActor: &actor,
 	})
 	if err != nil {
 		writeDeviceAdminError(c, err)
 		return
 	}
 	reloadBlacklistCacheAfterWrite(db)
-	recordAccountAudit(c, &operator, "device", 3, "封禁设备", map[string]any{
-		"entryId":         result.EntryID,
-		"deviceMasked":    result.ValueMasked,
-		"reason":          result.Reason,
-		"expiresAt":       result.ExpiresAt,
-		"revokedBindings": result.RevokedBindings,
-	})
 	c.JSON(http.StatusCreated, result)
 }
 
@@ -356,11 +332,14 @@ func writeDeviceAdminError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrInvalidBlacklistPattern):
 		status = http.StatusBadRequest
 		message = err.Error()
+	case errors.Is(err, service.ErrDeviceHistoryNotRemoved):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 	case errors.Is(err, service.ErrDeviceBindingNotFound):
 		status = http.StatusNotFound
 		message = err.Error()
 	case errors.Is(err, service.ErrDeviceBindingSchemaUnavailable),
 		errors.Is(err, service.ErrDeviceRevocationUnavailable),
+		errors.Is(err, service.ErrDeviceHistoryUnavailable),
 		errors.Is(err, errDeviceAdminDBUnavailable),
 		errors.Is(err, service.ErrBlacklistCacheNoDatabase):
 		status = http.StatusServiceUnavailable

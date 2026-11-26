@@ -97,6 +97,7 @@ var devicePoolBindingColumnSpecs = []devicePoolBindingColumnSpec{
 	{column: "last_ip", ddl: "last_ip VARCHAR(45) NOT NULL DEFAULT ''"},
 	// 首次来源只从新绑定开始采集，既有记录没有可验证的历史，不回填 last_ip。
 	{column: "first_ip", ddl: "first_ip VARCHAR(45) NOT NULL DEFAULT ''"},
+	{column: "history_hidden_at", ddl: "history_hidden_at DATETIME NULL"},
 }
 
 // ensureDevicePoolBindingSchema 给 account_device_bindings 补 A1 的 5 列 +
@@ -140,6 +141,11 @@ func ensureDevicePoolBindingSchema(db *gorm.DB) error {
 			return fmt.Errorf("add %s.%s fail: %w", entity.TableNameAccountDeviceBinding, spec.column, err)
 		}
 		logger.SysLog(fmt.Sprintf("已为 %s 补上列 %s（设备体系 A1）", entity.TableNameAccountDeviceBinding, spec.column))
+	}
+	if !db.Migrator().HasTable(&entity.DeviceLifecycleLock{}) {
+		if err := db.AutoMigrate(&entity.DeviceLifecycleLock{}); err != nil && !db.Migrator().HasTable(&entity.DeviceLifecycleLock{}) {
+			return fmt.Errorf("create device_lifecycle_locks fail: %w", err)
+		}
 	}
 	return nil
 }

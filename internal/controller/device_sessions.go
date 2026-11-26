@@ -91,6 +91,9 @@ type deviceSessionRequestBody struct {
 // 成功恒 204（不返回 body）：上报是后台心跳，响应体没有消费方；
 // 返回 200 + JSON 只会让 exe 侧多写一段永远不读的解析代码。
 func ReportDeviceSessions(c *gin.Context) {
+	if !requireOrdinaryDeviceCredential(c) {
+		return
+	}
 	operator, ok := currentOperator(c)
 	if !ok {
 		return

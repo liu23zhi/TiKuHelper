@@ -17,7 +17,7 @@
 /** 状态 → 界面元信息（137 §9.1 的三态：使用中 / 已移除 / 已拉黑）。 */
 export const DEVICE_STATUS_META = {
   active: { text: '使用中', tone: 'success', canRemove: true, canBlock: true, canUnblock: false },
-  removed: { text: '已移除', tone: 'muted', canRemove: false, canBlock: false, canUnblock: false },
+  removed: { text: '已移除', tone: 'muted', canRemove: false, canBlock: true, canUnblock: false },
   blocked: { text: '已拉黑', tone: 'danger', canRemove: false, canBlock: false, canUnblock: true },
 }
 
@@ -209,7 +209,9 @@ export function normalizeDeviceItem(raw) {
     tone: meta.tone,
     revokedAt: typeof item.revokedAt === 'string' ? item.revokedAt : '',
     revokedReason: typeof item.revokedReason === 'string' ? item.revokedReason : '',
-    blocked: item.blocked === true,
+    blocked: status === 'blocked' || item.blocked === true,
+    globallyBlocked: item.globallyBlocked === true,
+    blockable: item.blockable !== false && meta.canBlock && (readInt(item.id) ?? 0) > 0,
     deletable: item.deletable === true && status === 'removed' && item.blocked !== true,
     // blockId 只在 >0 时可用（列表里的「解除拉黑」按钮依赖它）。
     blockId: blockId !== null && blockId > 0 ? blockId : 0,

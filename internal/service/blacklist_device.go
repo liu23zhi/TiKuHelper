@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,7 +180,8 @@ type DeviceBanRequest struct {
 	// ExpiresAt 为 nil 表示永久封禁。
 	ExpiresAt *time.Time
 	// CreatedBy 是操作管理员 ID（0 = 系统）。
-	CreatedBy int32
+	CreatedBy  int32
+	AuditActor *DeviceHistoryActor
 }
 
 // DeviceBanResult 是一次封禁的结果。
@@ -253,91 +255,99 @@ func BanDevice(db *gorm.DB, request DeviceBanRequest) (DeviceBanResult, error) {
 		RevocationApplied: revocationReady,
 	}
 
-	tx := db.Begin()
-	if tx.Error != nil {
-		return DeviceBanResult{}, fmt.Errorf("封禁设备失败：%w", tx.Error)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			tx.Rollback()
-		}
-	}()
-
-	var existing entity.BlacklistEntry
-	findErr := deviceAdminSession(tx).
-		Where("kind = ? AND value_hash = ?", BlacklistKindDevice, hash).
-		Take(&existing).Error
-	switch {
-	case findErr == nil:
-		result.AlreadyBanned = existing.Enabled && (existing.ExpiresAt == nil || existing.ExpiresAt.After(now))
-		// 更新为「生效 + 新原因 + 新到期时间」。
-		//
-		// 必须用 Updates(map) 修 4 列而不是 Save：实体带 `default:true` 标签，
-		// Save 会把零值字段（ExpiresAt 为 nil）按默认值语义重排，历史坑已记录在
-		// entity/blacklist.go 的注释里。
-		if err := deviceAdminSession(tx).Model(&entity.BlacklistEntry{}).
-			Where("id = ?", existing.ID).
-			Updates(map[string]any{
-				"pattern":      deviceID,
-				"value_masked": result.ValueMasked,
-				"match_type":   BlacklistMatchExact,
-				"reason":       reason,
-				"enabled":      true,
-				"expires_at":   request.ExpiresAt,
-			}).Error; err != nil {
-			return DeviceBanResult{}, fmt.Errorf("更新设备黑名单规则失败：%w", err)
-		}
-		result.EntryID = existing.ID
-	case errors.Is(findErr, gorm.ErrRecordNotFound):
-		entry := entity.BlacklistEntry{
-			Kind:        BlacklistKindDevice,
-			Pattern:     deviceID,
-			ValueHash:   hash,
-			ValueMasked: result.ValueMasked,
-			MatchType:   BlacklistMatchExact,
-			Reason:      reason,
-			Enabled:     true,
-			ExpiresAt:   request.ExpiresAt,
-			CreatedBy:   request.CreatedBy,
-		}
-		if err := deviceAdminSession(tx).Create(&entry).Error; err != nil {
-			// 并发封禁同一台设备会撞 (kind, value_hash, match_type) 唯一索引。
-			// 这不是失败：对方已经把规则建好了，再读一次按「已存在」处理即可。
-			var raced entity.BlacklistEntry
-			if retryErr := deviceAdminSession(tx).
-				Where("kind = ? AND value_hash = ?", BlacklistKindDevice, hash).
-				Take(&raced).Error; retryErr != nil {
-				return DeviceBanResult{}, fmt.Errorf("写入设备黑名单规则失败：%w", err)
+	err := withDeviceLifecycleWrite(db, deviceID, func(tx *gorm.DB) error {
+		var existing entity.BlacklistEntry
+		findErr := deviceAdminSession(tx).
+			Where("kind = ? AND value_hash = ?", BlacklistKindDevice, hash).
+			Take(&existing).Error
+		switch {
+		case findErr == nil:
+			result.AlreadyBanned = existing.Enabled && (existing.ExpiresAt == nil || existing.ExpiresAt.After(now))
+			// 更新为「生效 + 新原因 + 新到期时间」。
+			//
+			// 必须用 Updates(map) 修 4 列而不是 Save：实体带 `default:true` 标签，
+			// Save 会把零值字段（ExpiresAt 为 nil）按默认值语义重排，历史坑已记录在
+			// entity/blacklist.go 的注释里。
+			if !result.AlreadyBanned || banDetailsChanged(existing, reason, request.ExpiresAt) {
+				if err := deviceAdminSession(tx).Model(&entity.BlacklistEntry{}).
+					Where("id = ?", existing.ID).
+					Updates(map[string]any{
+						"pattern":      deviceID,
+						"value_masked": result.ValueMasked,
+						"match_type":   BlacklistMatchExact,
+						"reason":       reason,
+						"enabled":      true,
+						"expires_at":   request.ExpiresAt,
+					}).Error; err != nil {
+					return fmt.Errorf("更新设备黑名单规则失败：%w", err)
+				}
 			}
-			result.EntryID = raced.ID
-			result.AlreadyBanned = true
+			result.EntryID = existing.ID
+		case errors.Is(findErr, gorm.ErrRecordNotFound):
+			entry := entity.BlacklistEntry{
+				Kind:        BlacklistKindDevice,
+				Pattern:     deviceID,
+				ValueHash:   hash,
+				ValueMasked: result.ValueMasked,
+				MatchType:   BlacklistMatchExact,
+				Reason:      reason,
+				Enabled:     true,
+				ExpiresAt:   request.ExpiresAt,
+				CreatedBy:   request.CreatedBy,
+			}
+			if err := deviceAdminSession(tx).Create(&entry).Error; err != nil {
+				// 并发封禁同一台设备会撞 (kind, value_hash, match_type) 唯一索引。
+				// 这不是失败：对方已经把规则建好了，再读一次按「已存在」处理即可。
+				var raced entity.BlacklistEntry
+				if retryErr := deviceAdminSession(tx).
+					Where("kind = ? AND value_hash = ?", BlacklistKindDevice, hash).
+					Take(&raced).Error; retryErr != nil {
+					return fmt.Errorf("写入设备黑名单规则失败：%w", err)
+				}
+				result.EntryID = raced.ID
+				result.AlreadyBanned = true
+			} else {
+				result.EntryID = entry.ID
+			}
+		default:
+			return fmt.Errorf("查询设备黑名单规则失败：%w", findErr)
+		}
+
+		// 第二件事：把该 device_id 的**所有在用绑定**撤销（D12）。
+		if revocationReady {
+			affected, err := revokeDeviceBindings(tx, deviceID, now, DeviceBindingRevokedReasonBanned)
+			if err != nil {
+				// 真错误必须回滚：留下「黑名单有规则、绑定还在」的半成品正是 D12 要防的。
+				return err
+			}
+			result.RevokedBindings = affected
 		} else {
-			result.EntryID = entry.ID
+			result.RevocationApplied = false
+			result.RevocationWarning = "设备绑定表缺少 revoked_at / revoked_reason 列，本次只写了黑名单；已登录会话不会立即失效（黑名单判定仍生效）"
+			logger.SysWarn("封禁设备 " + result.ValueMasked + " 时未能撤销绑定：" + ErrDeviceRevocationUnavailable.Error())
 		}
-	default:
-		return DeviceBanResult{}, fmt.Errorf("查询设备黑名单规则失败：%w", findErr)
-	}
 
-	// 第二件事：把该 device_id 的**所有在用绑定**撤销（D12）。
-	if revocationReady {
-		affected, err := revokeDeviceBindings(tx, deviceID, now, DeviceBindingRevokedReasonBanned)
-		if err != nil {
-			// 真错误必须回滚：留下「黑名单有规则、绑定还在」的半成品正是 D12 要防的。
-			return DeviceBanResult{}, err
+		if request.AuditActor != nil && (!result.AlreadyBanned || result.RevokedBindings != 0 || banDetailsChanged(existing, reason, request.ExpiresAt)) {
+			return WriteAccountAuditWithDB(tx, AccountAuditEvent{
+				UserID: request.AuditActor.UserID, Username: request.AuditActor.Username,
+				Module: "device", Action: 3, Description: "全局拉黑设备",
+				Result: map[string]any{"name": result.ValueMasked, "remark": result.Reason, "scope": "global",
+					"requestId": strconv.FormatInt(result.EntryID, 10)},
+			})
 		}
-		result.RevokedBindings = affected
-	} else {
-		result.RevocationApplied = false
-		result.RevocationWarning = "设备绑定表缺少 revoked_at / revoked_reason 列，本次只写了黑名单；已登录会话不会立即失效（黑名单判定仍生效）"
-		logger.SysWarn("封禁设备 " + result.ValueMasked + " 时未能撤销绑定：" + ErrDeviceRevocationUnavailable.Error())
-	}
-
-	if err := tx.Commit().Error; err != nil {
+		return nil
+	})
+	if err != nil {
 		return DeviceBanResult{}, fmt.Errorf("封禁设备失败：%w", err)
 	}
-	committed = true
 	return result, nil
+}
+
+func banDetailsChanged(existing entity.BlacklistEntry, reason string, expiresAt *time.Time) bool {
+	if existing.Reason != reason || (existing.ExpiresAt == nil) != (expiresAt == nil) {
+		return true
+	}
+	return expiresAt != nil && !existing.ExpiresAt.Equal(*expiresAt)
 }
 
 // revokeDeviceBindings 撤销某台设备的全部在用绑定，返回受影响行数。
@@ -356,7 +366,7 @@ func revokeDeviceBindings(tx *gorm.DB, deviceID string, now time.Time, reason st
 		return 0, nil
 	}
 	res := deviceAdminSession(tx).Model(&entity.AccountDeviceBinding{}).
-		Where("device_id = ? AND revoked_at IS NULL", deviceID).
+		Where(exactDeviceIDSQL(tx, "device_id", "?")+" AND revoked_at IS NULL", deviceID).
 		Updates(map[string]any{
 			"revoked_at":     now,
 			"revoked_reason": reason,
@@ -496,6 +506,10 @@ type OrphanDeviceBan struct {
 // 只排除「完全没有任何绑定」的设备；有历史（已撤销）绑定的设备仍在主列表里，
 // 因为它的封禁状态在那一行上就能看到。
 func ListOrphanDeviceBansWithDB(db *gorm.DB, now time.Time, limit int) ([]OrphanDeviceBan, error) {
+	return listOrphanDeviceBansWithKeyword(db, now, limit, "")
+}
+
+func listOrphanDeviceBansWithKeyword(db *gorm.DB, now time.Time, limit int, keyword string) ([]OrphanDeviceBan, error) {
 	out := []OrphanDeviceBan{}
 	if db == nil {
 		return out, nil
@@ -513,9 +527,13 @@ func ListOrphanDeviceBansWithDB(db *gorm.DB, now time.Time, limit int) ([]Orphan
 		// `(kind=? AND enabled=? AND expires_at IS NULL) OR expires_at > ?` ——
 		// 于是**已停用的规则也会被返回**（第二个 OR 分支只要未到期就成立）。
 		// 这是 SQL 优先级陷阱，不报错、只是结果错。
-		Where("(expires_at IS NULL OR expires_at > ?)", now)
+		Where(activeDeviceBanExpirySQL(db, "expires_at"), now)
 	if deviceBindingSchemaReady(db) {
-		query = query.Where("pattern NOT IN (SELECT device_id FROM account_device_bindings)")
+		sub := VisibleDeviceHistory(db, db.Table(entity.TableNameAccountDeviceBinding).Select("1")).Where(exactDeviceIDSQL(db, "blacklist_entries.pattern", "account_device_bindings.device_id"))
+		query = query.Where("NOT EXISTS (?)", sub)
+	}
+	if keyword != "" {
+		query = query.Where("INSTR(LOWER(pattern), LOWER(?)) > 0", keyword)
 	}
 	var rows []entity.BlacklistEntry
 	if err := query.Order("id desc").Limit(limit).Find(&rows).Error; err != nil {
@@ -574,6 +592,8 @@ type AdminDeviceItem struct {
 	// DeviceLabel 是扩展上报的可读标签（如 `Chrome on Windows #a1b2`）。
 	// A1-2 加列之前它恒为空串 —— 前端必须能显示「—」而不是崩。
 	DeviceLabel string `json:"deviceLabel"`
+	FirstIP     string `json:"firstIp"`
+	LastIP      string `json:"lastIp"`
 	// OwnerKind 取 login / token（A1-2 加列前恒为空串）。
 	OwnerKind     string     `json:"ownerKind"`
 	FirstSeenAt   *time.Time `json:"firstSeenAt"`
@@ -583,17 +603,22 @@ type AdminDeviceItem struct {
 	// Status 取 active / revoked / banned。
 	Status string `json:"status"`
 	// Banned 与 Ban* 是全局封禁的派生字段（与 Status 一致，但给出可展示的原因）。
-	Banned       bool       `json:"banned"`
-	BanEntryID   int64      `json:"banEntryId"`
-	BanReason    string     `json:"banReason"`
-	BanExpiresAt *time.Time `json:"banExpiresAt"`
-	BanPermanent bool       `json:"banPermanent"`
+	Banned         bool       `json:"banned"`
+	AccountBlocked bool       `json:"accountBlocked"`
+	Deletable      bool       `json:"deletable"`
+	BanEntryID     int64      `json:"banEntryId"`
+	BanReason      string     `json:"banReason"`
+	BanExpiresAt   *time.Time `json:"banExpiresAt"`
+	BanPermanent   bool       `json:"banPermanent"`
 }
 
 // AdminDeviceListResult 是设备列表的响应体（与其它管理端列表同形态）。
 type AdminDeviceListResult struct {
 	Data     []AdminDeviceItem `json:"data"`
 	Total    int64             `json:"total"`
+	Active   int64             `json:"active"`
+	Removed  int64             `json:"removed"`
+	Blocked  int64             `json:"blocked"`
 	Page     int               `json:"page"`
 	PageSize int               `json:"pageSize"`
 	// OrphanBans 是「有封禁、无绑定」的设备（见 OrphanDeviceBan 注释）。
@@ -612,11 +637,51 @@ type adminDeviceBindingRow struct {
 	UserID        int32      `gorm:"column:user_id"`
 	DeviceID      string     `gorm:"column:device_id"`
 	DeviceLabel   string     `gorm:"column:device_label"`
+	FirstIP       string     `gorm:"column:first_ip"`
+	LastIP        string     `gorm:"column:last_ip"`
+	Status        string     `gorm:"column:status"`
 	OwnerKind     string     `gorm:"column:owner_kind"`
 	FirstSeenAt   *time.Time `gorm:"column:first_seen_at"`
 	LastSeenAt    *time.Time `gorm:"column:last_seen_at"`
 	RevokedAt     *time.Time `gorm:"column:revoked_at"`
 	RevokedReason string     `gorm:"column:revoked_reason"`
+}
+
+// Blacklist fingerprints are case-sensitive even on installations with a
+// case-insensitive MariaDB string collation.
+func exactDeviceIDSQL(db *gorm.DB, lhs, rhs string) string {
+	if db.Dialector.Name() == "mysql" {
+		return "BINARY " + lhs + " = BINARY " + rhs
+	}
+	return lhs + " = " + rhs
+}
+
+func activeDeviceBanExpirySQL(db *gorm.DB, column string) string {
+	if db.Dialector.Name() == "sqlite" {
+		return "(" + column + " IS NULL OR julianday(" + column + ") > julianday(?))"
+	}
+	return "(" + column + " IS NULL OR " + column + " > ?)"
+}
+
+func adminDeviceStatusSQL(db *gorm.DB, hasRevocation bool, now time.Time) (string, []any) {
+	parts := []string{"CASE"}
+	var args []any
+	if db.Migrator().HasTable(entity.TableNameBlacklistEntry) {
+		exact := exactDeviceIDSQL(db, "b.pattern", "account_device_bindings.device_id")
+		parts = append(parts, "WHEN EXISTS (SELECT 1 FROM blacklist_entries AS b WHERE b.kind = ? AND b.enabled = ? AND "+activeDeviceBanExpirySQL(db, "b.expires_at")+" AND "+exact+") THEN 'banned'")
+		args = append(args, BlacklistKindDevice, true, now)
+	}
+	if db.Migrator().HasTable(&entity.UserDeviceBlock{}) {
+		exact := exactDeviceIDSQL(db, "b.device_id", "account_device_bindings.device_id")
+		parts = append(parts, "WHEN EXISTS (SELECT 1 FROM user_device_blocks AS b WHERE b.user_id = account_device_bindings.user_id AND "+exact+") THEN 'banned'")
+	}
+	if hasRevocation {
+		parts = append(parts, "WHEN revoked_at IS NOT NULL THEN 'revoked'")
+	}
+	if len(parts) == 1 {
+		return "'active'", nil
+	}
+	return strings.Join(append(parts, "ELSE 'active' END"), " "), args
 }
 
 // ListAdminDeviceBindingsWithDB 返回设备列表（137 §8.2 GET /admin/devices）。
@@ -637,6 +702,16 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 	if db == nil {
 		return AdminDeviceListResult{}, ErrBlacklistCacheNoDatabase
 	}
+	var result AdminDeviceListResult
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		result, err = listAdminDeviceBindings(tx, query, page, pageSize)
+		return err
+	})
+	return result, err
+}
+
+func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, pageSize int) (AdminDeviceListResult, error) {
 	page, pageSize = normalizeBlacklistPage(page, pageSize)
 	result := AdminDeviceListResult{
 		Data:       []AdminDeviceItem{},
@@ -657,7 +732,7 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 	hasOwnerKind := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "owner_kind")
 	hasRevocation := result.RevocationSupported
 
-	base := deviceAdminSession(db).Table(entity.TableNameAccountDeviceBinding)
+	base := VisibleDeviceHistory(db, deviceAdminSession(db).Table(entity.TableNameAccountDeviceBinding))
 
 	// 按账号过滤（A4-2：用户管理页的「设备」按钮）。
 	//
@@ -680,38 +755,41 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 		base = base.Where("("+clause+")", args...)
 	}
 
-	// 状态筛选。
-	switch strings.ToLower(strings.TrimSpace(query.Status)) {
+	statusExpr, statusArgs := adminDeviceStatusSQL(db, hasRevocation, now)
+	status := strings.ToLower(strings.TrimSpace(query.Status))
+	switch status {
 	case "", "all":
-		// 不筛选。
-	case AdminDeviceStatusActive:
-		if hasRevocation {
-			base = base.Where("revoked_at IS NULL")
-		}
-	case AdminDeviceStatusRevoked:
-		if hasRevocation {
-			base = base.Where("revoked_at IS NOT NULL")
-		} else {
-			// 缺列时「已撤销」不存在：返回空集而不是「全部」——
-			// 后者会让运营以为所有设备都被撤销过。
-			base = base.Where("1 = 0")
-		}
-	case AdminDeviceStatusBanned:
-		// 用子查询与 Go 侧的标记口径**逐字一致**（同一 kind/enabled/expires 条件），
-		// 否则会出现「筛选出 3 条、其中 0 条标着已封禁」。
-		if db.Migrator().HasTable(entity.TableNameBlacklistEntry) {
-			base = base.Where(
-				"device_id IN (SELECT pattern FROM blacklist_entries WHERE kind = ? AND enabled = ? AND (expires_at IS NULL OR expires_at > ?))",
-				BlacklistKindDevice, true, now)
-		} else {
-			base = base.Where("1 = 0")
-		}
+	case "removed":
+		status = AdminDeviceStatusRevoked
+	case "blocked":
+		status = AdminDeviceStatusBanned
+	case AdminDeviceStatusActive, AdminDeviceStatusRevoked, AdminDeviceStatusBanned:
 	default:
 		return AdminDeviceListResult{}, fmt.Errorf("%w：设备状态必须是 active / revoked / banned", ErrInvalidBlacklistPattern)
 	}
-
-	if err := base.Session(&gorm.Session{}).Count(&result.Total).Error; err != nil {
+	if status != "" && status != "all" {
+		args := append(append([]any{}, statusArgs...), status)
+		base = base.Where("("+statusExpr+") = ?", args...)
+	}
+	var counts []struct {
+		Status string `gorm:"column:device_status"`
+		Count  int64
+	}
+	if err := base.Session(&gorm.Session{}).
+		Select(statusExpr+" AS device_status, COUNT(*) AS count", statusArgs...).
+		Group("device_status").Scan(&counts).Error; err != nil {
 		return AdminDeviceListResult{}, fmt.Errorf("统计设备失败：%w", err)
+	}
+	for _, row := range counts {
+		result.Total += row.Count
+		switch row.Status {
+		case AdminDeviceStatusActive:
+			result.Active = row.Count
+		case AdminDeviceStatusRevoked:
+			result.Removed = row.Count
+		case AdminDeviceStatusBanned:
+			result.Blocked = row.Count
+		}
 	}
 
 	labelExpr := "'' AS device_label"
@@ -728,43 +806,27 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 		revokedAtExpr = "revoked_at"
 		revokedReasonExpr = "COALESCE(revoked_reason, '') AS revoked_reason"
 	}
+	ipColumn := func(col string) string {
+		if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, col) {
+			return "COALESCE(" + col + ", '') AS " + col
+		}
+		return "'' AS " + col
+	}
 	selectCols := strings.Join([]string{
 		"id", "user_id", "device_id",
-		labelExpr, ownerExpr,
-		"first_seen_at", "last_seen_at",
+		labelExpr, ownerExpr, ipColumn("first_ip"), ipColumn("last_ip"),
+		statusExpr + " AS status", "first_seen_at", "last_seen_at",
 		revokedAtExpr, revokedReasonExpr,
 	}, ", ")
 
 	var rows []adminDeviceBindingRow
 	if err := base.Session(&gorm.Session{}).
-		Select(selectCols).
+		Select(selectCols, statusArgs...).
 		Order("last_seen_at desc").Order("id desc").
 		Limit(pageSize).Offset((page - 1) * pageSize).
 		Scan(&rows).Error; err != nil {
 		return AdminDeviceListResult{}, fmt.Errorf("查询设备列表失败：%w", err)
 	}
-	if len(rows) == 0 {
-		// ⚠️ 按 userId 过滤时**不返回全局孤儿封禁**（A4-2）。
-		//
-		// OrphanBans 的语义是「device_id 没有任何绑定行的封禁」—— 它天然是
-		// **跨账号**的（谁知道那台设备曾属于谁）。在用户管理页展示它，等于
-		// 在「张三的设备」面板里列出一堆别人的封禁记录，用户无法判断哪条与他有关。
-		//
-		// 更糟的是「该用户一台设备都没有」与「他有一台被封禁的孤儿设备」在
-		// 前端会长得一模一样（都是列表空 + 一堆孤儿行），而后者的正确处理是
-		// 「去设备管理页解封」，前者是「他还没用过任何设备」。
-		if query.UserID > 0 {
-			return result, nil
-		}
-		orphans, orphanErr := ListOrphanDeviceBansWithDB(db, now, 50)
-		if orphanErr != nil {
-			logger.SysWarn("查询孤立设备封禁失败：" + orphanErr.Error())
-		} else {
-			result.OrphanBans = orphans
-		}
-		return result, nil
-	}
-
 	userIDs := make([]int32, 0, len(rows))
 	deviceIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -779,9 +841,10 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 	}
 	bans, banErr := LoadActiveDeviceBansWithDB(db, deviceIDs, now)
 	if banErr != nil {
-		logger.SysWarn("查询设备封禁状态失败：" + banErr.Error())
+		return AdminDeviceListResult{}, banErr
 	}
 
+	canDeleteHistory := hasRevocation && hasDeviceHistoryColumn(db)
 	for _, row := range rows {
 		item := AdminDeviceItem{
 			ID:            row.ID,
@@ -789,31 +852,34 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 			Username:      names[row.UserID],
 			DeviceID:      NormalizeBlacklistDeviceID(row.DeviceID),
 			DeviceLabel:   row.DeviceLabel,
+			FirstIP:       row.FirstIP,
+			LastIP:        row.LastIP,
 			OwnerKind:     row.OwnerKind,
 			FirstSeenAt:   row.FirstSeenAt,
 			LastSeenAt:    row.LastSeenAt,
 			RevokedAt:     row.RevokedAt,
 			RevokedReason: row.RevokedReason,
-			Status:        AdminDeviceStatusActive,
-		}
-		if row.RevokedAt != nil {
-			item.Status = AdminDeviceStatusRevoked
+			Status:        row.Status,
 		}
 		if ban, ok := bans[item.DeviceID]; ok {
-			item.Status = AdminDeviceStatusBanned
 			item.Banned = true
 			item.BanEntryID = ban.EntryID
 			item.BanReason = ban.Reason
 			item.BanExpiresAt = ban.ExpiresAt
 			item.BanPermanent = ban.ExpiresAt == nil
 		}
+		item.AccountBlocked = item.Status == AdminDeviceStatusBanned && !item.Banned
+		item.Deletable = item.Status == AdminDeviceStatusRevoked && canDeleteHistory
 		result.Data = append(result.Data, item)
 	}
 
-	orphans, orphanErr := ListOrphanDeviceBansWithDB(db, now, 50)
-	if orphanErr != nil {
-		logger.SysWarn("查询孤立设备封禁失败：" + orphanErr.Error())
-	} else {
+	// Global rules without a visible account row are a separate list, not
+	// device-history stats; do not display them in a scoped account or another status.
+	if query.UserID == 0 && (status == "" || status == "all" || status == AdminDeviceStatusBanned) {
+		orphans, err := listOrphanDeviceBansWithKeyword(db, now, 50, strings.TrimSpace(query.Keyword))
+		if err != nil {
+			return AdminDeviceListResult{}, err
+		}
 		result.OrphanBans = orphans
 	}
 	return result, nil

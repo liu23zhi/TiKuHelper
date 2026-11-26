@@ -270,14 +270,27 @@ func devicePoolRevokedColumnAvailable(db *gorm.DB) bool {
 	return db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_at")
 }
 
-// devicePoolActiveScope 追加「未撤销」条件；列不存在时退化为无条件（见上）。
-//
-// where 字符串与参数分开返回，避免调用方各自拼串导致口径漂移。
-func devicePoolActiveScope(db *gorm.DB) (string, []any) {
-	if devicePoolRevokedColumnAvailable(db) {
-		return "revoked_at IS NULL", nil
+// ActiveOrdinaryDeviceBindings is the same selection used for slot usage
+// and its device list. Existing account rules predate atomic revocation; they
+// already block use and must not consume a slot merely because of that old row.
+func ActiveOrdinaryDeviceBindings(db, query *gorm.DB) *gorm.DB {
+	if scope, args := devicePoolActiveScope(db); scope != "" {
+		return query.Where(scope, args...)
 	}
-	return "", nil
+	return query
+}
+
+func devicePoolActiveScope(db *gorm.DB) (string, []any) {
+	var predicates []string
+	if devicePoolRevokedColumnAvailable(db) {
+		predicates = append(predicates, "revoked_at IS NULL")
+	}
+	if db.Migrator().HasTable(&entity.UserDeviceBlock{}) {
+		exact := exactDeviceIDSQL(db, "b.device_id", "account_device_bindings.device_id")
+		predicates = append(predicates,
+			"NOT EXISTS (SELECT 1 FROM user_device_blocks AS b WHERE b.user_id = account_device_bindings.user_id AND "+exact+")")
+	}
+	return strings.Join(predicates, " AND "), nil
 }
 
 // CountDevices 返回某账号**当前占用槽位**的设备数（141 §2 的核心公式）。
@@ -328,9 +341,7 @@ func CountDevices(db *gorm.DB, userID int32) (int, error) {
 		return 0, ErrDevicePoolSchemaUnavailable
 	}
 	query := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).Where("user_id = ?", userID)
-	if scope, args := devicePoolActiveScope(db); scope != "" {
-		query = query.Where(scope, args...)
-	}
+	query = ActiveOrdinaryDeviceBindings(db, query)
 	selectClause := "id AS id"
 	if devicePoolSessionCountColumnAvailable(db) {
 		selectClause = "id AS id, session_count AS session_count"
@@ -734,8 +745,12 @@ func inspectDeviceAccess(db *gorm.DB, userID int32, deviceID string, clientIP st
 				db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
 				activity["last_ip"] = ip
 			}
-			if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-				Where("id = ?", id).UpdateColumns(activity).Error; err != nil {
+			update := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
+				Where("id = ? AND (last_seen_at IS NULL OR last_seen_at <= ?)", id, now)
+			if devicePoolRevokedColumnAvailable(db) {
+				update = update.Where("revoked_at IS NULL")
+			}
+			if err := update.UpdateColumns(activity).Error; err != nil {
 				devicePoolFailOpenLog(userID, "刷新设备活跃时间失败："+err.Error())
 			}
 		}
@@ -845,24 +860,28 @@ func RegisterDevice(db *gorm.DB, userID int32, deviceID string) (DevicePoolDecis
 // 判定通过后**照原样**继续走 CanUseDevice，不改写它的任何结论：
 // 加上判定之前的行为逐字保留（已有 30+ 条 device_pool 用例依赖这一点）。
 func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, options DeviceBindingRegisterOptions) (DevicePoolDecision, error) {
+	normalized := NormalizeDevicePoolDeviceID(deviceID)
+	if db == nil || normalized == "" || userID <= 0 || !devicePoolSchemaAvailable(db) {
+		return CanUseDevice(db, userID, normalized), nil
+	}
+	var decision DevicePoolDecision
+	err := withDeviceLifecycleWrite(db, normalized, func(tx *gorm.DB) error {
+		var err error
+		decision, err = registerDeviceWithOptions(tx, userID, normalized, options)
+		return err
+	})
+	return decision, err
+}
+
+func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, options DeviceBindingRegisterOptions) (DevicePoolDecision, error) {
 	// 设备标识冲突（141 §4）：只在「首次登记」判一次，不带 instance 时整体跳过。
-	if conflict := DecideDeviceRegistration(db, userID, deviceID, options.ClientInstance); !conflict.Allowed {
+	if conflict := DecideDeviceRegistration(db, userID, normalized, options.ClientInstance); !conflict.Allowed {
 		return conflict, nil
 	}
-	decision := CanUseDevice(db, userID, deviceID)
+	decision := InspectDeviceAccessWithDB(db, userID, normalized)
 	if !decision.Allowed {
 		return decision, nil
 	}
-	normalized := NormalizeDevicePoolDeviceID(deviceID)
-	if normalized == "" || userID <= 0 {
-		// 判定阶段已按 fail-open 放行，这里没有可落库的指纹。
-		return decision, nil
-	}
-	if !devicePoolSchemaAvailable(db) {
-		// 表不可用时判定已 fail-open 放行；登记失败也不影响本次请求。
-		return decision, nil
-	}
-
 	now := time.Now()
 	session := devicePoolSession(db)
 	ownerKind := strings.TrimSpace(options.OwnerKind)
@@ -880,6 +899,9 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 		// 仍是 idle_10d/user_removed，展示层与排障会读到矛盾的「未撤销但有撤销原因」。
 		updates["revoked_at"] = nil
 		updates["revoked_reason"] = ""
+	}
+	if hasDeviceHistoryColumn(db) {
+		updates["history_hidden_at"] = nil
 	}
 	if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "owner_kind") {
 		updates["owner_kind"] = ownerKind

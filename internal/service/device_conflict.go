@@ -447,9 +447,8 @@ func ReportDeviceSessionCount(db *gorm.DB, userID int32, deviceID string, count 
 	if state.hasReportedAt {
 		updates["session_reported_at"] = now
 	}
-	res := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-		Where("id = ?", id).
-		UpdateColumns(updates)
+	query := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).Where("id = ?", id)
+	res := ActiveOrdinaryDeviceBindings(db, query).UpdateColumns(updates)
 	if res.Error != nil {
 		return res.Error
 	}

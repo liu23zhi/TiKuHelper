@@ -56,7 +56,6 @@ import (
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // 设备行的三种状态（137 §9.1 的「状态」列）。
@@ -68,13 +67,6 @@ const (
 	deviceUserStatusRemoved = "removed" // 已移除（revoked_at 非空）
 	deviceUserStatusBlocked = "blocked" // 已拉黑（user_device_blocks 命中，优先级最高）
 )
-
-// 撤销原因：用户自己移除（137 §3.2 的四个取值之一）。
-//
-// 刻意写死字面量而不引用 A1 的 entity.DeviceBindingRevokeReasonUserRemoved：
-// 该常量属于 A1 的 entity 文件，本批次不可依赖（编译顺序问题同上）。
-// 合并后应改成引用它，否则两处字面量会漂移。
-const deviceUserRevokeReasonUserRemoved = "user_removed"
 
 // EffectiveDeviceLimit 的 source 取值中「用户自设覆盖」那一个（137 §4）。
 // 同样写字面量，理由同上（该常量由 A1 在 service 包内新增）。
@@ -196,9 +188,10 @@ type deviceUserDeviceItem struct {
 	StatusText    string     `json:"statusText"`
 	RevokedAt     *time.Time `json:"revokedAt"`
 	RevokedReason string     `json:"revokedReason"`
-	// Blocked=是否为用户拉黑状态；BlockID 是解除拉黑要用的 id（0=未拉黑）。
-	Blocked bool  `json:"blocked"`
-	BlockID int64 `json:"blockId"`
+	// BlockID only exists for a self-service account block; a global ban never gains this permission.
+	Blocked         bool  `json:"blocked"`
+	BlockID         int64 `json:"blockId"`
+	GloballyBlocked bool  `json:"globallyBlocked"`
 	// BlockOnly=true 表示这条只有拉黑记录、没有绑定行（历史数据/绑定行被物理删除）。
 	//
 	// 为什么要在列表里出现：不出现的话用户看得到「已拉黑」却找不到解除入口，
@@ -206,6 +199,7 @@ type deviceUserDeviceItem struct {
 	BlockOnly bool `json:"blockOnly"`
 	// Removable=当前是否可点「移除」（已撤销的行没有意义再撤销一次）。
 	Removable bool `json:"removable"`
+	Blockable bool `json:"blockable"`
 	// Deletable 仅对已撤销且未拉黑的历史记录为 true，允许用户清理历史。
 	Deletable bool `json:"deletable"`
 }
@@ -285,7 +279,7 @@ func deviceUserFindBinding(db *gorm.DB, userID int32, id int64) (*deviceUserBind
 	}
 	state := deviceUserReadColumnState(db)
 	var row deviceUserBindingRow
-	err := db.Table(entity.TableNameAccountDeviceBinding).
+	err := service.VisibleDeviceHistory(db, db.Table(entity.TableNameAccountDeviceBinding)).
 		Select(deviceUserBindingSelect(state)).
 		Where("id = ? AND user_id = ?", id, userID).
 		Take(&row).Error
@@ -320,6 +314,7 @@ func deviceUserListOrder(state deviceUserColumnState) string {
 //
 // 不接受任何 userId 参数：目标账号恒取当前登录用户（否则就是越权面）。
 func UserDevices(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)
 	if !ok {
 		return
@@ -336,6 +331,7 @@ func UserDevices(c *gin.Context) {
 			"devices":     []deviceUserDeviceItem{},
 			"total":       0,
 			"active":      0,
+			"removed":     0,
 			"blocked":     0,
 			"schemaReady": false,
 		}})
@@ -350,7 +346,7 @@ func UserDevices(c *gin.Context) {
 	}
 
 	var rows []deviceUserBindingRow
-	if err := db.Table(entity.TableNameAccountDeviceBinding).
+	if err := service.VisibleDeviceHistory(db, db.Table(entity.TableNameAccountDeviceBinding)).
 		Select(deviceUserBindingSelect(state)).
 		Where("user_id = ?", operator.ID).
 		Order(deviceUserListOrder(state)).
@@ -359,39 +355,47 @@ func UserDevices(c *gin.Context) {
 		return
 	}
 
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.DeviceID)
+	}
+	globalBans, err := service.LoadActiveDeviceBansWithDB(db, keys, time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备拉黑记录失败"})
+		return
+	}
+	historyAvailable := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "history_hidden_at")
+	canBlock := state.hasRevoked && deviceUserBlocksTableAvailable(db)
 	devices := make([]deviceUserDeviceItem, 0, len(rows))
-	active, blocked := 0, 0
+	active, removed, blocked := 0, 0, 0
 	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		seen[row.DeviceID] = true
 		item := deviceUserDeviceItem{
-			ID:            row.ID,
-			DeviceID:      row.DeviceID,
-			DeviceLabel:   row.DeviceLabel,
-			FirstIP:       row.FirstIP,
-			LastIP:        row.LastIP,
-			FirstSeenAt:   row.FirstSeenAt,
-			LastSeenAt:    row.LastSeenAt,
-			RevokedAt:     row.RevokedAt,
-			RevokedReason: row.RevokedReason,
-			Status:        deviceUserStatusActive,
+			ID: row.ID, DeviceID: row.DeviceID, DeviceLabel: row.DeviceLabel,
+			FirstIP: row.FirstIP, LastIP: row.LastIP, FirstSeenAt: row.FirstSeenAt,
+			LastSeenAt: row.LastSeenAt, RevokedAt: row.RevokedAt, RevokedReason: row.RevokedReason,
 		}
-		if row.RevokedAt != nil {
-			item.Status = deviceUserStatusRemoved
-		}
-		if block, hit := blocks[row.DeviceID]; hit {
-			// 拉黑优先于撤销：一台已移除又被拉黑的设备，用户要看到的是
-			// 「已拉黑」（因为解除拉黑才是可执行动作）。
-			item.Status = deviceUserStatusBlocked
-			item.Blocked = true
-			item.BlockID = block.ID
+		_, item.GloballyBlocked = globalBans[service.NormalizeBlacklistDeviceID(row.DeviceID)]
+		block, accountBlocked := blocks[row.DeviceID]
+		switch {
+		case item.GloballyBlocked || accountBlocked:
+			item.Status, item.Blocked = deviceUserStatusBlocked, true
+			if !item.GloballyBlocked {
+				item.BlockID = block.ID
+			}
 			blocked++
-		} else if row.RevokedAt == nil {
+		case row.RevokedAt != nil:
+			item.Status = deviceUserStatusRemoved
+			removed++
+		default:
+			item.Status = deviceUserStatusActive
 			active++
 		}
 		item.StatusText = deviceUserStatusText(item.Status)
-		item.Removable = row.RevokedAt == nil
-		item.Deletable = row.RevokedAt != nil && !item.Blocked
+		item.Removable = item.Status == deviceUserStatusActive && state.hasRevoked
+		item.Blockable = !item.Blocked && canBlock
+		item.Deletable = item.Status == deviceUserStatusRemoved && historyAvailable
 		devices = append(devices, item)
 	}
 
@@ -421,6 +425,7 @@ func UserDevices(c *gin.Context) {
 		"devices":     devices,
 		"total":       len(devices),
 		"active":      active,
+		"removed":     removed,
 		"blocked":     blocked,
 		"schemaReady": true,
 	}})
@@ -446,52 +451,13 @@ func UserDeviceDelete(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法删除设备记录"})
 		return
 	}
-	row, err := deviceUserFindBinding(db, operator.ID, id)
+	c.Header("Cache-Control", "no-store")
+	deviceID, err := service.ClearDeviceHistory(db, id, operator.ID, deviceHistoryActor(operator))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+		writeUserDeviceHistoryError(c, err, "删除设备记录失败")
 		return
 	}
-	if row == nil {
-		deviceUserNotFound(c)
-		return
-	}
-	if row.RevokedAt == nil {
-		c.JSON(http.StatusConflict, gin.H{"message": "只能删除已移除的设备"})
-		return
-	}
-	if blocks, err := deviceUserLoadBlocks(db, operator.ID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备拉黑记录失败"})
-		return
-	} else if _, blocked := blocks[row.DeviceID]; blocked {
-		c.JSON(http.StatusConflict, gin.H{"message": "已拉黑设备请先解除拉黑"})
-		return
-	}
-	deleteQuery := db.Table(entity.TableNameAccountDeviceBinding).
-		Where("id = ? AND user_id = ? AND revoked_at IS NOT NULL", id, operator.ID)
-	if deviceUserBlocksTableAvailable(db) {
-		// 拉黑记录可能在前面的读取之后插入；在实际 DELETE 内再次判断，
-		// 让新出现的拉黑记录保留其绑定历史，而不是先删绑定再留下孤儿拉黑。
-		deleteQuery = deleteQuery.Where("NOT EXISTS (SELECT 1 FROM user_device_blocks WHERE user_device_blocks.user_id = ? AND user_device_blocks.device_id = account_device_bindings.device_id)", operator.ID)
-	}
-	result := deleteQuery.Delete(&entity.AccountDeviceBinding{})
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "删除设备记录失败"})
-		return
-	}
-	if result.RowsAffected == 0 {
-		latest, findErr := deviceUserFindBinding(db, operator.ID, id)
-		if findErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
-			return
-		}
-		if latest != nil {
-			c.JSON(http.StatusConflict, gin.H{"message": "设备状态已变化，请刷新后重试"})
-			return
-		}
-		deviceUserNotFound(c)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": id, "deviceId": row.DeviceID, "deleted": true}})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": id, "deviceId": deviceID, "deleted": true}})
 }
 
 // UserDeviceExpiryGet/Put 读取和保存当前用户的设备闲置自动移除时间。
@@ -567,79 +533,15 @@ func UserDeviceRemove(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法移除设备"})
 		return
 	}
-	row, err := deviceUserFindBinding(db, operator.ID, id)
+	row, already, err := service.RemoveAccountDevice(db, id, deviceHistoryActor(operator))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
+		writeUserDeviceHistoryError(c, err, "移除设备失败")
 		return
 	}
-	if row == nil {
-		// 不存在 / 不属于自己 / 表未就绪 —— 对外一律 404（红线 1）。
-		deviceUserNotFound(c)
-		return
-	}
-	state := deviceUserReadColumnState(db)
-	if !state.hasRevoked {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "设备表尚未就绪，暂时无法移除设备"})
-		return
-	}
-
-	if row.RevokedAt != nil {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"id":             row.ID,
-			"deviceId":       row.DeviceID,
-			"status":         deviceUserStatusRemoved,
-			"statusText":     deviceUserStatusText(deviceUserStatusRemoved),
-			"revokedAt":      row.RevokedAt,
-			"revokedReason":  row.RevokedReason,
-			"alreadyRevoked": true,
-		}})
-		return
-	}
-
-	now := time.Now()
-	result := db.Table(entity.TableNameAccountDeviceBinding).
-		Where("id = ? AND user_id = ?", id, operator.ID).
-		Where("revoked_at IS NULL").
-		Updates(map[string]any{
-			"revoked_at":     now,
-			"revoked_reason": deviceUserRevokeReasonUserRemoved,
-		})
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "移除设备失败"})
-		return
-	}
-	if result.RowsAffected == 0 {
-		// 并发：查到时还没撤销，更新时已被另一次请求撤销（或行被删）。
-		// 重新读一次给出当前真实状态，而不是报错 —— 用户的意图已经达成了。
-		latest, err := deviceUserFindBinding(db, operator.ID, id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "移除设备失败"})
-			return
-		}
-		if latest == nil {
-			deviceUserNotFound(c)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"id":             latest.ID,
-			"deviceId":       latest.DeviceID,
-			"status":         deviceUserStatusRemoved,
-			"statusText":     deviceUserStatusText(deviceUserStatusRemoved),
-			"revokedAt":      latest.RevokedAt,
-			"revokedReason":  latest.RevokedReason,
-			"alreadyRevoked": true,
-		}})
-		return
-	}
-
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"id":             row.ID,
-		"deviceId":       row.DeviceID,
-		"status":         deviceUserStatusRemoved,
-		"statusText":     deviceUserStatusText(deviceUserStatusRemoved),
-		"revokedAt":      now,
-		"revokedReason":  deviceUserRevokeReasonUserRemoved,
-		"alreadyRevoked": false,
+		"id": row.ID, "deviceId": row.DeviceID, "status": deviceUserStatusRemoved,
+		"statusText": deviceUserStatusText(deviceUserStatusRemoved), "revokedAt": row.RevokedAt,
+		"revokedReason": row.RevokedReason, "alreadyRevoked": already,
 	}})
 }
 
@@ -795,58 +697,47 @@ func UserDeviceBlock(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法拉黑设备"})
 		return
 	}
-	row, err := deviceUserFindBinding(db, operator.ID, id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备记录失败"})
-		return
-	}
-	if row == nil {
-		deviceUserNotFound(c)
-		return
-	}
-	if !deviceUserBlocksTableAvailable(db) {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "设备拉黑表尚未就绪，暂时无法拉黑设备"})
-		return
-	}
-
+	c.Header("Cache-Control", "no-store")
 	var input struct {
 		Reason string `json:"reason"`
 	}
-	// 允许空 body（等价 reason=''）：拉黑是核心动作，不该因为没填原因被拒。
 	_ = c.ShouldBindJSON(&input)
-	reason := strings.TrimSpace(input.Reason)
-	if runes := []rune(reason); len(runes) > 255 {
-		reason = string(runes[:255])
-	}
-
-	deviceID := service.NormalizeDevicePoolDeviceID(row.DeviceID)
-	if deviceID == "" {
-		// 空设备指纹无法拉黑（会被当成「全站拉黑」之类）。这属于脏数据。
-		c.JSON(http.StatusBadRequest, gin.H{"message": "该设备记录缺少设备标识，无法拉黑"})
+	stored, err := service.BlockAccountDevice(db, id, deviceHistoryActor(operator), input.Reason)
+	if err != nil {
+		writeUserDeviceHistoryError(c, err, "拉黑设备失败")
 		return
 	}
-
-	payload := entity.UserDeviceBlock{UserID: operator.ID, DeviceID: deviceID, Reason: reason}
-	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&payload).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "拉黑设备失败"})
-		return
-	}
-	var stored deviceUserBlockRow
-	if err := db.Table(entity.TableNameUserDeviceBlock).
-		Select("id AS id, device_id AS device_id, reason AS reason, created_at AS created_at").
-		Where("user_id = ? AND device_id = ?", operator.ID, deviceID).
-		Take(&stored).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "拉黑设备失败"})
-		return
-	}
-
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"blockId":    stored.ID,
-		"deviceId":   deviceID,
-		"reason":     stored.Reason,
-		"status":     deviceUserStatusBlocked,
-		"statusText": deviceUserStatusText(deviceUserStatusBlocked),
+		"blockId": stored.ID, "deviceId": stored.DeviceID, "reason": stored.Reason,
+		"status": deviceUserStatusBlocked, "statusText": deviceUserStatusText(deviceUserStatusBlocked),
 	}})
+}
+
+func deviceHistoryActor(operator entity.User) service.DeviceHistoryActor {
+	return service.DeviceHistoryActor{UserID: operator.ID, Username: operator.Username}
+}
+
+func writeUserDeviceHistoryError(c *gin.Context, err error, fallback string) {
+	switch {
+	case errors.Is(err, service.ErrDeviceBindingNotFound):
+		deviceUserNotFound(c)
+	case errors.Is(err, service.ErrDeviceHistoryNotRemoved), errors.Is(err, service.ErrDeviceAlreadyGloballyBanned):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, service.ErrDeviceHistoryUnavailable):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": err.Error()})
+	case errors.Is(err, service.ErrInvalidDeviceID):
+		c.JSON(http.StatusBadRequest, gin.H{"message": "该设备记录缺少设备标识，无法拉黑"})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"message": fallback})
+	}
+}
+
+func requireOrdinaryDeviceCredential(c *gin.Context) bool {
+	if _, script := c.Get("script_session"); script {
+		c.JSON(http.StatusForbidden, gin.H{"message": "考试脚本凭据不能访问普通设备数据"})
+		return false
+	}
+	return true
 }
 
 // UserDeviceUnblock 解除拉黑：**删行**（不是改状态）。
@@ -871,39 +762,11 @@ func UserDeviceUnblock(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法解除拉黑"})
 		return
 	}
-	if !deviceUserBlocksTableAvailable(db) {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "设备拉黑表尚未就绪，暂时无法解除拉黑"})
-		return
-	}
-
-	var stored deviceUserBlockRow
-	err := db.Table(entity.TableNameUserDeviceBlock).
-		Select("id AS id, device_id AS device_id, reason AS reason, created_at AS created_at").
-		Where("id = ? AND user_id = ?", id, operator.ID).
-		Take(&stored).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		deviceUserNotFound(c)
-		return
-	}
+	stored, err := service.UnblockAccountDevice(db, id, deviceHistoryActor(operator))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取拉黑记录失败"})
+		writeUserDeviceHistoryError(c, err, "解除拉黑失败")
 		return
 	}
-
-	result := db.Table(entity.TableNameUserDeviceBlock).
-		Where("id = ? AND user_id = ?", id, operator.ID).
-		Delete(&entity.UserDeviceBlock{})
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "解除拉黑失败"})
-		return
-	}
-	if result.RowsAffected == 0 {
-		// 并发：读到之后、删之前被另一次请求删掉。语义上已经达成，仍按 404 处理
-		// 更安全（前端刷新即可看到真实状态），但不要报 500。
-		deviceUserNotFound(c)
-		return
-	}
-
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"blockId":  stored.ID,
 		"deviceId": stored.DeviceID,
@@ -1150,7 +1013,6 @@ const DeviceQuotaUnlimitedAvailable = -1
 type deviceQuotaColumnState struct {
 	hasLabel        bool // device_label
 	hasSessionCount bool // session_count（141 §3.1 新增）
-	hasRevoked      bool // revoked_at
 }
 
 func deviceQuotaReadColumnState(db *gorm.DB) deviceQuotaColumnState {
@@ -1160,7 +1022,6 @@ func deviceQuotaReadColumnState(db *gorm.DB) deviceQuotaColumnState {
 	}
 	state.hasLabel = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label")
 	state.hasSessionCount = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "session_count")
-	state.hasRevoked = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_at")
 	return state
 }
 
@@ -1236,6 +1097,9 @@ func deviceQuotaNormalizeDeviceID(raw string) string {
 // 属 C2 批次（141 §4 / §6.2/§6.3），把「读配额」与「登记槽位」揉在同一个 GET
 // 里会让「exe 启一次就占一个槽」变成副作用，而副作用没有幂等保证可言。
 func DeviceQuota(c *gin.Context) {
+	if !requireOrdinaryDeviceCredential(c) {
+		return
+	}
 	operator, ok := currentOperator(c)
 	if !ok {
 		return
@@ -1292,9 +1156,7 @@ func DeviceQuota(c *gin.Context) {
 		query := db.Table(entity.TableNameAccountDeviceBinding).
 			Select("device_id AS device_id, "+label+", "+sessionCount+", last_seen_at AS last_seen_at").
 			Where("user_id = ?", operator.ID)
-		if state.hasRevoked {
-			query = query.Where("revoked_at IS NULL")
-		}
+		query = service.ActiveOrdinaryDeviceBindings(db, query)
 		var rows []deviceQuotaBindingRow
 		if err := query.Order("last_seen_at DESC, id DESC").Find(&rows).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备列表失败"})
