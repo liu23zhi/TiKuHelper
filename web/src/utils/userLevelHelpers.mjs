@@ -170,6 +170,8 @@ export function buildNextLevelRequirement(levels, summary) {
   if (!next) {
     return { available: false, capped: true, reason: '已是最高等级。' }
   }
+  const exact = exactLevelGaps(next, summary)
+  if (exact) return { available: true, levelName: String(next.name ?? '').trim(), rank: Number(next.rank ?? 0), ...exact }
   const rechargeTotal = Number(summary?.rechargeTotal ?? 0)
   const consumptionTotal = Number(summary?.consumptionTotal ?? 0)
   const minRecharge = Number(next.minRechargeTotal ?? 0)
@@ -188,7 +190,6 @@ export function buildNextLevelRequirement(levels, summary) {
     minConsumptionTotal: Number.isFinite(minConsumption) ? minConsumption : null,
     rechargeGap,
     consumptionGap,
-    ...(exactLevelGaps(next,summary) ?? {}),
     // 两个维度**同时**满足才升级（与后端 ResolveUserLevel 的 AND 语义一致）。
     // 任一维度为 null 视为"未知"，不能算达标。
     satisfied: rechargeGap === 0 && consumptionGap === 0,

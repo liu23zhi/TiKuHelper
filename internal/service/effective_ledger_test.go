@@ -92,7 +92,7 @@ func TestEffectiveLedgerAdjustmentAuditsAndCannotRestoreRefundedPrincipal(t *tes
 		}
 	}
 	audit, err := CorrectEffectiveLedger(db, admin, 7, input)
-	if err != nil || audit.OperatorID != 8 || audit.OldMicros != 8000000 || audit.NewMicros != 6000001 || audit.RefundIDs == "" || audit.CreatedAt.IsZero() {
+	if err != nil || audit.OperatorID != 8 || audit.OldMicros.String() != "8000000" || audit.NewMicros.String() != "6000001" || audit.RefundIDs == "" || audit.CreatedAt.IsZero() {
 		t.Fatalf("audit %+v: %v", audit, err)
 	}
 	if _, err := CorrectEffectiveLedger(db, admin, 7, input); err == nil {
@@ -480,14 +480,14 @@ func TestReviewPrecisionBoundAppliesToDatabaseAndAudit(t *testing.T) {
 	seedLevelPaidOrder(t, db, o)
 	in := EffectiveCorrection{SourceKind: "order", SourceID: o.ID, Expected: "10000000001", New: "10000000000.000002", Reason: "精确微元"}
 	a, err := CorrectEffectiveLedger(db, admin, 2, in)
-	if err != nil || a.NewMicros != 10000000000000002 {
+	if err != nil || a.NewMicros.String() != "10000000000000002" {
 		t.Fatalf("first micro lost: %+v %v", a, err)
 	}
 	in.Expected = in.New
 	in.New = "10000000000.000001"
 	in.Revision = a.ID
 	b, err := CorrectEffectiveLedger(db, admin, 2, in)
-	if err != nil || b.OldMicros-b.NewMicros != 1 {
+	if err != nil || b.OldMicros.String() != "10000000000000002" || b.NewMicros.String() != "10000000000000001" {
 		t.Fatalf("second micro lost: %+v %v", b, err)
 	}
 	out, e := ExportDataWithDB(db, ExportDataOptions{Resource: ExportResourceUsers, Format: ExportFormatJSON})
@@ -556,5 +556,76 @@ func TestReviewAmbiguousLegacySQLiteRealPreservesEntitlement(t *testing.T) {
 	got, err := ComputeUserLevelTotalsWithDB(db, 2)
 	if err != nil || !got.RequiresReview() || got.Issues["stored_recharge_precision_unknown"] != 1 {
 		t.Fatalf("lost precision presented as known %+v %v", got, err)
+	}
+}
+
+func TestSecondReviewMismatchSourceExcludedFromDetailAndTotal(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}); err != nil {
+		t.Fatal(err)
+	}
+	admin := entity.User{ID: 1, Username: "admin", Role: "admin", Status: "enabled"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLevelUser(t, db, 2)
+	if err := db.Create(&entity.BillingRecord{ID: 10, UserID: 2, Type: "normal_search", Amount: 5, GiftCharged: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReviewEffectiveLedger(db, admin, 2, 0)
+	if err != nil || len(got.Sources) != 1 {
+		t.Fatalf("review failed %v", err)
+	}
+	s := got.Sources[0]
+	if !s.Excluded || !s.Uncertain || s.Exact.Gross != "5.00000000" || s.Exact.Debited != "" || s.Exact.Net != "0.000000" || s.Exact.Effective != got.Totals.Exact.Consumption || got.Totals.Exact.Consumption != "0.000000" {
+		t.Fatalf("excluded source has a recognized contribution: %+v; total=%s", s, got.Totals.Exact.Consumption)
+	}
+}
+func TestSecondReviewLargeAccountCanCorrectOneSmallSource(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}); err != nil {
+		t.Fatal(err)
+	}
+	admin := entity.User{ID: 1, Username: "admin", Role: "admin", Status: "enabled"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLevelUser(t, db, 2)
+	// Legal historical total is larger than an 18,6 source AND than int64 micro-units.
+	bills := make([]entity.BillingRecord, 1001)
+	for i := range bills {
+		bills[i] = entity.BillingRecord{ID: int32(i + 10), UserID: 2, Type: "normal_search", Amount: 9999999999, BalanceBefore: 9999999999}
+	}
+	if err := db.CreateInBatches(&bills, 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	const before = "10009999998999.000000"
+	const after = "10009999998998.999999"
+	in := EffectiveCorrection{SourceKind: "bill", SourceID: 10, Expected: before, New: after, Reason: "合成账务修正一微元"}
+	a, err := CorrectEffectiveLedger(db, admin, 2, in)
+	if err != nil {
+		t.Fatalf("valid one-micro source correction on large account: %v", err)
+	}
+	if a.OldExact != before || a.NewExact != after || a.DiscountMicros != 1 {
+		t.Fatalf("wrong audit %+v", a)
+	}
+	if _, err = CorrectEffectiveLedger(db, admin, 2, in); !errors.Is(err, ErrLedgerStale) {
+		t.Fatalf("stale duplicate accepted: %v", err)
+	}
+	got, err := ReviewEffectiveLedger(db, admin, 2, 0)
+	if err != nil || got.Totals.Exact.Consumption != after || len(got.Audit) != 1 || got.Audit[0].OldExact != before || got.Audit[0].NewExact != after {
+		t.Fatalf("replay disagreed: %+v %v", got.Totals, err)
+	}
+	// Even a valid account CAS can never subtract another bill's contribution.
+	in.Revision = a.ID
+	in.Expected = after
+	in.New = "1"
+	if _, err = CorrectEffectiveLedger(db, admin, 2, in); !errors.Is(err, ErrLedgerInput) {
+		t.Fatalf("source cap bypassed: %v", err)
+	}
+	in.New = before
+	b, err := CorrectEffectiveLedger(db, admin, 2, in)
+	if err != nil || b.DiscountMicros != 0 {
+		t.Fatalf("could not restore precise original contribution: %+v %v", b, err)
 	}
 }

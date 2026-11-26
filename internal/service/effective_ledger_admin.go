@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
+	"math/big"
 	"regexp"
 	"sort"
 	"strconv"
@@ -43,6 +45,34 @@ func ledgerMicros(v string) (int64, error) {
 	}
 	return n, nil
 }
+
+// Lifetime account totals use the same width as the derived DECIMAL(38,6)
+// history snapshots; validation of each selected source remains DECIMAL(18,6).
+var accountDecimal = regexp.MustCompile(`^[0-9]{1,32}(\.[0-9]{1,6})?$`)
+var auditUnits = regexp.MustCompile(`^(0|[1-9][0-9]{0,37})$`)
+
+func accountMicros(v string) (*big.Int, error) {
+	if !accountDecimal.MatchString(v) {
+		return nil, ErrLedgerInput
+	}
+	whole, frac, _ := strings.Cut(v, ".")
+	n, ok := new(big.Int).SetString(whole+frac+strings.Repeat("0", 6-len(frac)), 10)
+	if !ok {
+		return nil, ErrLedgerInput
+	}
+	return n, nil
+}
+func exactAuditTotal(raw json.Number) (string, error) {
+	if !auditUnits.MatchString(raw.String()) {
+		return "", ErrLedgerRange
+	}
+	n, ok := new(big.Int).SetString(raw.String(), 10)
+	if !ok {
+		return "", ErrLedgerRange
+	}
+	return fixedBig(n, 6), nil
+}
+
 func (p *effectiveProjection) revision() int64 {
 	if len(p.audits) == 0 {
 		return 0
@@ -88,8 +118,6 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 		sort.Slice(result.Sources, func(i, j int) bool { return result.Sources[i].ID > result.Sources[j].ID })
 		for i := len(p.audits) - 1; i >= 0; i-- {
 			a := p.audits[i]
-			a.OldExact = fixedInt(a.OldMicros, 6)
-			a.NewExact = fixedInt(a.NewMicros, 6)
 			result.Audit = append(result.Audit, a)
 		}
 		if !tx.Migrator().HasTable(&entity.BillingRecord{}) {
@@ -118,16 +146,16 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 
 func CorrectEffectiveLedger(db *gorm.DB, actor entity.User, uid int32, input EffectiveCorrection) (entity.EffectiveAdjustment, error) {
 	var a entity.EffectiveAdjustment
-	old, err := ledgerMicros(input.Expected)
+	old, err := accountMicros(input.Expected)
 	if err != nil {
 		return a, err
 	}
-	next, err := ledgerMicros(input.New)
+	next, err := accountMicros(input.New)
 	if err != nil {
 		return a, err
 	}
 	reason := strings.TrimSpace(input.Reason)
-	if db == nil || uid <= 0 || input.SourceID <= 0 || old == next || reason == "" || utf8.RuneCountInString(reason) > 255 {
+	if db == nil || uid <= 0 || input.SourceID <= 0 || old.Cmp(next) == 0 || reason == "" || utf8.RuneCountInString(reason) > 255 {
 		return a, ErrLedgerInput
 	}
 	err = ticketRefundTransaction(db, func(tx *gorm.DB) error {
@@ -155,15 +183,21 @@ func CorrectEffectiveLedger(db *gorm.DB, actor entity.User, uid int32, input Eff
 				return ErrLedgerInput
 			}
 		}
-		if current != fixedInt(old, 6) {
+		if current != fixedBig(old, 6) {
 			return ErrLedgerStale
 		}
-		contribution := src.effectiveMicros + next - old
+		// CAS the whole account but apply only its signed delta to this source.
+		// No cast to int64 until the proposed contribution is within the source's net.
+		contribution := new(big.Int).Sub(next, old)
+		contribution.Add(contribution, big.NewInt(src.effectiveMicros))
 		net := src.netMicros
-		if contribution < 0 || contribution > net {
+		if net < 0 || net > maxEffectiveMicros || src.grossMicros > maxEffectiveMicros {
+			return ErrLedgerRange
+		}
+		if contribution.Sign() < 0 || contribution.Cmp(big.NewInt(net)) > 0 {
 			return ErrLedgerInput
 		}
-		a = entity.EffectiveAdjustment{UserID: uid, OperatorID: actor.ID, SourceKind: src.Kind, SourceID: src.ID, Reason: reason, OldMicros: old, NewMicros: next, OldExact: fixedInt(old, 6), NewExact: fixedInt(next, 6), DiscountMicros: net - contribution, RefundIDs: linkedRefundIDs(src)}
+		a = entity.EffectiveAdjustment{UserID: uid, OperatorID: actor.ID, SourceKind: src.Kind, SourceID: src.ID, Reason: reason, OldMicros: json.Number(old.String()), NewMicros: json.Number(next.String()), OldExact: fixedBig(old, 6), NewExact: fixedBig(next, 6), DiscountMicros: net - contribution.Int64(), RefundIDs: linkedRefundIDs(src)}
 		if err := tx.Create(&a).Error; err != nil {
 			return err
 		}

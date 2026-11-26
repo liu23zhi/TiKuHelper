@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -258,6 +259,32 @@ func ensureEffectiveAuditSchema(db *gorm.DB) error {
 	if db.Migrator().HasTable(&entity.EffectiveRebuildAudit{}) && db.Migrator().HasColumn("effective_rebuild_audits", "examined") && !db.Migrator().HasColumn("effective_rebuild_audits", "scanned_count") {
 		if err := db.Migrator().RenameColumn("effective_rebuild_audits", "examined", "scanned_count"); err != nil {
 			return err
+		}
+	}
+	// SQLite startup intentionally suppresses generic column alterations. Only
+	// this unpublished audit table needs an exact integer -> text conversion;
+	// unlike REAL, both old INTEGER and the new digit strings are lossless.
+	audit := &entity.EffectiveAdjustment{}
+	if db.Dialector.Name() == "sqlite" && db.Migrator().HasTable(audit) {
+		cols, err := db.Migrator().ColumnTypes(audit)
+		if err != nil {
+			return err
+		}
+		for _, col := range cols {
+			var field string
+			switch col.Name() {
+			case "old_micros":
+				field = "OldMicros"
+			case "new_micros":
+				field = "NewMicros"
+			default:
+				continue
+			}
+			if strings.Contains(strings.ToUpper(col.DatabaseTypeName()), "INT") {
+				if err := db.Migrator().AlterColumn(audit, field); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{}); err != nil {

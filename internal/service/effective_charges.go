@@ -51,11 +51,12 @@ func (b effectiveBillRow) debit() (int64, bool) {
 }
 func (p *effectiveProjection) billFromRow(b effectiveBillRow) *effectiveSource {
 	d, ok := b.debit()
-	s := &effectiveSource{Kind: "bill", ID: b.ID, Uncertain: !ok, debitedMicros: d}
+	s := &effectiveSource{Kind: "bill", ID: b.ID, Uncertain: !ok, Excluded: !ok}
 	if b.Amount.known {
 		s.Exact.Gross = fixedInt(b.Amount.n, 8)
 	}
 	if ok {
+		s.debitedMicros = d
 		s.Exact.Debited = fixedInt(d, 6)
 		v := fixedFloat(s.Exact.Debited)
 		s.Debited = &v

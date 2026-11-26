@@ -23,6 +23,7 @@ type UserLevelTotals struct {
 }
 
 type effectiveSource struct {
+	Excluded                                                                             bool              `json:"excluded,omitempty"` // bill was omitted from recognized consumption
 	Exact                                                                                ledgerExactSource `json:"exact"`
 	grossMicros, debitedMicros, refundMicros, estimateMicros, netMicros, effectiveMicros int64
 	RefundEstimateUpper                                                                  float64  `json:"refundEstimateUpper,omitempty"`
@@ -103,7 +104,16 @@ func replayEffectiveBatch(db *gorm.DB, ids []int32) (ledgerBatch, error) {
 			return nil, err
 		}
 		for _, a := range all {
-			if a.OldMicros < 0 || a.NewMicros < 0 || a.DiscountMicros < 0 || max(a.OldMicros, a.NewMicros, a.DiscountMicros) > maxEffectiveMicros {
+			var err error
+			a.OldExact, err = exactAuditTotal(a.OldMicros)
+			if err != nil {
+				return nil, err
+			}
+			a.NewExact, err = exactAuditTotal(a.NewMicros)
+			if err != nil {
+				return nil, err
+			}
+			if a.DiscountMicros < 0 || a.DiscountMicros > maxEffectiveMicros {
 				return nil, ErrLedgerRange
 			}
 			p := batch[a.UserID]

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	driver "github.com/go-sql-driver/mysql"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -314,7 +315,7 @@ func TestReviewRebuildMariaDBInterleaving(t *testing.T) {
 	}
 	fix := service.EffectiveCorrection{SourceKind: "order", SourceID: 50, Expected: "11000000000.000002", New: "11000000000.000001", Reason: "核对一微元"}
 	first, e := service.CorrectEffectiveLedger(db, admin, 3, fix)
-	if e != nil || first.OldMicros-first.NewMicros != 1 {
+	if e != nil || first.OldMicros.String() != "11000000000000002" || first.NewMicros.String() != "11000000000000001" {
 		t.Fatalf("full-domain first audit %v", e)
 	}
 	if got, e := service.CurrentUserLevelIDWithDB(db, 3); got != 3 || e != nil {
@@ -378,4 +379,107 @@ func verifyT14HistoryMigration(t *testing.T, db *gorm.DB) {
 }
 func TestReviewEffectiveHistoryMigrationSQLite(t *testing.T) {
 	verifyT14HistoryMigration(t, newA1RegistryDB(t))
+}
+
+// This is the pre-wide audit table from the unpublished #55 candidate, not
+// a wallet table. The conversion must retain original BIGINT digits and make
+// new larger-than-int64 totals genuinely text on SQLite as well as MariaDB.
+type t14LegacyAdjustment struct {
+	ID                                   int64  `gorm:"primaryKey"`
+	UserID                               int32  `gorm:"not null;index"`
+	SourceKind                           string `gorm:"type:varchar(12);not null"`
+	SourceID, OperatorID                 int32  `gorm:"not null"`
+	Reason                               string `gorm:"type:varchar(255);not null"`
+	OldMicros, NewMicros, DiscountMicros int64  `gorm:"not null"`
+	RefundIDs                            string `gorm:"type:text"`
+	CreatedAt                            time.Time
+}
+
+func (*t14LegacyAdjustment) TableName() string { return "effective_adjustments" }
+func verifyWideAuditUpgrade(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if e := db.AutoMigrate(&t14LegacyAdjustment{}); e != nil {
+		t.Fatal(e)
+	}
+	old := t14LegacyAdjustment{UserID: 197, SourceKind: "bill", SourceID: 99, OperatorID: 1, Reason: "synthetic earlier audit", OldMicros: 9223372036854775806, NewMicros: 9223372036854775805, DiscountMicros: 1}
+	if e := db.Create(&old).Error; e != nil {
+		t.Fatal(e)
+	}
+	for range 2 {
+		if e := ensureEffectiveAuditSchema(db); e != nil {
+			t.Fatal(e)
+		}
+	}
+	var a entity.EffectiveAdjustment
+	if e := db.Take(&a, old.ID).Error; e != nil || a.OldMicros.String() != "9223372036854775806" || a.NewMicros.String() != "9223372036854775805" || a.Reason != old.Reason || a.DiscountMicros != 1 {
+		t.Fatalf("original audit lost digits: %+v %v", a, e)
+	}
+	if db.Dialector.Name() == "sqlite" {
+		var kind string
+		if e := db.Raw("SELECT typeof(old_micros) FROM effective_adjustments WHERE id=?", old.ID).Scan(&kind).Error; e != nil || kind != "text" {
+			t.Fatalf("SQLite audit column is not exact text: %s %v", kind, e)
+		}
+	}
+	t.Log("audit_bigint_to_digits=true previous_audit_preserved=true second_migration_idempotent=true")
+}
+func TestSecondReviewWideAuditUpgradeSQLite(t *testing.T) {
+	d, e := gorm.Open(sqliteQuietDialector{Dialector: sqlite.Open("file:wide-audit-quiet?mode=memory&cache=shared")}, &gorm.Config{Logger: gl.Default.LogMode(gl.Silent)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	pool, _ := d.DB()
+	t.Cleanup(func() { _ = pool.Close() })
+	verifyWideAuditUpgrade(t, d)
+}
+
+func TestSecondReviewWideAuditMariaDB(t *testing.T) {
+	if os.Getenv("T14_SYNTHETIC_RACE") != "empty-schema-only" {
+		t.Skip("requires empty synthetic DB")
+	}
+	if !strings.HasPrefix(os.Getenv("T14_CLONE_DB"), "t14_synthetic_") {
+		t.Fatal("not synthetic")
+	}
+	db := openT14Clone(t)
+	var tables int64
+	if e := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()").Scan(&tables).Error; e != nil || tables != 0 {
+		t.Fatal("requires an empty synthetic schema")
+	}
+	verifyWideAuditUpgrade(t, db)
+	if e := db.AutoMigrate(&entity.User{}, &entity.UserLevel{}, &entity.BillingRecord{}, &entity.RechargeOrder{}, &entity.TicketRefund{}); e != nil {
+		t.Fatal(e)
+	}
+	if e := ensureUserLevelIDColumn(db); e != nil {
+		t.Fatal(e)
+	}
+	admin := entity.User{ID: 1, Username: "admin", Role: "admin", Status: "enabled"}
+	owner := entity.User{ID: 2, Username: "owner", Role: "user", Status: "enabled"}
+	if e := db.Create(&[]entity.User{admin, owner}).Error; e != nil {
+		t.Fatal(e)
+	}
+	bs := make([]entity.BillingRecord, 1001)
+	for i := range bs {
+		bs[i] = entity.BillingRecord{UserID: 2, Type: "normal_search", Amount: 9999999999, BalanceBefore: 9999999999}
+	}
+	if e := db.CreateInBatches(&bs, 15).Error; e != nil {
+		t.Fatal(e)
+	}
+	in := service.EffectiveCorrection{SourceKind: "bill", SourceID: bs[0].ID, Expected: "10009999998999.000000", New: "10009999998998.999999", Reason: "synthetic wide CAS"}
+	a, e := service.CorrectEffectiveLedger(db, admin, 2, in)
+	if e != nil || a.OldExact != in.Expected || a.NewExact != in.New || a.DiscountMicros != 1 {
+		t.Fatalf("wide account %+v %v", a, e)
+	}
+	if _, e = service.CorrectEffectiveLedger(db, admin, 2, in); !errors.Is(e, service.ErrLedgerStale) {
+		t.Fatalf("replayed stale correction: %v", e)
+	}
+	review, e := service.ReviewEffectiveLedger(db, admin, 2, 0)
+	if e != nil || len(review.Audit) != 1 || review.Audit[0].OldExact != in.Expected || review.Audit[0].NewExact != in.New || review.Totals.Exact.Consumption != in.New {
+		t.Fatalf("wide roundtrip: %v", e)
+	}
+	in.Revision = a.ID
+	in.Expected = in.New
+	in.New = "1"
+	if _, e = service.CorrectEffectiveLedger(db, admin, 2, in); !errors.Is(e, service.ErrLedgerInput) {
+		t.Fatalf("cross-bill delta accepted: %v", e)
+	}
+	t.Log("wide_account_over_int64_micros=true source_delta=1 stale_rejected=true over_source_cap_rejected=true audit_reloaded=true")
 }

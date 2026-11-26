@@ -11,7 +11,7 @@
         <ul><li v-for="(n,k) in review.totals.issues" :key="k">{{ issueLabel(k) }}：{{ n }} 条</li></ul>
       </details>
       <details><summary>核对来源并修正有效额</summary>
-        <p>修正仅影响有效累计、等级和等级设备上限，不动钱包和原始流水。一次仅调整一个来源；退款本金不能恢复。更正沿用原金额字段的十二位整数与六位小数；已丢失精度的旧记录留待核对。</p>
+        <p>修正仅影响有效累计、等级和等级设备上限，不动钱包和原始流水。一次仅调整一个来源；退款本金不能恢复。单笔贡献沿用原金额上限；累计总额以精确十进制核对，保留六位小数；已丢失精度的旧记录留待核对。</p>
         <label>原始来源
           <select v-model="chosen" :disabled="busy" @change="resetDraft">
             <option value="">选择订单或扣款账单</option>
@@ -20,7 +20,7 @@
         </label>
         <button v-if="review.nextBill" type="button" :disabled="busy" @click="read(review.nextBill)">更早的账单</button>
         <template v-if="source">
-          <p>原额 ¥ {{ source.exact?.gross ?? source.gross }} <span v-if="source.debited != null">· 已实扣 ¥ {{ source.exact?.debited ?? source.debited }}</span> <span v-if="source.kind === 'order'">· 可核实的已退本金 ¥ {{ source.exact?.refunded ?? source.refunded }}<span v-if="source.refundEstimateUpper"> · 另有未证实退款上界 ¥ {{ source.exact?.refundEstimateUpper ?? source.refundEstimateUpper }}（不是实退额）</span></span> <span v-if="!source.uncertain">· 当前来源贡献 ¥ {{ source.exact?.effective ?? source.effective }}</span><span v-else>· 该来源贡献待核</span><span v-if="source.refundIds?.length"> · 退款单 #{{ source.refundIds.join('、#') }}</span></p>
+          <p>原额 ¥ {{ source.exact?.gross ?? source.gross }} <span v-if="source.debited != null">· 已实扣 ¥ {{ source.exact?.debited ?? source.debited }}</span> <span v-if="source.kind === 'order'">· 可核实的已退本金 ¥ {{ source.exact?.refunded ?? source.refunded }}<span v-if="source.refundEstimateUpper"> · 另有未证实退款上界 ¥ {{ source.exact?.refundEstimateUpper ?? source.refundEstimateUpper }}（不是实退额）</span></span> <span v-if="!source.uncertain">· 当前来源贡献 ¥ {{ source.exact?.effective ?? source.effective }}</span><span v-else-if="source.excluded">· 未计入有效消费（该账单实扣待核）</span><span v-else>· 该来源贡献待核</span><span v-if="source.refundIds?.length"> · 退款单 #{{ source.refundIds.join('、#') }}</span></p>
           <p v-if="source.uncertain || review.totals.issues" role="status">账务存在待核事实，仅供核对，不能修正。</p>
           <template v-else><label>修正后{{ source.kind === 'order' ? '有效充值' : '有效消费' }}总额（元）<input v-model.trim="amount" inputmode="decimal" :disabled="busy"></label>
           <label>修正原因<input v-model.trim="reason" maxlength="255" :disabled="busy"></label>
