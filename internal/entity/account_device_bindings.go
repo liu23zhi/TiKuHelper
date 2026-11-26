@@ -40,6 +40,7 @@ const (
 	DeviceBindingRevokeReasonIdle10d      = "idle_10d"
 	DeviceBindingRevokeReasonIdleTimeout  = "idle_timeout"
 	DeviceBindingRevokeReasonDeviceBanned = "device_banned"
+	DeviceBindingRevokeReasonUserBlocked  = "user_blocked"
 )
 
 // AccountDeviceBinding 是一行「某账号用过某设备」的记录。
@@ -166,9 +167,20 @@ type AccountDeviceBinding struct {
 	// 指针类型是刻意的：NULL 与「零值时间」必须可区分，否则每条历史行都会被当成已撤销。
 	RevokedAt *time.Time `gorm:"column:revoked_at" json:"revokedAt,omitempty"`
 	// RevokedReason 取值见 DeviceBindingRevokeReason*；未撤销时为空串。
-	RevokedReason string    `gorm:"column:revoked_reason;type:varchar(32);not null;default:''" json:"revokedReason"`
-	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt     time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	RevokedReason string `gorm:"column:revoked_reason;type:varchar(32);not null;default:''" json:"revokedReason"`
+	// HistoryHiddenAt is a display-only tombstone. The revoked binding and its
+	// security facts remain intact; a later permitted registration shows it again.
+	HistoryHiddenAt *time.Time `gorm:"column:history_hidden_at" json:"-"`
+	CreatedAt       time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*AccountDeviceBinding) TableName() string { return TableNameAccountDeviceBinding }
+
+// DeviceLifecycleLock serializes binding changes across server instances.
+// Only a digest is stored; this table is not a binding, history or an audit.
+type DeviceLifecycleLock struct {
+	DeviceKey string `gorm:"column:device_key;type:char(64);primaryKey"`
+}
+
+func (*DeviceLifecycleLock) TableName() string { return "device_lifecycle_locks" }

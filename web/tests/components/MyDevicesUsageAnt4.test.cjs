@@ -14,6 +14,7 @@ let rows = []
 let expiry = { days: 3, maxDays: 7, allowDisable: true }
 const expiryUpdates = []
 const deleted = []
+const blocked = []
 let wrapper
 const ok = data => ({ status: 200, data })
 const apiPath = path.join(web, 'src/api/TikuComponentApi.js')
@@ -23,7 +24,11 @@ api.exports = {
   listMyDevices: () => Promise.resolve(ok({ data: { schemaReady: true, devices: rows } })),
   getMyDeviceLimit: () => Promise.resolve(ok({ data: { limit: 1, source: 'user_override', override: 1, editable: true, hookReady: true } })),
   getMyLocations: params => new Promise(resolve => lookups.push({ params, resolve })),
-  blockMyDevice: () => Promise.resolve(ok({})),
+  blockMyDevice: id => {
+    blocked.push(id)
+    rows = rows.map(row => row.id !== id ? row : { ...row, status: 'blocked', blockable: false, deletable: false, blocked: true, blockId: 10 })
+    return Promise.resolve(ok({}))
+  },
   removeMyDevice: () => Promise.resolve(ok({})),
   renameMyDevice: () => Promise.resolve(ok({})),
   unblockMyDevice: () => Promise.resolve(ok({})),
@@ -51,6 +56,7 @@ afterEach(async () => {
   lookups.length = 0
   expiryUpdates.length = 0
   deleted.length = 0
+  blocked.length = 0
   expiry = { days: 3, maxDays: 7, allowDisable: true }
 })
 
@@ -110,4 +116,32 @@ test('real device table renders first/recent IP with geolocation and absolute ti
   await settle()
   assert.deepEqual(wrapper.findAll('.device-ip').map(cell => cell.text()), ['未记录', '198.51.100.2\n（当前归属地）'])
   assert.equal(wrapper.vm.ipLocations['198.51.100.1'], undefined, 'superseded list lookup cannot publish')
+})
+
+test('removed device can be blacklisted from its row, with precise impact and recent use in confirmation', async () => {
+  user.setStoredCurrentUser({ id: 7303, username: 'history-owner', role: 'user' })
+  rows = [
+    { id: 3, deviceId: 'extension:history-fixture', status: 'removed', deletable: true, lastSeenAt: '2026-11-02T01:02:03Z' },
+    { id: 4, deviceId: 'extension:blocked-fixture', status: 'blocked', blockId: 9, blocked: true },
+  ]
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/my-devices', component: { template: '<div />' } }] })
+  await router.push('/my-devices'); await router.isReady()
+  wrapper = mount(require(path.join(web, 'src/pages/MyDevices/index.vue')), { attachTo: document.body, global: { plugins: [Antd, router] } })
+  await settle()
+  assert.match(wrapper.text(), /共 2 台（使用中 0 台，已移除 1 台，已拉黑 1 台）/)
+  const history = wrapper.findAll('tbody tr').find(row => row.text().includes('已移除'))
+  const action = history.findAll('button').find(button => button.text().replace(/\s/g, '') === '拉黑')
+  assert.ok(action, 'removed history retains a blacklist action')
+  await action.trigger('click')
+  await settle()
+  assert.match(document.body.textContent, /extension:history-fixture/)
+  assert.match(document.body.textContent, /2026-11-02 09:02:03/)
+  assert.match(document.body.textContent, /当前账号/)
+  assert.deepEqual(blocked, [])
+  await wrapper.vm.confirmBlockDevice(); await settle()
+  assert.deepEqual(blocked, [3])
+  assert.match(wrapper.text(), /共 2 台（使用中 0 台，已移除 0 台，已拉黑 2 台）/)
+  wrapper.vm.statusFilter = 'removed'; await settle()
+  assert.match(wrapper.text(), /共 0 台（使用中 0 台，已移除 0 台，已拉黑 0 台）/)
+  assert.match(wrapper.text(), /暂无符合条件的设备/)
 })
