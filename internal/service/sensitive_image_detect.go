@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -131,7 +130,8 @@ type SensitiveImageDetectResult struct {
 	// 为什么必须由编排层给出来而不是留给调用方猜：扫描状态由本函数算出，
 	// 谁写下的它也只有本函数知道。调用方（上传路径 / 管理页）拿到值直接落库，
 	// 就不会出现「同一次判定在两个调用点被贴上不同来源」的漂移。
-	ScanMarkedBy string `json:"scanMarkedBy"`
+	ScanMarkedBy        string `json:"scanMarkedBy"`
+	AffectedAttachments int64  `json:"-"`
 }
 
 // HashSensitiveImage 返回图片二进制内容的 SHA256 十六进制串（缓存主键）。
@@ -163,6 +163,7 @@ func DetectSensitiveImageWithDB(
 	if db == nil {
 		return SensitiveImageDetectResult{}, errSensitiveImageQuotaNoDatabase
 	}
+	db = imageDetectionDB(db)
 	if userID <= 0 {
 		return SensitiveImageDetectResult{}, errors.New("敏感图片检测缺少有效用户")
 	}
@@ -194,7 +195,7 @@ func DetectSensitiveImageWithDB(
 	if err != nil {
 		// 缓存读失败不阻断链路：降级成「没缓存」继续走额度 + 外呼。
 		// 直接报错会让「缓存表一时不可用」变成「工单连图都传不了」。
-		logger.SysLog(fmt.Sprintf("敏感图片缓存读取失败，按未命中处理：%v", err))
+		logger.SysLog("敏感图片缓存读取失败，按未命中处理")
 		found = false
 	}
 
@@ -262,7 +263,7 @@ func finishSensitiveImageCacheHit(
 	result.CacheHit = true
 	result.State = sensitiveImageStateOfCacheStatus(entry.Status)
 	result.ScanState = sensitiveImageScanStateOfCacheStatus(entry.Status)
-	result.Reason = entry.Reason
+	result.Reason = SafeSensitiveImageHistoryReason(entry.Status, entry.Reason)
 	// Charged 保持零值 false：命中不消耗额度（111 Q1-g）。
 	result.Charged = false
 
@@ -270,7 +271,7 @@ func finishSensitiveImageCacheHit(
 	if err := db.Model(&entity.SensitiveImageCacheEntry{}).
 		Where(map[string]any{"image_sha256": entry.ImageSHA256}).
 		UpdateColumn("hit_count", gorm.Expr("hit_count + 1")).Error; err != nil {
-		logger.SysLog(fmt.Sprintf("敏感图片缓存命中计数写入失败（不影响结论）：%v", err))
+		logger.SysLog("敏感图片缓存命中计数写入失败（不影响结论）")
 	}
 	// 本函数到此为止：**不读额度表、不写额度表**。
 	//
@@ -330,8 +331,10 @@ func runSensitiveImageDetection(
 		// 失败只记日志（与缓存写入失败同一取向）：额度判定本身是对的，
 		// 把整条上传链路因为一次标记写失败而中断，代价远大于「标记暂时缺失」。
 		if _, syncErr := SyncSensitiveImageScanStateWithDB(db, imageSHA, string(result.State)); syncErr != nil {
-			logger.SysWarn(fmt.Sprintf("额度耗尽标记写入附件失败 sha256=%s error=%v", imageSHA, syncErr))
+			logger.SysWarn("额度耗尽标记写入附件失败")
 		}
+		trace := startImageDetectionTrace("upload_quota", imageSHA, mimeType, int64(len(data)), 0, ticketID)
+		trace.write("detect_result", string(result.State), imageLocalQuotaReached)
 		return result, nil
 	}
 	result.Charged = reservation.Charged
@@ -349,7 +352,7 @@ func runSensitiveImageDetection(
 				result.CacheHit = true
 				result.State = sensitiveImageStateOfCacheStatus(entry.Status)
 				result.ScanState = sensitiveImageScanStateOfCacheStatus(entry.Status)
-				result.Reason = entry.Reason
+				result.Reason = SafeSensitiveImageHistoryReason(entry.Status, entry.Reason)
 				return result, nil
 			}
 		}
@@ -359,27 +362,21 @@ func runSensitiveImageDetection(
 		return result, nil
 	}
 
-	detector := sensitiveImageDetectorWithDB(db)
-	if detector == nil {
-		// 没配置检测通道：不留 pending（否则这张图会卡到超时才被放行），
-		// 直接把缓存标成 error 并如实返回「未配置」。与 scanTicketAttachmentOnce
-		// 「没 key 不假装成功」同一取向。
-		_ = markSensitiveImageCacheErrorWithDB(db, imageSHA, "未配置图片检测通道", now)
-		result.State = SensitiveImageDetectPending
-		result.ScanState = entity.TicketAttachmentScanFailed
-		result.Reason = "未配置敏感图片检测通道"
-		return result, nil
-	}
-
-	result.UpstreamCalled = true
-	verdict, callErr := detector(ctx, data, mimeType)
-	if callErr != nil {
-		// 失败写 error（不是终态）：下次上传同一张图会抢占重试，不会再扣额度。
-		_ = markSensitiveImageCacheErrorWithDB(db, imageSHA, callErr.Error(), now)
+	trace := startImageDetectionTrace("upload_cache", imageSHA, mimeType, int64(len(data)), 0, ticketID)
+	verdict, called, code := detectSensitiveImageWithTrace(ctx, db, trace, data, mimeType)
+	result.UpstreamCalled = called
+	if code != "" {
+		// 保留可重试的 error；不保存上游正文。普通上传者仍只看原有文案。
+		diag := trace.fail(code)
+		if err := markSensitiveImageCacheErrorWithDB(db, imageSHA, diag.Error(), now); err != nil {
+			trace.fail(imageStateSyncFailed)
+		}
 		result.State = SensitiveImageDetectPending
 		result.ScanState = entity.TicketAttachmentScanFailed
 		result.Reason = "敏感图片检测暂时不可用"
-		logger.SysWarn(fmt.Sprintf("sensitive_image_detect_failed sha256=%s error=%v", imageSHA, callErr))
+		if code == imageDetectorUnconfigured {
+			result.Reason = "未配置敏感图片检测通道"
+		}
 		return result, nil
 	}
 
@@ -393,9 +390,10 @@ func runSensitiveImageDetection(
 	}
 	if err := markSensitiveImageCacheResultWithDB(db, imageSHA, status, truncateUTF8(verdict.Reason, 255), provider, now); err != nil {
 		// 写缓存失败不影响本次结论：用户这次拿到的判定是真的，只是下次还要再算一遍。
-		logger.SysLog(fmt.Sprintf("敏感图片检测结果写入缓存失败（结论照常返回）：%v", err))
+		trace.fail(imageStateSyncFailed)
 	}
 	result.State = sensitiveImageStateOfCacheStatus(status)
+	trace.write("detect_result", string(result.State), "-")
 	result.ScanState = sensitiveImageScanStateOfCacheStatus(status)
 	result.Reason = verdict.Reason
 	return result, nil
@@ -527,46 +525,25 @@ func sensitiveImageScanStateOfCacheStatus(status string) string {
 	return entity.TicketAttachmentScanSensitive
 }
 
-// sensitiveImageDetectorWithDB 返回本次要用的检测通道。
-//
-// 优先级：测试注入 > 生产 uapi 实现。返回 nil 表示「没配置，不可用」。
-func sensitiveImageDetectorWithDB(db *gorm.DB) SensitiveImageDetector {
+// detectSensitiveImageWithTrace 复用工单的判定规则与一次外呼约束。
+func detectSensitiveImageWithTrace(ctx context.Context, db *gorm.DB, trace *imageDetectionTrace, data []byte, mimeType string) (SensitiveImageVerdict, bool, string) {
 	if sensitiveImageDetectorOverride != nil {
-		return sensitiveImageDetectorOverride
-	}
-	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
-	if !strings.HasPrefix(key, "uapi-") || len(key) <= len("uapi-") {
-		return nil
-	}
-	return func(ctx context.Context, data []byte, mimeType string) (SensitiveImageVerdict, error) {
-		scan := scanTicketAttachmentOnce(ctx, db, 0, data, mimeType)
-		switch scan.State {
-		case entity.TicketAttachmentScanApproved:
-			return SensitiveImageVerdict{Sensitive: false, Provider: SensitiveImageProviderUAPI}, nil
-		case entity.TicketAttachmentScanSensitive:
-			reason := strings.TrimSpace(scan.RiskLevel)
-			if reason == "" {
-				reason = "上游判定为敏感图片"
-			} else {
-				reason = "上游判定为敏感图片（风险等级 " + reason + "）"
-			}
-			return SensitiveImageVerdict{Sensitive: true, Reason: reason, Provider: SensitiveImageProviderUAPI}, nil
-		default:
-			// failed：上游 200 但没给出可用结论 —— 按「没跑成」处理，
-			// 绝不当成 clean（那等于把审核绕过变成一次上游抖动）。
-			return SensitiveImageVerdict{}, fmt.Errorf("敏感图片检测结论不可用: %s", truncateUTF8(scan.CheckError, 200))
+		verdict, err := sensitiveImageDetectorOverride(ctx, data, mimeType)
+		if err != nil {
+			return SensitiveImageVerdict{}, true, trace.upstreamFailureCode(err)
 		}
+		return verdict, true, ""
 	}
+	scan, reason, code := fetchTicketAttachmentScan(ctx, GetUAPIAPIKeyWithDB(db), trace, data, mimeType, ticketAttachmentScanTimeout)
+	called := code != imageDetectorUnconfigured && code != imageRequestInvalid
+	if code != "" {
+		return SensitiveImageVerdict{}, called, code
+	}
+	return SensitiveImageVerdict{Sensitive: scan.State == entity.TicketAttachmentScanSensitive, Reason: reason, Provider: SensitiveImageProviderUAPI}, called, ""
 }
 
-// ManualDetectSensitiveImageWithDB 是管理员「手动触发检测」的入口（107 Q1 ③ 按工单批量）。
-//
-// 与用户路径的三处差异：
-//  1. **完全绕过额度闸门**。管理员触发是运营复核，不是用户上传，
-//     不该因为某个用户当天额度用满就查不了。
-//  2. **允许覆盖已有结论**（provider 记为 manual）：这正是「模型更新后重判」的用途。
-//  3. 仍然只外呼一次并把结论写回同一个 SHA256 行 —— 手动复核的结论对所有
-//     引用这张图的工单同时生效，这也是「检测跟 SHA256 走」的直接后果。
+// ManualDetectSensitiveImageWithDB 手动复判绕过用户额度，旧结论只在取得可信新判定
+// 且缓存、附件、blob 都能在同一事务内更新时才被覆盖。
 func ManualDetectSensitiveImageWithDB(
 	ctx context.Context,
 	db *gorm.DB,
@@ -574,15 +551,29 @@ func ManualDetectSensitiveImageWithDB(
 	mimeType string,
 	now time.Time,
 ) (SensitiveImageDetectResult, error) {
-	started := time.Now()
-	logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_start image_sha256=%s bytes=%d mime=%s channel=admin",
-		HashSensitiveImage(data), len(data), strings.TrimSpace(mimeType)))
+	trace := startImageDetectionTrace("admin", HashSensitiveImage(data), mimeType, int64(len(data)), 0, 0)
+	return manualDetectSensitiveImageWithTrace(ctx, db, trace, data, mimeType, now)
+}
+
+// ManualDetectSensitiveImageBySHAWithDB 统一管理员重判的读取、诊断和落库。
+func ManualDetectSensitiveImageBySHAWithDB(ctx context.Context, db *gorm.DB, sha string) (SensitiveImageDetectResult, error) {
+	trace := startImageDetectionTrace("admin", sha, "", 0, 0, 0)
+	plain, mime, err := LoadSensitiveImageBytesWithDB(db, sha)
+	if err != nil {
+		return SensitiveImageDetectResult{}, trace.fail(imageReadErrorCode(err))
+	}
+	trace.setImage(HashSensitiveImage(plain), mime, int64(len(plain)))
+	return manualDetectSensitiveImageWithTrace(ctx, db, trace, plain, mime, SensitiveImageQuotaNow())
+}
+
+func manualDetectSensitiveImageWithTrace(ctx context.Context, db *gorm.DB, trace *imageDetectionTrace, data []byte, mimeType string, now time.Time) (SensitiveImageDetectResult, error) {
 	if db == nil {
-		return SensitiveImageDetectResult{}, errSensitiveImageQuotaNoDatabase
+		return SensitiveImageDetectResult{}, trace.fail(imageStateSyncFailed)
 	}
 	if len(data) == 0 {
-		return SensitiveImageDetectResult{}, ErrTicketAttachmentInvalid
+		return SensitiveImageDetectResult{}, trace.fail(imageBytesUnavailable)
 	}
+	db = imageDetectionDB(db)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -591,53 +582,42 @@ func ManualDetectSensitiveImageWithDB(
 	}
 	imageSHA := HashSensitiveImage(data)
 	result := SensitiveImageDetectResult{
-		ImageSHA256:         imageSHA,
-		TicketSubmitAllowed: true,
-		// 手动重判必然是真实外呼结论（本函数本来就绕过额度闸门），
-		// 所以来源恒为 upstream；写在这里是为了让「结果结构自带落库值」这条
-		// 契约在两个入口上一致，调用方不必各自补。
+		ImageSHA256: imageSHA, TicketSubmitAllowed: true,
 		ScanMarkedBy: entity.TicketAttachmentMarkedByUpstream,
 	}
-
-	detector := sensitiveImageDetectorWithDB(db)
-	if detector == nil {
-		logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_error image_sha256=%s duration_ms=%d code=detector_unconfigured",
-			result.ImageSHA256, time.Since(started).Milliseconds()))
-		return result, errors.New("未配置敏感图片检测通道")
-	}
-	result.UpstreamCalled = true
-	verdict, err := detector(ctx, data, mimeType)
-	if err != nil {
-		// 手动触发失败要把错误如实返回给管理员（与用户路径的静默降级相反）。
-		_ = markSensitiveImageCacheErrorWithDB(db, imageSHA, err.Error(), now)
-		logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_error image_sha256=%s duration_ms=%d code=upstream error=%s",
-			imageSHA, time.Since(started).Milliseconds(), err))
-		return result, fmt.Errorf("敏感图片检测失败：%w", err)
+	verdict, called, code := detectSensitiveImageWithTrace(ctx, db, trace, data, mimeType)
+	result.UpstreamCalled = called
+	if code != "" {
+		// 失败既不是新判定，也无权使别的检测占位或旧结论失效。
+		return result, trace.fail(code)
 	}
 	status := entity.SensitiveImageCacheStatusClean
 	if verdict.Sensitive {
 		status = entity.SensitiveImageCacheStatusSensitive
 	}
-	// 手动触发必须能覆盖已有结论，因此这里不用「只改 pending/error」的条件更新。
-	if err := db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "image_sha256"}},
-		DoUpdates: clause.AssignmentColumns([]string{"status", "reason", "provider", "content_type", "file_size", "updated_at"}),
-	}).Create(&entity.SensitiveImageCacheEntry{
-		ImageSHA256: imageSHA,
-		ContentType: strings.TrimSpace(mimeType),
-		FileSize:    int64(len(data)),
-		Status:      status,
-		Reason:      truncateUTF8(verdict.Reason, 255),
-		Provider:    SensitiveImageProviderManual,
-		UpdatedAt:   now,
-	}).Error; err != nil {
-		return result, fmt.Errorf("写入敏感图片检测结果失败：%w", err)
+	state := sensitiveImageStateOfCacheStatus(status)
+	var updated int64
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "image_sha256"}},
+			DoUpdates: clause.AssignmentColumns([]string{"status", "reason", "provider", "content_type", "file_size", "updated_at"}),
+		}).Create(&entity.SensitiveImageCacheEntry{
+			ImageSHA256: imageSHA, ContentType: strings.TrimSpace(mimeType), FileSize: int64(len(data)),
+			Status: status, Reason: truncateUTF8(verdict.Reason, 255), Provider: SensitiveImageProviderManual, UpdatedAt: now,
+		}).Error; err != nil {
+			return err
+		}
+		var err error
+		updated, err = syncSensitiveImageScanStateInDB(tx, imageSHA, string(state), now)
+		return err
+	}); err != nil {
+		return result, trace.fail(imageStateSyncFailed)
 	}
-	result.State = sensitiveImageStateOfCacheStatus(status)
+	result.State = state
 	result.ScanState = sensitiveImageScanStateOfCacheStatus(status)
 	result.Reason = verdict.Reason
-	logger.SensitiveImageTrace(fmt.Sprintf("event=manual_detect_result image_sha256=%s duration_ms=%d state=%s sensitive=%t provider=%s",
-		imageSHA, time.Since(started).Milliseconds(), result.State, verdict.Sensitive, verdict.Provider))
+	result.AffectedAttachments = updated
+	trace.write("detect_result", result.ScanState, "-")
 	return result, nil
 }
 
@@ -648,6 +628,7 @@ var (
 	// （例如附件已被删除）。手动重检必须拿字节去外呼，没有字节就只能如实报错，
 	// 不能假装重新检测成功。
 	ErrSensitiveImageBytesUnavailable = errors.New("找不到该图片的原始字节")
+	errSensitiveImageReadFailed       = errors.New("读取或解密图片失败")
 )
 
 // SensitiveImageQuotaNow 是编排层取「现在」的唯一入口。
@@ -670,32 +651,68 @@ func SensitiveImageQuotaStatusDefaultDate() string {
 // 内容相同，hash 已经证明了这一点。
 func LoadSensitiveImageBytesWithDB(db *gorm.DB, imageSHA256 string) ([]byte, string, error) {
 	if db == nil {
-		return nil, "", errSensitiveImageQuotaNoDatabase
+		return nil, "", errSensitiveImageReadFailed
 	}
+	db = imageDetectionDB(db)
 	imageSHA256 = strings.ToLower(strings.TrimSpace(imageSHA256))
 	if imageSHA256 == "" {
 		return nil, "", ErrSensitiveImageBytesUnavailable
 	}
+	var blobErr error
 	if ticketAttachmentBlobReady(db) {
-		if mimeType, plain, err := ReadTicketAttachmentBlobWithDB(db, imageSHA256); err == nil {
-			return plain, mimeType, nil
+		var plain []byte
+		var mime string
+		mime, plain, blobErr = ReadTicketAttachmentBlobWithDB(db, imageSHA256)
+		if blobErr == nil {
+			return checkedSensitiveImageBytes(imageSHA256, plain, mime)
 		}
 	}
 	var row entity.TicketAttachment
-	err := db.Where(map[string]any{"sha256": imageSHA256}).Order("id ASC").First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	err := db.Where(map[string]any{"sha256": imageSHA256}).Order("purged_at IS NOT NULL ASC, id ASC").First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && row.PurgedAt != nil) {
+		if blobErr != nil && !errors.Is(blobErr, ErrTicketAttachmentBlobNotFound) {
+			return nil, "", errSensitiveImageReadFailed
+		}
 		return nil, "", ErrSensitiveImageBytesUnavailable
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, "", errSensitiveImageReadFailed
 	}
-	plain, mimeType, err := decryptTicketAttachmentForScan(db, row)
-	if err != nil {
-		// 解密失败（密钥换了 / 行残缺）同样归入「拿不到字节」：
-		// 对调用方而言这两种情况的处置完全一样（无法重检）。
+	return loadTicketAttachmentScanBytes(db, row)
+}
+
+func loadTicketAttachmentScanBytes(db *gorm.DB, row entity.TicketAttachment) ([]byte, string, error) {
+	if row.PurgedAt != nil {
 		return nil, "", ErrSensitiveImageBytesUnavailable
 	}
-	return plain, mimeType, nil
+	plain, mime, err := decryptTicketAttachmentForScan(db, row)
+	if err == nil {
+		return checkedSensitiveImageBytes(row.SHA256, plain, mime)
+	}
+	if ticketAttachmentBlobReady(db) && len(row.SHA256) == 64 {
+		mime, plain, blobErr := ReadTicketAttachmentBlobWithDB(db, row.SHA256)
+		if blobErr == nil {
+			return checkedSensitiveImageBytes(row.SHA256, plain, mime)
+		}
+	}
+	return nil, "", errSensitiveImageReadFailed
+}
+
+func checkedSensitiveImageBytes(sha string, plain []byte, mime string) ([]byte, string, error) {
+	if len(plain) == 0 {
+		return nil, "", ErrSensitiveImageBytesUnavailable
+	}
+	if !strings.EqualFold(HashSensitiveImage(plain), sha) {
+		return nil, "", errSensitiveImageReadFailed
+	}
+	return plain, mime, nil
+}
+
+func imageReadErrorCode(err error) string {
+	if errors.Is(err, ErrSensitiveImageBytesUnavailable) {
+		return imageBytesUnavailable
+	}
+	return imageReadFailed
 }
 
 // SyncSensitiveImageScanStateWithDB 把某张图的结论同步到所有引用它的附件行。
@@ -704,7 +721,7 @@ func LoadSensitiveImageBytesWithDB(db *gorm.DB, imageSHA256 string) ([]byte, str
 // （同一张图被不同工单、不同用户上传）。只改缓存不改附件，表现就是
 // 「管理页说已重判为 clean，用户看到的图还是隐藏」—— 这类不一致极难排查。
 //
-// 只改 scan_state / scan_marked_by / checked_at，不动 attempt_count / next_attempt_at：
+// 改 scan_state / scan_marked_by / checked_at；新判定清除旧错误，不动 attempt_count / next_attempt_at：
 // 手动重判不是异步重试，改动重试计数会让后台 worker 的行为凭空变化。
 //
 // ⚠️ scan_marked_by 与 scan_state **必须在同一个 UPDATE 里**写：两条路径分开写
@@ -719,16 +736,19 @@ func SyncSensitiveImageScanStateWithDB(db *gorm.DB, imageSHA256, state string) (
 	if imageSHA256 == "" {
 		return 0, ErrSensitiveImageBytesUnavailable
 	}
+	return syncSensitiveImageScanStateInDB(imageDetectionDB(db), imageSHA256, state, SensitiveImageQuotaNow())
+}
+
+func syncSensitiveImageScanStateInDB(db *gorm.DB, imageSHA256, state string, now time.Time) (int64, error) {
 	scanState, markedBy := sensitiveImageScanStateAndMarkOfState(state)
-	now := SensitiveImageQuotaNow()
+	updates := map[string]any{
+		"scan_state": scanState, "scan_marked_by": markedBy, "checked_at": now, "updated_at": now,
+	}
+	if state == string(SensitiveImageDetectClean) || state == string(SensitiveImageDetectSensitive) {
+		updates["check_error"] = ""
+	}
 	update := db.Model(&entity.TicketAttachment{}).
-		Where(map[string]any{"sha256": imageSHA256}).
-		Updates(map[string]any{
-			"scan_state":     scanState,
-			"scan_marked_by": markedBy,
-			"checked_at":     now,
-			"updated_at":     now,
-		})
+		Where(map[string]any{"sha256": imageSHA256}).Updates(updates)
 	if update.Error != nil {
 		return 0, update.Error
 	}
@@ -771,11 +791,17 @@ func sensitiveImageScanStateAndMarkOfState(state string) (scanState string, mark
 type SensitiveImageTicketDetectResult struct {
 	TicketID int64 `json:"ticketId"`
 	// Total 是该工单的附件总数；Detected 是本次真的重新检测的张数；
-	// Skipped 是字节取不到（行残缺/密钥变更）而被跳过的张数。
+	// Skipped 是因原件、检测或同步失败而未完成的张数。
 	Total    int                          `json:"total"`
 	Detected int                          `json:"detected"`
 	Skipped  int                          `json:"skipped"`
 	Results  []SensitiveImageDetectResult `json:"results"`
+	Failures []SensitiveImageBatchFailure `json:"failures,omitempty"`
+}
+
+type SensitiveImageBatchFailure struct {
+	AttachmentID int64 `json:"attachmentId"`
+	SensitiveImageDiagnostic
 }
 
 // ManualDetectSensitiveImageTicketWithDB 对一个工单的所有图片批量重新检测（管理员）。
@@ -789,14 +815,15 @@ type SensitiveImageTicketDetectResult struct {
 func ManualDetectSensitiveImageTicketWithDB(ctx context.Context, db *gorm.DB, ticketID int64) (SensitiveImageTicketDetectResult, error) {
 	result := SensitiveImageTicketDetectResult{TicketID: ticketID}
 	if db == nil {
-		return result, errSensitiveImageQuotaNoDatabase
+		return result, startImageDetectionTrace("admin_batch", "", "", 0, 0, ticketID).fail(imageReadFailed)
 	}
+	db = imageDetectionDB(db)
 	if ticketID <= 0 {
-		return result, errors.New("需要提供有效的工单编号")
+		return result, startImageDetectionTrace("admin_batch", "", "", 0, 0, ticketID).fail(imageRequestInvalid)
 	}
 	var rows []entity.TicketAttachment
-	if err := db.Where(map[string]any{"ticket_id": ticketID}).Order("id ASC").Find(&rows).Error; err != nil {
-		return result, err
+	if err := db.Where(map[string]any{"ticket_id": ticketID}).Order("purged_at IS NOT NULL ASC, id ASC").Find(&rows).Error; err != nil {
+		return result, startImageDetectionTrace("admin_batch", "", "", 0, 0, ticketID).fail(imageReadFailed)
 	}
 	result.Total = len(rows)
 	if len(rows) == 0 {
@@ -813,23 +840,24 @@ func ManualDetectSensitiveImageTicketWithDB(ctx context.Context, db *gorm.DB, ti
 			}
 			seen[sha] = struct{}{}
 		}
-		plain, mimeType, err := decryptTicketAttachmentForScan(db, row)
-		if err != nil {
+		trace := startImageDetectionTrace("admin_batch", sha, row.MediaType, row.ByteSize, row.ID, ticketID)
+		plain, mimeType, readErr := loadTicketAttachmentScanBytes(db, row)
+		if readErr != nil {
 			result.Skipped++
+			result.Failures = append(result.Failures, SensitiveImageBatchFailure{row.ID, trace.fail(imageReadErrorCode(readErr))})
 			continue
 		}
-		detected, err := ManualDetectSensitiveImageWithDB(ctx, db, plain, mimeType, now)
+		detected, err := manualDetectSensitiveImageWithTrace(ctx, db, trace, plain, mimeType, now)
 		if err != nil {
 			result.Skipped++
+			var diag SensitiveImageDiagnostic
+			if errors.As(err, &diag) {
+				result.Failures = append(result.Failures, SensitiveImageBatchFailure{row.ID, diag})
+			}
 			continue
 		}
 		result.Detected++
 		result.Results = append(result.Results, detected)
-		if sha != "" {
-			if _, syncErr := SyncSensitiveImageScanStateWithDB(db, sha, string(detected.State)); syncErr != nil {
-				logger.SysWarn(fmt.Sprintf("敏感图片复判后同步附件状态失败 sha256=%s error=%v", sha, syncErr))
-			}
-		}
 	}
 	return result, nil
 }
