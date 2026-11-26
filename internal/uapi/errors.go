@@ -55,6 +55,8 @@ type APIError struct {
 
 	// 本地内容校验失败只在类型字段保留请求关联，避免普通错误字符串扩散上游头部。
 	omitRequestIDFromText bool
+	// 图像审核的非 2xx 响应仅在类型字段保留非可信原文。
+	omitUpstreamText bool
 }
 
 // Error 实现 error 接口
@@ -65,15 +67,15 @@ func (e *APIError) Error() string {
 	var b strings.Builder
 	b.WriteString("uapi: HTTP ")
 	b.WriteString(strconv.Itoa(e.HTTPStatus))
-	if e.Code != "" {
+	if e.Code != "" && !e.omitUpstreamText {
 		b.WriteString(" ")
 		b.WriteString(e.Code)
 	}
-	if e.Message != "" {
+	if e.Message != "" && !e.omitUpstreamText {
 		b.WriteString(": ")
 		b.WriteString(e.Message)
 	}
-	if e.RequestID != "" && !e.omitRequestIDFromText {
+	if e.RequestID != "" && !e.omitRequestIDFromText && !e.omitUpstreamText {
 		b.WriteString(" (request_id=")
 		b.WriteString(e.RequestID)
 		b.WriteString(")")

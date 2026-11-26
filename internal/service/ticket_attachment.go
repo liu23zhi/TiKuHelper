@@ -275,7 +275,7 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 	// safeTicketAttachmentImage 里已经被剥掉，让上游看用户看不到的内容没有意义。
 	scanState := entity.TicketAttachmentScanPending
 	if TicketImageModerationEnabledWithDB(db) {
-		decision := moderateTicketAttachmentImage(context.Background(), db, safe, mimeType)
+		decision := moderateTicketAttachmentImage(context.Background(), db, ticketID, safe, mimeType)
 		switch decision.State {
 		case TicketImageModerationFlagged:
 			// 落库即打标：不经过 pending，异步 worker 因此不会再来复核这张图
@@ -496,52 +496,58 @@ type TicketAttachmentScanResult struct {
 // 任何错误都返回 State=failed 的结果而不是零值：调用方把结果写进库里，
 // 图片因此保持隐藏。**没有 key** 也走这条路径，这就是「无 API key 按敏感处理」。
 func scanTicketAttachmentOnce(ctx context.Context, db *gorm.DB, attachmentID int64, plain []byte, mimeType string) TicketAttachmentScanResult {
-	started := time.Now()
-	imageSHA := HashSensitiveImage(plain)
-	logger.SensitiveImageTrace(fmt.Sprintf("event=detect_start attachment_id=%d image_sha256=%s bytes=%d mime=%s channel=background",
-		attachmentID, imageSHA, len(plain), strings.TrimSpace(mimeType)))
-	failed := func(reason string) TicketAttachmentScanResult {
-		logger.SensitiveImageTrace(fmt.Sprintf("event=detect_error attachment_id=%d image_sha256=%s duration_ms=%d reason=%s",
-			attachmentID, imageSHA, time.Since(started).Milliseconds(), reason))
-		return TicketAttachmentScanResult{State: entity.TicketAttachmentScanFailed, CheckError: truncateUTF8(reason, 500)}
+	trace := startImageDetectionTrace("background", HashSensitiveImage(plain), mimeType, int64(len(plain)), attachmentID, 0)
+	return scanTicketAttachment(ctx, db, trace, plain, mimeType)
+}
+
+func scanTicketAttachment(ctx context.Context, db *gorm.DB, trace *imageDetectionTrace, plain []byte, mimeType string) TicketAttachmentScanResult {
+	scan, _, code := fetchTicketAttachmentScan(ctx, GetUAPIAPIKeyWithDB(db), trace, plain, mimeType, ticketAttachmentScanTimeout)
+	if code != "" {
+		return failedTicketAttachmentScan(trace.fail(code))
 	}
-	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
-	if !strings.HasPrefix(key, "uapi-") || len(key) <= len("uapi-") {
-		// 没配置密钥：不假装成功，也不浪费一次必然 401 的外呼。
-		return failed("未配置 UapiPro 密钥，无法完成敏感图片检测")
+	trace.write("detect_result", scan.State, "-")
+	return scan
+}
+
+func failedTicketAttachmentScan(diag SensitiveImageDiagnostic) TicketAttachmentScanResult {
+	return TicketAttachmentScanResult{State: entity.TicketAttachmentScanFailed, CheckError: diag.Error()}
+}
+
+// fetchTicketAttachmentScan 只负责一次计费外呼和判定。工单不同入口保留原有超时与处置。
+func fetchTicketAttachmentScan(ctx context.Context, key string, trace *imageDetectionTrace, plain []byte, mimeType string, timeout time.Duration) (TicketAttachmentScanResult, string, string) {
+	if !hasUsableUAPIKey(key) {
+		return TicketAttachmentScanResult{}, "", imageDetectorUnconfigured
 	}
-	client := uapi.NewClient(key).SetTimeout(ticketAttachmentScanTimeout).SetMaxRetries(0)
+	client := uapi.NewClient(key).SetTimeout(timeout).SetMaxRetries(0)
 	if override := strings.TrimSpace(ticketAttachmentNSFWURLOverride); override != "" {
 		client.SetImageNSFWURL(override)
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	callCtx, cancel := context.WithTimeout(ctx, ticketAttachmentScanTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result, err := client.ImageNSFW(callCtx, uapi.ImageNSFWRequest{
-		Image:     plain,
-		ImageName: "ticket-attachment" + ticketAttachmentExtension(mimeType),
+		Image: plain, ImageName: "ticket-attachment" + ticketAttachmentExtension(mimeType),
 	})
 	if err != nil {
-		// 上游故障 / 超时 / 解析失败：一律 failed（不显示），绝不放过。
-		return failed("敏感图片检测失败：" + err.Error())
+		return TicketAttachmentScanResult{}, "", trace.upstreamFailureCode(err)
 	}
+	trace.setUpstream(result.HTTPStatus, result.RequestID)
 	state, reason := judgeTicketAttachmentScan(result)
-	scan := TicketAttachmentScanResult{
-		State: state, NSFWScore: result.NSFWScore, RiskLevel: strings.ToLower(strings.TrimSpace(result.RiskLevel)),
-		Suggestion: strings.ToLower(strings.TrimSpace(result.Suggestion)), Label: strings.TrimSpace(result.Label),
-	}
-	logger.SensitiveImageTrace(fmt.Sprintf("event=detect_result attachment_id=%d image_sha256=%s duration_ms=%d state=%s nsfw_score=%v risk_level=%s suggestion=%s label=%s inference_time_ms=%d",
-		attachmentID, imageSHA, time.Since(started).Milliseconds(), scan.State, scan.NSFWScore, scan.RiskLevel, scan.Suggestion, scan.Label, result.InferenceTimeMS))
-	if state == entity.TicketAttachmentScanSensitive {
-		// 只记判定结论与分数；原始响应体可能含模型细节，且对排障没有额外价值。
-		logger.SysLog(fmt.Sprintf("ticket_attachment_sensitive attachmentId=%d reason=%s nsfwScore=%v", attachmentID, reason, result.NSFWScore))
-	}
 	if state == entity.TicketAttachmentScanFailed {
-		scan.CheckError = truncateUTF8(reason, 500)
+		return TicketAttachmentScanResult{}, "", imageResponseVerdictMissing
 	}
-	return scan
+	scan := TicketAttachmentScanResult{State: state, NSFWScore: result.NSFWScore}
+	switch risk := strings.ToLower(strings.TrimSpace(result.RiskLevel)); risk {
+	case "low", "medium", "high":
+		scan.RiskLevel = risk
+	}
+	switch suggestion := strings.ToLower(strings.TrimSpace(result.Suggestion)); suggestion {
+	case "pass", "review", "block":
+		scan.Suggestion = suggestion
+	}
+	return scan, reason, ""
 }
 
 // ticketAttachmentNSFWURLOverride 只给测试注入 httptest 地址用；
@@ -560,7 +566,7 @@ func ProcessPendingTicketAttachmentScans(ctx context.Context, db *gorm.DB, now t
 	if ctx.Err() != nil {
 		return 0, nil
 	}
-	db = db.WithContext(dbqueue.WithPriority(ctx, dbqueue.PriorityLow))
+	db = imageDetectionDB(db.WithContext(dbqueue.WithPriority(ctx, dbqueue.PriorityLow)))
 	var rows []entity.TicketAttachment
 	if err := db.Where("scan_state = ? AND attempt_count < ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)",
 		entity.TicketAttachmentScanPending, TicketAttachmentScanMaxAttempts, now).
@@ -575,7 +581,7 @@ func ProcessPendingTicketAttachmentScans(ctx context.Context, db *gorm.DB, now t
 		}
 		processed++
 		if err := processTicketAttachmentScan(ctx, db, row, now); err != nil {
-			logger.SysWarn(fmt.Sprintf("ticket_attachment_scan_failed attachmentId=%d ticketId=%d error=%v", row.ID, row.TicketID, err))
+			logger.SysWarn(fmt.Sprintf("ticket_attachment_scan_failed attachmentId=%d ticketId=%d", row.ID, row.TicketID))
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -602,14 +608,18 @@ func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.Ti
 		return nil
 	}
 
-	plain, mimeType, readErr := decryptTicketAttachmentForScan(db, row)
+	trace := startImageDetectionTrace("background", row.SHA256, row.MediaType, row.ByteSize, row.ID, row.TicketID)
+	plain, mimeType, readErr := loadTicketAttachmentScanBytes(db, row)
 	var scan TicketAttachmentScanResult
 	if readErr != nil {
-		scan = TicketAttachmentScanResult{State: entity.TicketAttachmentScanFailed, CheckError: truncateUTF8(readErr.Error(), 500)}
+		scan = failedTicketAttachmentScan(trace.fail(imageReadErrorCode(readErr)))
 	} else {
-		scan = scanTicketAttachmentOnce(ctx, db, row.ID, plain, mimeType)
+		scan = scanTicketAttachment(ctx, db, trace, plain, mimeType)
 	}
-	return persistTicketAttachmentScanResult(db, row, scan, scannedAt)
+	if err := persistTicketAttachmentScanResult(db, row, scan, scannedAt); err != nil {
+		return trace.fail(imageStateSyncFailed)
+	}
+	return nil
 }
 
 func decryptTicketAttachmentForScan(db *gorm.DB, row entity.TicketAttachment) ([]byte, string, error) {
@@ -655,20 +665,21 @@ func persistTicketAttachmentScanResultInTx(db *gorm.DB, row entity.TicketAttachm
 		"checked_at":    now,
 		"updated_at":    now,
 	}
+	storedScanState := scan.State
 	switch scan.State {
 	case entity.TicketAttachmentScanApproved, entity.TicketAttachmentScanSensitive:
-		updates["scan_state"] = scan.State
 		updates["next_attempt_at"] = nil
 	default:
 		if attempts < TicketAttachmentScanMaxAttempts {
-			updates["scan_state"] = entity.TicketAttachmentScanPending
+			storedScanState = entity.TicketAttachmentScanPending
 			next := now.Add(time.Duration(attempts) * time.Minute)
 			updates["next_attempt_at"] = next
 		} else {
-			updates["scan_state"] = entity.TicketAttachmentScanFailed
+			storedScanState = entity.TicketAttachmentScanFailed
 			updates["next_attempt_at"] = nil
 		}
 	}
+	updates["scan_state"] = storedScanState
 	// 只在「本次 claim 成功占住的 scanning 行」上写：若这期间状态已被改成
 	// sensitive（上传前同步审核的结论），RowsAffected=0，异步结果被丢弃，
 	// sensitive 得以保持。
@@ -685,7 +696,7 @@ func persistTicketAttachmentScanResultInTx(db *gorm.DB, row entity.TicketAttachm
 		logger.SysLog(fmt.Sprintf("ticket_attachment_scan_result_discarded attachmentId=%d want=%s reason=state_changed", row.ID, scan.State))
 	}
 	if result.RowsAffected > 0 {
-		if err := persistTicketImageSharedVerdict(db, row, scan, now); err != nil {
+		if err := persistTicketImageSharedVerdict(db, row, scan, storedScanState, now); err != nil {
 			return err
 		}
 	}
@@ -699,7 +710,7 @@ func RecoverStaleTicketAttachmentScans(db *gorm.DB, now time.Time) (int64, error
 		return 0, errors.New("数据库未初始化")
 	}
 	staleBefore := now.Add(-2 * time.Minute)
-	result := db.Model(&entity.TicketAttachment{}).
+	result := imageDetectionDB(db).Model(&entity.TicketAttachment{}).
 		Where("scan_state = ? AND updated_at < ?", entity.TicketAttachmentScanScanning, staleBefore).
 		Updates(map[string]interface{}{"scan_state": entity.TicketAttachmentScanPending, "next_attempt_at": now, "updated_at": now})
 	return result.RowsAffected, result.Error
@@ -741,12 +752,12 @@ func RunTicketAttachmentScanWorker(ctx context.Context, db *gorm.DB) {
 		now := time.Now()
 		if nextRecovery.IsZero() || !now.Before(nextRecovery) {
 			if _, err := RecoverStaleTicketAttachmentScans(db, now); err != nil {
-				logger.SysWarn(fmt.Sprintf("ticket_attachment_scan_recovery_failed error=%v", err))
+				logger.SysWarn("ticket_attachment_scan_recovery_failed")
 			}
 			nextRecovery = now.Add(ticketAttachmentScanRecoveryInterval)
 		}
 		if _, err := ProcessPendingTicketAttachmentScans(ctx, db, now); err != nil {
-			logger.SysWarn(fmt.Sprintf("ticket_attachment_scan_poll_failed error=%v", err))
+			logger.SysWarn("ticket_attachment_scan_poll_failed")
 		}
 		delay := ticketAttachmentScanPollInterval
 		if strings.TrimSpace(GetUAPIAPIKeyWithDB(db)) == "" {

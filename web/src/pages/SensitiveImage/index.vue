@@ -126,12 +126,16 @@
         <p class="field-hint">
           两个输入框都填时只处理图片标识（按 SHA256 重判），工单编号会被忽略 —— 页面会明确提示这一点，不会假装批量也跑了。
         </p>
-        <p v-if="detectError" class="filter-error" role="alert">{{ detectError }}</p>
+        <p v-if="detectError" class="filter-error" role="alert">
+          {{ detectError }}
+          <code v-if="detectErrorCode">{{ detectErrorCode }}</code>
+          <span v-if="detectDiagnosticId"> 诊断编号 <code data-request-diagnostic>{{ detectDiagnosticId }}</code></span>
+        </p>
 
         <!-- 判据②：本次涉及多少行必须写在响应区，且数字缺失时写「未知」而不是 0。 -->
         <a-alert
           v-if="detectOutcome"
-          :type="detectOutcome.attachSyncError ? 'warning' : 'success'"
+          :type="detectOutcome.attachSyncError || detectOutcome.skipped > 0 ? 'warning' : 'success'"
           show-icon
           class="detect-outcome"
           data-testid="detect-outcome"
@@ -152,8 +156,15 @@
               <p v-if="detectOutcome.mode === 'ticket'" data-testid="detect-outcome-ticket">
                 本工单共 {{ detectOutcome.total === null ? '未知' : detectOutcome.total }} 张，重新检测
                 {{ detectOutcome.detected === null ? '未知' : detectOutcome.detected }} 张，跳过
-                {{ detectOutcome.skipped === null ? '未知' : detectOutcome.skipped }} 张（字节取不到）。
+                {{ detectOutcome.skipped === null ? '未知' : detectOutcome.skipped }} 张（未完成）。
               </p>
+              <ul v-if="detectOutcome.failures.length" data-testid="detect-outcome-failures">
+                <li v-for="item in detectOutcome.failures" :key="item.attachmentId">
+                  附件 {{ item.attachmentId ?? '未知' }}：{{ item.message }}
+                  <code v-if="item.code">{{ item.code }}</code>
+                  <span v-if="item.diagnosticId"> 诊断编号 <code data-request-diagnostic>{{ item.diagnosticId }}</code></span>
+                </li>
+              </ul>
               <p class="detail-hint" data-testid="detect-outcome-raw-only">
                 响应只回判定结论与计数；图片字节与上游原始响应不在本接口响应里，也不会在本页展示。
               </p>
@@ -307,6 +318,7 @@ import {
   buildGifControllerOptions,
   createGifPlaybackController,
   describeDetectOutcome,
+  presentImageDetectionError,
   projectDetectResponse,
   readPositiveInt,
   shouldOfferGifControls,
@@ -374,6 +386,8 @@ export default {
     const detectForm = reactive(emptyDetectForm())
     const detecting = ref(false)
     const detectError = ref('')
+    const detectErrorCode = ref('')
+    const detectDiagnosticId = ref('')
     const detectOutcome = ref(null)
     const detectOutcomeText = ref('')
 
@@ -611,8 +625,17 @@ export default {
       detectForm[field] = value
     }
 
+    const showDetectFailure = payload => {
+      const view = presentImageDetectionError(payload)
+      detectError.value = view.message
+      detectErrorCode.value = view.code
+      detectDiagnosticId.value = view.diagnosticId
+    }
+
     const runDetect = async () => {
       if (!canManage() || detecting.value) return
+      detectErrorCode.value = ''
+      detectDiagnosticId.value = ''
       const built = buildDetectPayload({ imageSha256: detectForm.imageSha256, ticketId: detectForm.ticketId })
       if (built.error) {
         detectError.value = built.error
@@ -629,7 +652,7 @@ export default {
         const res = await manualDetectSensitiveImage(built.payload)
         if (!owns()) return
         if (res?.status !== 200) {
-          detectError.value = String(res?.data?.message || res?.message || '').trim() || '手动触发检测失败'
+          showDetectFailure(res?.data)
           return
         }
         // 判据③：只投影白名单字段，字节与上游原文一律不进页面状态。
@@ -638,12 +661,14 @@ export default {
         detectOutcomeText.value = describeDetectOutcome(view)
         if (built.ignoredTicketId) {
           message.info('同时填了图片标识与工单编号，本次只按图片标识重判；工单编号已忽略')
+        } else if (view.skipped > 0) {
+          message.warning('有图片未完成检测，请查看逐张回执。')
         } else {
           message.success('手动检测完成')
         }
         reloadAfter = true
       } catch (error) {
-        if (owns()) detectError.value = String(error?.message || '').trim() || '手动触发检测失败'
+        if (owns()) showDetectFailure(error?.response?.data)
       } finally {
         if (owns()) detecting.value = false
       }
@@ -750,7 +775,7 @@ export default {
       columns,
       quota, loadingQuota, savingQuota, quotaError, quotaSaveError, quotaDraft,
       setQuotaDraft, saveQuota, loadQuota,
-      detectForm, detecting, detectError, detectOutcome, detectOutcomeText,
+      detectForm, detecting, detectError, detectErrorCode, detectDiagnosticId, detectOutcome, detectOutcomeText,
       setDetectField, runDetect, detectRecord,
       gifPreview, gifFrameHint, openGifPreview, closeGifPreview,
       toggleGifPlayback, restartGifPlayback, stepGifFrame,

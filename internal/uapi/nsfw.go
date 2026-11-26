@@ -15,6 +15,10 @@ const (
 	DefaultImageNSFWURL = "https://uapis.cn/api/v1/image/nsfw"
 	// MaxImageNSFWBytes 是文档给出的最大上传大小（20 MB）。
 	MaxImageNSFWBytes = 20 * 1024 * 1024
+
+	// NSFWResponseJSONInvalid 与 NSFWResponseVerdictMissing 是本地生成的 2xx 内容错误码。
+	NSFWResponseJSONInvalid    = "NSFW_RESPONSE_JSON_INVALID"
+	NSFWResponseVerdictMissing = "NSFW_RESPONSE_VERDICT_MISSING"
 )
 
 // ImageNSFWRequest 是服务端上传一张图片做敏感内容检测的请求。
@@ -39,6 +43,8 @@ type ImageNSFWResponse struct {
 	Confidence      *float64 `json:"confidence,omitempty"`
 	InferenceTimeMS int64    `json:"inference_time_ms,omitempty"`
 	RawJSON         string   `json:"-"`
+	HTTPStatus      int      `json:"-"`
+	RequestID       string   `json:"-"` // 不可信上游头部，仅供类型化关联
 }
 
 // SetImageNSFWURL 覆盖检测端点，仅用于测试或受控代理；生产用文档完整地址。
@@ -90,6 +96,10 @@ func (c *Client) ImageNSFW(ctx context.Context, request ImageNSFWRequest) (Image
 		return ImageNSFWResponse{}, err
 	}
 	if err := checkResponse(response); err != nil {
+		var apiError *APIError
+		if errors.As(err, &apiError) {
+			apiError.omitUpstreamText = true
+		}
 		return ImageNSFWResponse{}, err
 	}
 
@@ -106,13 +116,15 @@ func (c *Client) ImageNSFW(ctx context.Context, request ImageNSFWRequest) (Image
 	raw := append([]byte(nil), response.Body()...)
 	var result ImageNSFWResponse
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return ImageNSFWResponse{}, invalidContent("NSFW_RESPONSE_JSON_INVALID", "解析敏感图片检测响应失败", err)
+		return ImageNSFWResponse{}, invalidContent(NSFWResponseJSONInvalid, "解析敏感图片检测响应失败", err)
 	}
 	result.RawJSON = string(raw)
+	result.HTTPStatus = response.StatusCode()
+	result.RequestID = response.Header().Get("X-Request-ID")
 	// 200 但没有判定字段 = 上游没给出结论。这里返回错误，让调用方走 fail-closed，
 	// 绝不能因为「HTTP 200」就把图片当成正常图片放行。
 	if result.IsNSFW == nil && strings.TrimSpace(result.Suggestion) == "" && strings.TrimSpace(result.RiskLevel) == "" {
-		return ImageNSFWResponse{}, invalidContent("NSFW_RESPONSE_VERDICT_MISSING", "检测响应缺少判定字段", nil)
+		return ImageNSFWResponse{}, invalidContent(NSFWResponseVerdictMissing, "检测响应缺少判定字段", nil)
 	}
 	return result, nil
 }
