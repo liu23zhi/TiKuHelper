@@ -195,6 +195,11 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
       assert.equal(data.headers['X-Forwarded-For'][0], '198.51.100.99');
       assert.equal(data.headers['X-Forwarded-Proto'][0], 'http');
       assert.equal(data.headers.Forwarded, undefined);
+      const originalPeer = await request(port, false, {}, '/api/agreements/status');
+      const agreement = await request(port, false, { 'X-Forwarded-For': '198.51.100.99', Forwarded: 'for=spoof' }, '/api/agreements/status');
+      assert.equal(agreement.headers.Forwarded[0], 'by=_tiku_agreement_gateway');
+      assert.equal(agreement.headers['X-Forwarded-For'][0], originalPeer.headers['X-Forwarded-For'][0]);
+      assert.notEqual(agreement.headers['X-Forwarded-For'][0], '198.51.100.99');
       assert.equal(data.listen, '127.0.0.1:8061'); assert.equal(data.gateway, '1');
     }
     assert.equal(await websocket(ports[1]), 101);
@@ -240,6 +245,9 @@ test('container gateway forwards headers and WebSocket, safely rotates SNI snaps
     const forwarded = await request(ports[1], false, { 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '203.0.113.9' });
     assert.equal(forwarded.headers['X-Forwarded-Proto'][0], 'https');
     assert.equal(forwarded.headers['X-Forwarded-For'][0], '203.0.113.9');
+    const agreement = await request(ports[1], false, { 'X-Forwarded-For': '203.0.113.9' }, '/api/admin/agreements/records');
+    assert.equal(agreement.headers.Forwarded[0], 'by=_tiku_agreement_gateway');
+    assert.equal(agreement.headers['X-Forwarded-For'][0], '203.0.113.9');
     await eventually(async () => assert.equal(await peerSerial(ports[2], 'expiry.example'), '2C'), 'short-lived TLS snapshot accepted');
     await eventually(() => assert.match(successful(execute('docker', ['exec', name, '/app/container-gateway', '--healthcheck'])), /HTTP ready; HTTPS 未启用/), 'natural expiry disables TLS', 180);
 	    await eventually(() => assert.rejects(request(ports[2], true)), 'expired TLS listener removed');

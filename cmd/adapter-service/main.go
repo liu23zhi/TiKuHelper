@@ -104,6 +104,7 @@ func main() {
 		logger.FatalLog(err)
 	}
 	server.Use(controller.ScriptHostBoundary(mg.GetDB()))
+	server.Use(controller.AgreementSourcePolicy(trustedProxies.List[:trustedProxies.ConfiguredCount], httpRuntime.InternalGateway))
 	api.SetAPIRouter(server)
 	healthDB, err := mg.GetDB().DB()
 	if err != nil {

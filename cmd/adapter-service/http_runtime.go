@@ -9,8 +9,9 @@ import (
 )
 
 type httpRuntime struct {
-	Address string
-	Proxies trustedProxyConfig
+	Address         string
+	InternalGateway bool
+	Proxies         trustedProxyConfig
 }
 
 // The bundled gateway owns the external trust policy. Its child accepts only
@@ -39,7 +40,7 @@ func loadHTTPRuntime() (httpRuntime, error) {
 	if err != nil || portNumber < 1 || portNumber > 65535 || (host != "" && net.ParseIP(host) == nil) {
 		return httpRuntime{}, fmt.Errorf("TIKU_LISTEN_ADDRESS 须为有效的 IP:端口（1–65535）")
 	}
-	config := httpRuntime{Address: address}
+	config := httpRuntime{Address: address, InternalGateway: internal}
 	if internal {
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {

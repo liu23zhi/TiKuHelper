@@ -48,6 +48,12 @@ func scriptHostBoundary(db *gorm.DB, entry func(*gin.Context) bool) gin.HandlerF
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
+		// Device credentials and their preflight must not be served on
+		// standalone aliases or dedicated script origins.
+		if agreementRoute(c.Request.URL.Path) && role != service.PlatformWebHost {
+			reject()
+			return
+		}
 		switch role {
 		case service.PlatformWebHost:
 			c.Set(platformRootKey, true)

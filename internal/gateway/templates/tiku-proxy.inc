@@ -1,8 +1,8 @@
 proxy_http_version 1.1;
 proxy_set_header Host              $http_host;
 proxy_set_header X-Real-IP         $remote_addr;
-proxy_set_header X-Forwarded-For   $remote_addr;
-proxy_set_header Forwarded         "";
+proxy_set_header X-Forwarded-For   $tiku_route_xff;
+proxy_set_header Forwarded         $tiku_agreement_forwarded;
 proxy_set_header X-Forwarded-Proto $tiku_forwarded_proto;
 proxy_set_header X-Forwarded-Port  $server_port;
 

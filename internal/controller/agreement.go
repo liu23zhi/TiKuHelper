@@ -72,6 +72,10 @@ func agreementJSON(c *gin.Context, dst any) error {
 }
 func agreementStore(c *gin.Context, op string) (service.AgreementStore, bool) {
 	c.Header("Cache-Control", "no-store")
+	if (op != "fetch" || c.GetHeader(agreementDeviceHeader) != "" || c.GetHeader("Authorization") != "" || c.GetHeader("X-Script-Identity") != "") && agreementSource(c) == "" {
+		c.JSON(503, gin.H{"operation": op, "code": "source_unavailable"})
+		return service.AgreementStore{}, false
+	}
 	db := agreementDB()
 	if db == nil {
 		agreementFail(c, op, errors.New("no db"))
@@ -87,7 +91,7 @@ func agreementTLS(c *gin.Context, op string) bool {
 	return false
 }
 func agreementProof(c *gin.Context) service.AgreementCredentials {
-	return service.AgreementCredentials{Secret: c.GetHeader(agreementDeviceHeader), Authorization: c.GetHeader("Authorization"), Identity: c.GetHeader("X-Script-Identity"), IP: c.ClientIP()}
+	return service.AgreementCredentials{Secret: c.GetHeader(agreementDeviceHeader), Authorization: c.GetHeader("Authorization"), Identity: c.GetHeader("X-Script-Identity"), IP: agreementSource(c)}
 }
 func EnrollAgreementDevice(c *gin.Context) {
 	const op = "enroll"
@@ -99,7 +103,7 @@ func EnrollAgreementDevice(c *gin.Context) {
 		agreementFail(c, op, service.ErrAgreementInput)
 		return
 	}
-	if !enrollmentBudget.allow(c.ClientIP()) {
+	if !enrollmentBudget.allow(agreementSource(c)) {
 		c.Header("Retry-After", "300")
 		c.JSON(429, gin.H{"operation": op, "code": "rate_limited"})
 		return
@@ -206,7 +210,7 @@ func agreementAdmin(name string, action int32, op agreementAdminOp) gin.HandlerF
 			if ids, ok := out.([]int64); ok {
 				target = fmt.Sprint(ids)
 			}
-			return service.WriteAccountAuditWithDB(tx, service.AccountAuditEvent{Module: "agreement", Action: action, UserID: user.ID, Username: user.Username, Description: fmt.Sprintf("协议 %s %s", name, target), ClientIP: c.ClientIP(), CorrelationID: c.GetString("transport_request_id")})
+			return service.WriteAccountAuditWithDB(tx, service.AccountAuditEvent{Module: "agreement", Action: action, UserID: user.ID, Username: user.Username, Description: fmt.Sprintf("协议 %s %s", name, target), ClientIP: agreementSource(c), CorrelationID: c.GetString("transport_request_id")})
 		})
 		if e != nil {
 			agreementFail(c, name, e)
