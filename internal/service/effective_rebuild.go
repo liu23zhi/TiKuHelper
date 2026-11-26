@@ -2,13 +2,16 @@ package service
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"strings"
-	"unicode/utf8"
 )
 
 type EffectiveRebuildInput struct {
@@ -42,8 +45,8 @@ func RebuildEffectiveLevels(db *gorm.DB, actor entity.User, in EffectiveRebuildI
 	if db == nil || in.AfterID < 0 || in.Limit < 1 || in.Limit > 200 || applying && (len(in.ApplyDigest) != 64 || reason == "" || utf8.RuneCountInString(reason) > 255) {
 		return out, ErrLedgerInput
 	}
-	err := userLevelSession(db).Transaction(func(tx *gorm.DB) error {
-		if _, err := ticketRefundActor(tx, actor.ID, true, false); err != nil {
+	run := func(tx *gorm.DB) error {
+		if _, err := ticketRefundActor(tx, actor.ID, true, applying); err != nil {
 			return err
 		}
 		if !userLevelSchemaAvailable(tx) || !tx.Migrator().HasTable(&entity.EffectiveRebuildAudit{}) {
@@ -79,7 +82,7 @@ func RebuildEffectiveLevels(db *gorm.DB, actor entity.User, in EffectiveRebuildI
 				return err
 			}
 			r := rebuildRow{ID: u.ID, Old: u.LevelID, Totals: totals}
-			if len(totals.Issues) != 0 {
+			if totals.RequiresReview() {
 				out.Skipped++
 				r.New = r.Old
 				for k, n := range totals.Issues {
@@ -98,7 +101,11 @@ func RebuildEffectiveLevels(db *gorm.DB, actor entity.User, in EffectiveRebuildI
 			out.NextID = u.ID
 		}
 		out.Examined = len(rows)
-		b, err := json.Marshal([]any{actor.ID, in.AfterID, in.Limit, out.HasMore, levels, rows})
+		var previous int64
+		if err := tx.Model(&entity.EffectiveRebuildAudit{}).Where("operator_id = ? AND after_id = ?", actor.ID, in.AfterID).Select("COALESCE(MAX(id),0)").Scan(&previous).Error; err != nil {
+			return err
+		}
+		b, err := json.Marshal([]any{actor.ID, in.AfterID, in.Limit, previous, out.HasMore, levels, rows})
 		if err != nil {
 			return err
 		}
@@ -110,25 +117,29 @@ func RebuildEffectiveLevels(db *gorm.DB, actor entity.User, in EffectiveRebuildI
 		if out.Digest != in.ApplyDigest || len(rows) == 0 {
 			return ErrLedgerStale
 		}
-		for _, r := range rows {
-			if r.New == r.Old {
-				continue
-			}
-			ev, err := EvaluateUserLevelWithDB(tx, r.ID, entity.UserLevelTriggerReconcile)
-			if err != nil {
-				return err
-			}
-			if ev.ToLevelID != r.New {
-				return ErrLedgerStale
-			}
-		}
 		a := entity.EffectiveRebuildAudit{OperatorID: actor.ID, AfterID: in.AfterID, NextID: out.NextID, Examined: out.Examined, Changed: out.Changed, Skipped: out.Skipped, Digest: out.Digest, Reason: reason}
 		if err := tx.Create(&a).Error; err != nil {
 			return err
 		}
 		out.AuditID = a.ID
+		for _, r := range rows {
+			if r.New == r.Old {
+				continue
+			}
+			if _, e := persistUserLevelFacts(tx, r.ID, r.Old, r.New, entity.UserLevelTriggerReconcile, r.Totals, levels, fmt.Sprintf("effective:%d:%d", a.ID, r.ID)); e != nil {
+				return e
+			}
+		}
 		return nil
-	})
+	}
+	var err error
+	if applying {
+		err = ticketRefundTransaction(db, run)
+	} else if db.Dialector.Name() == "mysql" {
+		err = userLevelSession(db).Transaction(run, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	} else {
+		err = userLevelSession(db).Transaction(run)
+	}
 	if err != nil {
 		return EffectiveRebuildResult{}, err
 	}

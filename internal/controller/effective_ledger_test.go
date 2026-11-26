@@ -55,3 +55,44 @@ func TestEffectiveLedgerHTTPRejectsForeignSourceAndDemotedAdmin(t *testing.T) {
 		t.Fatalf("audit count %d %v", n, err)
 	}
 }
+
+func TestReviewLegacyReevaluateRequiresConfirmedBatch(t *testing.T) {
+	db := newRegisterLevelTestDB(t)
+	admin := entity.User{ID: 1, Username: "admin", Role: "admin", Status: "enabled"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := entity.User{ID: 2, Username: "owner", Role: "user", Status: "enabled"}
+	if err := db.Create(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.EffectiveRebuildAudit{}); err != nil {
+		t.Fatal(err)
+	}
+	basic, _ := seedControllerUserLevels(t, db, 2, 10, 0)
+	if err := db.Table("users").Where("id = ?", 2).Update("level_id", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		u      *entity.User
+		status int
+	}{{nil, 401}, {&owner, 403}, {&admin, 428}} {
+		w := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Request = httptest.NewRequest("POST", "/api/admin/user-levels/reevaluate", nil)
+		if tc.u != nil {
+			ctx.Set("user", tc.u)
+		}
+		UserLevelReevaluate(ctx)
+		if w.Code != tc.status {
+			t.Fatalf("legacy reevaluate status %d want %d", w.Code, tc.status)
+		}
+		if tc.status == 428 && !strings.Contains(w.Body.String(), "effective-ledger/rebuild") {
+			t.Fatalf("missing stable replacement for legacy client")
+		}
+	}
+	var id int32
+	if err := db.Table("users").Select("level_id").Where("id = ?", 2).Scan(&id).Error; err != nil || id != 0 {
+		t.Fatalf("legacy route wrote %d (basic %d)", id, basic.ID)
+	}
+}

@@ -229,16 +229,20 @@ func EvaluateUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLev
 		return UserLevelChangeResult{}, err
 	}
 	// Never turn an unexplained historical row into an automatic demotion.
-	// Missing optional tables in pre-migration deployments remain explicitly
-	// reported. Ambiguous legacy settlements remain held for review.
+	// Missing financial source tables and ambiguous legacy settlements preserve the existing entitlement.
 	if totals.RequiresReview() {
 		result.Evaluated = false
 		result.FromLevelID = current
 		result.ToLevelID = current
 		return result, nil
 	}
-	result.FromLevelID = current
-	result.ToLevelID = targetID
+	return persistUserLevelFacts(db, userID, current, targetID, trigger, totals, levels, buildUserLevelEventKey(userID, current, targetID, trigger))
+}
+
+// Called with the exact entitlement decision and source totals. Rebuild supplies
+// the locked, digest-approved rows directly; it never recalculates a second plan.
+func persistUserLevelFacts(db *gorm.DB, userID, current, targetID int32, trigger string, totals UserLevelTotals, levels []entity.UserLevel, key string) (UserLevelChangeResult, error) {
+	result := UserLevelChangeResult{Evaluated: true, FromLevelID: current, ToLevelID: targetID, RechargeSum: totals.RechargeTotal, ConsumeSum: totals.ConsumptionTotal}
 	if current == targetID {
 		return result, nil
 	}
@@ -251,7 +255,7 @@ func EvaluateUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLev
 		FromLevelID:      current,
 		ToLevelID:        targetID,
 		Trigger:          normalizeUserLevelTrigger(trigger),
-		EventKey:         buildUserLevelEventKey(userID, current, targetID, trigger),
+		EventKey:         key,
 		RechargeTotal:    totals.RechargeTotal,
 		ConsumptionTotal: totals.ConsumptionTotal,
 		Remark:           buildUserLevelHistoryRemark(current, targetID, levels),
@@ -267,11 +271,14 @@ func EvaluateUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLev
 
 	// 即使这次流水被唯一键挡掉（重复触发），level_id 也要写成目标值：
 	// 上一次可能只写了流水而没改到用户行（例如进程在两步之间退出）。
-	if err := userLevelSession(db).Table(entity.TableNameUser).
-		Where("id = ?", userID).
-		Update("level_id", targetID).Error; err != nil {
-		return result, err
+	updated := userLevelSession(db).Table(entity.TableNameUser).Where("id = ? AND level_id = ?", userID, current).Update("level_id", targetID)
+	if updated.Error != nil {
+		return result, updated.Error
 	}
+	if updated.RowsAffected != 1 {
+		return result, ErrLedgerStale
+	}
+
 	return result, nil
 }
 
@@ -442,7 +449,7 @@ func CreateUserLevelWithDB(db *gorm.DB, input UserLevelInput) (entity.UserLevel,
 // UpdateUserLevelWithDB 编辑一个等级。
 //
 // 改门槛后**不自动重评**存量用户：门槛是配置，重评是另一件事（需要扫全表）。
-// 管理端可以在保存后显式调用 ReevaluateAllUserLevelsWithDB（见下）。
+// 管理端可以在保存后显式调用 RebuildEffectiveLevels 显式预览并确认重建。
 func UpdateUserLevelWithDB(db *gorm.DB, id int32, input UserLevelInput) (entity.UserLevel, error) {
 	if db == nil || !userLevelSchemaAvailable(db) {
 		return entity.UserLevel{}, ErrUserLevelSchemaUnavailable
@@ -542,34 +549,6 @@ func DeleteUserLevelWithDB(db *gorm.DB, id int32) error {
 		}
 	}
 	return nil
-}
-
-// ReevaluateAllUserLevelsWithDB 重评一批用户的等级（管理端改门槛后手动触发）。
-//
-// limit 控制单次处理量，避免一次扫全表把请求拖死；返回处理数与变更数。
-func ReevaluateAllUserLevelsWithDB(db *gorm.DB, limit int, trigger string) (processed int, changed int, err error) {
-	if db == nil || !userLevelSchemaAvailable(db) {
-		return 0, 0, ErrUserLevelSchemaUnavailable
-	}
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
-	var ids []int32
-	if err := userLevelSession(db).Table(entity.TableNameUser).
-		Order("id asc").Limit(limit).Pluck("id", &ids).Error; err != nil {
-		return 0, 0, err
-	}
-	for _, id := range ids {
-		result, evalErr := ReconcileUserLevelWithDB(db, id, trigger)
-		if evalErr != nil {
-			return processed, changed, evalErr
-		}
-		processed++
-		if result.Changed {
-			changed++
-		}
-	}
-	return processed, changed, nil
 }
 
 // UserLevelSummary 是「用户当前等级」的下发结构（个人中心 / 用户列表用）。

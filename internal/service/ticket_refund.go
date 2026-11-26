@@ -1061,6 +1061,12 @@ func changeTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, mutate f
 			}
 			return err
 		}
+		// A successful line can affect entitlement while its siblings are still
+		// pending, before finalization touches the wallet. Serialize these writes
+		// with the same owner row as credits, debits, corrections and rebuilds.
+		if err := lockEffectiveOwner(tx, row.UserID); err != nil {
+			return err
+		}
 		return mutate(tx, &row)
 	})
 	if err != nil {

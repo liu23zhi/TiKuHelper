@@ -11,6 +11,7 @@ let corrected=false
 transport.loaded=true
 transport.exports=async req=>{
  calls.push(req)
+ if(req.url.includes("/users/42/"))return {status:200,data:{data:{totals:{rechargeTotal:5.85,historicalRecharge:10,consumptionTotal:0,historicalConsumption:0,issues:{refund_principal_without_exact_receipt:1}},sources:[{kind:"order",id:5,gross:10,refunded:0,refundEstimateUpper:4.15,uncertain:true,effective:5.85,refundIds:[71]}],audit:[]}}}
  if(req.method==='post'){corrected=true;return {status:200,data:{data:{id:91}}}}
  return {status:200,data:{data:{revision:corrected?91:0,totals:{rechargeTotal:6,historicalRecharge:10,consumptionTotal:corrected?1:2,historicalConsumption:2},sources:[{kind:'bill',id:11,gross:2,refunded:0,effective:corrected?1:2}],audit:[]}}}
 }
@@ -32,5 +33,18 @@ test('shows original facts, sends a reasoned correction tied to the chosen bill 
   assert.equal(calls[1].url,'/api/admin/users/9/effective-ledger')
   assert.deepEqual(calls[1].data,{sourceKind:'bill',sourceId:11,expected:'2.000000',new:'1.000000',reason:'核实错误扣费',revision:0})
   assert.match(w.text(),/当前有效消费 ¥ 1/)
+ }finally{w.unmount()}
+})
+
+
+test('an estimate can be inspected but never labeled a confirmed refund or saved',async()=>{
+ const w=mount(Editor,{props:{userId:42}})
+ try{
+  await w.get('button').trigger('click');await flushPromises()
+  await w.get('select').setValue('order:5')
+  assert.match(w.text(),/可核实的已退本金 ¥ 0/)
+  assert.match(w.text(),/未证实退款上界 ¥ 4.15（不是实退额）/)
+  assert.match(w.text(),/该来源贡献待核/)
+  assert.doesNotMatch(w.text(),/已退本金 ¥ 4.15|单独保存本次账务修正/)
  }finally{w.unmount()}
 })

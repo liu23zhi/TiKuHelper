@@ -116,6 +116,9 @@ func AdminUserPortrait(c *gin.Context) {
 	}
 	portrait, err := service.BuildUserPortraitWithDB(db, service.PortraitScope{UserID: int32(id)})
 	switch {
+	case errors.Is(err, service.ErrLedgerRange):
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"message": err.Error()})
+		return
 	case errors.Is(err, service.ErrPortraitUserNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"message": "用户不存在"})
 		return

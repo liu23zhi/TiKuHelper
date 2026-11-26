@@ -14,7 +14,7 @@ import (
 
 func seedControllerUserLevels(t *testing.T, db *gorm.DB, userID int32, minRecharge, minConsumption float64) (entity.UserLevel, entity.UserLevel) {
 	t.Helper()
-	if err := db.AutoMigrate(&entity.UserLevel{}, &entity.UserLevelHistory{}); err != nil {
+	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.BillingRecord{}, &entity.UserLevel{}, &entity.UserLevelHistory{}); err != nil {
 		t.Fatal(err)
 	}
 	if !db.Migrator().HasColumn(entity.TableNameUser, "level_id") {

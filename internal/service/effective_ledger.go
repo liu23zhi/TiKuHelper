@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -11,36 +10,49 @@ import (
 	"gorm.io/gorm"
 )
 
+// Ledger UI and accounting corrections expose six decimals. Within this
+// supported range all integer micros (and sum intermediates in 1e-8 units)
+// are exactly representable, even through SQLite's REAL aggregation.
+const maxEffectiveYuan = 10_000_000
+const maxEffectiveMicros int64 = maxEffectiveYuan * 1_000_000
+
+var ErrLedgerRange = errors.New("有效账务支持 0 至 10000000 元、六位小数；超出范围不能精确核对或重评")
+
 type UserLevelTotals struct {
-	RechargeTotal         float64 `json:"rechargeTotal"`
-	ConsumptionTotal      float64 `json:"consumptionTotal"`
-	HistoricalRecharge    float64 `json:"historicalRecharge"`
-	HistoricalConsumption float64 `json:"historicalConsumption"`
-	// When nonempty, amounts are confirmed subtotals, not guessed totals.
+	ConfirmedUnallocatedRefund float64 `json:"confirmedUnallocatedRefund,omitempty"`
+	RefundEstimateUpper        float64 `json:"refundEstimateUpper,omitempty"`
+	RechargeTotal              float64 `json:"rechargeTotal"`
+	ConsumptionTotal           float64 `json:"consumptionTotal"`
+	HistoricalRecharge         float64 `json:"historicalRecharge"`
+	HistoricalConsumption      float64 `json:"historicalConsumption"`
+	// When nonempty, summaries may include only confirmed amounts or explicitly bounded estimates; entitlements stay unchanged.
 	Issues map[string]int64 `json:"issues,omitempty"`
 }
 
 type effectiveSource struct {
-	Debited   *float64 `json:"debited,omitempty"`
-	Uncertain bool     `json:"uncertain,omitempty"`
-	Kind      string   `json:"kind"`
-	ID        int32    `json:"id"`
-	Gross     float64  `json:"gross"`
-	Refunded  float64  `json:"refunded"`
-	RefundIDs []int64  `json:"refundIds,omitempty"`
-	Net       float64  `json:"net"`
-	Effective float64  `json:"effective"`
+	RefundEstimateUpper float64  `json:"refundEstimateUpper,omitempty"`
+	Debited             *float64 `json:"debited,omitempty"`
+	Uncertain           bool     `json:"uncertain,omitempty"`
+	Kind                string   `json:"kind"`
+	ID                  int32    `json:"id"`
+	Gross               float64  `json:"gross"`
+	Refunded            float64  `json:"refunded"`
+	RefundIDs           []int64  `json:"refundIds,omitempty"`
+	Net                 float64  `json:"net"`
+	Effective           float64  `json:"effective"`
 }
 type ledgerKey struct {
 	kind string
 	id   int32
 }
 type effectiveProjection struct {
-	unallocatedMicros int64 // confirmed principal without a defensible per-order split
-	Totals            UserLevelTotals
-	orders            map[int32]*effectiveSource
-	discounts         map[ledgerKey]int64
-	audits            []entity.EffectiveAdjustment
+	grossMicros, historicalChargeOctos, confirmedChargeMicros int64
+	estimatedUnallocatedMicros                                int64
+	unallocatedMicros                                         int64 // confirmed principal without a defensible per-order split
+	Totals                                                    UserLevelTotals
+	orders                                                    map[int32]*effectiveSource
+	discounts                                                 map[ledgerKey]int64
+	audits                                                    []entity.EffectiveAdjustment
 }
 
 func (p *effectiveProjection) issue(k string, n int64) {
@@ -49,7 +61,7 @@ func (p *effectiveProjection) issue(k string, n int64) {
 	}
 }
 func (p *effectiveProjection) apply(s *effectiveSource) {
-	s.Net = util.RoundMoney(max(0, s.Gross-s.Refunded))
+	s.Net = util.RoundMoney(max(0, s.Gross-s.Refunded-s.RefundEstimateUpper))
 	if s.Kind == "bill" {
 		if s.Debited == nil {
 			s.Net = 0
@@ -92,6 +104,9 @@ func replayEffectiveBatch(db *gorm.DB, ids []int32) (ledgerBatch, error) {
 			return nil, err
 		}
 		for _, a := range all {
+			if a.OldMicros < 0 || a.NewMicros < 0 || a.DiscountMicros < 0 || max(a.OldMicros, a.NewMicros, a.DiscountMicros) > maxEffectiveMicros {
+				return nil, ErrLedgerRange
+			}
 			p := batch[a.UserID]
 			p.audits = append(p.audits, a)
 			p.discounts[ledgerKey{a.SourceKind, a.SourceID}] = a.DiscountMicros
@@ -121,7 +136,13 @@ func replayEffectiveBatch(db *gorm.DB, ids []int32) (ledgerBatch, error) {
 			}
 			s := &effectiveSource{Kind: "order", ID: r.ID, Gross: r.Amount}
 			p.orders[r.ID] = s
-			p.Totals.HistoricalRecharge += r.Amount
+			if r.Amount > maxEffectiveYuan {
+				return nil, ErrLedgerRange
+			}
+			p.grossMicros += yuanToMicros(r.Amount)
+			if p.grossMicros > maxEffectiveMicros {
+				return nil, ErrLedgerRange
+			}
 			// Operator display status alone is neither a payment nor a payout receipt.
 			if r.Status == "refunded" {
 				p.issue("operator_refund_mark", 1)
@@ -153,8 +174,9 @@ func replayEffectiveBatch(db *gorm.DB, ids []int32) (ledgerBatch, error) {
 			p.apply(s)
 			net += yuanToMicros(s.Effective)
 		}
-		p.Totals.RechargeTotal = float64(max(0, net-p.unallocatedMicros)) / 1e6
-		p.Totals.HistoricalRecharge = util.RoundMoney(p.Totals.HistoricalRecharge)
+		p.Totals.ConfirmedUnallocatedRefund = float64(p.unallocatedMicros) / 1e6
+		p.Totals.RechargeTotal = float64(max(0, net-p.unallocatedMicros-p.estimatedUnallocatedMicros)) / 1e6
+		p.Totals.HistoricalRecharge = float64(p.grossMicros) / 1e6
 		if !bills {
 			p.issue("billing_table_unavailable", 1)
 		}
@@ -192,88 +214,153 @@ func (batch ledgerBatch) applyRefunds(db *gorm.DB, ids []int32) error {
 		}
 	}
 	consumed := map[int64]entity.TicketRefundLedger{}
+	holds := map[int64]entity.TicketRefundLedger{}
 	if db.Migrator().HasTable(&entity.TicketRefundLedger{}) {
 		var rows []entity.TicketRefundLedger
-		if err := db.Model(&entity.TicketRefundLedger{}).Select("ticket_refund_ledger.user_id,ticket_refund_ledger.refund_id,ticket_refund_ledger.amount_micros").Joins("JOIN ticket_refunds r ON r.id=ticket_refund_ledger.refund_id").Where("r.user_id IN ? AND ticket_refund_ledger.kind = ?", ids, ticketRefundLedgerConsume).Find(&rows).Error; err != nil {
+		if err := db.Model(&entity.TicketRefundLedger{}).Select("ticket_refund_ledger.user_id,ticket_refund_ledger.refund_id,ticket_refund_ledger.amount_micros,ticket_refund_ledger.kind").Joins("JOIN ticket_refunds r ON r.id=ticket_refund_ledger.refund_id").Where("r.user_id IN ? AND ticket_refund_ledger.kind IN ?", ids, []string{ticketRefundLedgerConsume, ticketRefundLedgerFreeze}).Find(&rows).Error; err != nil {
 			return err
 		}
 		for _, r := range rows {
-			consumed[r.RefundID] = r
+			if r.Kind == ticketRefundLedgerConsume {
+				consumed[r.RefundID] = r
+			} else {
+				holds[r.RefundID] = r
+			}
 		}
 	}
 	for _, r := range rs {
-		p := batch[r.UserID]
-		terminal := r.Status == entity.TicketRefundStatusSucceeded || r.Status == entity.TicketRefundStatusPartial
-		parts := map[int32]int64{}
-		var planned int64
-		for _, l := range lines[r.ID] {
-			if l.Status == entity.TicketRefundStatusSucceeded && l.Cents > 0 {
-				v := l.Cents * ticketRefundMicrosPerCent
+		if err := batch[r.UserID].projectRefund(r, lines[r.ID], consumed[r.ID], holds[r.ID]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Only a settled consume receipt establishes the terminal principal. Before
+// terminal settlement, a successful line and a full-size immutable hold can
+// establish its exact share. Missing or disagreeing facts are never reported
+// as an observed per-order debit (nor made editable).
+func (p *effectiveProjection) projectRefund(r entity.TicketRefund, lines []entity.TicketRefundOrderLine, receipt, hold entity.TicketRefundLedger) error {
+	terminal := r.Status == entity.TicketRefundStatusSucceeded || r.Status == entity.TicketRefundStatusPartial
+	if r.ApprovedCents < 0 || r.ApprovedCents > maxEffectiveMicros/ticketRefundMicrosPerCent || receipt.AmountMicros > maxEffectiveMicros {
+		return ErrLedgerRange
+	}
+	approved := r.ApprovedCents * ticketRefundMicrosPerCent
+	linked := map[int32]bool{}
+	if r.OrderID != nil {
+		linked[*r.OrderID] = true
+	}
+	parts := map[int32]int64{}
+	var planned int64
+	failures := 0
+	other := 0
+	for _, l := range lines {
+		linked[l.OrderID] = true
+		if l.Cents < 0 || l.Cents > maxEffectiveMicros/ticketRefundMicrosPerCent {
+			return ErrLedgerRange
+		}
+		switch l.Status {
+		case entity.TicketRefundStatusSucceeded:
+			v := l.Cents * ticketRefundMicrosPerCent
+			if v > 0 {
 				parts[l.OrderID] += v
 				planned += v
-			}
-		}
-		if len(parts) == 0 && r.Status == entity.TicketRefundStatusSucceeded && r.OrderID != nil {
-			planned = r.ApprovedCents * ticketRefundMicrosPerCent
-			parts[*r.OrderID] = planned
-		}
-		receipt, ok := consumed[r.ID]
-		if !terminal {
-			if r.Status != entity.TicketRefundStatusProcessing && r.Status != entity.TicketRefundStatusUnknown {
-				if planned > 0 || ok {
-					p.issue("refund_state_conflict", 1)
+				if planned > maxEffectiveMicros {
+					return ErrLedgerRange
 				}
-				continue
 			}
-			if ok {
-				p.issue("refund_state_conflict", 1)
-			}
-			if planned == 0 {
-				continue
-			}
+		case entity.TicketRefundStatusFailed:
+			failures++
+		default:
+			other++
 		}
-		if ok && receipt.UserID != r.UserID {
-			p.issue("refund_wrong_owner_receipt", 1)
-			continue
-		}
-		amount := receipt.AmountMicros
-		if !ok || !terminal {
-			amount = planned
-			if terminal {
-				p.issue("settled_refund_without_consume_receipt", 1)
-			}
-		}
-		if amount <= 0 || planned <= 0 || amount > planned || planned-amount >= ticketRefundMicrosPerCent || (len(parts) > 1 && amount != planned) {
-			if ok && terminal && amount > 0 {
-				p.unallocatedMicros += amount
-			}
-			p.issue("refund_without_exact_order_allocation", 1)
-			continue
-		}
-		ids := make([]int, 0, len(parts))
-		for id := range parts {
-			ids = append(ids, int(id))
-		}
-		sort.Ints(ids)
-		for _, i := range ids {
-			id := int32(i)
-			v := min(parts[id], amount)
-			amount -= v
-			s := p.orders[id]
-			if s == nil {
-				p.issue("refund_without_credited_order", 1)
-				continue
-			}
-
-			if terminal && !ok {
+	}
+	if len(lines) == 0 && r.Status == entity.TicketRefundStatusSucceeded && r.OrderID != nil {
+		planned = approved
+		parts[*r.OrderID] = planned
+	}
+	markUnknown := func() {
+		for id := range linked {
+			if s := p.orders[id]; s != nil {
 				s.Uncertain = true
-			} // Approved cents bound the actual micro debit but cannot establish it.
-			s.Refunded = util.RoundMoney(s.Refunded + float64(v)/1e6)
-			s.RefundIDs = append(s.RefundIDs, r.ID)
-			if s.Refunded > s.Gross {
-				p.issue("refund_exceeds_order_principal", 1)
+				s.RefundIDs = append(s.RefundIDs, r.ID)
 			}
 		}
+	}
+	hasReceipt := receipt.RefundID != 0
+	if hasReceipt && (receipt.UserID != r.UserID || receipt.AmountMicros <= 0) {
+		p.issue("refund_wrong_owner_or_amount", 1)
+		markUnknown()
+		return nil
+	}
+	if !terminal && r.Status != entity.TicketRefundStatusProcessing && r.Status != entity.TicketRefundStatusUnknown {
+		if planned > 0 || hasReceipt {
+			p.issue("refund_state_conflict", 1)
+			markUnknown()
+			if hasReceipt {
+				p.unallocatedMicros += receipt.AmountMicros
+			}
+		}
+		return p.checkRefundBounds()
+	}
+	conflict := len(lines) > 0 && ((r.Status == entity.TicketRefundStatusSucceeded && (failures > 0 || other > 0)) || (r.Status == entity.TicketRefundStatusPartial && (planned == 0 || failures == 0 || other > 0)))
+	if conflict || (!terminal && hasReceipt) {
+		p.issue("refund_state_conflict", 1)
+		markUnknown()
+		if hasReceipt {
+			p.unallocatedMicros += receipt.AmountMicros
+		} else if terminal {
+			p.estimatedUnallocatedMicros += approved
+			p.Totals.RefundEstimateUpper += float64(approved) / 1e6
+		}
+		return p.checkRefundBounds()
+	}
+	if !terminal && planned == 0 {
+		return nil
+	}
+	exact := hasReceipt && terminal || !terminal && planned > 0 && hold.UserID == r.UserID && hold.AmountMicros == approved
+	amount := planned
+	if hasReceipt && terminal {
+		amount = receipt.AmountMicros
+	}
+	if !exact {
+		p.issue("refund_principal_without_exact_receipt", 1)
+	}
+	if planned <= 0 || amount > planned || planned-amount >= ticketRefundMicrosPerCent || (len(parts) > 1 && amount != planned) {
+		p.issue("refund_without_exact_order_allocation", 1)
+		markUnknown()
+		if hasReceipt && terminal {
+			p.unallocatedMicros += amount
+		} else if terminal {
+			p.estimatedUnallocatedMicros += approved
+			p.Totals.RefundEstimateUpper += float64(approved) / 1e6
+		}
+		return p.checkRefundBounds()
+	}
+	for id, part := range parts {
+		v := min(part, amount)
+		s := p.orders[id]
+		if s == nil {
+			p.issue("refund_without_credited_order", 1)
+			continue
+		}
+		s.RefundIDs = append(s.RefundIDs, r.ID)
+		if exact {
+			s.Refunded = util.RoundMoney(s.Refunded + float64(v)/1e6)
+		} else {
+			s.Uncertain = true
+			s.RefundEstimateUpper = util.RoundMoney(s.RefundEstimateUpper + float64(v)/1e6)
+			p.Totals.RefundEstimateUpper = util.RoundMoney(p.Totals.RefundEstimateUpper + float64(v)/1e6)
+		}
+		if s.Refunded > s.Gross {
+			p.issue("refund_exceeds_order_principal", 1)
+		}
+	}
+	return p.checkRefundBounds()
+}
+func (p *effectiveProjection) checkRefundBounds() error {
+	if p.unallocatedMicros > maxEffectiveMicros || p.estimatedUnallocatedMicros > maxEffectiveMicros || p.Totals.RefundEstimateUpper > maxEffectiveYuan {
+		return ErrLedgerRange
 	}
 	return nil
 }
@@ -313,15 +400,15 @@ func billProjectionQuery(db *gorm.DB, uid int32) *gorm.DB {
 
 func (batch ledgerBatch) readCharges(db *gorm.DB, ids []int32) error {
 	var groups []struct {
-		UserID          int32
-		Kind            string
-		Diagnostic      int
-		N               int64
-		Amount, Debited float64
-		Proven          int64
+		UserID        int32
+		Kind          string
+		Diagnostic    int
+		N             int64
+		Octos, Micros float64
+		Proven        int64
 	}
 	debit := effectiveDebitSQL(db)
-	if err := db.Model(&entity.BillingRecord{}).Select("user_id, TRIM(type) AS kind,"+chargeOriginSQL+" AS diagnostic, COUNT(*) AS n, SUM(amount) AS amount, COALESCE(SUM("+debit+"),0) AS debited,COUNT("+debit+") AS proven").Where("user_id IN ? AND amount > 0", ids).Group("user_id, TRIM(type)," + chargeOriginSQL).Scan(&groups).Error; err != nil {
+	if err := db.Model(&entity.BillingRecord{}).Select("user_id, TRIM(type) AS kind,"+chargeOriginSQL+" AS diagnostic, COUNT(*) AS n, SUM(ROUND(amount*100000000,0)) AS octos, COALESCE(SUM(ROUND(("+debit+")*1000000,0)),0) AS micros,COUNT("+debit+") AS proven").Where("user_id IN ? AND amount > 0", ids).Group("user_id, TRIM(type)," + chargeOriginSQL).Scan(&groups).Error; err != nil {
 		return err
 	}
 	known := map[string]bool{AdminGrantBillingRecordType: true, AdminGrantReversalBillingRecordType: true, "test": true}
@@ -332,13 +419,22 @@ func (batch ledgerBatch) readCharges(db *gorm.DB, ids []int32) error {
 		p := batch[g.UserID]
 		switch {
 		case confirmedCharge(g.Kind, false):
-			p.Totals.HistoricalConsumption += g.Amount
+			if g.Octos > maxEffectiveYuan*1e8 {
+				return ErrLedgerRange
+			}
+			p.historicalChargeOctos += int64(g.Octos)
 			if confirmedCharge(g.Kind, g.Diagnostic != 0) {
-				p.Totals.ConsumptionTotal += g.Debited
+				if g.Micros > float64(maxEffectiveMicros) {
+					return ErrLedgerRange
+				}
+				p.confirmedChargeMicros += int64(g.Micros)
 				p.issue("charge_without_exact_debit", g.N-g.Proven)
 			}
 		case g.Kind == scriptReservationBillingRecordType:
-			p.Totals.HistoricalConsumption += g.Amount
+			if g.Octos > maxEffectiveYuan*1e8 {
+				return ErrLedgerRange
+			}
+			p.historicalChargeOctos += int64(g.Octos)
 		case !known[g.Kind]:
 			p.issue("unclassified_billing_type:"+g.Kind, g.N)
 		}
@@ -346,11 +442,14 @@ func (batch ledgerBatch) readCharges(db *gorm.DB, ids []int32) error {
 	for _, p := range batch {
 		for k, d := range p.discounts {
 			if k.kind == "bill" && d > 0 {
-				p.Totals.ConsumptionTotal -= float64(d) / 1e6
+				p.confirmedChargeMicros -= d
 			}
 		}
-		p.Totals.ConsumptionTotal = util.RoundMoney(max(0, p.Totals.ConsumptionTotal))
-		p.Totals.HistoricalConsumption = util.RoundMoney(p.Totals.HistoricalConsumption)
+		if p.historicalChargeOctos > maxEffectiveYuan*100000000 || p.confirmedChargeMicros > maxEffectiveMicros {
+			return ErrLedgerRange
+		}
+		p.Totals.ConsumptionTotal = float64(max(int64(0), p.confirmedChargeMicros)) / 1e6
+		p.Totals.HistoricalConsumption = float64((p.historicalChargeOctos+50)/100) / 1e6
 	}
 	return nil
 }
@@ -393,14 +492,4 @@ func linkedRefundIDs(s *effectiveSource) string {
 // RequiresReview identifies conflicts in existing facts, not a legitimate zero.
 // A confirmed but unallocated manual payout has an exact account total, though
 // it cannot be corrected per order until attribution is resolved.
-func (t UserLevelTotals) RequiresReview() bool {
-	for k := range t.Issues {
-		switch k {
-		case "order_table_unavailable", "refund_table_unavailable", "billing_table_unavailable":
-			continue
-		default:
-			return true
-		}
-	}
-	return false
-}
+func (t UserLevelTotals) RequiresReview() bool { return len(t.Issues) > 0 }

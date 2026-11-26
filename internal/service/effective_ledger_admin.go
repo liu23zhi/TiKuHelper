@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"regexp"
 	"sort"
 	"strconv"
@@ -28,6 +29,7 @@ type EffectiveReview struct {
 	NextBill int32                        `json:"nextBill"`
 }
 
+var ErrLedgerUncertain = errors.New("账务存在待核事实，不能修正累计金额")
 var ledgerDecimal = regexp.MustCompile(`^[0-9]{1,12}(\.[0-9]{1,6})?$`)
 
 func ledgerMicros(v string) (int64, error) {
@@ -35,7 +37,11 @@ func ledgerMicros(v string) (int64, error) {
 		return 0, ErrLedgerInput
 	}
 	a, b, _ := strings.Cut(v, ".")
-	return strconv.ParseInt(a+b+strings.Repeat("0", 6-len(b)), 10, 64)
+	n, err := strconv.ParseInt(a+b+strings.Repeat("0", 6-len(b)), 10, 64)
+	if err != nil || n > maxEffectiveMicros {
+		return 0, ErrLedgerRange
+	}
+	return n, nil
 }
 func (p *effectiveProjection) revision() int64 {
 	if len(p.audits) == 0 {
@@ -43,8 +49,15 @@ func (p *effectiveProjection) revision() int64 {
 	}
 	return p.audits[len(p.audits)-1].ID
 }
+
+// Lock only the identity, not wallet eligibility: disabled or archived owners
+// may still legitimately have a pending payout finalized or released.
+func lockEffectiveOwner(tx *gorm.DB, uid int32) error {
+	var row struct{ ID int32 }
+	return tx.Table(entity.TableNameUser).Select("id").Where("id = ?", uid).Clauses(clause.Locking{Strength: "UPDATE"}).Take(&row).Error
+}
 func checkEffectiveTarget(tx *gorm.DB, actor entity.User, uid int32, lock bool) error {
-	if _, err := ticketRefundActor(tx, actor.ID, true, false); err != nil {
+	if _, err := ticketRefundActor(tx, actor.ID, true, lock); err != nil {
 		return err
 	}
 	q := tx.Model(&entity.User{}).Select("id").Where("id = ?", uid)
@@ -106,11 +119,11 @@ func CorrectEffectiveLedger(db *gorm.DB, actor entity.User, uid int32, input Eff
 	var a entity.EffectiveAdjustment
 	old, err := ledgerMicros(input.Expected)
 	if err != nil {
-		return a, ErrLedgerInput
+		return a, err
 	}
 	next, err := ledgerMicros(input.New)
 	if err != nil {
-		return a, ErrLedgerInput
+		return a, err
 	}
 	reason := strings.TrimSpace(input.Reason)
 	if db == nil || uid <= 0 || input.SourceID <= 0 || old == next || reason == "" || utf8.RuneCountInString(reason) > 255 {
@@ -123,6 +136,9 @@ func CorrectEffectiveLedger(db *gorm.DB, actor entity.User, uid int32, input Eff
 		p, err := replayEffectiveLedger(tx, uid)
 		if err != nil {
 			return err
+		}
+		if p.Totals.RequiresReview() {
+			return ErrLedgerUncertain
 		}
 		if p.revision() != input.Revision {
 			return ErrLedgerStale

@@ -392,7 +392,7 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 		t.Fatalf("users.level_id = %d, want %d after refund", levelID, basic.ID)
 	}
 
-	// 未出钱的退款（processing）不得算作已退：等级不能再动。
+	// Contradictory display status does not reverse an already journaled debit.
 	if err := db.Model(&entity.TicketRefund{}).Where("id = ?", refund.ID).Update("status", "processing").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -400,8 +400,8 @@ func TestEvaluateUserLevelDowngradesAfterRefund(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if totals.RechargeTotal != 600 {
-		t.Fatalf("non-succeeded refund must not reduce recharge total, got %v", totals.RechargeTotal)
+	if totals.RechargeTotal != 100 || !totals.RequiresReview() {
+		t.Fatalf("status conflict must retain the proven debit and mark review, got %+v", totals)
 	}
 }
 

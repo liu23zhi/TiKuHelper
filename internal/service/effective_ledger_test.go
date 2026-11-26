@@ -382,3 +382,145 @@ func TestEffectiveConsumptionRequiresActualDebitAndMicros(t *testing.T) {
 		t.Fatalf("actual debit total = %+v want 5.000003 + 2 unknown, %v", got, err)
 	}
 }
+
+func TestReviewMissingLedgerSourcesPreserveStoredEntitlements(t *testing.T) {
+	for _, table := range []string{"billing_records", "recharge_orders", "ticket_refunds"} {
+		t.Run(table, func(t *testing.T) {
+			db := newUserLevelTestDB(t)
+			if err := db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{}); err != nil {
+				t.Fatal(err)
+			}
+			admin := entity.User{ID: 1, Username: "admin", Role: "admin", Status: "enabled"}
+			if err := db.Create(&admin).Error; err != nil {
+				t.Fatal(err)
+			}
+			seedLevelUser(t, db, 2)
+			mustCreateLevel(t, db, entity.UserLevel{Name: "basic", Rank: 1, Enabled: true, DeviceLimit: 1})
+			high := mustCreateLevel(t, db, entity.UserLevel{Name: "legacy", Rank: 2, Enabled: true, MinRechargeTotal: 20, DeviceLimit: 9})
+			if err := db.Table("users").Where("id = ?", 2).Update("level_id", high.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Migrator().DropTable(table); err != nil {
+				t.Fatal(err)
+			}
+			s, err := RefreshUserLevelSummaryWithDB(db, 2, "reconcile")
+			if err != nil || !s.LevelReviewPending || s.LevelID != high.ID {
+				t.Fatalf("critical source absent, personal changed stored level: %+v %v", s, err)
+			}
+			p, err := RebuildEffectiveLevels(db, admin, EffectiveRebuildInput{AfterID: 1, Limit: 1})
+			if err != nil || p.Skipped != 1 || p.Changed != 0 {
+				t.Fatalf("bulk mismatch %+v %v", p, err)
+			}
+			if n, _, e := EffectiveDeviceLimit(db, 2); e != nil || n != 9 {
+				t.Fatalf("slots=%d %v", n, e)
+			}
+		})
+	}
+}
+func TestReviewEstimatedRefundIsNotAnActualRefund(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		t.Run(fmt.Sprint(conflict), func(t *testing.T) {
+			db := newUserLevelTestDB(t)
+			if err := db.AutoMigrate(&entity.TicketRefundOrderLine{}, &entity.TicketRefundLedger{}); err != nil {
+				t.Fatal(err)
+			}
+			o := entity.RechargeOrder{ID: 5, UserID: 7, Status: "paid", OrderNo: "real-credit", Amount: 10}
+			seedLevelPaidOrder(t, db, o)
+			r := entity.TicketRefund{UserID: 7, OrderID: &o.ID, RefundNo: "fixture", Status: "succeeded", ApprovedCents: 415}
+			if err := db.Create(&r).Error; err != nil {
+				t.Fatal(err)
+			}
+			if conflict {
+				if err := db.Create(&entity.TicketRefundOrderLine{RefundID: r.ID, OrderID: o.ID, RefundNo: "line", Status: "failed", Cents: 415}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Create(&entity.TicketRefundLedger{UserID: 7, RefundID: r.ID, Kind: "consume", AmountMicros: 4149123}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			p, err := replayEffectiveLedger(db, 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			src := p.orders[o.ID]
+			if !src.Uncertain || src.Refunded != 0 || !p.Totals.RequiresReview() {
+				t.Fatalf("unproved / contradictory per-order amount reported as actual: %+v totals %+v", src, p.Totals)
+			}
+		})
+	}
+}
+func TestReviewCorrectionPrecisionBound(t *testing.T) {
+	for _, v := range []string{"10000000000.000001", "10000000000.000002", "10000000.000001"} {
+		if _, err := ledgerMicros(v); err == nil {
+			t.Fatalf("accepted unsupported precision range %s", v)
+		}
+	}
+	for _, v := range []string{"9999999.999998", "9999999.999999", "10000000.000000"} {
+		n, err := ledgerMicros(v)
+		if err != nil || yuanToMicros(float64(n)/1e6) != n {
+			t.Fatalf("valid fixed-micro amount %s: %v", v, err)
+		}
+	}
+}
+
+func TestReviewPrecisionBoundAppliesToDatabaseAndAudit(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}); err != nil {
+		t.Fatal(err)
+	}
+	admin := entity.User{ID: 1, Role: "admin", Status: "enabled", Username: "admin"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLevelUser(t, db, 2)
+	o := entity.RechargeOrder{ID: 3, UserID: 2, OrderNo: "edge", Amount: 10000000, Status: "paid"}
+	seedLevelPaidOrder(t, db, o)
+	in := EffectiveCorrection{SourceKind: "order", SourceID: o.ID, Expected: "10000000", New: "9999999.999999", Reason: "精确微元"}
+	a, err := CorrectEffectiveLedger(db, admin, 2, in)
+	if err != nil || a.OldMicros-a.NewMicros != 1 || a.DiscountMicros != 1 {
+		t.Fatalf("first micro lost: %+v %v", a, err)
+	}
+	in.Expected = in.New
+	in.New = "9999999.999998"
+	in.Revision = a.ID
+	b, err := CorrectEffectiveLedger(db, admin, 2, in)
+	if err != nil || b.OldMicros-b.NewMicros != 1 || b.DiscountMicros != 2 {
+		t.Fatalf("second micro lost: %+v %v", b, err)
+	}
+	seedLevelPaidOrder(t, db, entity.RechargeOrder{ID: 4, UserID: 2, OrderNo: "overflow", Amount: 0.000001, Status: "paid"})
+	if _, err := ComputeUserLevelTotalsWithDB(db, 2); !errors.Is(err, ErrLedgerRange) {
+		t.Fatalf("aggregate overflow not rejected: %v", err)
+	}
+}
+func TestReviewNoopRebuildDigestUsedOnce(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	if err := db.AutoMigrate(&entity.EffectiveRebuildAudit{}); err != nil {
+		t.Fatal(err)
+	}
+	admin := entity.User{ID: 1, Role: "admin", Status: "enabled", Username: "admin"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLevelUser(t, db, 2)
+	l := mustCreateLevel(t, db, entity.UserLevel{Name: "basic", Rank: 1, Enabled: true})
+	if err := db.Table("users").Where("id = ?", 2).Update("level_id", l.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	in := EffectiveRebuildInput{AfterID: 1, Limit: 1}
+	p, err := RebuildEffectiveLevels(db, admin, in)
+	if err != nil || p.Changed != 0 {
+		t.Fatalf("preview %+v %v", p, err)
+	}
+	in.ApplyDigest = p.Digest
+	in.Reason = "已核对"
+	if _, err := RebuildEffectiveLevels(db, admin, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildEffectiveLevels(db, admin, in); !errors.Is(err, ErrLedgerStale) {
+		t.Fatalf("noop replay wrote duplicate audit: %v", err)
+	}
+	var n int64
+	if err := db.Model(&entity.EffectiveRebuildAudit{}).Count(&n).Error; err != nil || n != 1 {
+		t.Fatalf("audits=%d %v", n, err)
+	}
+}

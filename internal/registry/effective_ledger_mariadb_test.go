@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	driver "github.com/go-sql-driver/mysql"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -165,4 +167,114 @@ func TestEffectiveLedgerRestoredMariaDB(t *testing.T) {
 		t.Fatal("structural migration changed a financial fact")
 	}
 	t.Logf("AFTER users=%d warning_users=%d missing_debit=%d unknown_billing_rows=%d aggregate_matches_independent_oracle=true amounts_unchanged=true", after.Users, after.WarningUsers, after.DebitUnknown, after.UnknownKind)
+}
+
+// Two independent connections. A writer owns the account lock and its bill is
+// uncommitted while the verifier reads its authenticated actor. Release the
+// writer only when the verifier reaches the cohort lock: no scheduler sleeps.
+func TestReviewRebuildMariaDBInterleaving(t *testing.T) {
+	if os.Getenv("T14_SYNTHETIC_RACE") != "empty-schema-only" {
+		t.Skip("requires empty synthetic DB, never a restore")
+	}
+	if !strings.HasPrefix(os.Getenv("T14_CLONE_DB"), "t14_synthetic_") {
+		t.Fatal("not a synthetic schema")
+	}
+	db := openT14Clone(t)
+	var n int64
+	if err := db.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()").Scan(&n).Error; err != nil || n != 0 {
+		t.Fatal("requires an empty synthetic database")
+	}
+	if err := db.AutoMigrate(&entity.User{}, &entity.UserLevel{}, &entity.UserLevelHistory{}, &entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.TicketRefund{}, &entity.TicketRefundOrderLine{}, &entity.TicketRefundLedger{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureUserLevelIDColumn(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureEffectiveAuditSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	admin := entity.User{ID: 1, Username: "synthetic-admin", Role: "admin", Status: "enabled"}
+	owner := entity.User{ID: 2, Username: "synthetic-owner", Role: "user", Status: "enabled"}
+	if err := db.Create(&[]entity.User{admin, owner}).Error; err != nil {
+		t.Fatal(err)
+	}
+	levels := []entity.UserLevel{{ID: 1, Name: "basic", Rank: 1, Enabled: true, DeviceLimit: 1}, {ID: 2, Name: "paid", Rank: 2, Enabled: true, MinConsumptionTotal: 5, DeviceLimit: 3}}
+	if err := db.Create(&levels).Error; err != nil {
+		t.Fatal(err)
+	}
+	in := service.EffectiveRebuildInput{AfterID: 1, Limit: 1}
+	preview, err := service.RebuildEffectiveLevels(db, admin, in)
+	if err != nil || preview.Changed != 1 {
+		t.Fatalf("preview %+v %v", preview, err)
+	}
+	writer := db.Begin()
+	if writer.Error != nil {
+		t.Fatal(writer.Error)
+	}
+	defer writer.Rollback()
+	if e := writer.Exec("UPDATE users SET balance=balance+0 WHERE id=2").Error; e != nil {
+		t.Fatal(e)
+	}
+	if e := writer.Create(&entity.BillingRecord{UserID: 2, Type: "normal_search", Amount: 6, GiftCharged: 6, RequestID: "synthetic-commit"}).Error; e != nil {
+		t.Fatal(e)
+	}
+	barrier := make(chan struct{})
+	var once sync.Once
+	if e := db.Callback().Query().Before("gorm:query").Register("t14:cohort_lock", func(q *gorm.DB) {
+		if q.Statement.Table == "users" && strings.Contains(strings.Join(q.Statement.Selects, ","), "level_id") {
+			if _, ok := q.Statement.Clauses["FOR"]; ok {
+				once.Do(func() { close(barrier) })
+			}
+		}
+	}); e != nil {
+		t.Fatal(e)
+	}
+	in.Reason = "合成重评"
+	in.ApplyDigest = preview.Digest
+	done := make(chan error, 1)
+	go func() { _, e := service.RebuildEffectiveLevels(db, admin, in); done <- e }()
+	select {
+	case <-barrier:
+	case e := <-done:
+		t.Fatalf("ended before cohort lock: %v", e)
+	case <-time.After(8 * time.Second):
+		t.Fatal("cohort lock barrier timed out")
+	}
+	if e := writer.Commit().Error; e != nil {
+		t.Fatal(e)
+	}
+	select {
+	case e := <-done:
+		if !errors.Is(e, service.ErrLedgerStale) {
+			t.Fatalf("committed bill must invalidate preview, got %v", e)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("rebuild did not finish")
+	}
+	if got, e := service.CurrentUserLevelIDWithDB(db, 2); e != nil || got != 0 {
+		t.Fatalf("stale preview wrote level %d %v", got, e)
+	}
+	for _, model := range []any{&entity.EffectiveRebuildAudit{}, &entity.UserLevelHistory{}} {
+		if err := db.Model(model).Count(&n).Error; err != nil || n != 0 {
+			t.Fatalf("stale write left audit %d %v", n, err)
+		}
+	}
+	in.ApplyDigest = ""
+	fresh, e := service.RebuildEffectiveLevels(db, admin, in)
+	if e != nil || fresh.Digest == preview.Digest {
+		t.Fatalf("new snapshot %v", e)
+	}
+	in.ApplyDigest = fresh.Digest
+	out, e := service.RebuildEffectiveLevels(db, admin, in)
+	if e != nil || out.AuditID == 0 {
+		t.Fatalf("fresh apply %+v %v", out, e)
+	}
+	if got, e := service.CurrentUserLevelIDWithDB(db, 2); e != nil || got != 2 {
+		t.Fatalf("fresh level %d %v", got, e)
+	}
+	var history entity.UserLevelHistory
+	if e := db.Take(&history).Error; e != nil || history.ConsumptionTotal != 6 || history.FromLevelID != 0 || history.ToLevelID != 2 {
+		t.Fatalf("wrong applied facts %+v %v", history, e)
+	}
+	t.Log("stale_rejected=true stale_level_writes=0 stale_audits=0 fresh_level=2 fresh_consumption=6")
 }

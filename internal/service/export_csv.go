@@ -662,7 +662,7 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 			maskedColumn("wechat_id", MaskExportWechatID),
 			exportColumn("created_at"),
 			exportColumn("last_login_at"),
-			exportColumn("historical_recharge"), exportColumn("effective_recharge"), exportColumn("historical_consumption"), exportColumn("effective_consumption"), exportColumn("effective_ledger_issues"),
+			exportColumn("historical_recharge"), exportColumn("effective_recharge"), exportColumn("historical_consumption"), exportColumn("effective_consumption"), exportColumn("effective_ledger_issues"), exportColumn("confirmed_unallocated_refund"), exportColumn("unconfirmed_refund_upper_bound"),
 		},
 		load: func(db *gorm.DB, limit int) ([][]string, error) {
 			rows := make([]entity.User, 0, 128)
@@ -705,7 +705,7 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 						wechat,
 						formatExportTime(row.CreatedAt),
 						formatExportTimePtr(row.LastLoginAt),
-						formatExportFloat(ledger.HistoricalRecharge), formatExportFloat(ledger.RechargeTotal), formatExportFloat(ledger.HistoricalConsumption), formatExportFloat(ledger.ConsumptionTotal), string(issues),
+						formatExportFloat(ledger.HistoricalRecharge), formatExportFloat(ledger.RechargeTotal), formatExportFloat(ledger.HistoricalConsumption), formatExportFloat(ledger.ConsumptionTotal), string(issues), formatExportFloat(ledger.ConfirmedUnallocatedRefund), formatExportFloat(ledger.RefundEstimateUpper),
 					})
 				}
 			}

@@ -211,6 +211,10 @@ func backfillUserLevelsForRegister(db *gorm.DB) {
 			logger.SysLog(fmt.Sprintf("注册级回填评估失败（userID=%d，下次启动会重试）：%v", userID, err))
 			continue
 		}
+		if !result.Evaluated {
+			failed++
+			continue
+		} // Missing evidence is not a completed registration evaluation.
 		if result.Changed {
 			changed++
 		}
