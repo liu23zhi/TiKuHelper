@@ -48,7 +48,7 @@ func ensureUserLevelSchema(db *gorm.DB) error {
 		// 加列无从谈起，建出来的等级表也没有落点。
 		return nil
 	}
-	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{}); err != nil {
+	if err := ensureEffectiveAuditSchema(db); err != nil {
 		return fmt.Errorf("create effective ledger audit: %w", err)
 	}
 	if err := db.AutoMigrate(&entity.UserLevel{}); err != nil {
@@ -246,4 +246,10 @@ func userLevelSchemaAvailableForRegistry(db *gorm.DB) bool {
 		return false
 	}
 	return db.Migrator().HasColumn(entity.TableNameUser, "level_id")
+}
+
+// Shared by the startup migration and the isolated restored-copy verifier.
+// Only creates the append-only audit schema; never evaluates existing users.
+func ensureEffectiveAuditSchema(db *gorm.DB) error {
+	return db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{})
 }
