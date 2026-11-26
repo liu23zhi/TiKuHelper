@@ -423,6 +423,8 @@ const SCORE_RESULT_STATUSES = ['scored', 'pending_review', 'below_threshold']
 const scorerKind = record => String(record?.agentScorer || '').trim().toLowerCase()
 const hasRecordedAgentScore = record => ['agent', 'stub'].includes(scorerKind(record))
   || SCORE_RESULT_STATUSES.includes(String(record?.status || '').trim().toLowerCase())
+  // 旧评分事务已写专用理由，但尚无 scorer 字段。只检查存证是否存在，不读取内容作判断。
+  || (typeof record?.agentRationale === 'string' && record.agentRationale.trim() !== '')
 
 function readNonnegativeNumber(value) {
   if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null

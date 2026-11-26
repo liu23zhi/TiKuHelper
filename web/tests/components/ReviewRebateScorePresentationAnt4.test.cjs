@@ -20,6 +20,10 @@ const rows = [
   { ...defaultZeros, id: 46, status: 'scored', agentScorer: 'stub', agentStars: 5, agentContentScore: 7, agentConfidence: 0.9 },
   { ...defaultZeros, id: 47, status: 'scraping', agentScorer: 'unrecognized-legacy', agentContentScore: 4 },
   { ...defaultZeros, id: 48, status: 'approved', agentScorer: 'agent', agentStars: 4, agentContentScore: 7, agentConfidence: 0.8 },
+  { ...defaultZeros, id: 49, status: 'approved', agentRationale: 'legacy score evidence, not a source label', agentStars: 4, agentContentScore: 7, agentConfidence: 1 },
+  { ...defaultZeros, id: 50, status: 'rejected', agentRationale: 'legacy zero-score evidence' },
+  { ...defaultZeros, id: 51, status: 'rejected', reviewNote: 'manual decision, not a score' },
+  { ...defaultZeros, id: 52, status: 'approved', agentRationale: ' \t ', agentStars: 4, agentContentScore: 7, agentConfidence: 1 },
 ].map(row => ({ source: 'edge', userId: 102, ...row }))
 let wrapper, router
 const writes = []
@@ -64,7 +68,7 @@ after(() => { axios.defaults.adapter = original })
 
 test('table separates confirmed scores, real zeros, and rows without evidence of a score', async () => {
   await open()
-  const actual = rows.map(({ id }) => cells(id))
+  const actual = rows.filter(({ id }) => id <= 48).map(({ id }) => cells(id))
   console.log('T09_TABLE_SCORE_CELLS=' + JSON.stringify(actual))
   assert.deepEqual(actual, [
     ['—', '—'],
@@ -94,4 +98,17 @@ test('manual review confirmation preserves verified zeros and the threshold warn
   console.log('T09_CONFIRM_REAL_ZERO=' + JSON.stringify(visible.replace(/\s+/g, ' ')))
   assert.match(visible, /Agent 打分\s*0 星 \/ 0 分/)
   assert.match(visible, /置信度\s*0\.00\s*低于门槛/)
+})
+
+test('legacy terminal rows retain persisted scores only when the dedicated rationale is nonblank', async () => {
+  await open()
+  const actual = [49, 50, 51, 52].map(cells)
+  console.log('T09_LEGACY_SCORE_CELLS=' + JSON.stringify(actual))
+  assert.deepEqual(actual, [
+    ['4 星 / 7 分 来源未知', '1.00'],
+    ['0 星 / 0 分', '0.00 低于门槛'],
+    ['—', '—'],
+    ['—', '—'],
+  ])
+  assert.doesNotMatch(actual.flat().join(' '), /legacy score evidence|legacy zero-score evidence|manual decision/)
 })
