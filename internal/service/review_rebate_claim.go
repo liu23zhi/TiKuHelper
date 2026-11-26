@@ -471,7 +471,7 @@ func ListReviewRebateClaimsWithDB(db *gorm.DB, filter ReviewRebateClaimListQuery
 // 放在这里的理由：它是**前后端契约**的一部分（列表里的 screenshotUrl 要用它拼接，
 // 前端页面要按它取图），两处各写一份字符串迟早会漂移。
 // 前端 api/ReviewRebateApi.js 的 adminBase 必须与本值一致。
-const ReviewRebateAdminAPIPrefix = "/adapter-service"
+const ReviewRebateAdminAPIPrefix = "/api"
 
 // GetReviewRebateClaimWithDB 按 ID 取一条提交单（管理员详情）。
 func GetReviewRebateClaimWithDB(db *gorm.DB, id int32) (entity.ReviewRebateClaim, error) {

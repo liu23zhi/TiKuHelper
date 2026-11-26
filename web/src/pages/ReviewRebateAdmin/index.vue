@@ -212,13 +212,9 @@
               <span v-else-if="column.key === 'username'">{{ buildUserName(record.username, record.userId) }}</span>
               <a-tag v-else-if="column.key === 'status'" :color="claimStatusColor(record.status)">{{ claimStatusLabel(record.status) }}</a-tag>
               <span v-else-if="column.key === 'screenshot'">
-                <a
-                  v-if="record.screenshotUrl"
-                  :href="record.screenshotUrl"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="screenshot-link"
-                >查看截图</a>
+                <a-button v-if="record.screenshotUrl" type="link" size="small" @click="openScreenshot(record)">
+                  查看截图
+                </a-button>
                 <span v-else class="action-disabled">无图</span>
               </span>
               <span v-else-if="column.key === 'source'">{{ record.source === 'chrome' ? 'Chrome' : 'Edge' }}</span>
@@ -246,6 +242,25 @@
         </ConsoleTableShell>
         <a-empty v-else-if="claimsLoaded && !loadingClaims" description="当前没有待处理的提交" />
       </ConsolePanel>
+
+      <a-modal
+        v-if="screenshotPreview.open"
+        :open="screenshotPreview.open"
+        title="查看提交截图"
+        :footer="null"
+        @cancel="closeScreenshot"
+      >
+        <p v-if="screenshotPreview.loading" role="status">正在加载截图…</p>
+        <p v-else-if="screenshotPreview.error" class="form-error" role="alert">{{ screenshotPreview.error }}</p>
+        <img
+          v-else-if="screenshotPreview.url"
+          :key="screenshotPreview.url"
+          class="screenshot-preview"
+          :src="screenshotPreview.url"
+          alt="提交截图"
+          @error="onScreenshotImageError"
+        />
+      </a-modal>
 
       <ReviewRebateVerificationDialog
         v-if="verificationRecord"
@@ -379,6 +394,7 @@ import {
   updateReviewRebateRule,
   deleteReviewRebateRule,
   getReviewRebateClaims,
+  getReviewRebateScreenshot,
   decideReviewRebateClaim,
 } from '@/api/ReviewRebateApi'
 import { notifyReviewRebateAvailabilityChanged } from '@/utils/reviewRebateAvailability'
@@ -479,6 +495,8 @@ export default {
     const decisionDialogKey = ref(0)
     const decisionRecord = ref({})
     const verificationRecord = ref(null)
+    const screenshotPreview = reactive({ open: false, loading: false, url: '', error: '' })
+    let screenshotRequest = null
     const decisionForm = reactive({ decision: 'approve', note: '' })
 
     const programFailure = shallowRef(null)
@@ -504,7 +522,7 @@ export default {
       const user = currentUser.value
       const id = Number(user?.id)
       return Number.isSafeInteger(id) && id > 0 && id <= 2147483647 && isAdminUser(user)
-        && !['disabled', '0'].includes(String(user?.status ?? 'enabled'))
+        && !['banned', 'disabled', '0'].includes(String(user?.status ?? 'enabled'))
     }
     const canManage = () => alive && route.path === mountedPath
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin()
@@ -1030,7 +1048,62 @@ export default {
       }
     }
 
+    const clearScreenshotImage = () => {
+      if (screenshotPreview.url) URL.revokeObjectURL(screenshotPreview.url)
+      screenshotPreview.url = ''
+    }
+
+    const onScreenshotImageError = event => {
+      const url = screenshotPreview.url
+      if (!url || event.currentTarget.getAttribute('src') !== url) return
+      clearScreenshotImage()
+      screenshotPreview.error = '截图无法解码，文件可能已损坏。'
+    }
+
+    const closeScreenshot = () => {
+      const pending = screenshotRequest
+      screenshotRequest = null
+      pending?.abort()
+      clearScreenshotImage()
+      Object.assign(screenshotPreview, { open: false, loading: false, error: '' })
+    }
+
+    const openScreenshot = async record => {
+      if (!canManage()) return
+      closeScreenshot()
+      const controller = new AbortController()
+      screenshotRequest = controller
+      screenshotPreview.open = true
+      screenshotPreview.loading = true
+      const owns = () => screenshotRequest === controller && canManage()
+      try {
+        const request = getReviewRebateScreenshot(record.id, record.screenshotUrl, controller.signal)
+        if (!request) {
+          screenshotPreview.error = '截图地址无效。'
+          return
+        }
+        const res = await request
+        if (!owns()) return
+        if (res.status === 403) screenshotPreview.error = '当前账号无权查看此截图。'
+        else if (res.status === 404) screenshotPreview.error = '提交记录或截图不存在。'
+        else if (res.status !== 200) screenshotPreview.error = '截图加载失败，请稍后重试。'
+        else if (!(res.data instanceof Blob) || !res.data.size || !['image/png', 'image/jpeg'].includes(res.data.type)) {
+          screenshotPreview.error = '返回内容不是受支持的图片。'
+        } else {
+          screenshotPreview.url = URL.createObjectURL(res.data)
+        }
+      } catch {
+        if (owns()) screenshotPreview.error = '截图请求未完成，请检查网络后重试。'
+      } finally {
+        if (owns()) {
+          screenshotRequest = null
+          screenshotPreview.loading = false
+        }
+      }
+    }
+
     const retire = () => {
+      closeScreenshot()
       programVersion += 1; rulesVersion += 1; claimsVersion += 1; writeVersion += 1
       rules.value = []; rulesLoaded.value = false
       claims.value = []; claimsLoaded.value = false; loadingClaims.value = false
@@ -1067,6 +1140,7 @@ export default {
       fieldId, canManage, busy, loading,
       programForm, programLoaded, savingProgram, programSaved, programValidation,
       programSource, selectProgramSource, verificationRecord,
+      screenshotPreview, openScreenshot, closeScreenshot, onScreenshotImageError,
       programMissing, programWarning, programWarningContextKey,
       rules, rulesLoaded, savingRule, ruleWarning, ruleColumns,
       claims, claimsLoaded, loadingClaims, deciding, decisionWarning, claimColumns,
@@ -1101,7 +1175,7 @@ export default {
 .money-cell, .time-cell { font-variant-numeric: tabular-nums; }
 .note-cell { overflow-wrap: anywhere; white-space: pre-wrap; }
 .scorer-tag { margin-inline-start: 6px; }
-.screenshot-link { overflow-wrap: anywhere; }
+.screenshot-preview { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
 .action-disabled { color: var(--console-muted); font-size: 13px; }
 .is-low-confidence { color: var(--console-danger, #c13e41); font-weight: 600; }
 .low-tag { margin-inline-start: 6px; }
