@@ -394,6 +394,17 @@ type DeviceUnbanResult struct {
 // 物理删除与黑名单其余四类一致（规则类不做软删除，46-*.md §2.1）。
 // 命中记录（blacklist_hits）不跟着删，因此「这条规则当时拦了多少次」仍可查。
 func UnbanDevice(db *gorm.DB, deviceID string) (DeviceUnbanResult, error) {
+	return unbanDevice(db, deviceID, nil)
+}
+
+// UnbanDeviceWithAudit 将实际删除和管理审计作为一个事务提交。
+func UnbanDeviceWithAudit(db *gorm.DB, deviceID string, actor DeviceHistoryActor) (DeviceUnbanResult, error) {
+	return unbanDevice(db, deviceID, &actor)
+}
+
+var errDeviceUnbanNoTransition = errors.New("设备全局规则未变化")
+
+func unbanDevice(db *gorm.DB, deviceID string, actor *DeviceHistoryActor) (DeviceUnbanResult, error) {
 	if db == nil {
 		return DeviceUnbanResult{}, ErrBlacklistCacheNoDatabase
 	}
@@ -406,12 +417,44 @@ func UnbanDevice(db *gorm.DB, deviceID string) (DeviceUnbanResult, error) {
 		return result, nil
 	}
 	hash := BlacklistPatternHashHex(normalized)
-	res := deviceAdminSession(db).Where("kind = ? AND value_hash = ?", BlacklistKindDevice, hash).
-		Delete(&entity.BlacklistEntry{})
-	if res.Error != nil {
-		return DeviceUnbanResult{}, fmt.Errorf("解封设备失败：%w", res.Error)
+	err := withDeviceLifecycleWrite(db, normalized, func(tx *gorm.DB) error {
+		var ruleIDs []int64
+		if err := deviceAdminSession(tx).Model(&entity.BlacklistEntry{}).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("kind = ? AND value_hash = ?", BlacklistKindDevice, hash).
+			Order("id").Pluck("id", &ruleIDs).Error; err != nil {
+			return fmt.Errorf("查询设备黑名单规则失败：%w", err)
+		}
+		for _, ruleID := range ruleIDs {
+			res := deviceAdminSession(tx).Where("id = ? AND kind = ? AND value_hash = ?", ruleID, BlacklistKindDevice, hash).
+				Delete(&entity.BlacklistEntry{})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				continue
+			}
+			result.Deleted += res.RowsAffected
+			if actor != nil {
+				if err := WriteAccountAuditWithDB(tx, AccountAuditEvent{
+					UserID: actor.UserID, Username: actor.Username,
+					Module: "device", Action: 4, Description: "解封设备",
+					Result: map[string]any{"name": MaskBlacklistDeviceID(normalized), "scope": "global",
+						"requestId": strconv.FormatInt(ruleID, 10)},
+				}); err != nil {
+					return fmt.Errorf("写入设备解封审计失败：%w", err)
+				}
+			}
+		}
+		if result.Deleted == 0 {
+			// 没有状态转换，不留下本次事务可能新建的生命周期锁行。
+			return errDeviceUnbanNoTransition
+		}
+		return nil
+	})
+	if err != nil && err != errDeviceUnbanNoTransition {
+		return DeviceUnbanResult{}, fmt.Errorf("解封设备失败：%w", err)
 	}
-	result.Deleted = res.RowsAffected
 	return result, nil
 }
 
