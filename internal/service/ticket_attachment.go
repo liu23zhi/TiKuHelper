@@ -593,9 +593,9 @@ func ProcessPendingTicketAttachmentScans(ctx context.Context, db *gorm.DB, now t
 	return processed, firstErr
 }
 
-func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.TicketAttachment, scannedAt time.Time) error {
+func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.TicketAttachment, pollAt time.Time) error {
 	trace := newImageDetectionTrace("background", row.SHA256, row.MediaType, row.ByteSize, row.ID, row.TicketID)
-	claim, err := claimTicketImageWorker(db, row, scannedAt, trace.id)
+	claim, err := claimTicketImageWorker(db, row, pollAt, trace.id)
 	if err != nil {
 		return trace.fail(imageStateSyncFailed)
 	}
@@ -608,14 +608,14 @@ func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.Ti
 	row = claim.row
 	trace.attachmentID, trace.ticketID = row.ID, row.TicketID
 	trace.write("detect_start", "-", "-")
-	plain, mimeType, readErr := loadTicketAttachmentScanBytes(db, row)
+	plain, mimeType, readErr := loadTicketImageWorkerBytes(db, claim)
 	var scan TicketAttachmentScanResult
 	if readErr != nil {
 		scan = failedTicketAttachmentScan(trace.fail(imageReadErrorCode(readErr)))
 	} else {
 		scan = scanTicketAttachment(ctx, db, trace, plain, mimeType)
 	}
-	outcome, err := completeTicketImageWorker(db, claim, scan, scannedAt)
+	outcome, err := completeTicketImageWorker(db, claim, scan, ticketImageWorkerTime(pollAt))
 	if err != nil {
 		trace.write("detect_persist_failed", "-", imageStateSyncFailed)
 		return trace.fail(imageStateSyncFailed)

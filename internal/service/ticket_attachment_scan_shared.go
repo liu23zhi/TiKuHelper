@@ -27,18 +27,18 @@ type ticketImageWorkerClaim struct {
 // The cache primary key is the cross-process SHA lock. A unique, locally
 // generated token is stored only while pending, and checked again on finish.
 // Never keep the SQL transaction open during the network call.
-func claimTicketImageWorker(db *gorm.DB, row entity.TicketAttachment, now time.Time, diagnosticID string) (ticketImageWorkerClaim, error) {
+func claimTicketImageWorker(db *gorm.DB, row entity.TicketAttachment, pollAt time.Time, diagnosticID string) (ticketImageWorkerClaim, error) {
 	claim := ticketImageWorkerClaim{row: row}
 	if !hasTicketImageSharedCache(db, row.SHA256) {
 		var err error
-		claim.owned, err = claimTicketImageWorkerRow(db, row, now)
+		claim.owned, err = claimTicketImageWorkerRow(db, row, ticketImageWorkerTime(pollAt))
 		return claim, err
 	}
 	claim.shared, claim.token = true, ticketImageWorkerLeasePrefix+diagnosticID
 	err := db.Transaction(func(tx *gorm.DB) error {
 		entry := entity.SensitiveImageCacheEntry{
 			ImageSHA256: row.SHA256, ContentType: row.MediaType, FileSize: row.ByteSize,
-			Status: entity.SensitiveImageCacheStatusPending, Provider: claim.token, UpdatedAt: now,
+			Status: entity.SensitiveImageCacheStatusPending, Provider: claim.token, UpdatedAt: ticketImageWorkerTime(pollAt),
 		}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&entry).Error; err != nil {
 			return err
@@ -47,6 +47,7 @@ func claimTicketImageWorker(db *gorm.DB, row entity.TicketAttachment, now time.T
 		if err != nil {
 			return err
 		}
+		now := ticketImageWorkerTime(pollAt)
 		if current.Status == entity.SensitiveImageCacheStatusClean || current.Status == entity.SensitiveImageCacheStatusSensitive {
 			var err error
 			claim.reusedState, err = reuseTicketImageVerdictInTx(tx, current, now)
@@ -97,6 +98,9 @@ func claimTicketImageWorker(db *gorm.DB, row entity.TicketAttachment, now time.T
 				State: entity.TicketAttachmentScanFailed, CheckError: claim.row.CheckError,
 			}, entity.TicketAttachmentScanFailed, now)
 		}
+		// The candidate selection and its locks can take time too. Both
+		// stores use the same freshly sampled start of this specific lease.
+		now = ticketImageWorkerTime(pollAt)
 		owned, err := claimTicketImageWorkerRow(tx, claim.row, now)
 		if err != nil {
 			return err
@@ -116,6 +120,65 @@ func claimTicketImageWorker(db *gorm.DB, row entity.TicketAttachment, now time.T
 		return claim, nil
 	}
 	return claim, err
+}
+
+// A polling timestamp is a lower bound (including deterministic scheduled
+// calls), not the start time of each lease in a potentially slow batch.
+func ticketImageWorkerTime(pollAt time.Time) time.Time {
+	now := time.Now()
+	if pollAt.After(now) {
+		return pollAt
+	}
+	return now
+}
+
+// A retry anchor carries attempts/backoff, not the right to read its bytes.
+// Re-read live references rather than the ciphertext snapshot used to claim.
+func loadTicketImageWorkerBytes(db *gorm.DB, claim ticketImageWorkerClaim) ([]byte, string, error) {
+	if !claim.shared {
+		var current entity.TicketAttachment
+		if err := db.First(&current, claim.row.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, "", ErrSensitiveImageBytesUnavailable
+			}
+			return nil, "", errSensitiveImageReadFailed
+		}
+		return loadTicketAttachmentScanBytes(db, current)
+	}
+	// The first real, readable reference wins. A shared blob can supply
+	// identical bytes only while there is an unpurged reference to the SHA.
+	sha := claim.row.SHA256
+	var after int64
+	seenLive := false
+	for {
+		var candidate entity.TicketAttachment
+		err := db.Where("sha256 = ? AND purged_at IS NULL AND id > ?", sha, after).
+			Order("id ASC").Take(&candidate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			break
+		}
+		if err != nil {
+			return nil, "", errSensitiveImageReadFailed
+		}
+		after = candidate.ID
+		if plain, mime, err := decryptTicketAttachmentForScan(db, candidate); err == nil {
+			if plain, mime, err := checkedSensitiveImageBytes(sha, plain, mime); err == nil {
+				return plain, mime, nil
+			}
+		}
+		if !seenLive && ticketAttachmentBlobReady(db) {
+			if mime, plain, err := ReadTicketAttachmentBlobWithDB(db, sha); err == nil {
+				if plain, mime, err := checkedSensitiveImageBytes(sha, plain, mime); err == nil {
+					return plain, mime, nil
+				}
+			}
+		}
+		seenLive = true
+	}
+	if !seenLive {
+		return nil, "", ErrSensitiveImageBytesUnavailable
+	}
+	return nil, "", errSensitiveImageReadFailed
 }
 
 func hasTicketImageSharedCache(db *gorm.DB, sha string) bool {
