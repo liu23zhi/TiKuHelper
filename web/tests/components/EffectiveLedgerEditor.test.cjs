@@ -11,6 +11,10 @@ let corrected=false
 transport.loaded=true
 transport.exports=async req=>{
  calls.push(req)
+ if(req.url.includes("/users/44/")){
+   if(req.method==='post')return {status:200,data:{data:{id:200}}}
+   return {status:200,data:{data:{revision:90,totals:{rechargeTotal:11000000000.000002,historicalRecharge:12000000000,consumptionTotal:0,historicalConsumption:0,exact:{recharge:'11000000000.000001',historicalRecharge:'12000000000.000000',consumption:'0.000000',historicalConsumption:'0.000000'}},sources:[{kind:'order',id:88,gross:6000000000,effective:5000000000,refunded:0}],audit:[]}}}
+ }
  if(req.url.includes("/users/42/"))return {status:200,data:{data:{totals:{rechargeTotal:5.85,historicalRecharge:10,consumptionTotal:0,historicalConsumption:0,issues:{refund_principal_without_exact_receipt:1}},sources:[{kind:"order",id:5,gross:10,refunded:0,refundEstimateUpper:4.15,uncertain:true,effective:5.85,refundIds:[71]}],audit:[]}}}
  if(req.method==='post'){corrected=true;return {status:200,data:{data:{id:91}}}}
  return {status:200,data:{data:{revision:corrected?91:0,totals:{rechargeTotal:6,historicalRecharge:10,consumptionTotal:corrected?1:2,historicalConsumption:2},sources:[{kind:'bill',id:11,gross:2,refunded:0,effective:corrected?1:2}],audit:[]}}}
@@ -46,5 +50,17 @@ test('an estimate can be inspected but never labeled a confirmed refund or saved
   assert.match(w.text(),/未证实退款上界 ¥ 4.15（不是实退额）/)
   assert.match(w.text(),/该来源贡献待核/)
   assert.doesNotMatch(w.text(),/已退本金 ¥ 4.15|单独保存本次账务修正/)
+ }finally{w.unmount()}
+})
+
+
+test('sends the server decimal expected value instead of reconstructing it from Number',async()=>{
+ const w=mount(Editor,{props:{userId:44}})
+ try{
+  await w.get('button').trigger('click');await flushPromises();await w.get('select').setValue('order:88')
+  assert.equal(w.findAll('input')[0].element.value,'11000000000.000001')
+  await w.findAll('input')[0].setValue('11000000000.000000');await w.findAll('input')[1].setValue('合成一微元')
+  await w.findAll('button').find(x=>x.text().includes('保存本次')).trigger('click');await flushPromises()
+  const post=calls.find(x=>x.method==='post'&&x.url.includes('/44/'));assert.equal(post.data.expected,'11000000000.000001');assert.equal(post.data.new,'11000000000.000000')
  }finally{w.unmount()}
 })

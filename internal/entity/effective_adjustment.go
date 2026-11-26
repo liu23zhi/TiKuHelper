@@ -5,6 +5,8 @@ import "time"
 // EffectiveAdjustment only changes the recognition of an existing source. It
 // never updates wallet movements, gateway outcomes, or the source itself.
 type EffectiveAdjustment struct {
+	OldExact   string `gorm:"-" json:"oldExact"`
+	NewExact   string `gorm:"-" json:"newExact"`
 	ID         int64  `gorm:"primaryKey" json:"id"`
 	UserID     int32  `gorm:"not null;index" json:"userId"`
 	SourceKind string `gorm:"type:varchar(12);not null" json:"sourceKind"`
@@ -26,7 +28,7 @@ type EffectiveRebuildAudit struct {
 	OperatorID int32     `gorm:"not null" json:"operatorId"`
 	AfterID    int32     `gorm:"not null" json:"afterId"`
 	NextID     int32     `gorm:"not null" json:"nextId"`
-	Examined   int       `gorm:"not null" json:"examined"`
+	Examined   int       `gorm:"column:scanned_count;not null" json:"examined"`
 	Changed    int       `gorm:"not null" json:"changed"`
 	Skipped    int       `gorm:"not null" json:"skipped"`
 	Digest     string    `gorm:"type:char(64);not null" json:"digest"`

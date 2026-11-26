@@ -273,3 +273,12 @@ test('等级一览的差额保留 6 位、不出现浮点尾数', () => {
   assert.equal(rows[0].rechargeGap, 0)
   assert.equal(rows[0].consumptionGap, 0)
 })
+
+test('large DECIMAL thresholds and adjacent stored micro totals are not coerced to Number',()=>{
+ const level={id:3,rank:3,enabled:true,name:'precise',minRechargeTotal:11000000000.000002,minConsumptionTotal:0,minRechargeExact:'11000000000.000002',minConsumptionExact:'0.000000'}
+ const summary={rank:1,levelId:1,rechargeTotal:11000000000.000002,consumptionTotal:0,ledger:{exact:{recharge:'11000000000.000001',consumption:'0.000000'}}}
+ assert.equal(buildLevelMetricText(summary,'recharge').value,'11000000000.000001')
+ assert.equal(buildNextLevelRequirement([level],summary).rechargeGap,'0.000001')
+ const item=buildLevelOverviewRows([level],summary).rows[0]
+ assert.equal(item.rechargeGap,'0.000001');assert.equal(item.satisfied,false)
+})

@@ -705,7 +705,7 @@ var exportResourceSpecs = map[string]exportResourceSpec{
 						wechat,
 						formatExportTime(row.CreatedAt),
 						formatExportTimePtr(row.LastLoginAt),
-						formatExportFloat(ledger.HistoricalRecharge), formatExportFloat(ledger.RechargeTotal), formatExportFloat(ledger.HistoricalConsumption), formatExportFloat(ledger.ConsumptionTotal), string(issues), formatExportFloat(ledger.ConfirmedUnallocatedRefund), formatExportFloat(ledger.RefundEstimateUpper),
+						ledger.Exact.HistoricalRecharge, ledger.Exact.Recharge, ledger.Exact.HistoricalConsumption, ledger.Exact.Consumption, string(issues), ledger.Exact.ConfirmedUnallocatedRefund, ledger.Exact.RefundEstimateUpper,
 					})
 				}
 			}

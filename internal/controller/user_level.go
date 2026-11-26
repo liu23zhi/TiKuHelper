@@ -152,7 +152,7 @@ func classifyUserLevelError(err error) int {
 		return http.StatusOK
 	}
 	switch {
-	case errors.Is(err, service.ErrLedgerRange):
+	case errors.Is(err, service.ErrLedgerRange), errors.Is(err, service.ErrLedgerPrecision):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, service.ErrUserLevelSchemaUnavailable),
 		errors.Is(err, service.ErrRechargePromotionTierSchemaUnavailable):

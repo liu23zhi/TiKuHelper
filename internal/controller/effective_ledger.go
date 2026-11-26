@@ -56,7 +56,7 @@ func writeEffectiveLedgerResult(c *gin.Context, data any, err error) {
 	if err != nil {
 		status, msg := 500, "读取或保存有效金额失败"
 		switch {
-		case errors.Is(err, service.ErrLedgerRange):
+		case errors.Is(err, service.ErrLedgerRange), errors.Is(err, service.ErrLedgerPrecision):
 			status, msg = 422, err.Error()
 		case errors.Is(err, service.ErrLedgerInput):
 			status, msg = 400, err.Error()

@@ -87,7 +87,10 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 		}
 		sort.Slice(result.Sources, func(i, j int) bool { return result.Sources[i].ID > result.Sources[j].ID })
 		for i := len(p.audits) - 1; i >= 0; i-- {
-			result.Audit = append(result.Audit, p.audits[i])
+			a := p.audits[i]
+			a.OldExact = fixedInt(a.OldMicros, 6)
+			a.NewExact = fixedInt(a.NewMicros, 6)
+			result.Audit = append(result.Audit, a)
 		}
 		if !tx.Migrator().HasTable(&entity.BillingRecord{}) {
 			return nil
@@ -106,9 +109,7 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 			result.NextBill = bs[page-1].ID
 		}
 		for _, b := range bs {
-			s := effectiveSource{Kind: "bill", ID: b.ID, Gross: b.Amount, Debited: b.Debited}
-			p.apply(&s)
-			result.Sources = append(result.Sources, s)
+			result.Sources = append(result.Sources, *p.billFromRow(b))
 		}
 		return nil
 	})
@@ -147,22 +148,22 @@ func CorrectEffectiveLedger(db *gorm.DB, actor entity.User, uid int32, input Eff
 		if err != nil {
 			return err
 		}
-		current := p.Totals.ConsumptionTotal
+		current := p.Totals.Exact.Consumption
 		if src.Kind == "order" {
-			current = p.Totals.RechargeTotal
-			if p.unallocatedMicros != 0 || src.Uncertain || p.Totals.Issues["refund_without_exact_order_allocation"] > 0 {
+			current = p.Totals.Exact.Recharge
+			if p.unallocatedMicros.Sign() != 0 || src.Uncertain || p.Totals.Issues["refund_without_exact_order_allocation"] > 0 {
 				return ErrLedgerInput
 			}
 		}
-		if yuanToMicros(current) != old {
+		if current != fixedInt(old, 6) {
 			return ErrLedgerStale
 		}
-		contribution := yuanToMicros(src.Effective) + next - old
-		net := yuanToMicros(src.Net)
+		contribution := src.effectiveMicros + next - old
+		net := src.netMicros
 		if contribution < 0 || contribution > net {
 			return ErrLedgerInput
 		}
-		a = entity.EffectiveAdjustment{UserID: uid, OperatorID: actor.ID, SourceKind: src.Kind, SourceID: src.ID, Reason: reason, OldMicros: old, NewMicros: next, DiscountMicros: net - contribution, RefundIDs: linkedRefundIDs(src)}
+		a = entity.EffectiveAdjustment{UserID: uid, OperatorID: actor.ID, SourceKind: src.Kind, SourceID: src.ID, Reason: reason, OldMicros: old, NewMicros: next, OldExact: fixedInt(old, 6), NewExact: fixedInt(next, 6), DiscountMicros: net - contribution, RefundIDs: linkedRefundIDs(src)}
 		if err := tx.Create(&a).Error; err != nil {
 			return err
 		}

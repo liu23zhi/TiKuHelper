@@ -450,19 +450,20 @@ func TestReviewEstimatedRefundIsNotAnActualRefund(t *testing.T) {
 	}
 }
 func TestReviewCorrectionPrecisionBound(t *testing.T) {
-	for _, v := range []string{"10000000000.000001", "10000000000.000002", "10000000.000001"} {
+	for _, v := range []string{"1000000000000.000000", "1.0000001", "-0.000001"} {
 		if _, err := ledgerMicros(v); err == nil {
-			t.Fatalf("accepted unsupported precision range %s", v)
+			t.Fatal("invalid DECIMAL(18,6)", v)
 		}
 	}
-	for _, v := range []string{"9999999.999998", "9999999.999999", "10000000.000000"} {
-		n, err := ledgerMicros(v)
-		if err != nil || yuanToMicros(float64(n)/1e6) != n {
-			t.Fatalf("valid fixed-micro amount %s: %v", v, err)
+	for _, pair := range []struct {
+		s string
+		n int64
+	}{{"10000000000.000001", 10000000000000001}, {"10000000000.000002", 10000000000000002}, {"999999999999.999999", 999999999999999999}} {
+		if got, e := ledgerMicros(pair.s); e != nil || got != pair.n {
+			t.Fatalf("full existing DECIMAL requires %s=%d; got %d %v", pair.s, pair.n, got, e)
 		}
 	}
 }
-
 func TestReviewPrecisionBoundAppliesToDatabaseAndAudit(t *testing.T) {
 	db := newUserLevelTestDB(t)
 	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}); err != nil {
@@ -473,23 +474,29 @@ func TestReviewPrecisionBoundAppliesToDatabaseAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedLevelUser(t, db, 2)
-	o := entity.RechargeOrder{ID: 3, UserID: 2, OrderNo: "edge", Amount: 10000000, Status: "paid"}
+	// SQLite stores a whole large principal exactly as INTEGER; never require an
+	// artificial account cap to make a one-micro correction on a real source.
+	o := entity.RechargeOrder{ID: 3, UserID: 2, OrderNo: "edge", Amount: 10000000001, Status: "paid"}
 	seedLevelPaidOrder(t, db, o)
-	in := EffectiveCorrection{SourceKind: "order", SourceID: o.ID, Expected: "10000000", New: "9999999.999999", Reason: "精确微元"}
+	in := EffectiveCorrection{SourceKind: "order", SourceID: o.ID, Expected: "10000000001", New: "10000000000.000002", Reason: "精确微元"}
 	a, err := CorrectEffectiveLedger(db, admin, 2, in)
-	if err != nil || a.OldMicros-a.NewMicros != 1 || a.DiscountMicros != 1 {
+	if err != nil || a.NewMicros != 10000000000000002 {
 		t.Fatalf("first micro lost: %+v %v", a, err)
 	}
 	in.Expected = in.New
-	in.New = "9999999.999998"
+	in.New = "10000000000.000001"
 	in.Revision = a.ID
 	b, err := CorrectEffectiveLedger(db, admin, 2, in)
-	if err != nil || b.OldMicros-b.NewMicros != 1 || b.DiscountMicros != 2 {
+	if err != nil || b.OldMicros-b.NewMicros != 1 {
 		t.Fatalf("second micro lost: %+v %v", b, err)
 	}
-	seedLevelPaidOrder(t, db, entity.RechargeOrder{ID: 4, UserID: 2, OrderNo: "overflow", Amount: 0.000001, Status: "paid"})
-	if _, err := ComputeUserLevelTotalsWithDB(db, 2); !errors.Is(err, ErrLedgerRange) {
-		t.Fatalf("aggregate overflow not rejected: %v", err)
+	out, e := ExportDataWithDB(db, ExportDataOptions{Resource: ExportResourceUsers, Format: ExportFormatJSON})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var rows []map[string]any
+	if json.Unmarshal(out.Content, &rows) != nil || rows[1]["effective_recharge"] != "10000000000.000001" {
+		t.Fatalf("lossy export %s", out.Content)
 	}
 }
 func TestReviewNoopRebuildDigestUsedOnce(t *testing.T) {
@@ -522,5 +529,32 @@ func TestReviewNoopRebuildDigestUsedOnce(t *testing.T) {
 	var n int64
 	if err := db.Model(&entity.EffectiveRebuildAudit{}).Count(&n).Error; err != nil || n != 1 {
 		t.Fatalf("audits=%d %v", n, err)
+	}
+}
+
+func TestReviewLifetimeSumIsNotCappedAtSingleRowWidth(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	seedLevelUser(t, db, 2)
+	basic := mustCreateLevel(t, db, entity.UserLevel{Name: "basic", Rank: 1, Enabled: true})
+	for i := 0; i < 101; i++ {
+		seedLevelPaidOrder(t, db, entity.RechargeOrder{UserID: 2, OrderNo: fmt.Sprintf("synthetic-large-%d", i), Status: "paid", Amount: 9999999999})
+	}
+	got, err := RefreshUserLevelSummaryWithDB(db, 2, "reconcile")
+	if err != nil || got.LevelID != basic.ID || got.Ledger.Exact.Recharge != "1009999999899.000000" {
+		t.Fatalf("lifetime sum truncated: %+v %v", got, err)
+	}
+	var h entity.UserLevelHistory
+	if err := db.First(&h).Error; err != nil || h.RechargeExact != got.Ledger.Exact.Recharge {
+		t.Fatalf("exact history materialization: %+v %v", h, err)
+	}
+}
+func TestReviewAmbiguousLegacySQLiteRealPreservesEntitlement(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	seedLevelUser(t, db, 2)
+	o := entity.RechargeOrder{ID: 3, UserID: 2, OrderNo: "old-real", Status: "paid", Amount: 10000000000.000002}
+	seedLevelPaidOrder(t, db, o)
+	got, err := ComputeUserLevelTotalsWithDB(db, 2)
+	if err != nil || !got.RequiresReview() || got.Issues["stored_recharge_precision_unknown"] != 1 {
+		t.Fatalf("lost precision presented as known %+v %v", got, err)
 	}
 }

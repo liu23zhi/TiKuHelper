@@ -62,8 +62,8 @@ func RebuildEffectiveLevels(db *gorm.DB, actor entity.User, in EffectiveRebuildI
 		if err := q.Find(&users).Error; err != nil {
 			return err
 		}
-		var levels []entity.UserLevel
-		if err := levelsQ.Find(&levels).Error; err != nil {
+		levels, err := readEffectiveLevelDefinitions(levelsQ)
+		if err != nil {
 			return err
 		}
 		if len(levels) == 0 {
@@ -89,7 +89,7 @@ func RebuildEffectiveLevels(db *gorm.DB, actor entity.User, in EffectiveRebuildI
 					out.Issues[k] += n
 				}
 			} else {
-				level, ok := ResolveUserLevel(levels, totals.RechargeTotal, totals.ConsumptionTotal)
+				level, ok := resolveEffectiveLevel(levels, totals)
 				if ok {
 					r.New = level.ID
 				}

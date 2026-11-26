@@ -36,11 +36,11 @@
         <a-descriptions-item label="充值本金">¥ {{ formatMoneyValue(portrait.base.balance) }}</a-descriptions-item>
         <a-descriptions-item label="赠送余额">¥ {{ formatMoneyValue(portrait.base.giftBalance) }}</a-descriptions-item>
         <template v-if="portrait.base.ledger">
-          <a-descriptions-item label="当前有效充值">¥ {{ formatMoneyValue(portrait.base.ledger.rechargeTotal) }}</a-descriptions-item>
-          <a-descriptions-item label="历史累计到账本金">¥ {{ formatMoneyValue(portrait.base.ledger.historicalRecharge) }}</a-descriptions-item>
-          <a-descriptions-item label="当前有效消费">¥ {{ formatMoneyValue(portrait.base.ledger.consumptionTotal) }}</a-descriptions-item>
-          <a-descriptions-item label="历史累计支出">¥ {{ formatMoneyValue(portrait.base.ledger.historicalConsumption) }}</a-descriptions-item>
-          <a-descriptions-item v-if="portrait.base.ledger.issues" label="历史待核">有效额尚待完整核对<span v-if="portrait.base.ledger.refundEstimateUpper">；未证实退款上界 ¥ {{ formatMoneyValue(portrait.base.ledger.refundEstimateUpper) }}（非实退）</span></a-descriptions-item>
+          <a-descriptions-item label="当前有效充值">¥ {{ formatMoneyValue(portrait.base.ledger.exact?.recharge ?? portrait.base.ledger.rechargeTotal) }}</a-descriptions-item>
+          <a-descriptions-item label="历史累计到账本金">¥ {{ formatMoneyValue(portrait.base.ledger.exact?.historicalRecharge ?? portrait.base.ledger.historicalRecharge) }}</a-descriptions-item>
+          <a-descriptions-item label="当前有效消费">¥ {{ formatMoneyValue(portrait.base.ledger.exact?.consumption ?? portrait.base.ledger.consumptionTotal) }}</a-descriptions-item>
+          <a-descriptions-item label="历史累计支出">¥ {{ formatMoneyValue(portrait.base.ledger.exact?.historicalConsumption ?? portrait.base.ledger.historicalConsumption) }}</a-descriptions-item>
+          <a-descriptions-item v-if="portrait.base.ledger.issues" label="历史待核">有效额尚待完整核对<span v-if="portrait.base.ledger.refundEstimateUpper">；未证实退款上界 ¥ {{ formatMoneyValue(portrait.base.ledger.exact?.refundEstimateUpper ?? portrait.base.ledger.refundEstimateUpper) }}（非实退）</span></a-descriptions-item>
         </template>
         <a-descriptions-item label="注册时间">{{ displayTime(portrait.base.createdAt) }}</a-descriptions-item>
         <a-descriptions-item label="注册来源">{{ buildRegisterSourceLabel(portrait.base.registerSource) }}</a-descriptions-item>

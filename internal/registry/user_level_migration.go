@@ -54,9 +54,7 @@ func ensureUserLevelSchema(db *gorm.DB) error {
 	if err := db.AutoMigrate(&entity.UserLevel{}); err != nil {
 		return fmt.Errorf("create user_levels fail: %w", err)
 	}
-	if err := db.AutoMigrate(&entity.UserLevelHistory{}); err != nil {
-		return fmt.Errorf("create user_level_histories fail: %w", err)
-	}
+
 	if err := ensureUserLevelIDColumn(db); err != nil {
 		return fmt.Errorf("add users.level_id fail: %w", err)
 	}
@@ -255,5 +253,15 @@ func userLevelSchemaAvailableForRegistry(db *gorm.DB) bool {
 // Shared by the startup migration and the isolated restored-copy verifier.
 // Only creates the append-only audit schema; never evaluates existing users.
 func ensureEffectiveAuditSchema(db *gorm.DB) error {
-	return db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{})
+	// Early unpublished candidates used the default Go field spelling as a
+	// database identifier; preserve any opt-in trial receipts across the rename.
+	if db.Migrator().HasTable(&entity.EffectiveRebuildAudit{}) && db.Migrator().HasColumn("effective_rebuild_audits", "examined") && !db.Migrator().HasColumn("effective_rebuild_audits", "scanned_count") {
+		if err := db.Migrator().RenameColumn("effective_rebuild_audits", "examined", "scanned_count"); err != nil {
+			return err
+		}
+	}
+	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{}); err != nil {
+		return err
+	}
+	return db.AutoMigrate(&entity.UserLevelHistory{})
 }

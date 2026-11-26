@@ -197,8 +197,8 @@ func EvaluateUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLev
 		return UserLevelChangeResult{}, nil
 	}
 
-	var levels []entity.UserLevel
-	if err := userLevelSession(db).Model(&entity.UserLevel{}).Find(&levels).Error; err != nil {
+	levels, err := readEffectiveLevelDefinitions(userLevelSession(db).Model(&entity.UserLevel{}))
+	if err != nil {
 		return UserLevelChangeResult{}, err
 	}
 	if len(levels) == 0 {
@@ -218,7 +218,7 @@ func EvaluateUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLev
 		ConsumeSum:  totals.ConsumptionTotal,
 	}
 
-	level, matched := ResolveUserLevel(levels, totals.RechargeTotal, totals.ConsumptionTotal)
+	level, matched := resolveEffectiveLevel(levels, totals)
 	targetID := int32(0)
 	if matched {
 		targetID = level.ID
@@ -250,17 +250,17 @@ func persistUserLevelFacts(db *gorm.DB, userID, current, targetID int32, trigger
 	// 先写流水（幂等锚点），再改 users.level_id。
 	// 顺序与 GrantRechargePromotionInTx 一致：唯一键冲突时要能在
 	// **没有动过用户行**的前提下返回，否则就得补偿写回。
-	history := entity.UserLevelHistory{
-		UserID:           userID,
-		FromLevelID:      current,
-		ToLevelID:        targetID,
-		Trigger:          normalizeUserLevelTrigger(trigger),
-		EventKey:         key,
-		RechargeTotal:    totals.RechargeTotal,
-		ConsumptionTotal: totals.ConsumptionTotal,
-		Remark:           buildUserLevelHistoryRemark(current, targetID, levels),
+	history := effectiveHistoryWrite{
+		UserID:        userID,
+		FromLevelID:   current,
+		ToLevelID:     targetID,
+		Trigger:       normalizeUserLevelTrigger(trigger),
+		EventKey:      key,
+		RechargeTotal: totals.Exact.Recharge, RechargeExact: totals.Exact.Recharge,
+		ConsumptionTotal: totals.Exact.Consumption, ConsumptionExact: totals.Exact.Consumption,
+		Remark: buildUserLevelHistoryRemark(current, targetID, levels),
 	}
-	ins := userLevelSession(db).Clauses(clause.OnConflict{DoNothing: true}).Create(&history)
+	ins := userLevelSession(db).Table(entity.TableNameUserLevelHistory).Clauses(clause.OnConflict{DoNothing: true}).Create(&history)
 	if ins.Error != nil {
 		return result, ins.Error
 	}
@@ -346,8 +346,8 @@ func ListUserLevelsWithDB(db *gorm.DB) ([]entity.UserLevel, error) {
 	if !userLevelSchemaAvailable(db) {
 		return nil, ErrUserLevelSchemaUnavailable
 	}
-	var levels []entity.UserLevel
-	if err := userLevelSession(db).Model(&entity.UserLevel{}).Find(&levels).Error; err != nil {
+	levels, err := readEffectiveLevelDefinitions(userLevelSession(db).Model(&entity.UserLevel{}))
+	if err != nil {
 		return nil, err
 	}
 	SortUserLevelsByRank(levels)

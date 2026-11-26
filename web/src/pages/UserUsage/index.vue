@@ -278,7 +278,7 @@
                   <div data-user-usage-recharge-total class="level-metric-value">
                     ¥ {{ formatLevelMetric(levelRechargeMetric.value) }}
                   </div>
-                  <div class="level-metric-hint">历史累计到账本金：¥ {{ formatLevelMetric(userLevelSummary?.ledger?.historicalRecharge) }}</div>
+                  <div class="level-metric-hint">历史累计到账本金：¥ {{ formatLevelMetric(userLevelSummary?.ledger?.exact?.historicalRecharge ?? userLevelSummary?.ledger?.historicalRecharge) }}</div>
                 </div>
               </a-col>
               <a-col :xs="24" :md="12" :lg="9">
@@ -287,12 +287,12 @@
                   <div data-user-usage-consumption-total class="level-metric-value">
                     ¥ {{ formatLevelMetric(levelConsumptionMetric.value) }}
                   </div>
-                  <div class="level-metric-hint">历史累计支出：¥ {{ formatLevelMetric(userLevelSummary?.ledger?.historicalConsumption) }}</div>
+                  <div class="level-metric-hint">历史累计支出：¥ {{ formatLevelMetric(userLevelSummary?.ledger?.exact?.historicalConsumption ?? userLevelSummary?.ledger?.historicalConsumption) }}</div>
                 </div>
               </a-col>
             </a-row>
 
-            <p v-if="userLevelSummary?.ledger?.issues" role="status">部分历史记录缺少完整凭据，有效额尚待完整核对。<span v-if="userLevelSummary.ledger.refundEstimateUpper">含保守扣除的未证实退款上界 ¥ {{ formatLevelMetric(userLevelSummary.ledger.refundEstimateUpper) }}（非实退）。</span><span v-if="userLevelSummary.levelReviewPending">等级待核，暂保留原等级。</span></p>
+            <p v-if="userLevelSummary?.ledger?.issues" role="status">部分历史记录缺少完整凭据，有效额尚待完整核对。<span v-if="userLevelSummary.ledger.refundEstimateUpper">含保守扣除的未证实退款上界 ¥ {{ formatLevelMetric(userLevelSummary.ledger.exact?.refundEstimateUpper ?? userLevelSummary.ledger.refundEstimateUpper) }}（非实退）。</span><span v-if="userLevelSummary.levelReviewPending">等级待核，暂保留原等级。</span></p>
             <!-- 下一档门槛与差额。
                  没有档位数据时 nextLevelRequirement.available === false，
                  这里如实显示原因，**不编造门槛数字**（63 号 U-03 红线）。 -->
