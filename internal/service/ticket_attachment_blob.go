@@ -525,6 +525,10 @@ func LinkUploadedTicketAttachmentBlobWithDB(db *gorm.DB, attachmentID int64) (re
 				"ticket_attachment_blob_sha_mismatch attachmentId=%d recorded=%s computed=%s（以实际字节为准）",
 				attachmentID, recorded, sha))
 		}
+		state, stateErr := ticketUploadBlobScanStateInTx(tx, sha, row)
+		if stateErr != nil {
+			return stateErr
+		}
 		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(tx, plain, sha)
 		if sealErr != nil {
 			return sealErr
@@ -539,6 +543,9 @@ func LinkUploadedTicketAttachmentBlobWithDB(db *gorm.DB, attachmentID int64) (re
 		count, linkErr := LinkTicketAttachmentBlobInTx(tx, attachmentID, sha)
 		if linkErr != nil {
 			return linkErr
+		}
+		if err := applyTicketUploadBlobScanStateInTx(tx, sha, state); err != nil {
+			return err
 		}
 		refCount, linked = count, true
 		return nil
@@ -608,6 +615,14 @@ func LinkUploadedTicketAttachmentBlobWithContentWithDB(db *gorm.DB, link TicketA
 		return 0, false, nil
 	}
 	err = db.Transaction(func(tx *gorm.DB) error {
+		var row entity.TicketAttachment
+		if err := tx.Select("sha256", "scan_state", "scan_marked_by").First(&row, link.AttachmentID).Error; err != nil {
+			return err
+		}
+		state, stateErr := ticketUploadBlobScanStateInTx(tx, sha, row)
+		if stateErr != nil {
+			return stateErr
+		}
 		// 加密在这里做（而不是让 controller 做）：blob 的 AAD 域前缀是 blob 自己的，
 		// 与附件侧 AAD 不同，两套密文不可互换解密。
 		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(tx, link.Plain, sha)
@@ -625,6 +640,9 @@ func LinkUploadedTicketAttachmentBlobWithContentWithDB(db *gorm.DB, link TicketA
 		if linkErr != nil {
 			return linkErr
 		}
+		if err := applyTicketUploadBlobScanStateInTx(tx, sha, state); err != nil {
+			return err
+		}
 		refCount, linked = count, true
 		return nil
 	})
@@ -632,6 +650,32 @@ func LinkUploadedTicketAttachmentBlobWithContentWithDB(db *gorm.DB, link TicketA
 		return 0, false, err
 	}
 	return refCount, linked, nil
+}
+
+// Copy an authoritative ruling when a terminal attachment is linked after
+// the ruling committed. Do not turn quota-only marks into real verdicts.
+func ticketUploadBlobScanStateInTx(tx *gorm.DB, sha string, row entity.TicketAttachment) (string, error) {
+	tx = imageDetectionDB(tx)
+	if hasTicketImageSharedCache(tx, sha) {
+		entry, _, err := lockTicketImageCache(tx, sha)
+		if err != nil {
+			return "", err
+		}
+		if state := ticketScanStateFromSharedCache(entry.Status); state != "" {
+			return state, nil
+		}
+	}
+	if row.SHA256 == sha && row.ScanMarkedBy != entity.TicketAttachmentMarkedByQuota && row.ScanState == entity.TicketAttachmentScanSensitive {
+		return row.ScanState, nil
+	}
+	return "", nil
+}
+
+func applyTicketUploadBlobScanStateInTx(tx *gorm.DB, sha, state string) error {
+	if state == "" {
+		return nil
+	}
+	return tx.Model(&entity.TicketAttachmentBlob{}).Where("sha256 = ?", sha).UpdateColumn("scan_state", state).Error
 }
 
 // ReleaseDeletedTicketAttachmentBlobWithDB 是**删除路径的独立接线点**

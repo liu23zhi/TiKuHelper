@@ -71,7 +71,7 @@ AND newer.scan_state IN ('approved','sensitive','failed') AND COALESCE(newer.sca
 	return db.Session(&gorm.Session{NewDB: true}).Table("(" + base + ") AS image_history")
 }
 
-func persistTicketImageSharedVerdict(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
+func persistTicketImageSharedVerdict(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, storedScanState string, now time.Time) error {
 	if !db.Migrator().HasTable(entity.TableNameSensitiveImageCache) {
 		return nil
 	}
@@ -84,7 +84,7 @@ func persistTicketImageSharedVerdict(db *gorm.DB, row entity.TicketAttachment, s
 	}
 	reason := ""
 	if status == entity.SensitiveImageCacheStatusError {
-		reason = "检测失败，请重新检测"
+		reason = SafeSensitiveImageHistoryReason(status, scan.CheckError)
 	}
 	entry := entity.SensitiveImageCacheEntry{ImageSHA256: row.SHA256, ContentType: row.MediaType, FileSize: row.ByteSize,
 		Status: status, Reason: reason, Provider: "ticket-worker", FirstSeenAt: row.CreatedAt, UpdatedAt: now}
@@ -97,7 +97,7 @@ func persistTicketImageSharedVerdict(db *gorm.DB, row entity.TicketAttachment, s
 	}
 	if db.Migrator().HasTable(entity.TableNameTicketAttachmentBlob) {
 		return db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{}).Where("sha256 = ?", row.SHA256).
-			Updates(map[string]any{"scan_state": scan.State, "updated_at": now}).Error
+			Updates(map[string]any{"scan_state": storedScanState, "updated_at": now}).Error
 	}
 	return nil
 }
