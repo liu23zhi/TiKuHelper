@@ -127,6 +127,37 @@ func TestHealthUsesActualHTTPAndRejectsWrongStatusBody(t *testing.T) {
 	}
 }
 
+func TestOwnerPreflightValidatesSensitiveImageLogPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		wantAllowed bool
+	}{
+		{"Tiku-sensitive-image.txt", true},
+		{"Tiku-sensitive-image01.txt", true},
+		{"Tiku-sensitive-image02.txt.gz", true},
+		{"Tiku-sensitive-image-other.txt", false},
+		{"Tiku-sensitive-image01.txt.bak", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := fixturePath(t)
+			root := filepath.Dir(filepath.Dir(p))
+			if err := os.WriteFile(filepath.Join(root, ".s04-host-owner.json"), []byte(`{"uid":1001,"gid":1001}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, "logs")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, tc.name), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ownershipEntries(p, 1001, 1001, root); (err == nil) != tc.wantAllowed {
+				t.Fatalf("ownership preflight for %q: want allowed=%t, got %v", tc.name, tc.wantAllowed, err)
+			}
+		})
+	}
+}
+
 func TestOwnerPreflightRejectsArbitraryIDsLinksAndUnexpectedPaths(t *testing.T) {
 	p := fixturePath(t)
 	root := filepath.Dir(filepath.Dir(p))

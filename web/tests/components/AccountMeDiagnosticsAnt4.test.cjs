@@ -54,7 +54,30 @@ window.addEventListener('error',e=>runtime.push(e.error?.name||'window-error'));
 const oldError=console.error,oldWarn=console.warn,oldMessageError=Antd.message.error,NativeAbortController=globalThis.AbortController
 console.error=(...args)=>{errors.push({argumentCount:args.length});return Reflect.apply(oldError,console,args)};console.warn=(...args)=>{warnings.push({argumentCount:args.length});return Reflect.apply(oldWarn,console,args)}
 Antd.message.error=function(...args){const text=typeof args[0]==='string'?args[0]:typeof args[0]?.content==='string'?args[0].content:'',stack=new Error().stack||'',lane=stack.includes(path.join(web,'src/utils/request.js'))?'transport':stack.includes(path.join(web,'src/pages/Login/index.vue'))?'login':stack.includes(path.join(web,'src/pages/Profile/index.vue'))?'profile':'other';toastEvents.push({lane,unsafe:text.includes(UNSAFE)});return Reflect.apply(oldMessageError,this,args)}
-globalThis.AbortController=class extends NativeAbortController{constructor(...args){super(...args);if(captureKind){const record={kind:captureKind,controller:this,abortCalls:0};controllers.push(record);controllerMeta.set(this,record);if(!capturedOwner)capturedOwner=record}}abort(...args){const record=controllerMeta.get(this);if(record)record.abortCalls++;return super.abort(...args)}}
+globalThis.AbortController=class extends NativeAbortController {
+  constructor(...args) {
+    super(...args)
+    if (!captureKind) return
+    const profile=captureKind==='profile'
+    const source=path.join(web,'src/pages',profile?'Profile':'Login','index.vue')
+    const caller=profile?'loadProfile':'handleLogin'
+    // The mount also creates jsdom CSS controllers and a separate settings attempt.
+    // Bind the page's controller by its allocation site, never by creation order.
+    const [,,allocation,entry]=new Error().stack.split('\n')
+    if (!allocation?.trimStart().startsWith('at beginAttempt ('+source+':') ||
+        !entry?.trimStart().startsWith('at '+caller+' ('+source+':')) return
+    assert.equal(capturedOwner,null,'one actual page controller for the captured operation')
+    const record={kind:captureKind,controller:this,abortCalls:0}
+    controllers.push(record)
+    controllerMeta.set(this,record)
+    capturedOwner=record
+  }
+  abort(...args) {
+    const record=controllerMeta.get(this)
+    if (record) record.abortCalls++
+    return super.abort(...args)
+  }
+}
 const api=require(path.join(web,'src/api/TikuComponentApi.js')),originalMe=api.getCurrentUser,transport=require(path.join(web,'src/utils/requestHelpers.mjs')),failure=require(path.join(web,'src/utils/requestFailureView.mjs')),retry=require(path.join(web,'src/utils/requestRetry.mjs'))
 api.getCurrentUser=function(...args){const plan=mePlans.shift();assert.ok(plan,'explicit own /me input bound before original caller');const intent={sequence:++intentSerial,plan,kind:captureKind||'actor-read',owner:capturedOwner,wires:0,done:false};intents.push(intent);return Reflect.apply(originalMe,this,args).then(object=>{intent.done=true;const id=transport.getTransportRequestId(object);if(id)IDs.add(id);replies.push({intent:intent.sequence,object,id,rejected:false});return object},object=>{intent.done=true;const id=transport.getTransportRequestId(object);if(id)IDs.add(id);replies.push({intent:intent.sequence,object,id,rejected:true});throw object})}
 const Login=require(path.join(web,'src/pages/Login/index.vue')),Profile=require(path.join(web,'src/pages/Profile/index.vue')),FailureAlert=require(path.join(web,'src/components/RequestFailureAlert.vue'))
