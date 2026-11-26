@@ -7,6 +7,7 @@ import (
 	"hash/maphash"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -143,7 +144,13 @@ func CurrentAgreement(c *gin.Context) {
 		agreementFail(c, op, e)
 		return
 	}
-	if versions, pinned := c.GetQueryArray("version"); pinned {
+	// ParseQuery can return partial values alongside an error; never use them.
+	query, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil {
+		agreementFail(c, op, service.ErrAgreementInput)
+		return
+	}
+	if versions, pinned := query["version"]; pinned {
 		if len(versions) != 1 || versions[0] == "" {
 			agreementFail(c, op, service.ErrAgreementInput)
 			return
