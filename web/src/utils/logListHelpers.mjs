@@ -21,6 +21,7 @@ export const LOG_MODULE_OPTIONS = [
   { label: '题库', value: 'tiku' },
   { label: '考试工具', value: 'userexam_tool' },
   { label: '反馈工单', value: 'ticket' },
+  { label: '用户协议', value: 'agreement' },
   { label: '邀请返佣', value: 'referral' },
   { label: '公告', value: 'announcement' },
   { label: '黑名单', value: 'blacklist' },
