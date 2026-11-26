@@ -1,7 +1,11 @@
 <template>
   <div class="console-page agreement-admin">
     <ConsolePageHeading title="用户协议管理" description="编辑协议草稿、发布不可变版本，并查询设备的同意记录。" />
-    <p v-if="!authorized" role="status">仅当前有效的管理员账号可管理用户协议。</p>
+    <section v-if="eligible && accessBlocked" class="console-panel agreement-access" aria-label="管理权限检查">
+      <p role="alert">{{ accessMessage }}</p>
+      <a-button data-action="recheck-access" :loading="checkingAccess" :disabled="checkingAccess" @click="recheckAccess(true)">重新检查权限</a-button>
+    </section>
+    <p v-else-if="!authorized" role="status">仅当前有效的管理员账号可管理用户协议。</p>
     <div v-else :key="generation" class="agreement-panels">
       <p v-if="notice" role="status" class="notice">{{ notice }}</p>
       <ConsolePanel title="协议草稿" description="保存草稿不会影响已发布版本或设备。">
@@ -197,7 +201,8 @@ import {
   listAgreementDrafts, getAgreementDraft, saveAgreementDraft, deleteAgreementDraft, deleteAgreementDrafts,
   publishAgreementDraft, listAgreementReleases, getAgreementRelease, listAgreementRecords,
 } from '@/api/AgreementAdminApi'
-import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
+import { getCurrentUser } from '@/api/TikuComponentApi'
+import { getCurrentSessionRevision, getCurrentUserLogoutEpoch, isAdminUser, setStoredCurrentUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
 
 defineOptions({ name: 'AgreementAdmin' })
@@ -235,11 +240,14 @@ const draftError = computed(() => {
   if (!form.body.trim() || utf8.encode(form.body).length > 256 * 1024) return '正文不能为空，且不得超过 256 KiB（UTF-8）。'
   return ''
 })
-const { currentUser } = useCurrentUserDisplay()
+const { currentUser, captureUpdateGuard } = useCurrentUserDisplay()
 const logoutEpoch = getCurrentUserLogoutEpoch()
-const authorized = computed(() => getCurrentUserLogoutEpoch() === logoutEpoch && Boolean(currentUserIdentity(currentUser.value)) &&
+const accessBlocked = ref(false), checkingAccess = ref(false), accessMessage = ref('')
+const eligible = computed(() => getCurrentUserLogoutEpoch() === logoutEpoch && Boolean(currentUserIdentity(currentUser.value)) &&
   isAdminUser(currentUser.value) && (currentUser.value?.status || 'enabled') === 'enabled')
+const authorized = computed(() => eligible.value && !accessBlocked.value)
 function clear() {
+  checkingAccess.value = false
   generation.value++
   for (const list of Object.values(lists)) Object.assign(list, newList())
   notice.value = ''; dialog.value = null; selected.value = []
@@ -250,7 +258,10 @@ function open() {
   if (!authorized.value) return
   for (const type of Object.keys(lists)) loadPage(type, 0)
 }
-const scope = useCurrentUserRequestScope(currentUser, { clear, reset() {}, reload: open })
+const scope = useCurrentUserRequestScope(currentUser, {
+  clear, reload: open,
+  reset() { accessBlocked.value = false; accessMessage.value = '' },
+})
 onMounted(open)
 // The shared scope handles identity, role and logout. Invalidate status-only changes too.
 watch(currentUser, (next, previous) => {
@@ -258,9 +269,13 @@ watch(currentUser, (next, previous) => {
       (next?.status || 'enabled') === (previous?.status || 'enabled')) return
   clear(); open()
 }, { flush: 'sync' })
-function capture() {
+function captureGeneration() {
   const isOwner = scope.captureDataOwner(), version = generation.value
-  return () => isOwner() && generation.value === version && authorized.value
+  return () => isOwner() && generation.value === version
+}
+function capture() {
+  const currentGeneration = captureGeneration()
+  return () => currentGeneration() && authorized.value
 }
 function owned(fn, ...args) {
   const live = capture()
@@ -268,6 +283,57 @@ function owned(fn, ...args) {
 }
 const ownedSubmitFilters = computed(() => owned(submitFilters))
 const ownedSubmitDraft = computed(() => owned(commitDialog, dialog.value))
+
+const deniedMessage = '服务器已拒绝管理访问，个人资料不会因一次拒绝而改写。可重新检查权限。'
+const unconfirmedMessage = '未能确认当前会话的管理员权限。管理内容保持隐藏，请重新检查。'
+async function recheckAccess(allowReopen) {
+  if (!eligible.value || !accessBlocked.value || checkingAccess.value) return
+  const live = captureGeneration(), sameProfile = captureUpdateGuard(), session = getCurrentSessionRevision()
+  checkingAccess.value = true
+  accessMessage.value = '管理访问已暂停，正在检查当前会话权限。'
+  try {
+    const result = await getCurrentUser({ errorFeedback: 'local' })
+    if (!live()) return
+    const profile = result?.data
+    const role = typeof profile?.role === 'string' ? profile.role.trim().toLowerCase() : ''
+    const status = profile?.status
+    if (!sameProfile() || session !== getCurrentSessionRevision() || result?.status !== 200 ||
+        !validId(profile?.id) || String(profile.id) !== String(currentUser.value?.id) ||
+        !['admin', 'user'].includes(role) || typeof status !== 'string' || !status) {
+      accessMessage.value = unconfirmedMessage
+      return
+    }
+    if (role !== 'admin' || status !== 'enabled') {
+      // Only a fresh, same-account profile can update the shell's role/status.
+      setStoredCurrentUser({ ...currentUser.value, role, status })
+      return
+    }
+    if (allowReopen) {
+      accessBlocked.value = false
+      accessMessage.value = ''
+      open()
+    } else {
+      // A general profile can still report admin while this endpoint denies
+      // access. Do not create an automatic reload/403/profile-check loop.
+      accessMessage.value = deniedMessage
+    }
+  } catch {
+    if (live()) accessMessage.value = unconfirmedMessage
+  } finally {
+    if (live()) checkingAccess.value = false
+  }
+}
+async function adminRequest(request, owner) {
+  const result = await request()
+  // Even a superseded filter or closed dialog can carry a current-session
+  // denial. Only its ownership, not its local loading slot, matters here.
+  if (result?.status === 403 && owner()) {
+    accessBlocked.value = true
+    clear()
+    void recheckAccess(false)
+  }
+  return result
+}
 
 async function loadPage(type, offset) {
   if (!authorized.value || !scope.canLoadForCurrentUser() || offset < 0 || offset > 1000000) return
@@ -278,7 +344,7 @@ async function loadPage(type, offset) {
   if (type === 'drafts') selected.value = []
   if (type === 'releases' && offset === 0) { currentRelease.value = null; headLoaded.value = false }
   try {
-    const result = await reads[type](params)
+    const result = await adminRequest(() => reads[type](params), owner)
     if (!live()) return
     if (type === 'records' && result?.status === 404 && result.data?.code === 'not_found') {
       list.status = 'ready'
@@ -287,7 +353,7 @@ async function loadPage(type, offset) {
     }
     if (result?.status !== 200 || !Array.isArray(result.data)) {
       list.status = 'error'
-      list.message = result?.status === 403 ? '当前账号无权读取' + readNames[type] + '。' : readNames[type] + '读取失败，请刷新重试。'
+      list.message = readNames[type] + '读取失败，请刷新重试。'
       return
     }
     if (type === 'releases') {
@@ -353,12 +419,12 @@ async function loadDetail(target) {
   target.loading = true; target.error = ''; target.canReload = false; target.locked = false
   target.detail = null; target.form = null; target.reviewed = false
   try {
-    const result = await (isRelease ? getAgreementRelease(target.id) : getAgreementDraft(target.id))
+    const result = await adminRequest(() => isRelease ? getAgreementRelease(target.id) : getAgreementDraft(target.id), owner)
     if (!live()) return
     const detail = isRelease ? result.data : result.data?.draft
     if (result.status !== 200 || detail?.id !== target.id || !validContent(detail) ||
         (isRelease ? !detail.publishedAt : !validId(detail.revision) || result.data.type !== 'user_agreement' || result.data.audience !== 'all_devices')) {
-      target.error = result.status === 403 ? '当前账号无权读取协议。' : result.status === 404 ? '该协议已不存在；请刷新列表。' : '协议正文读取失败，请重试。'
+      target.error = result.status === 404 ? '该协议已不存在；请刷新列表。' : '协议正文读取失败，请重试。'
       target.canReload = result.status !== 404
       return
     }
@@ -385,20 +451,18 @@ async function commitDialog(target) {
   if (saving ? !form || draftError.value : mode === 'publish' ? !detail || !target.reviewed : mode !== 'delete') return
   const owner = capture(), live = () => owner() && dialog.value === target
   const { ids, batch } = target
-  const operation = saving ? '保存草稿' : mode === 'publish' ? '发布协议' : '删除草稿'
   target.busy = true; target.reviewed = false; target.error = ''
   try {
-    const result = await (saving ? saveAgreementDraft(id, { ...form }) :
+    const result = await adminRequest(() => saving ? saveAgreementDraft(id, { ...form }) :
       mode === 'publish' ? publishAgreementDraft(id, detail.revision) :
-        batch ? deleteAgreementDrafts(ids) : deleteAgreementDraft(ids[0]))
+        batch ? deleteAgreementDrafts(ids) : deleteAgreementDraft(ids[0]), owner)
     if (!live()) return
     const { status, data } = result
     if (status !== 200) {
       if (status === 409) {
         target.error = '版本冲突：草稿修订已改变、协议已发布或版本号已使用。请核对后再操作。'
         target.locked = true; target.canReload = mode === 'edit' || mode === 'publish'
-      } else if (status === 403) target.error = '当前账号无权' + operation + '。'
-      else if (status === 404) { target.error = '目标草稿已不存在；请刷新列表。'; target.locked = true }
+      } else if (status === 404) { target.error = '目标草稿已不存在；请刷新列表。'; target.locked = true }
       else if (status === 400) target.error = '服务端未接受本次提交，请检查填写内容。'
       else lockUnconfirmed(target)
       return
@@ -425,6 +489,7 @@ async function commitDialog(target) {
 </script>
 
 <style scoped>
+.agreement-access { padding: 20px 24px; }
 .agreement-panels { display: grid; gap: 20px; min-width: 0; }
 .record-filter, .row-actions, .paging { display: flex; flex-wrap: wrap; gap: 8px; }
 .record-filter { align-items: start; gap: 12px; margin-bottom: 16px; }

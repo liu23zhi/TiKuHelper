@@ -19,6 +19,10 @@ const listing = row => ({ ...row, body: '' })
 const preview = draft => ({ draft, type: 'user_agreement', audience: 'all_devices' })
 const ok = data => ({ status: 200, data })
 const err = (status, code) => ({ status, data: { code } })
+const forbidden = { status: 403, data: { message: '无权限执行该操作' } }
+const info = '/api/user/info'
+const consent = { deviceId: 'fixture-private-device', userId: 38, version: 'demo-1', clientKind: 'exam_client',
+  accepted: true, acceptedAt: '2026-11-27T02:03:04Z', ip: '192.0.2.42' }
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 const mounted = []
 let calls = [], respond = null
@@ -173,15 +177,66 @@ test('publish visibly presents the server preview and needs both review and conf
   assert.equal(w.find('[data-action="edit"]').exists(), false)
 })
 
-test('publish denial is not displayed as success and requires review again', async () => {
-  respond = c => c.path === base + '/drafts/11/publish' && err(403, 'forbidden')
-  const w = await open(); await click(w, 'publish')
-  await modal().get('#agreement-reviewed').setValue(true); await click(modal(), 'confirm-publish')
-  assert.equal(mutateCalls().length, 1)
-  assert.match(modal().text(), /当前账号无权/)
-  assert.ok(action(modal(), 'confirm-publish').element.disabled)
-  assert.match(w.get('[aria-label="当前发布版本"]').text(), /demo-1/)
-  assert.doesNotMatch(w.text(), /已发布。/)
+test('HTTP 403 on publish closes the page, retires pending reads, and restores only fresh data after a verified retry', async () => {
+  const pendingRelease = deferred(), pendingInfo = deferred()
+  let historyReads = 0, profileReads = 0, recordReads = 0
+  respond = c => {
+    if (c.path === base + '/drafts/11/publish') return forbidden
+    if (c.path === base + '/releases' && ++historyReads === 2) return pendingRelease.promise
+    if (c.path === base + '/records') return ok([{ ...consent, deviceId: ++recordReads === 1 ? consent.deviceId : 'fresh-fixture-device' }])
+    if (c.path === info) {
+      profileReads++
+      return profileReads === 1 ? pendingInfo.promise : profileReads === 2 ? ok({ ...admin, id: 99 }) : ok(admin)
+    }
+    return null
+  }
+  const w = await open()
+  assert.match(w.text(), /合成摘要.*demo-1.*fixture-private-device.*192\.0\.2\.42/)
+  await click(w, 'refresh-releases')
+  await click(w, 'publish')
+  assert.match(modal().text(), /合成正文/)
+  await modal().get('#agreement-reviewed').setValue(true)
+  const confirm = action(modal(), 'confirm-publish')
+  await confirm.trigger('click'); await settle()
+  assert.equal(user.getStoredCurrentUser().role, 'admin', 'no local demotion before the server verifies identity')
+  assert.equal(profileReads, 1)
+  assert.ok(action(w, 'recheck-access').element.disabled)
+  assert.equal(document.querySelector('[role="dialog"]'), null)
+  assert.equal(w.find('table').exists(), false)
+  assert.doesNotMatch(w.text(), /合成摘要|demo-1|fixture-private-device|192\.0\.2\.42|已发布。/)
+  pendingRelease.resolve(ok([listing({ ...release, version: 'late-private-release' })])); await settle()
+  pendingInfo.resolve(err(404, 'fixture_profile_unavailable')); await settle()
+  assert.match(w.text(), /未能确认/)
+  assert.doesNotMatch(w.text(), /late-private-release/)
+  assert.equal(w.find('table').exists(), false)
+  assert.equal(w.find('[data-action="create"]').exists(), false)
+  await click(w, 'recheck-access')
+  assert.equal(profileReads, 2)
+  assert.equal(user.getStoredCurrentUser().id, admin.id, 'a profile for a different owner cannot reopen the page')
+  assert.equal(w.find('table').exists(), false)
+  await click(w, 'recheck-access')
+  assert.equal(profileReads, 3)
+  assert.match(w.text(), /fresh-fixture-device/)
+  assert.doesNotMatch(w.text(), /fixture-private-device|late-private-release|已发布。/)
+  assert.equal(document.querySelector('[role="dialog"]'), null)
+  assert.equal(mutateCalls().length, 1, 'recovery never replays the denied publication')
+})
+
+test('HTTP 403 loading a draft clears every list even when the profile still reports administrator', async () => {
+  respond = c => {
+    if (c.path === base + '/drafts/11') return forbidden
+    if (c.path === base + '/records') return ok([consent])
+    if (c.path === info) return ok(admin)
+    return null
+  }
+  const w = await open()
+  await click(w, 'preview')
+  assert.equal(document.querySelector('[role="dialog"]'), null)
+  assert.equal(w.find('table').exists(), false)
+  assert.equal(calls.filter(c => c.path === info).length, 1, '403 starts only one automatic profile check')
+  assert.equal(calls.filter(c => c.path === base + '/drafts').length, 1, 'admin profile alone cannot cause a background reopen loop')
+  assert.match(w.text(), /拒绝.*重新检查/)
+  assert.deepEqual(mutateCalls(), [])
 })
 
 test('a failed review cannot publish; a stale revision requires reread and a fresh acknowledgement', async () => {
@@ -324,4 +379,30 @@ test('live administrator demotion removes the real RouterView and returns to the
   user.setStoredCurrentUser({ ...admin, role: 'user' }); await settle()
   assert.doesNotMatch(shell.text(), /合成摘要/)
   assert.equal(router.currentRoute.value.path, user.resolveHomePath(member))
+})
+
+test('server-confirmed demotion after a list 403 sends the live RouterView to personal home', async () => {
+  const profile = deferred()
+  let revokeOnRefresh = false
+  respond = c => {
+    if (c.path === base + '/drafts' && revokeOnRefresh) return forbidden
+    if (c.path === base + '/records') return ok([consent])
+    if (c.path === info) return profile.promise
+    return null
+  }
+  user.setStoredCurrentUser(admin)
+  await router.push(route)
+  const shell = mount({ render: () => h(RouterView) }, { attachTo: document.body, global: { plugins: [router, { install: registerConsoleUI }] } })
+  mounted.push(shell); await settle()
+  assert.match(shell.text(), /fixture-private-device/)
+  revokeOnRefresh = true
+  await click(shell, 'refresh-drafts')
+  assert.equal(user.getStoredCurrentUser().role, 'admin')
+  assert.equal(router.currentRoute.value.path, route)
+  assert.doesNotMatch(shell.text(), /fixture-private-device|合成历史摘要/)
+  assert.equal(shell.find('[data-action="create"]').exists(), false)
+  profile.resolve(ok({ ...admin, role: 'user' })); await settle()
+  assert.equal(user.getStoredCurrentUser().role, 'user')
+  assert.equal(router.currentRoute.value.path, user.resolveHomePath(member))
+  assert.deepEqual(mutateCalls(), [])
 })
