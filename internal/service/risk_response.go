@@ -50,18 +50,6 @@ func ApplyRiskAlertResponse(db *gorm.DB, id int64, actorID int32, in RiskRespons
 	return applyRiskResponse(db, id, actorID, in)
 }
 
-func respondToNewWarning(db *gorm.DB, kind string, w *entity.RiskWarning) error {
-	if w == nil || !riskResponseDetector(kind) || riskResponseIP(*w, kind, true) == "" {
-		return nil
-	}
-	policy, err := GetRiskResponsePolicy(db, kind)
-	if err != nil || policy.Mode != "temp_ip" {
-		return err
-	}
-	_, err = applyRiskResponse(db, w.ID, 0, RiskResponseInput{Action: "ip", DurationMinutes: policy.DurationMinutes, Reason: "触发风控策略，暂时限制该 IP 的访问"})
-	return err
-}
-
 func applyRiskResponse(db *gorm.DB, id int64, actor int32, in RiskResponseInput) (RiskAlertResponseView, error) {
 	var v RiskAlertResponseView
 	var changed bool
@@ -87,7 +75,7 @@ func applyRiskResponse(db *gorm.DB, id int64, actor int32, in RiskResponseInput)
 			(in.Action == "city_isp" && (v.CityISP == "" || in.ExpectedTarget != v.CityISP)) {
 			return invalidRiskResponse("归属范围已改变或不可用，请刷新处置目标后重新确认")
 		}
-		decision := entity.RiskWarningResponse{WarningID: id, Action: in.Action, ActorID: actor, DurationMinutes: in.DurationMinutes, Reason: in.Reason, CreatedAt: tx.NowFunc()}
+		decision := entity.RiskWarningResponse{WarningID: id, RuleID: warning.RuleID, SourceIPMasked: MaskBlacklistValue(BlacklistKindIP, v.IP, BlacklistMatchExact), Action: in.Action, ActorID: actor, DurationMinutes: in.DurationMinutes, Reason: in.Reason, CreatedAt: tx.NowFunc()}
 		bk, pattern, mt := BlacklistKindIP, v.IP, BlacklistMatchExact
 		switch in.Action {
 		case "segment":
@@ -238,6 +226,14 @@ func writeLeaseExpiry(tx *gorm.DB, d entity.RiskWarningResponse) (entity.RiskWar
 	d.ExpiresAt = responseExpiry(d.CreatedAt, d.DurationMinutes)
 	if err := tx.Model(&entity.BlacklistEntry{}).Where("id = ?", d.EntryID).Update("expires_at", d.ExpiresAt).Error; err != nil {
 		return d, false, err
+	}
+	if d.ActorID == 0 {
+		// Read the DB-rounded timestamp and expiry, not the pre-write value.
+		var entry entity.BlacklistEntry
+		if err := tx.Select("updated_at", "expires_at").First(&entry, d.EntryID).Error; err != nil {
+			return d, false, err
+		}
+		d.EntryVersion, d.ExpiresAt = &entry.UpdatedAt, entry.ExpiresAt
 	}
 	return d, true, nil
 }

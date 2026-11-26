@@ -26,6 +26,10 @@ func riskResponseAdmin(c *gin.Context) (*gorm.DB, int32, bool) {
 	return db, actor.ID, true
 }
 func writeResponseResult(c *gin.Context, data any, err error) {
+	if errors.Is(err, service.ErrLegacyRiskResponsePolicyReadOnly) {
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+		return
+	}
 	if errors.Is(err, service.ErrRiskResponseInvalid) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
@@ -104,12 +108,22 @@ func RiskAlertResponseApply(c *gin.Context) {
 		DurationMinutes *int   `json:"durationMinutes"`
 		Reason          string `json:"reason"`
 		Confirmed       bool   `json:"confirmed"`
+		ResponseID      int64  `json:"responseId"`
 		ExpectedTarget  string `json:"expectedTarget"`
 	}
 	if !bindResponseBody(c, &body) {
 		return
 	}
-	if body.DurationMinutes == nil {
+	if body.Action == "revoke_auto" {
+		if !body.Confirmed || body.ResponseID <= 0 || body.DurationMinutes != nil || body.ExpectedTarget != "" || body.Reason != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "撤销必须确认并仅提供自动处置记录编号"})
+			return
+		}
+		v, err := service.RevokeAutomaticRiskResponse(db, id, body.ResponseID, actor)
+		writeResponseResult(c, v, err)
+		return
+	}
+	if body.DurationMinutes == nil || body.ResponseID != 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "必须明确提供 durationMinutes（0 表示永久）"})
 		return
 	}

@@ -153,7 +153,7 @@ test('C3 状态文案：未配置 / 已配置未启用 / 已启用 三态可区�
 // ─────────────────────────────────────────────────────────────────────
 
 test('区分默认通知、自动临时单 IP 与管理员确认的范围/永久处置', () => {
-  for (const text of ['默认', '自动临时封单 IP', '范围封禁', '永久封禁', '管理员', '黑名单']) assert.ok(RISK_ADVISORY_NOTE.includes(text))
+  for (const text of ['默认', '独立配置自动封禁', '范围封禁', '永久封禁', '管理员', '黑名单']) assert.ok(RISK_ADVISORY_NOTE.includes(text))
 })
 
 test('告警页不得修改账号状态或擅自开启全站黑名单', async () => {
@@ -243,7 +243,7 @@ test('判据 ②（改阈值落库）已实现：前端必须提供阈值读写�
   const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/-]+)'/g)].map(m => m[1])
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    ['/alerts', '/alerts/', '/config', '/config/', '/offhours-window', '/response-policies/', '/rule-types', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
+    ['/alerts', '/alerts/', '/config', '/config/', '/offhours-window', '/rule-types', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
     '风控 API 模块包含规则类型目录、规则 CRUD、启停及既有配置路径',
   )
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路径必须是拼接形式（不能写成模板字面量绕过上面的统计）')

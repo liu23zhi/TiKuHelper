@@ -102,16 +102,14 @@ func TestRiskResponseEnforcementSameNamedCities(t *testing.T) {
 func TestRiskResponseEnforcementDurationBeginsAtEnforcement(t *testing.T) {
 	db := responseTestDB(t)
 	setBlacklistEnabled(t, db, "true")
-	if _, e := PutRiskResponsePolicy(db, "device_register_burst", "temp_ip", 1, 11); e != nil {
-		t.Fatal(e)
-	}
+	rule := entity.RiskRule{RuleID: "device_register_burst", ResponsePolicyJSON: `{"mode":"temporary","scope":"ip","durationMinutes":1}`}
 	w := responseTestWarning(t, db, "device_register_burst", "192.0.2.25", "registration_browser", "single")
 	evaluationStarted := time.Now().Add(-2 * time.Minute)
 	w.CreatedAt = evaluationStarted
 	if e := db.Model(&w).Update("created_at", evaluationStarted).Error; e != nil {
 		t.Fatal(e)
 	}
-	if e := respondToNewWarning(db, "device_register_burst", &w); e != nil {
+	if e := respondToNewWarning(db, rule, &w); e != nil {
 		t.Fatal(e)
 	}
 	var row entity.RiskWarningResponse

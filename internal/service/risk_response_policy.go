@@ -14,6 +14,8 @@ const (
 	riskResponseManualMaxMinutes = 365 * 24 * 60
 )
 
+var ErrLegacyRiskResponsePolicyReadOnly = errors.New("按类型共享的旧处置策略已停用，请在风控规则编辑器保存独立处置策略")
+
 var ErrRiskResponseInvalid = errors.New("风控处置参数无效")
 
 func invalidRiskResponse(message string) error {
@@ -55,6 +57,15 @@ func PutRiskResponsePolicy(db *gorm.DB, detector, mode string, minutes int, acto
 	}
 	p := RiskResponsePolicy{Mode: mode, DurationMinutes: minutes}
 	err := db.Transaction(func(tx *gorm.DB) error {
+		// The old endpoint is retained for archived configuration inspection only
+		// after the one-time copy. Never silently accept a disconnected write.
+		flag, found, err := getSystemSettingByKey(tx, RiskRuleResponseMigrationKey)
+		if err != nil {
+			return err
+		}
+		if found && flag.Value == "1" {
+			return ErrLegacyRiskResponsePolicyReadOnly
+		}
 		// Never persist or change blacklist_enabled here.
 		data, err := json.Marshal(map[string]any{"mode": mode, "durationMinutes": minutes})
 		if err != nil {

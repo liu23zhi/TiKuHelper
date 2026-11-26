@@ -31,11 +31,8 @@
           :aria-pressed="section === tab.key" :type="section === tab.key ? 'primary' : 'default'"
           @click="section = tab.key">{{ tab.label }}</a-button>
       </nav>
-      <ConsolePanel v-if="section === 'core'" title="注册与登录保护" description="先选择如何处置，再调整下方规则的触发条件。处置策略按类型共享，在评估产生新告警时执行；登录入口原有的实时限速仍独立生效。">
-        <div class="policy-grid">
-          <RiskPolicyCard v-for="item in coreDetectors" :key="ownerKey + item.type" :detector="item.type"
-            :title="item.name" :description="item.summary" :capture-scope="captureRuleScope" />
-        </div>
+      <ConsolePanel v-if="section === 'core'" title="注册与登录保护" description="每条规则单独设置处置，仅影响后续新告警；密码登录入口的实时限速仍独立生效。">
+        <ul class="field-hint"><li v-for="item in coreDetectors" :key="item.type">{{ item.name }}：{{ item.summary }}</li></ul>
       </ConsolePanel>
 
       <!-- ============ 风控通知配置（独立于工单，C2/C3） ============ -->
@@ -147,7 +144,7 @@
 
       <ConsolePanel v-if="section === 'core' || section === 'other'" class="risk-rules-panel"
         :title="section === 'core' ? '核心保护的触发条件' : '其他检测规则'"
-        :description="section === 'core' ? '每条实例单独设置启停、主阈值、告警级别与重复告警间隔。' : '保留既有业务和行为告警；这些规则不会自动封禁。'">
+        :description="section === 'core' ? '每条实例单独设置触发条件、通知级别、节流间隔和处置策略。' : '保留既有业务和行为告警；这些规则不会自动封禁。'">
         <template #actions>
           <a-button type="primary" :disabled="!canManage() || rulesLoading || ruleWriting" @click="openCreateRule">新增规则</a-button>
         </template>
@@ -180,6 +177,7 @@
                   生效阈值：{{ rule.threshold }}{{ ruleUnit(rule) }}
                 </span>
               </div>
+              <p class="field-hint" data-rule-response>生效处置：{{ rulePolicyLabel(rule.effectiveResponsePolicy) }}<span v-if="rulePolicyLabel(rule.responsePolicy) !== rulePolicyLabel(rule.effectiveResponsePolicy)"> · 已配置：{{ rulePolicyLabel(rule.responsePolicy) }}</span></p>
               <details v-if="rule.description" class="risk-rule-desc"><summary>规则说明与备注</summary>{{ rule.description }}</details>
               <p class="risk-rule-updated">更新于 {{ formatRiskDateTime(rule.updatedAt) }}<span v-if="rule.updatedBy"> · {{ rule.updatedBy }}</span></p>
             </div>
@@ -549,13 +547,31 @@
           <div class="risk-rule-editor-grid">
             <a-form-item label="告警级别" :html-for="fieldId('editor-severity')" required>
               <a-select :id="fieldId('editor-severity')" v-model:value="ruleDraft.severity" :options="severityOptions" />
-              <div class="field-hint">级别只标记重要程度。是否临时封 IP，由该类型的处置策略决定。</div>
+              <div class="field-hint">仅用于发送通知时显示，不参与触发条件、处置动作或封禁范围判断。</div>
             </a-form-item>
             <a-form-item label="节流秒数" :html-for="fieldId('editor-throttle')">
               <a-input-number :id="fieldId('editor-throttle')" v-model:value="ruleDraft.throttleSeconds" :min="0" :precision="0" class="risk-editor-number" />
               <div class="field-hint">0 表示同一告警主体只记录一次；大于 0 时，同一主体在设定秒数内不重复记录。</div>
             </a-form-item>
           </div>
+        </section>
+        <section class="risk-editor-section" aria-label="处置策略">
+          <h3>处置策略</h3>
+          <p v-if="ruleEditingId" class="field-hint" data-editor-effective-policy>当前生效：{{ rulePolicyLabel(ruleDraft.savedEffectivePolicy) }}</p>
+          <a-form-item label="处置动作" :html-for="fieldId('editor-response-mode')">
+            <a-select :id="fieldId('editor-response-mode')" v-model:value="ruleDraft.responseMode" :options="responseModeOptions" :disabled="!selectedRuleType?.supportsResponsePolicy" />
+            <p class="field-hint">{{ selectedRuleType?.supportsResponsePolicy ? '封禁遵守白名单和黑名单总开关，仅按可信单一来源归因；变更只用于新告警。' : '本检测类型未提供可信的网络处置来源，只能告警。' }}</p>
+          </a-form-item>
+          <template v-if="ruleDraft.responseMode !== 'notify'">
+            <a-form-item label="封禁范围" :html-for="fieldId('editor-response-scope')">
+              <a-select :id="fieldId('editor-response-scope')" v-model:value="ruleDraft.responseScope" :options="responseScopeOptions" />
+              <p v-if="ruleDraft.responseScope === 'segment'" class="field-hint">只使用可信归属地缓存中的首尾地址；无可靠区间时只告警。</p>
+            </a-form-item>
+            <a-form-item v-if="ruleDraft.responseMode === 'temporary'" label="封禁时长（分钟）" :html-for="fieldId('editor-response-duration')" required>
+              <a-input-number :id="fieldId('editor-response-duration')" v-model:value="ruleDraft.responseMinutes" :min="1" :max="1440" :precision="0" />
+            </a-form-item>
+            <a-checkbox v-if="rulePolicyRequiresConfirmation" v-model:checked="ruleDraft.responseConfirmed">我已核对范围与期限，确认对后续告警启用此策略</a-checkbox>
+          </template>
         </section>
         <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
       </a-form>
@@ -567,7 +583,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
-import RiskPolicyCard from './RiskPolicyCard.vue'
 import RiskWindowSettings from './RiskWindowSettings.vue'
 import RiskAlertResponse from './RiskAlertResponse.vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
@@ -619,7 +634,7 @@ import { currentUserIdentity } from '@/utils/currentUserScope'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 const coreDetectors = [
-  { type: 'device_register_burst', name: '同一设备批量注册', summary: '基于同一注册浏览器标识统计成功注册的不同账号；不把共享 IP 当作一台设备。' },
+  { type: 'device_register_burst', name: '同一浏览器批量注册', summary: '基于同一注册浏览器标识统计成功注册的不同账号；不把共享 IP 当作一台设备。' },
   { type: 'login_bruteforce', name: '密码爆破', summary: '区分账号维度与来源 IP 维度；仅能归因到一个 IP 的告警可用于网络处置。' },
 ]
 const coreType = type => coreDetectors.some(item => item.type === type)
@@ -630,7 +645,7 @@ const emptySettings = () => ({ enabled: false, configured: false, webhookUrl: ''
 
 export default {
   name: 'RiskAdminPage',
-  components: { RiskPolicyCard, RiskWindowSettings, RiskAlertResponse, ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { RiskWindowSettings, RiskAlertResponse, ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
   setup() {
     const route = useRoute()
     const prefix = 'risk-admin-' + useId()
@@ -690,7 +705,28 @@ export default {
     const ruleEditingId = ref('')
     const ruleWriting = ref(false)
     const ruleDeleting = reactive({})
-    const ruleDraft = reactive({ type: '', name: '', description: '', severity: 'medium', threshold: 1, throttleSeconds: 0 })
+    const ruleDraft = reactive({ type: '', name: '', description: '', severity: 'medium', threshold: 1, throttleSeconds: 0,
+      responseMode: 'notify', responseScope: 'ip', responseMinutes: null, responseConfirmed: false, savedEffectivePolicy: null })
+    const responseModeOptions = [
+      { label: '仅告警', value: 'notify' }, { label: '告警 + 临时封禁', value: 'temporary' }, { label: '告警 + 永久封禁', value: 'permanent' },
+    ]
+    const responseScopeOptions = [{ label: '单 IP', value: 'ip' }, { label: '可信精确 IP 段', value: 'segment' }]
+    const rulePolicyLabel = policy => {
+      if (policy?.mode === 'disabled') return '规则已停用'
+      const scope = policy?.scope === 'segment' ? '可信精确 IP 段' : '单 IP'
+      if (policy?.mode === 'temporary') return '告警 + 临时封禁 · ' + scope + ' · ' + policy.durationMinutes + ' 分钟'
+      if (policy?.mode === 'permanent') return '告警 + 永久封禁 · ' + scope + ' · 直至撤销'
+      return '仅告警'
+    }
+    const rulePolicyRequiresConfirmation = computed(() => ruleDraft.responseMode === 'permanent' ||
+      (ruleDraft.responseMode !== 'notify' && ruleDraft.responseScope === 'segment'))
+    watch(() => [ruleDraft.responseMode, ruleDraft.responseScope, ruleDraft.responseMinutes], () => {
+      ruleDraft.responseConfirmed = false
+    }, { flush: 'sync' })
+    const fillPolicyDraft = (policy, effective = null) => Object.assign(ruleDraft, {
+      responseMode: policy?.mode || 'notify', responseScope: policy?.scope || 'ip',
+      responseMinutes: policy?.durationMinutes ?? null, responseConfirmed: false, savedEffectivePolicy: effective,
+    })
     const availableTypes = computed(() => ruleTypes.value.filter(item => coreType(item.type) === (section.value === 'core')))
     const ruleTypeOptions = computed(() => availableTypes.value.map(item => ({ label: item.name + ' · ' + item.type, value: item.type })))
     const selectedRuleType = computed(() => ruleTypes.value.find(item => item.type === ruleDraft.type) || null)
@@ -977,6 +1013,8 @@ export default {
           type: String(item.type ?? item.ruleId),
           source: item.source === 'custom' ? 'custom' : 'builtin',
           throttleSeconds: Number(item.throttleSeconds ?? 0),
+          responsePolicy: item.responsePolicy || { mode: 'notify' },
+          effectiveResponsePolicy: item.effectiveResponsePolicy || { mode: item.enabled === true ? 'notify' : 'disabled' },
           unit: String(item.unit ?? ''),
           updatedAt: item.updatedAt || '',
           updatedBy: String(item.updatedBy ?? ''),
@@ -1039,6 +1077,7 @@ export default {
       ruleDraft.severity = first?.defaultSeverity || 'medium'
       ruleDraft.threshold = Number(first?.defaultThreshold ?? 1)
       ruleDraft.throttleSeconds = Number(first?.defaultThrottleSeconds ?? 0)
+      fillPolicyDraft()
     }
     const openCreateRule = async () => {
       if (!canManage() || rulesLoading.value || ruleWriting.value) return
@@ -1067,6 +1106,7 @@ export default {
         threshold: Number(rule.threshold ?? 0),
         throttleSeconds: Number(rule.throttleSeconds ?? 0),
       })
+      fillPolicyDraft(rule.responsePolicy, rule.effectiveResponsePolicy)
       ruleEditorOpen.value = true
     }
     const setRuleType = type => {
@@ -1077,6 +1117,7 @@ export default {
       ruleDraft.threshold = Number(selected.defaultThreshold ?? 1)
       ruleDraft.severity = selected.defaultSeverity || 'medium'
       ruleDraft.throttleSeconds = Number(selected.defaultThrottleSeconds ?? 0)
+      fillPolicyDraft()
     }
     const closeRuleEditor = () => {
       if (ruleWriting.value) return
@@ -1098,6 +1139,21 @@ export default {
         rulesError.value = '请填写名称、受支持的规则类型、有效阈值和非负整数节流秒数。'
         return
       }
+      const mode = ruleDraft.responseMode
+      const responseMinutes = Number(ruleDraft.responseMinutes)
+      if (mode === 'temporary' && (!Number.isInteger(responseMinutes) || responseMinutes < 1 || responseMinutes > 1440)) {
+        rulesError.value = '临时封禁时长必须为 1 至 1440 分钟。'
+        return
+      }
+      if (rulePolicyRequiresConfirmation.value && !ruleDraft.responseConfirmed) {
+        rulesError.value = '永久封禁或 IP 段封禁须明确确认后才能保存。'
+        return
+      }
+      const responsePolicy = {
+        mode, ...(mode !== 'notify' ? { scope: ruleDraft.responseScope } : {}),
+        ...(mode === 'temporary' ? { durationMinutes: responseMinutes } : {}),
+        ...(rulePolicyRequiresConfirmation.value ? { confirmed: true } : {}),
+      }
       ruleWriting.value = true
       rulesError.value = ''
       rulesSuccess.value = ''
@@ -1109,6 +1165,7 @@ export default {
         ...(type.hasThreshold === false ? {} : { threshold }),
         throttleSeconds,
         config: {},
+        responsePolicy,
       }
       try {
         const res = editingId
@@ -1193,10 +1250,13 @@ export default {
               source: String(saved.source ?? rules.value[index].source),
               type: String(saved.type ?? rules.value[index].type),
               throttleSeconds: Number(saved.throttleSeconds ?? rules.value[index].throttleSeconds),
+              responsePolicy: saved.responsePolicy || rules.value[index].responsePolicy,
+              effectiveResponsePolicy: saved.effectiveResponsePolicy || { mode: saved.enabled === true ? 'notify' : 'disabled' },
             })
           }
         } else {
           rule.enabled = nextEnabled === true
+          rule.effectiveResponsePolicy = { mode: nextEnabled === true ? 'notify' : 'disabled' }
         }
         rulesSuccess.value = nextEnabled === true
           ? `已启用「${rule.name}」`
@@ -1571,6 +1631,7 @@ export default {
       loadThresholds, setThresholdDraft, saveThreshold, resetThreshold, describeThresholdSource,
       rules, rulesLoading, rulesError, rulesSuccess, ruleToggling,
       ruleTypes, ruleTypeOptions, selectedRuleType, severityOptions, ruleEditorOpen, ruleEditingId, ruleWriting, ruleDeleting, ruleDraft,
+      rulePolicyLabel, rulePolicyRequiresConfirmation, responseModeOptions, responseScopeOptions,
       loadRules, toggleRule, ruleUnit, ruleTypeName, openCreateRule, openEditRule, closeRuleEditor, setRuleType, saveRule, deleteRule,
       // 非数值配置（ASN 名单 / 评估间隔）
       configItems, configItemDraft, configItemsLoading, configItemsWriting,

@@ -84,10 +84,9 @@ export const RISK_SEVERITY_META = Object.freeze({
   low: { label: '低', color: 'blue', order: 1 },
 })
 
-// 风控命中「什么都没做」的唯一可能结论（96 C1）：
-// 页面上任何位置都不提供「封禁 / 拒绝 / 改状态」按钮，处置必须去黑名单或封禁各自的页面。
+// These conditions are enforced server-side, not inferred from severity.
 export const RISK_ADVISORY_NOTE =
-  '默认仅记录并按通知设置推送。两项核心保护可选择自动临时封单 IP；范围封禁或永久封禁须由管理员在告警中确认。白名单和黑名单总开关仍然有效。'
+  '新规则默认仅告警。可归因的核心规则可独立配置自动封禁；范围封禁或永久封禁保存前须由管理员确认。白名单优先，仍受黑名单总开关约束。'
 
 export function riskRuleLabel(ruleId, detail = '', rules = []) {
   const key = String(ruleId ?? '').trim()

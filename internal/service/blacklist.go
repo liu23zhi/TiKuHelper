@@ -32,9 +32,10 @@ const (
 // ip 的 prefix 只是**输入侧**的简化写法，归一化后一律变成 cidr ——
 // 判定永远走 net.IPNet，不做字符串前缀比较。
 const (
-	BlacklistMatchExact  = "exact"
-	BlacklistMatchCIDR   = "cidr"
-	BlacklistMatchPrefix = "prefix"
+	BlacklistMatchExact     = "exact"
+	BlacklistMatchCIDR      = "cidr"
+	BlacklistMatchPrefix    = "prefix"
+	blacklistMatchIPv4Range = "range"
 )
 
 // 命中动作（46-黑名单设计.md §2.2 / §3.4）。
@@ -159,6 +160,12 @@ func normalizeBlacklistIP(raw string, matchType string) (NormalizedBlacklistValu
 
 	var pattern string
 	switch matchType {
+	case blacklistMatchIPv4Range:
+		bounds, ok := parseBlacklistIPv4Range(value)
+		if !ok {
+			return NormalizedBlacklistValue{}, ErrInvalidBlacklistPattern
+		}
+		pattern = bounds.String()
 	case BlacklistMatchExact:
 		ip := net.ParseIP(value)
 		if ip == nil {
@@ -317,6 +324,14 @@ func BlacklistPatternHashBytes(pattern string) [32]byte {
 func MaskBlacklistValue(kind string, pattern string, matchType string) string {
 	switch kind {
 	case BlacklistKindIP:
+		if matchType == blacklistMatchIPv4Range {
+			bounds, ok := parseBlacklistIPv4Range(pattern)
+			if !ok {
+				return "***"
+			}
+			return MaskBlacklistValue(kind, bounds.Begin.String(), BlacklistMatchExact) +
+				"–" + MaskBlacklistValue(kind, bounds.End.String(), BlacklistMatchExact)
+		}
 		if matchType == BlacklistMatchCIDR || strings.Contains(pattern, "/") {
 			return pattern
 		}
