@@ -2,7 +2,7 @@
   <div class="console-page device-admin-page">
     <ConsolePageHeading
       title="设备管理"
-      description="按设备处置：解绑只释放槽位（用户下次请求会静默重绑），封禁则写入全局黑名单并**立即撤销该设备的全部绑定**（用户当场掉线，且无法自行解除）。"
+      description="移除只释放当前绑定名额，设备仍可能重新绑定。删除历史仅清理展示记录。全局拉黑会立即撤销这台设备在所有账号下的有效绑定，不能靠重新绑定恢复。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || loading || writing" @click="loadRows">刷新</a-button>
@@ -30,6 +30,8 @@
         <div>
           <div class="summary-label">筛选结果</div>
           <div class="summary-value">{{ hasLoaded ? total : '--' }} 条</div>
+          <div v-if="hasLoaded && stats" class="summary-status">使用中 {{ stats.active }} · 已移除 {{ stats.removed }} · 已拉黑 {{ stats.blocked }}</div>
+          <div v-if="loading" class="summary-status">正在读取设备列表…</div>
         </div>
         <div>
           <div class="summary-label">当前范围</div>
@@ -37,7 +39,7 @@
         </div>
       </ConsoleSummaryGrid>
 
-      <ConsolePanel title="筛选" description="搜索同时匹配设备 ID 与用户名。状态三档：使用中 / 已解绑 / 封禁中（封禁优先级最高）。">
+      <ConsolePanel title="筛选" description="搜索同时匹配设备 ID 与用户名。状态三档：使用中 / 已移除 / 已拉黑（拉黑优先级最高）。">
         <a-form layout="inline" class="filter-form" :on-finish="reload">
           <a-form-item label="关键词" :html-for="fieldId('keyword')">
             <a-input
@@ -66,7 +68,7 @@
             <a-space wrap>
               <a-button type="primary" html-type="submit" :loading="loading" :disabled="busy()">查询</a-button>
               <a-button :disabled="busy()" @click="resetFilters">重置筛选</a-button>
-              <a-button type="primary" ghost :disabled="busy()" @click="openBanModal('')">按设备 ID 封禁</a-button>
+              <a-button type="primary" ghost :disabled="busy()" @click="openBanModal()">按设备 ID 全局拉黑</a-button>
             </a-space>
           </a-form-item>
         </a-form>
@@ -93,8 +95,9 @@
               <span v-else-if="column.key === 'deviceLabel'">{{ record.deviceLabel || '—' }}</span>
               <span v-else-if="column.key === 'userId'" class="number-cell">{{ record.userId ?? '-' }}</span>
               <span v-else-if="column.key === 'username'">{{ record.username || '（账号不存在或已归档）' }}</span>
-              <span v-else-if="column.key === 'firstSeenAt'" class="time-cell">{{ formatDateTime(record.firstSeenAt) }}</span>
-              <span v-else-if="column.key === 'lastSeenAt'" class="time-cell">{{ formatDateTime(record.lastSeenAt) }}</span>
+              <span v-else-if="column.key === 'firstIp' || column.key === 'lastIp'" class="ip-cell">{{ ipText(record[column.key]) }}</span>
+              <span v-else-if="column.key === 'firstSeenAt'" class="time-cell">{{ formatDeviceUsageTime(record.firstSeenAt) }}</span>
+              <span v-else-if="column.key === 'lastSeenAt'" class="time-cell">{{ formatDeviceUsageTime(record.lastSeenAt) }}</span>
               <span v-else-if="column.key === 'revokedAt'" class="time-cell">
                 <template v-if="record.revokedAt">
                   {{ formatDateTime(record.revokedAt) }}
@@ -108,9 +111,10 @@
                 <template v-if="record.banned">{{ banExpiryText(record.banExpiresAt, formatDateTime) }}</template>
                 <template v-else>—</template>
               </span>
-              <a-tag v-else-if="column.key === 'status'" :color="deviceStatusColor(record.status)">
-                {{ deviceStatusText(record.status) }}
-              </a-tag>
+              <template v-else-if="column.key === 'status'">
+                <a-tag :color="deviceStatusColor(record.status)">{{ deviceStatusText(record.status) }}</a-tag>
+                <div v-if="record.banned || record.accountBlocked" class="revoke-reason">{{ record.banned ? '全局拉黑' : '仅此账号' }}</div>
+              </template>
               <template v-else-if="column.key === 'action'">
                 <a-space wrap>
                   <a-tooltip :title="canUnbindDevice(record, revocationSupported) ? '断开这一行绑定（不封设备）' : unbindBlockedHint(record, revocationSupported)">
@@ -118,24 +122,22 @@
                       type="link"
                       :disabled="busy() || !canUnbindDevice(record, revocationSupported)"
                       @click="confirmUnbind(record)"
-                    >解绑</a-button>
+                    >移除</a-button>
                   </a-tooltip>
                   <a-button
                     v-if="deviceBanAction(record) === 'ban'"
                     type="link"
                     danger
                     :disabled="busy()"
-                    @click="openBanModal(record.deviceId)"
-                  >封禁</a-button>
+                    @click="openBanModal(record)"
+                  >全局拉黑</a-button>
                   <a-button
                     v-else
                     type="link"
                     :disabled="busy()"
                     @click="confirmUnban(record)"
                   >解封</a-button>
-                  <a-tooltip :title="record.revokedAt ? '仅删除绑定历史，保留封禁与拉黑状态' : '请先解绑设备'">
-                    <a-button type="link" danger :disabled="busy() || !record.revokedAt" @click="confirmDelete(record)">删除记录</a-button>
-                  </a-tooltip>
+                  <a-button v-if="record.deletable" type="link" danger :disabled="busy()" @click="confirmDelete(record)">删除记录</a-button>
                 </a-space>
               </template>
             </template>
@@ -170,8 +172,8 @@
 
       <a-modal
         :open="banVisible"
-        title="封禁设备"
-        ok-text="确认封禁"
+        title="全局拉黑设备"
+        ok-text="确认拉黑"
         cancel-text="取消"
         :confirm-loading="writing"
         @ok="submitBan"
@@ -181,15 +183,16 @@
           type="warning"
           show-icon
           class="modal-alert"
-          message="封禁会同时做两件事：写入全局黑名单（用户无法自行解除）并立即撤销该设备的全部绑定。用户会当场掉线，且无法自助恢复。"
+          message="影响使用这台设备的所有账号：写入全局黑名单，并立即撤销该设备的全部有效绑定。用户不能自行解除或靠重新绑定恢复。"
         />
+        <p v-if="banTarget" class="field-hint">最近使用：{{ formatDeviceUsageTime(banTarget.lastSeenAt) }} · {{ ipText(banTarget.lastIp) }}</p>
         <a-form layout="vertical">
           <a-form-item label="设备 ID" required :html-for="fieldId('ban-device')">
             <a-input
               :id="fieldId('ban-device')"
               :value="draft.deviceId"
               placeholder="如 exe:a1b2c3d4"
-              :disabled="writing"
+              :disabled="writing || Boolean(banTarget)"
               @update:value="value => setDraft('deviceId', value)"
             />
           </a-form-item>
@@ -237,6 +240,9 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import { banAdminDevice, deleteAdminDevice, getAdminDevices, unbanAdminDevice, unbindAdminDevice } from '@/api/DeviceAdminApi'
+import { getIpLocations } from '@/api/TikuComponentApi'
+import { collectLocationKeys, formatValueWithLocation, lookupLocationAddresses, normalizeLocationKey } from '@/utils/locationHelpers.mjs'
+import { formatDeviceUsageTime } from '@/utils/myDevicesHelpers.mjs'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -273,6 +279,9 @@ export default {
     const writing = ref(false)
     const hasLoaded = ref(false)
     const total = ref(0)
+    const stats = ref(null)
+    const ipLocations = ref({})
+    const ipText = ip => formatValueWithLocation(ip, ipLocations.value[normalizeLocationKey(ip)]) || '未记录'
     const listError = ref('')
     const filterError = ref('')
     const actionWarning = ref('')
@@ -281,6 +290,7 @@ export default {
     const revocationSupported = ref(true)
     const filters = reactive(emptyFilters())
     const appliedFilters = ref({})
+    const loadedFilters = ref({})
     // scopedUserId 来自 ?userId=（A4-2：用户管理页「设备」按钮跳进来时带上）。
     //
     // 与 filters 分开存是刻意的：filters 是用户可改的表单，本值是「进入本页时的
@@ -296,6 +306,7 @@ export default {
 
     const banVisible = ref(false)
     const banError = ref('')
+    const banTarget = ref(null)
     const draft = reactive(emptyDraft())
 
     const pagination = reactive({
@@ -315,7 +326,7 @@ export default {
       const user = currentUser.value
       const id = Number(user?.id)
       return Number.isSafeInteger(id) && id > 0 && id <= 2147483647 && isAdminUser(user)
-        && !['disabled', '0'].includes(String(user?.status ?? 'enabled'))
+        && !['disabled', 'banned', '0'].includes(String(user?.status ?? 'enabled').toLowerCase())
     }
     const canManage = () => alive && route.path === mountedPath
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin()
@@ -331,8 +342,10 @@ export default {
       { title: '设备名', dataIndex: 'deviceLabel', key: 'deviceLabel', width: 150 },
       { title: '用户 ID', dataIndex: 'userId', key: 'userId', width: 90 },
       { title: '所属账号', dataIndex: 'username', key: 'username', width: 150 },
-      { title: '首次出现', dataIndex: 'firstSeenAt', key: 'firstSeenAt', width: 175 },
-      { title: '最近活跃', dataIndex: 'lastSeenAt', key: 'lastSeenAt', width: 175 },
+      { title: '首次使用 IP', key: 'firstIp', width: 180 },
+      { title: '最近使用 IP', key: 'lastIp', width: 180 },
+      { title: '首次使用时间', dataIndex: 'firstSeenAt', key: 'firstSeenAt', width: 175 },
+      { title: '最近使用时间', dataIndex: 'lastSeenAt', key: 'lastSeenAt', width: 175 },
       { title: '解绑时间', dataIndex: 'revokedAt', key: 'revokedAt', width: 220 },
       { title: '封禁到期', dataIndex: 'banExpiresAt', key: 'banExpiresAt', width: 165 },
       { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
@@ -347,7 +360,7 @@ export default {
     ]
 
     const scopeLabel = computed(() => {
-      const scope = appliedFilters.value
+      const scope = hasLoaded.value ? loadedFilters.value : appliedFilters.value
       const parts = [
         scope.keyword && `关键词：${scope.keyword}`,
         scope.status && `状态：${deviceStatusText(scope.status)}`,
@@ -360,9 +373,10 @@ export default {
       return parts.join('；') || '全部设备'
     })
 
-    const tableDescription = computed(() => '每行是「某账号的某台设备」的一次绑定。同一台设备可能出现在多个账号下（工作室的典型形态）—— 封禁按 device_id 生效，会一次影响全部账号。')
+    const tableDescription = '每行对应一个账号的一台设备。全局拉黑按设备标识生效，会同时影响多个账号；独立考试脚本租约不在此列表。使用时间为北京时间。'
 
     const emptyText = computed(() => {
+      if (loading.value) return '正在读取设备列表…'
       if (listError.value) return '列表加载失败，请重试'
       if (!hasLoaded.value) return '设备列表尚未读取成功'
       return '暂无符合条件的设备'
@@ -396,10 +410,11 @@ export default {
     const loadRows = async () => {
       if (!canManage()) return false
       const ticket = ++readVersion
+      const params = buildParams()
       const owns = () => canManage() && ticket === readVersion
       loading.value = true
       try {
-        const res = await getAdminDevices(buildParams())
+        const res = await getAdminDevices(params)
         if (!owns()) return false
         const body = res?.data
         const items = body?.data
@@ -419,6 +434,16 @@ export default {
         // 把所有解绑按钮禁掉。缺字段 = 按支持处理（后端会如实 503）。
         revocationSupported.value = body?.revocationSupported !== false
         total.value = count
+        const statusCounts = { active: readDeviceCount(body.active), removed: readDeviceCount(body.removed), blocked: readDeviceCount(body.blocked) }
+        stats.value = Object.values(statusCounts).every(value => value !== null) ? statusCounts : null
+        loadedFilters.value = { keyword: params.keyword, status: params.status }
+        ipLocations.value = {}
+        const ips = collectLocationKeys(rows.value, ['firstIp', 'lastIp'])
+        if (ips.length) {
+          void lookupLocationAddresses('ip', ips, getIpLocations).then(addresses => {
+            if (owns()) ipLocations.value = addresses
+          })
+        }
         pagination.total = count
         hasLoaded.value = true
         listError.value = ''
@@ -512,23 +537,26 @@ export default {
     }
 
     const confirmDelete = async record => {
-      if (!record?.revokedAt || !canManage() || busy()) return false
-      const result = await Swal.fire({ title: '删除这条设备记录？', text: '仅清除已解绑的历史记录；设备封禁和账号拉黑状态会保留。', icon: 'warning', showCancelButton: true, confirmButtonText: '删除记录', cancelButtonText: '取消' })
-      if (!result.isConfirmed || !canManage()) return false
-      await runWrite(() => deleteAdminDevice(record.id), '已删除设备记录')
+      if (!record?.deletable || !canManage() || busy()) return false
+      const context = writeVersion
+      const result = await Swal.fire({ title: '删除这条设备记录？', text: '仅清理已移除设备的历史展示，不会停用设备或删除安全审计。', icon: 'warning', showCancelButton: true, confirmButtonText: '删除记录', cancelButtonText: '取消' })
+      if (!result.isConfirmed || !canManage() || context !== writeVersion) return false
+      await runWrite(() => deleteAdminDevice(record.id), '已删除设备历史记录')
       return loadRows()
     }
 
-    const openBanModal = deviceId => {
+    const openBanModal = record => {
       if (!canManage() || busy()) return
       Object.assign(draft, emptyDraft())
-      draft.deviceId = String(deviceId || '')
+      banTarget.value = record || null
+      draft.deviceId = String(record?.deviceId || '')
       banError.value = ''
       banVisible.value = true
     }
     const closeBanModal = () => {
       if (writing.value) return
       banVisible.value = false
+      banTarget.value = null
       banError.value = ''
     }
 
@@ -561,8 +589,10 @@ export default {
           return revoked > 0 ? `已封禁该设备并撤销 ${revoked} 条绑定` : '已封禁该设备'
         })
       if (res && typeof res.status === 'number' && res.status >= 200 && res.status < 300) {
-        banVisible.value = false
+        closeBanModal()
         await loadRows()
+      } else if (banVisible.value) {
+        banError.value = actionWarning.value
       }
     }
 
@@ -586,58 +616,36 @@ export default {
     const retire = () => {
       readVersion += 1
       writeVersion += 1
+      rows.value = []
+      orphanBans.value = []
+      total.value = 0
+      stats.value = null
+      ipLocations.value = {}
       pagination.current = 1
+      pagination.total = 0
+      hasLoaded.value = false
+      loading.value = false
+      writing.value = false
+      listError.value = ''
+      actionWarning.value = ''
+      closeBanModal()
     }
 
     watch(() => [currentUserIdentity(currentUser.value), currentUser.value?.role, currentUser.value?.status], () => {
       retire()
-      rows.value = []
-      orphanBans.value = []
-      total.value = 0
-      pagination.total = 0
-      hasLoaded.value = false
-      actionWarning.value = ''
       if (mounted && canManage()) void loadRows()
     }, { flush: 'sync' })
     watch(() => getCurrentUserLogoutEpoch(), value => {
       if (value === observedLogout) return
       observedLogout = value
       retire()
-      rows.value = []
-      orphanBans.value = []
-      total.value = 0
-      pagination.total = 0
-      hasLoaded.value = false
     }, { flush: 'sync' })
-    watch(() => route.path, () => {
+    watch(() => route.path, retire, { flush: 'sync' })
+    watch(scopedUserId, () => {
+      if (!alive || !canManage()) return
       retire()
-      rows.value = []
-      orphanBans.value = []
-      total.value = 0
-      pagination.total = 0
-      hasLoaded.value = false
-      banVisible.value = false
+      void loadRows()
     }, { flush: 'sync' })
-
-// ?userId= 变化必须重新取数（A4-2）。
-//
-// 为什么要单独一条 watch：上面那条 `route.path` 的 watch 只在**路径**变化时
-// 清空数据，而「从用户 A 的设备跳到用户 B 的设备」是同一个 path 上的 query 变化，
-// 它不会触发。不加这条，用户会在 B 的面板里继续看到 A 的设备 —— 而且标题
-// 已经变成「仅显示账号 #B」，是最容易让人做出错误判断的那种不一致。
-//
-// 刻意不复用那条清空逻辑：这里要的是「清空后立刻重新取数」，而不是「清空等下次挂载」。
-watch(scopedUserId, () => {
-  if (!alive || !canManage()) return
-  readVersion += 1
-  rows.value = []
-  orphanBans.value = []
-  total.value = 0
-  pagination.total = 0
-  pagination.current = 1
-  hasLoaded.value = false
-  void loadRows()
-})
 
     onMounted(() => {
       mounted = true
@@ -653,10 +661,10 @@ watch(scopedUserId, () => {
 
     return {
       fieldId, canManage, busy, columns, orphanColumns, rows, orphanBans, filters,
-      loading, writing, hasLoaded, total, listError, filterError, actionWarning,
+      loading, writing, hasLoaded, total, stats, listError, filterError, actionWarning, ipText, formatDeviceUsageTime,
       revocationSupported, pagination, scopeLabel, tableDescription, emptyText, scopedUserId,
       statusOptions, formatDateTime, setFilter, reload, resetFilters, onTableChange,
-      confirmUnbind, confirmDelete, openBanModal, banVisible, banError, draft, setDraft, submitBan, closeBanModal,
+      confirmUnbind, confirmDelete, openBanModal, banVisible, banTarget, banError, draft, setDraft, submitBan, closeBanModal,
       confirmUnban, loadRows,
       // 纯展示 helper 直出给模板（页面不再重复一份格式化逻辑）。
       shortDeviceId, deviceStatusText, deviceStatusColor, revokeReasonText,
@@ -677,6 +685,8 @@ watch(scopedUserId, () => {
 .filter-error { margin: 0 0 16px; color: var(--console-danger, #c13e41); font-size: 13px; }
 .field-hint { margin: 6px 0 0; color: var(--console-muted); font-size: 12px; }
 .modal-alert { margin-bottom: 16px; }
+.summary-status { margin-top: 6px; color: var(--console-muted); }
+.ip-cell { white-space: pre-line; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .mono-cell, .time-cell, .number-cell { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .revoke-reason { color: var(--console-muted); font-size: 12px; }
 @media (max-width: 640px) {

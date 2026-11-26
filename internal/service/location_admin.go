@@ -584,7 +584,7 @@ func ResolveOwnLocationIPsWithDB(db *gorm.DB, operator entity.User, requested []
 				continue
 			}
 			var stored []string
-			if err := db.Model(&entity.AccountDeviceBinding{}).
+			if err := VisibleDeviceHistory(db, db.Model(&entity.AccountDeviceBinding{})).
 				Where("user_id = ? AND LOWER(TRIM("+column+")) IN ?", operator.ID, keys).
 				Distinct().Pluck(column, &stored).Error; err != nil {
 				return nil, err

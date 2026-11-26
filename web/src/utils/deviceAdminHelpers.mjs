@@ -19,8 +19,8 @@
 /** 状态固定顺序（页面按这个顺序给筛选下拉开项，避免顺序随数据抖动）。 */
 export const DEVICE_STATUS_ROWS = Object.freeze([
   { key: 'active', label: '使用中', color: 'green', hint: '绑定在用（revoked_at 为空）' },
-  { key: 'revoked', label: '已解绑', color: 'default', hint: '绑定已撤销（用户移除 / 管理员解绑 / 闲置清理）' },
-  { key: 'banned', label: '封禁中', color: 'red', hint: '设备在全局黑名单里，用户无法自行解除' },
+  { key: 'revoked', label: '已移除', color: 'default', hint: '绑定已撤销（用户移除 / 管理员解绑 / 闲置清理）' },
+  { key: 'banned', label: '已拉黑', color: 'red', hint: '账号级拉黑或全局拉黑' },
 ]);
 
 /** 撤销原因的中文文案（后端写的是稳定英文串，见 137 §3.2）。 */
@@ -30,6 +30,7 @@ const REVOKE_REASON_TEXT = Object.freeze({
   idle_10d: '闲置 10 天自动解绑',
   idle_timeout: '闲置超时自动解绑',
   device_banned: '设备被全局封禁',
+  user_blocked: '设备被所在账号拉黑',
 });
 
 /**

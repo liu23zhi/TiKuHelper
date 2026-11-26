@@ -2,7 +2,7 @@
   <div class="console-page my-devices-page">
     <ConsolePageHeading
       title="我的设备"
-      description="这里列出的都是调 API 的客户端设备（浏览器扩展 / 考试客户端），不包含网页后台登录。你可以移除设备释放名额，也可以删除已移除设备的历史记录；想彻底停用请用「拉黑」。"
+      description="这里只列出调用 API 的浏览器扩展和考试客户端设备，不包含网页后台登录或独立考试脚本租约。移除会释放名额，但之后可能重新绑定；删除历史只清理展示记录；拉黑则撤销当前绑定，不能靠重新绑定恢复。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="busy()" @click="reload">刷新</a-button>
@@ -99,15 +99,21 @@
     <!-- ───────────── 设备列表 ───────────── -->
     <ConsolePanel
       title="设备列表"
-      :description="'共 ' + listView.total + ' 台（使用中 ' + listView.active + ' 台，已拉黑 ' + listView.blocked + ' 台）。已移除与已拉黑的设备也列在这里，便于核对历史。'"
+      :description="listDescription"
     >
+      <div class="filter-row">
+        <label :for="statusFilterId">设备状态</label>
+        <a-select :id="statusFilterId" v-model:value="statusFilter" :options="statusOptions" :disabled="loading" />
+      </div>
+      <a-alert v-if="listError" type="error" show-icon :message="listError" class="page-alert" />
       <a-table
         :columns="columns"
-        :data-source="listView.devices"
+        :data-source="filteredDevices"
         :pagination="false"
         :loading="loading"
         row-key="rowKey"
         size="middle"
+        :locale="{ emptyText: listEmptyText }"
         :scroll="{ x: 1440 }"
       >
         <template #bodyCell="{ column, record }">
@@ -117,7 +123,7 @@
           </template>
           <template v-else-if="column.key === 'firstIp' || column.key === 'lastIp'">
             <div class="device-ip" :class="{ 'device-ip-empty': !record[column.key] }">
-              {{ formatValueWithLocation(record[column.key], ipLocations[normalizeLocationKey(record[column.key])]) || '未记录' }}
+              {{ ipText(record[column.key]) }}
             </div>
           </template>
           <template v-else-if="column.key === 'firstSeenAt' || column.key === 'lastSeenAt'">
@@ -127,9 +133,9 @@
             <a-tag :color="record.tone === 'success' ? 'green' : (record.tone === 'danger' ? 'red' : 'default')">
               {{ record.statusText }}
             </a-tag>
-            <div v-if="record.revokedReason === 'user_removed'" class="status-note">你自己移除的</div>
+            <div v-if="record.globallyBlocked" class="status-note">全局拉黑，不能自行解除</div>
+            <div v-else-if="record.revokedReason === 'user_removed'" class="status-note">你自己移除的</div>
             <div v-else-if="record.revokedReason === 'idle_10d' || record.revokedReason === 'idle_timeout'" class="status-note">闲置超时自动移除</div>
-            <div v-else-if="record.revokedReason === 'device_banned'" class="status-note">该设备已被封禁</div>
             <div v-else-if="record.revokedReason === 'admin_unbound'" class="status-note">管理员解绑</div>
           </template>
           <template v-else-if="column.key === 'actions'">
@@ -161,7 +167,7 @@
 
               <a-popconfirm
                 v-if="record.deletable"
-                title="删除后将无法再查看这条历史记录，确定删除？"
+                title="删除只清理这条历史展示记录，不会停用设备或删除安全审计。确定删除？"
                 ok-text="删除"
                 cancel-text="取消"
                 :disabled="busy()"
@@ -170,16 +176,7 @@
                 <a-button size="small" danger :disabled="busy()">删除记录</a-button>
               </a-popconfirm>
 
-              <a-popconfirm
-                v-if="record.status === 'active'"
-                title="拉黑后这台设备将无法使用本账号（你可以随时解除）。确定拉黑？"
-                ok-text="拉黑"
-                cancel-text="取消"
-                :disabled="busy()"
-                @confirm="blockDevice(record)"
-              >
-                <a-button size="small" danger :disabled="busy()">拉黑</a-button>
-              </a-popconfirm>
+              <a-button v-if="record.blockable" size="small" danger :disabled="busy()" @click="openBlockConfirm(record)">拉黑</a-button>
 
               <a-button
                 v-if="record.blocked && record.blockId > 0"
@@ -198,6 +195,20 @@
           </template>
         </template>
       </a-table>
+      <a-modal
+        :open="Boolean(blockTarget)"
+        title="拉黑设备"
+        ok-text="确认拉黑"
+        cancel-text="取消"
+        :confirm-loading="Boolean(actionBusy)"
+        @ok="confirmBlockDevice"
+        @cancel="closeBlockConfirm"
+      >
+        <p class="device-id">设备 ID：{{ blockTarget?.deviceId }}</p>
+        <p>最近使用：{{ formatDeviceUsageTime(blockTarget?.lastSeenAt) }} · {{ ipText(blockTarget?.lastIp) }}</p>
+        <p>拉黑仅影响当前账号，立即撤销有效绑定，无法靠重新绑定恢复。</p>
+        <a-alert v-if="failure" type="error" show-icon :message="failure" />
+      </a-modal>
       <p class="hint">使用时间均为北京时间。历史未采集的首次 IP 显示为「未记录」。</p>
 
       <!--
@@ -240,10 +251,6 @@
         <p v-if="renameError" class="rename-error" role="alert">{{ renameError }}</p>
       </a-modal>
 
-      <a-empty
-        v-if="listView.loaded && listView.devices.length === 0"
-        description="还没有任何设备记录。用带设备标识的客户端（浏览器扩展 / 考试客户端）登录一次，这里就会出现。"
-      />
       <p v-if="!listView.schemaReady" class="hint">
         设备表尚未就绪（数据表待迁移），当前列表为空表示「没有数据」而不是「没有设备」。
       </p>
@@ -307,6 +314,7 @@ export default {
   setup() {
     const route = useRoute()
     const limitInputId = 'my-devices-limit-' + useId()
+    const statusFilterId = 'my-devices-state-' + useId()
     const limitRuleId = 'my-devices-limit-rule-' + useId()
     const mountedPath = route.path
     const { currentUser } = useCurrentUserDisplay()
@@ -319,6 +327,29 @@ export default {
     const ipLocations = ref({})
 
     const listView = ref(emptyDeviceListState())
+    const blockTarget = ref(null)
+    const listError = ref('')
+    const statusFilter = ref('')
+    const statusOptions = [
+      { value: '', label: '全部状态' }, { value: 'active', label: '使用中' },
+      { value: 'removed', label: '已移除' }, { value: 'blocked', label: '已拉黑' },
+    ]
+    const filteredDevices = computed(() => listView.value.devices.filter(row => !statusFilter.value || row.status === statusFilter.value))
+    const listDescription = computed(() => {
+      if (loading.value) return '正在读取设备列表…'
+      if (listError.value) return listView.value.loaded ? '刷新失败，暂显示上次读取的结果。' : '设备列表读取失败。'
+      if (!listView.value.loaded || !listView.value.schemaReady) return '设备列表暂不可用。'
+      const rows = filteredDevices.value
+      const count = status => rows.filter(row => row.status === status).length
+      return `共 ${rows.length} 台（使用中 ${count('active')} 台，已移除 ${count('removed')} 台，已拉黑 ${count('blocked')} 台）。`
+    })
+    const listEmptyText = computed(() => {
+      if (loading.value) return '正在读取设备列表…'
+      if (listError.value) return '设备列表读取失败，请刷新重试。'
+      if (!listView.value.loaded || !listView.value.schemaReady) return '设备列表暂不可用。'
+      return statusFilter.value ? '暂无符合条件的设备。' : '还没有任何设备记录。'
+    })
+    const ipText = ip => formatValueWithLocation(ip, ipLocations.value[normalizeLocationKey(ip)]) || '未记录'
     const limitView = ref(emptyDeviceLimitState())
     const limitDraft = ref(null)
     const limitError = ref('')
@@ -428,7 +459,7 @@ export default {
     }
 
     function hasAnyAction(record) {
-      return Boolean(record.renamable) || record.removable || record.status === 'active'
+      return Boolean(record.renamable) || record.removable || record.blockable
         || record.deletable || (record.blocked && record.blockId > 0)
     }
 
@@ -500,16 +531,23 @@ export default {
 
     async function loadList() {
       const owner = currentUserIdentity(currentUser.value)
-      const res = await listMyDevices()
-      if (!canLoad() || owner !== currentUserIdentity(currentUser.value)) return
-      if (res?.status !== 200 || !res.data) {
-        failure.value = '设备列表读取失败' + (res?.message ? '：' + res.message : '')
-        return
+      const owns = () => canLoad() && owner === currentUserIdentity(currentUser.value)
+      try {
+        const res = await listMyDevices()
+        if (!owns()) return
+        if (res?.status !== 200 || !res.data) {
+          listError.value = '设备列表读取失败' + (res?.message ? '：' + res.message : '')
+          return
+        }
+        const view = decorate(normalizeDeviceList(res.data))
+        listView.value = view
+        listError.value = ''
+        ipLocations.value = {}
+        const loadedView = listView.value
+        enrichDeviceIps(view.devices, () => owns() && listView.value === loadedView)
+      } catch {
+        if (owns()) listError.value = '设备列表读取失败，请刷新重试。'
       }
-      const view = decorate(normalizeDeviceList(res.data))
-      listView.value = view
-      const loadedView = listView.value
-      enrichDeviceIps(view.devices, () => canLoad() && owner === currentUserIdentity(currentUser.value) && listView.value === loadedView)
     }
 
     async function loadLimit() {
@@ -601,8 +639,22 @@ export default {
       finally { if (pageActive()) expirySaving.value = false }
     }
 
+    function openBlockConfirm(record) {
+      if (!record?.blockable || !canLoad() || busy()) return
+      clearNotice()
+      blockTarget.value = record
+    }
+
+    function closeBlockConfirm() {
+      if (!actionBusy.value) blockTarget.value = null
+    }
+
+    function confirmBlockDevice() {
+      if (blockTarget.value) return blockDevice(blockTarget.value)
+    }
+
     async function blockDevice(record) {
-      if (!canLoad() || busy()) return
+      if (!record?.blockable || !canLoad() || busy()) return
       clearNotice()
       actionBusy.value = record.rowKey
       try {
@@ -612,8 +664,9 @@ export default {
           failure.value = '拉黑设备失败' + (res?.message ? '：' + res.message : '')
           return
         }
-        notice.value = '已拉黑该设备，它现在无法使用本账号。'
+        blockTarget.value = null
         await reload()
+        if (pageActive()) notice.value = '已拉黑该设备并释放其占用的名额。'
       } catch (error) {
         if (pageActive()) failure.value = '拉黑设备失败：' + (error?.message || error)
       } finally {
@@ -678,6 +731,9 @@ export default {
 
     function retire() {
       listView.value = emptyDeviceListState()
+      listError.value = ''
+      blockTarget.value = null
+      statusFilter.value = ''
       ipLocations.value = {}
       limitView.value = emptyDeviceLimitState()
       limitDraft.value = null
@@ -710,14 +766,14 @@ export default {
 
     return {
       loading, actionBusy, savingLimit, failure, notice, ipLocations,
-      listView, limitView, limitDraft, limitError, limitEditable, expiryDays, expiryLoaded, expiryMaxDays, expiryAllowDisable, expirySaving,
+      listView, listError, listDescription, listEmptyText, filteredDevices, statusFilter, statusFilterId, statusOptions, ipText, limitView, limitDraft, limitError, limitEditable, expiryDays, expiryLoaded, expiryMaxDays, expiryAllowDisable, expirySaving,
       limitText, limitHint, limitPanelDescription, limitCeilingText, limitCeilingHint,
       limitRuleText,
       limitInputId, limitRuleId, columns, busy,
       reload, removeDevice, deleteRemovedDevice, blockDevice, unblockDevice, saveDeviceLimit, saveExpiry,
-      hasAnyAction, formatDeviceUsageTime, maskDeviceId,
+      hasAnyAction, formatDeviceUsageTime, maskDeviceId, blockTarget, openBlockConfirm, closeBlockConfirm, confirmBlockDevice,
       // 来源 IP 与重命名
-      formatValueWithLocation, normalizeLocationKey, DEVICE_LABEL_MAX_RUNES,
+      DEVICE_LABEL_MAX_RUNES,
       renameOpen, renameSaving, renameDraft, renameError,
       renameTargetLabel, renameTargetId,
       openRename, closeRename, submitRename,
@@ -727,6 +783,8 @@ export default {
 </script>
 
 <style scoped>
+.filter-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.filter-row .ant-select { min-width: 135px; }
 .page-alert { margin-bottom: 16px; }
 .limit-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, .8fr); align-items: start; gap: 20px; }
 .limit-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }

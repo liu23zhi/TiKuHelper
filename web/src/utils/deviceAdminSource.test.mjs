@@ -88,9 +88,9 @@ test('DeviceAdminApi 删除已解绑记录按绑定行ID发DELETE，不调用解
   for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, 'device:uuid']) assert.throws(() => remove(value), /删除参数错误/)
   assert.equal(calls.length, 1, '非法记录ID不能发请求')
   const page = pageSource()
-  assert.match(page, /:disabled="[^"]*!record\.revokedAt/)
+  assert.match(page, /v-if="record\.deletable"/)
   assert.match(page, /deleteAdminDevice\(/)
-  assert.match(page, /设备封禁和账号拉黑状态会保留/)
+  assert.match(page, /不会停用设备或删除安全审计/)
 })
 
 test('DeviceAdmin 页面不直接 import request，只用 DeviceAdminApi', () => {
