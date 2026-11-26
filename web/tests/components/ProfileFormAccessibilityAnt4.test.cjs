@@ -36,7 +36,7 @@ api.exports = {
   getCurrentUser: () => {
     if (!holdMe) return read('getCurrentUser', me)
     reads.push('getCurrentUser')
-    return new Promise(resolve => pendingMe.push(value => resolve(ok(value))))
+    return new Promise(resolve => pendingMe.push((value, status = 200) => resolve({ ...ok(value), status })))
   },
   getPublicRegisterStatus: () => read('getPublicRegisterStatus', settings),
   getMyLocations: () => read('getMyLocations', {}),
@@ -295,4 +295,108 @@ test('Profile original readable static text, own-text buttons and legitimate nat
   for (const row of staticRows) { assert.ok(compact(row.textContent)); assert.equal(row.querySelectorAll(controlSelector).length, 0, 'readable static profile text is not an unlabeled input') }
   for (const node of [...root.querySelectorAll('button')].filter(visible)) assert.ok(compact(node.textContent) || compact(node.getAttribute('aria-label')), 'own visible action text names buttons; no unrelated FormItem label is required')
   assert.equal(reads.filter(name => name === 'getCurrentUser').length, 1); noDuplicateIds()
+})
+
+function balanceControls(root) {
+  const trigger = [...root.querySelectorAll('button[aria-controls]')]
+    .find(element => compact(document.getElementById(element.getAttribute('aria-labelledby'))?.textContent) === '账户余额合计')
+  assert.ok(trigger, 'actual balance button has a named controlled disclosure')
+  const details = document.getElementById(trigger.getAttribute('aria-controls'))
+  assert.ok(root.contains(details))
+  return {
+    trigger, details, total: () => compact(trigger.querySelector('.summary-value').textContent),
+    values: () => [...details.querySelectorAll('dd')].map(element => compact(element.textContent)),
+  }
+}
+function balancePointer(element, type, pointerType) {
+  const event = new Event(type)
+  Object.defineProperty(event, 'pointerType', { value: pointerType })
+  element.dispatchEvent(event)
+}
+test('Profile balance is closed by default; named, independent controls handle hover, keyboard dismissal and repeated tap', async () => {
+  me = { ...ORDINARY, balance: 96, giftBalance: 0 }
+  const { host, first } = await open({ many: true })
+  const second = await addSecond(host)
+  const a = balanceControls(first.element), b = balanceControls(second.element)
+  assert.notEqual(a.details.id, b.details.id)
+  assert.equal(a.total(), '¥ 96')
+  assert.equal(a.trigger.getAttribute('aria-expanded'), 'false')
+  assert.equal(visible(a.details), false)
+  const card = a.trigger.closest('.ant-card')
+  balancePointer(card, 'pointerenter', 'touch'); await settle()
+  assert.equal(visible(a.details), false)
+  balancePointer(card, 'pointerenter', 'mouse'); await settle()
+  assert.equal(a.trigger.getAttribute('aria-expanded'), 'true')
+  assert.equal(visible(a.details), true)
+  assert.equal(visible(b.details), false)
+  assert.deepEqual(a.values(), ['¥ 96', '¥ 0'])
+  assert.equal(compact(a.details.textContent), '充值本金（可退款）¥ 96赠送余额（不可退款）¥ 0')
+  balancePointer(card, 'pointerleave', 'mouse'); await settle()
+  assert.equal(visible(a.details), false)
+  const refresh = button(first.element, '刷新')
+  const dialog = document.createElement('div')
+  dialog.setAttribute('role', 'dialog')
+  const dialogControl = dialog.appendChild(document.createElement('button'))
+  first.element.appendChild(dialog)
+  refresh.focus()
+  balancePointer(card, 'pointerenter', 'mouse'); await settle()
+  const escape = () => new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+  dialogControl.dispatchEvent(escape()); await settle()
+  assert.equal(visible(a.details), true, 'a Profile dialog owns its Escape')
+  dialog.remove()
+  const escapeAtRefresh = escape()
+  refresh.dispatchEvent(escapeAtRefresh); await settle()
+  assert.equal(visible(a.details), false)
+  assert.equal(document.activeElement, refresh)
+  assert.equal(escapeAtRefresh.defaultPrevented, false)
+  // jsdom does not reproduce Chromium's input-modality :focus-visible heuristic.
+  // The real Tab/focus path is covered separately by the Chromium acceptance.
+  const nativeMatches = a.trigger.matches.bind(a.trigger)
+  a.trigger.matches = selector => selector === ':focus-visible' || nativeMatches(selector)
+  a.trigger.focus(); await settle()
+  delete a.trigger.matches
+  assert.equal(document.activeElement, a.trigger)
+  assert.equal(visible(a.details), true)
+  a.trigger.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await settle()
+  assert.equal(visible(a.details), false)
+  assert.equal(document.activeElement, a.trigger)
+  a.trigger.click(); await settle()
+  assert.equal(visible(a.details), true)
+  a.trigger.click(); await settle()
+  assert.equal(visible(a.details), false)
+  assert.equal(reads.filter(name => name === 'getCurrentUser').length, 2, 'disclosure performs no read or mutation')
+  noDuplicateIds()
+})
+
+test('Profile balance distinguishes loading, request failure, missing buckets, invalid input and exact refresh without changing wire data', async () => {
+  holdMe = true
+  const { first } = await open({ waitReady: false })
+  const balance = balanceControls(first.element)
+  assert.equal(balance.total(), '余额加载中…')
+  balance.trigger.focus(); await settle()
+  assert.deepEqual(balance.values(), ['余额加载中…', '余额加载中…'])
+  pendingMe.shift()({ message: 'SYNTHETIC_PRIVATE_RAW' }, 422); await settle()
+  assert.equal(balance.total(), '余额加载失败')
+  assert.deepEqual(balance.values(), ['余额加载失败', '余额加载失败'])
+  assert.equal(first.element.textContent.includes('SYNTHETIC_PRIVATE_RAW'), false)
+  const refresh = button(first.element, '刷新')
+  const read = async (snapshot) => {
+    refresh.click(); await settle()
+    assert.equal(balance.total(), '余额加载中…')
+    pendingMe.shift()(snapshot); await settle()
+  }
+  await read({ ...ORDINARY, balance: '999999999999.000001', giftBalance: '0.000001' })
+  assert.equal(balance.total(), '¥ 999999999999.000002')
+  assert.deepEqual(balance.values(), ['¥ 999999999999.000001', '¥ 0.000001'])
+  assert.equal(first.vm.currentUser.balance, '999999999999.000001')
+  assert.equal(first.vm.currentUser.giftBalance, '0.000001')
+  await read({ ...ORDINARY, balance: -0.000001 })
+  assert.equal(balance.total(), '余额数据缺失')
+  assert.deepEqual(balance.values(), ['¥ -0.000001', '余额数据缺失'])
+  await read({ ...ORDINARY, balance: 'invalid', giftBalance: 0 })
+  assert.equal(balance.total(), '余额数据异常')
+  assert.deepEqual(balance.values(), ['余额数据异常', '¥ 0'])
+  await read({ ...ORDINARY, balance: -0.000001, giftBalance: 0.000001 })
+  assert.equal(balance.total(), '¥ 0')
+  assert.deepEqual(balance.values(), ['¥ -0.000001', '¥ 0.000001'])
 })

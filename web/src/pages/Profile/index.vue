@@ -25,20 +25,25 @@
           <div class="summary-label">账号角色</div>
           <div data-profile-private class="summary-value">{{ roleText(currentUser.role) }}</div>
         </a-card>
-        <a-card :bordered="false" class="summary-card">
-          <div class="summary-label">账户余额合计</div>
-          <div data-profile-private class="summary-value">¥ {{ formatAccountTotal(currentUser) }}</div>
-          <div class="summary-hint">充值本金与赠送余额合计</div>
-        </a-card>
-        <a-card :bordered="false" class="summary-card">
-          <div class="summary-label">充值本金（可退款）</div>
-          <div data-profile-private class="summary-value">¥ {{ formatBalance(currentUser.balance) }}</div>
-          <div class="summary-hint">来自充值的本金，按退款规则计算可退金额。</div>
-        </a-card>
-        <a-card :bordered="false" class="summary-card">
-          <div class="summary-label">赠送余额（不可退款）</div>
-          <div data-profile-private class="summary-value">¥ {{ formatBalance(currentUser.giftBalance) }}</div>
-          <div class="summary-hint">赠送金额可用于消费，但不能申请退款。</div>
+        <a-card :bordered="false" class="summary-card balance-card"
+          @pointerenter="onBalancePointerEnter" @pointerleave="onBalancePointerLeave"
+        >
+          <button type="button" class="balance-trigger" :aria-expanded="balanceDetailsOpen"
+            :aria-controls="fieldId('balance-details')" :aria-labelledby="fieldId('balance-label')"
+            :aria-describedby="fieldId('balance-value') + ' ' + fieldId('balance-hint')"
+            @focus="onBalanceFocus" @blur="closeBalanceDetails" @click="toggleBalanceDetails"
+          >
+            <span :id="fieldId('balance-label')" class="summary-label">账户余额合计</span>
+            <span :id="fieldId('balance-value')" data-profile-private class="summary-value" aria-live="polite">{{ balanceDisplay.total }}</span>
+            <span :id="fieldId('balance-hint')" class="summary-hint">充值本金与赠送余额合计</span>
+            <span class="balance-chevron" aria-hidden="true">{{ balanceDetailsOpen ? '▴' : '▾' }}</span>
+          </button>
+          <dl v-show="balanceDetailsOpen" :id="fieldId('balance-details')" ref="balanceDetails" class="balance-details">
+            <dt>充值本金（可退款）</dt>
+            <dd data-profile-private>{{ balanceDisplay.principal }}</dd>
+            <dt>赠送余额（不可退款）</dt>
+            <dd data-profile-private>{{ balanceDisplay.gift }}</dd>
+          </dl>
         </a-card>
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">上次登录</div>
@@ -323,7 +328,7 @@ import ClosureGuide from '@/pages/Tickets/ClosureGuide.vue'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
 import { buildDeviceLimitHint, buildDeviceLimitText } from '@/utils/userLevelHelpers.mjs'
 import { getMyUserLevel } from '@/api/UserLevelApi'
-import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
+import { buildProfileBalanceDisplay } from '@/utils/profileBalance.mjs'
 import { captureCurrentUserLease, getCurrentUserLogoutEpoch, getStoredCurrentUser, setStoredCurrentUser, useCurrentUserDisplay } from '@/utils/currentUser.js'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { useSmsCooldown } from '@/utils/smsCooldown.js'
@@ -392,6 +397,48 @@ export default defineComponent({
     const currentUser = computed(() => profileUser.value || {})
     const profileReady = ref(false), profileError = ref('')
     const loading = ref(false), updatingPhone = ref(false), updatingProfile = ref(false)
+    const balanceDetailsOpen = ref(false), balanceDetails = ref(null)
+    const balanceDisplay = computed(() => buildProfileBalanceDisplay(currentUser.value,
+      loading.value ? 'loading' : profileError.value ? 'failed' : profileReady.value ? 'ready' : 'loading'))
+    let balanceEscapeDocument = null
+    const onBalanceEscape = event => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      const root = profileRoot.value
+      const target = event.target
+      if (!root || (target !== root.ownerDocument.body && !root.contains(target))) return
+      // A dialog may render inside Profile. Let it handle its own dismissal.
+      if (target?.closest?.('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]')) return
+      closeBalanceDetails()
+    }
+    const closeBalanceDetails = () => {
+      balanceDetailsOpen.value = false
+      balanceEscapeDocument?.removeEventListener('keydown', onBalanceEscape)
+      balanceEscapeDocument = null
+    }
+    const openBalanceDetails = () => {
+      if (balanceDetailsOpen.value) return
+      balanceDetailsOpen.value = true
+      // Hover can open the details without bringing focus to the trigger.
+      balanceEscapeDocument = profileRoot.value?.ownerDocument
+      balanceEscapeDocument?.addEventListener('keydown', onBalanceEscape)
+      nextTick(() => {
+        if (!balanceDetailsOpen.value || !balanceDetails.value) return
+        // Keep the in-flow panel inside the visible screen, including mobile
+        // browsers where the layout and visual viewports can differ.
+        const viewport = window.visualViewport
+        const top = viewport?.offsetTop ?? 0
+        const bottom = top + (viewport?.height ?? window.innerHeight)
+        const rect = balanceDetails.value.getBoundingClientRect()
+        if (rect.bottom > bottom) window.scrollBy({ top: Math.ceil(rect.bottom - bottom), behavior: 'instant' })
+      })
+    }
+    const onBalancePointerEnter = event => { if (event.pointerType === 'mouse') openBalanceDetails() }
+    const onBalancePointerLeave = event => { if (event.pointerType === 'mouse') closeBalanceDetails() }
+    const onBalanceFocus = event => { if (event.currentTarget.matches(':focus-visible')) openBalanceDetails() }
+    const toggleBalanceDetails = () => {
+      if (balanceDetailsOpen.value) closeBalanceDetails()
+      else openBalanceDetails()
+    }
     const sendingPhoneCode = ref(false), unbindingWechat = ref(false), wechatQrLoading = ref(false)
     const wechatQrCodeImageData = ref(''), wechatLoginToken = ref('')
     const wechatStatusText = ref('请使用微信扫码完成绑定')
@@ -527,6 +574,7 @@ export default defineComponent({
         })
         scrubInputs('input:not([type="radio"]):not([type="checkbox"]), textarea')
         profileRoot.value?.querySelectorAll('[data-profile-private]').forEach(node => { node.textContent = '' })
+        closeBalanceDetails()
         profileUser.value = null; profileReady.value = false; profileDraftDirty = false
         profileError.value = '账号上下文已变化，请刷新个人信息后继续操作'
         clearLocationMap(ipLocations); clearLocationMap(phoneLocations)
@@ -680,7 +728,7 @@ export default defineComponent({
           throw error
         }
         if (!isCurrent(owner) || owner.data !== dataGeneration) return
-        if (res?.status !== 200 || !res.data || typeof res.data !== 'object' || !Object.keys(res.data).length) {
+        if (res?.status !== 200 || !res.data || typeof res.data !== 'object' || Array.isArray(res.data) || !Object.keys(res.data).length) {
           profileError.value = '获取个人状态失败，已确认的资料与未保存内容保持不变，请刷新重试'
           showCurrentUserFailure(res, ownsFailure)
           reportError(owner, res, '获取个人状态失败，请稍后刷新重试')
@@ -960,12 +1008,6 @@ export default defineComponent({
     // 未读到等级摘要时 buildDeviceLimitText(null) 返回 '—'，与「不限」严格区分。
     const deviceLimitText = computed(() => buildDeviceLimitText(userLevelSummary.value?.deviceLimit))
     const deviceLimitHint = computed(() => buildDeviceLimitHint(userLevelSummary.value?.deviceLimit))
-    const formatBalance = value => formatMoneyValue(value || 0)
-    const formatAccountTotal = user => {
-      const principal = Number(user?.balance || 0)
-      const gift = Number(user?.giftBalance || 0)
-      return formatBalance((Number.isFinite(principal) ? principal : 0) + (Number.isFinite(gift) ? gift : 0))
-    }
     const roleText = value => String(value || '').toLowerCase() === 'admin' ? '管理员' : '普通用户'
     const statusText = value => String(value || '').toLowerCase() === 'disabled' ? '已禁用' : '正常'
     const normalizeWechatCodeInput = value => String(value || '').replace(/\D/g, '').slice(0, 12)
@@ -1056,7 +1098,9 @@ export default defineComponent({
       smsCooldownText: smsCooldown.buttonText, smsCooldownActive: smsCooldown.active,
       sendPhoneChangeCode, submitPhoneChange, submitProfile, startWechatBind, handleWechatBindSubModeChange,
       submitWechatCodeBind, unbindWechat, loadProfile, normalizeSMSCodeInput, normalizeWechatCodeInput,
-      registerSourceText: buildRegisterSourceLabel, formatDateTime, formatBalance, formatAccountTotal,
+      registerSourceText: buildRegisterSourceLabel, formatDateTime,
+      balanceDisplay, balanceDetails, balanceDetailsOpen, onBalancePointerEnter, onBalancePointerLeave,
+      onBalanceFocus, closeBalanceDetails, toggleBalanceDetails,
       deviceLimitText, deviceLimitHint,
       ipLocations, phoneLocations, normalizeLocationKey, formatValueWithLocation, roleText, statusText,
     }
@@ -1105,6 +1149,50 @@ export default defineComponent({
   color: var(--console-text, #172b27);
   font-size: 21px;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.balance-card :deep(.ant-card-body) { justify-content: flex-start; }
+.balance-trigger {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  margin: 0;
+  padding: 0 16px 0 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.balance-trigger:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.balance-trigger .summary-value { max-width: 100%; }
+.balance-chevron {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block-start: 0;
+  color: var(--console-muted, #62766e);
+}
+.balance-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  margin: 12px 0 0;
+  padding: 10px;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.balance-details dd {
+  max-width: 100%;
+  margin: 0;
+  text-align: end;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
