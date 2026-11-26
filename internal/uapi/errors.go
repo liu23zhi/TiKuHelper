@@ -42,7 +42,7 @@ var (
 	ErrNetwork = errors.New("uapi: 网络请求失败")
 )
 
-// APIError uapis.cn 返回的错误响应，可用 errors.As 取出。
+// APIError 表示上游响应或内容校验错误，可用 errors.As 取出。
 type APIError struct {
 	HTTPStatus int           // HTTP 状态码
 	Code       string        // 错误码：优先字符串形式 code，其次 error，最后数字形式 code
@@ -52,6 +52,9 @@ type APIError struct {
 
 	// kind 对应的导出哨兵错误，供 errors.Is 判别
 	kind error
+
+	// 本地内容校验失败只在类型字段保留请求关联，避免普通错误字符串扩散上游头部。
+	omitRequestIDFromText bool
 }
 
 // Error 实现 error 接口
@@ -70,7 +73,7 @@ func (e *APIError) Error() string {
 		b.WriteString(": ")
 		b.WriteString(e.Message)
 	}
-	if e.RequestID != "" {
+	if e.RequestID != "" && !e.omitRequestIDFromText {
 		b.WriteString(" (request_id=")
 		b.WriteString(e.RequestID)
 		b.WriteString(")")

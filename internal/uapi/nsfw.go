@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"strings"
@@ -92,16 +93,26 @@ func (c *Client) ImageNSFW(ctx context.Context, request ImageNSFWRequest) (Image
 		return ImageNSFWResponse{}, err
 	}
 
+	invalidContent := func(code, message string, cause error) error {
+		return &APIError{
+			HTTPStatus:            response.StatusCode(),
+			Code:                  code,
+			Message:               message,
+			RequestID:             response.Header().Get("X-Request-ID"),
+			kind:                  errors.Join(ErrUpstream, cause),
+			omitRequestIDFromText: true,
+		}
+	}
 	raw := append([]byte(nil), response.Body()...)
 	var result ImageNSFWResponse
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return ImageNSFWResponse{}, fmt.Errorf("%w: 解析敏感图片检测响应失败: %w", ErrUpstream, err)
+		return ImageNSFWResponse{}, invalidContent("NSFW_RESPONSE_JSON_INVALID", "解析敏感图片检测响应失败", err)
 	}
 	result.RawJSON = string(raw)
 	// 200 但没有判定字段 = 上游没给出结论。这里返回错误，让调用方走 fail-closed，
 	// 绝不能因为「HTTP 200」就把图片当成正常图片放行。
 	if result.IsNSFW == nil && strings.TrimSpace(result.Suggestion) == "" && strings.TrimSpace(result.RiskLevel) == "" {
-		return ImageNSFWResponse{}, fmt.Errorf("%w: 检测响应缺少判定字段", ErrUpstream)
+		return ImageNSFWResponse{}, invalidContent("NSFW_RESPONSE_VERDICT_MISSING", "检测响应缺少判定字段", nil)
 	}
 	return result, nil
 }
