@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -111,11 +113,20 @@ func (c *Client) getWebToMarkdownStatus(ctx context.Context, taskID string) (Web
 	return task, nil
 }
 
+func (task WebToMarkdownTask) hasMarkdown() bool {
+	return task.Result != nil && strings.TrimSpace(task.Result.Markdown) != ""
+}
+
 // ReadWebPage submits and polls one URL. It returns a completed task only;
-// Failed, timed out and cancelled tasks return ErrUpstream with their message.
-func (c *Client) ReadWebPage(ctx context.Context, rawURL string) (WebToMarkdownTask, error) {
+// failed, timed out and cancelled tasks return ErrUpstream with their message.
+func (c *Client) ReadWebPage(ctx context.Context, rawURL string) (result WebToMarkdownTask, resultErr error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if id, err := uuid.NewRandom(); err == nil {
+		started := time.Now()
+		ctx = context.WithValue(ctx, webWorkflowAuditContextKey{}, id.String())
+		defer func() { finishWebWorkflow(id.String(), started, result, resultErr) }()
 	}
 	ctx, cancel := context.WithTimeout(ctx, webToMarkdownTotalTimeout)
 	defer cancel()
@@ -126,7 +137,7 @@ func (c *Client) ReadWebPage(ctx context.Context, rawURL string) (WebToMarkdownT
 	for {
 		switch task.Status {
 		case "completed":
-			if task.Result == nil || strings.TrimSpace(task.Result.Markdown) == "" {
+			if !task.hasMarkdown() {
 				return task, fmt.Errorf("%w: 网页转 Markdown 完成但结果为空", ErrUpstream)
 			}
 			return task, nil

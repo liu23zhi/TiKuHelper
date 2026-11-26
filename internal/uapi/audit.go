@@ -15,6 +15,7 @@ import (
 )
 
 type providerAuditContextKey struct{}
+type webWorkflowAuditContextKey struct{}
 
 // The provider header is arbitrary, so an unkeyed digest can still expose
 // low-entropy values. This key stays in memory: the optional provider hint
@@ -23,6 +24,7 @@ var providerAuditHashKey, providerAuditHashKeyError = uuid.NewRandom()
 
 type providerAudit struct {
 	category       string
+	workflowID     string
 	id             string
 	started        time.Time
 	attempts       int
@@ -34,6 +36,7 @@ type providerAuditEvent struct {
 	Phase          string         `json:"phase"`
 	Category       string         `json:"category"`
 	ID             string         `json:"request_id"`
+	WorkflowID     string         `json:"workflow_id,omitempty"`
 	UpstreamIDHash string         `json:"upstream_id_hash,omitempty"`
 	HTTPStatus     int            `json:"http_status,omitempty"`
 	Attempts       int            `json:"attempts"`
@@ -57,10 +60,12 @@ func auditProviderCall[T any](ctx context.Context, category string, call func(co
 		// Correlation failure must not change an upstream operation.
 		return call(ctx)
 	}
+	workflowID, _ := ctx.Value(webWorkflowAuditContextKey{}).(string)
 	a := &providerAudit{
-		category: category,
-		id:       id.String(),
-		started:  time.Now(),
+		category:   category,
+		workflowID: workflowID,
+		id:         id.String(),
+		started:    time.Now(),
 	}
 	a.publish(providerAuditEvent{Phase: "start"})
 	reply, err := call(context.WithValue(ctx, providerAuditContextKey{}, a))
@@ -73,6 +78,10 @@ func auditProviderCall[T any](ctx context.Context, category string, call func(co
 		}
 	} else {
 		end.Outcome, end.Summary = auditResponseShape(reply)
+		switch end.Outcome {
+		case "empty_result", "invalid_response":
+			end.ErrorClass = end.Outcome
+		}
 		if a.attempts == 0 {
 			end.Outcome = "no_request"
 		}
@@ -84,6 +93,7 @@ func auditProviderCall[T any](ctx context.Context, category string, call func(co
 func (a *providerAudit) publish(event providerAuditEvent) {
 	event.Category = a.category
 	event.ID = a.id
+	event.WorkflowID = a.workflowID
 	event.HTTPStatus = a.httpStatus
 	event.UpstreamIDHash = a.upstreamIDHash
 	event.Attempts = a.attempts
@@ -109,12 +119,39 @@ func noteProviderAttempt(ctx context.Context) {
 func noteProviderResponse(ctx context.Context, status int, upstreamID string) {
 	if a, _ := ctx.Value(providerAuditContextKey{}).(*providerAudit); a != nil {
 		a.httpStatus = status
-		if upstreamID != "" && providerAuditHashKeyError == nil {
-			digest := hmac.New(sha256.New, providerAuditHashKey[:])
-			_, _ = digest.Write([]byte(upstreamID))
-			a.upstreamIDHash = hex.EncodeToString(digest.Sum(nil))
-		}
+		a.upstreamIDHash = hashProviderRequestID(upstreamID)
 	}
+}
+
+func hashProviderRequestID(id string) string {
+	if id == "" || providerAuditHashKeyError != nil {
+		return ""
+	}
+	digest := hmac.New(sha256.New, providerAuditHashKey[:])
+	_, _ = digest.Write([]byte(id))
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+// ProviderFailure is a projection for adjacent diagnostics, never a replacement
+// for the typed error returned to the caller. Only an actual APIError supplies
+// HTTP status and the hash of an untrusted provider correlation header.
+type ProviderFailure struct {
+	Class          string
+	HTTPStatus     int
+	UpstreamIDHash string
+}
+
+func DescribeProviderFailure(err error) ProviderFailure {
+	result := ProviderFailure{}
+	var api *APIError
+	if errors.As(err, &api) && api != nil {
+		if api.HTTPStatus >= 100 && api.HTTPStatus <= 599 {
+			result.HTTPStatus = api.HTTPStatus
+		}
+		result.UpstreamIDHash = hashProviderRequestID(api.RequestID)
+	}
+	result.Class = auditErrorClass(err, result.HTTPStatus)
+	return result
 }
 
 func auditErrorClass(err error, status int) string {
@@ -161,15 +198,25 @@ func hasAuditField(value string) int {
 func auditResponseShape(reply any) (string, map[string]int) {
 	switch v := reply.(type) {
 	case PhoneInfo:
-		return "success", map[string]int{"has_city": hasAuditField(v.City), "has_province": hasAuditField(v.Province), "has_operator": hasAuditField(v.SP), "has_area_code": hasAuditField(v.AreaCode)}
+		outcome := "success"
+		if hasAuditField(v.City)+hasAuditField(v.Province)+hasAuditField(v.SP) == 0 {
+			outcome = "empty_result"
+		}
+		return outcome, map[string]int{"has_city": hasAuditField(v.City), "has_province": hasAuditField(v.Province), "has_operator": hasAuditField(v.SP), "has_area_code": hasAuditField(v.AreaCode)}
 	case IPInfo:
-		return "success", map[string]int{"has_ip": hasAuditField(v.IP), "has_region": hasAuditField(v.Region), "has_asn": hasAuditField(v.ASN), "segment_boundary_fields": hasAuditField(v.BeginIP) + hasAuditField(v.EndIP)}
+		outcome := "success"
+		if hasAuditField(v.Region) == 0 && LocationDisplayOperator(v.LLC, v.ISP) == "" {
+			outcome = "empty_result"
+		}
+		return outcome, map[string]int{"has_ip": hasAuditField(v.IP), "has_region": hasAuditField(v.Region), "has_asn": hasAuditField(v.ASN), "segment_boundary_fields": hasAuditField(v.BeginIP) + hasAuditField(v.EndIP)}
 	case ImageOCRResponse:
 		return "success", map[string]int{"has_text": hasAuditField(v.Text), "has_markdown": hasAuditField(v.Markdown), "word_rows": len(v.WordsResult)}
 	case ProfanityCheckResponse:
 		outcome := "clear"
 		if v.Forbidden() {
 			outcome = "matched"
+		} else if !IsDefinitiveProfanityStatus(v.Status) {
+			outcome = "invalid_response"
 		}
 		return outcome, map[string]int{"matched_count": len(v.ForbiddenWords), "has_status": hasAuditField(v.Status)}
 	case SearchEnginesResponse:
@@ -186,11 +233,46 @@ func auditResponseShape(reply any) (string, map[string]int) {
 			outcome = v.Status
 		}
 		hasResult := 0
-		if v.Result != nil {
-			hasResult = hasAuditField(v.Result.Markdown)
+		if v.hasMarkdown() {
+			hasResult = 1
+		} else if outcome == "completed" {
+			outcome = "empty_result"
 		}
 		return outcome, map[string]int{"has_result": hasResult, "has_task": hasAuditField(v.TaskID)}
 	default:
 		return "success", nil
+	}
+}
+
+// This event describes ReadWebPage's terminal business outcome, not another
+// egress request. It deliberately has no category, attempts or retries.
+func finishWebWorkflow(id string, started time.Time, task WebToMarkdownTask, err error) {
+	if id == "" {
+		return
+	}
+	outcome, class := "completed", ""
+	if err != nil {
+		outcome = "error"
+		class = DescribeProviderFailure(err).Class
+		switch {
+		case class == "cancelled" || class == "timeout":
+			outcome = class
+		case task.Status == "completed" && !task.hasMarkdown():
+			outcome, class = "empty_result", "empty_result"
+		case task.Status == "timeout" || task.Status == "cancelled" || task.Status == "failed":
+			outcome, class = task.Status, "provider_task_"+task.Status
+		}
+	}
+	event := struct {
+		Workflow     string `json:"workflow"`
+		ID           string `json:"workflow_id"`
+		Phase        string `json:"phase"`
+		ProviderCall bool   `json:"provider_call"`
+		ElapsedMS    int64  `json:"elapsed_ms"`
+		Outcome      string `json:"outcome"`
+		ErrorClass   string `json:"error_class,omitempty"`
+	}{"web_read", id, "finish", false, time.Since(started).Milliseconds(), outcome, class}
+	if data, err := json.Marshal(event); err == nil {
+		logger.SysLog("uapi_workflow " + string(data))
 	}
 }

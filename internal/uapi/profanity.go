@@ -47,6 +47,16 @@ func (r ProfanityCheckResponse) Forbidden() bool {
 	return strings.EqualFold(strings.TrimSpace(r.Status), profanityStatusForbidden)
 }
 
+// IsDefinitiveProfanityStatus is the application's existing reuse rule;
+// arbitrary states can be parsed but are not a reusable detection verdict.
+func IsDefinitiveProfanityStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "clean", "ok", "pass", "passed", "normal", "safe", "forbidden", "blocked", "rejected", "hit", "sensitive":
+		return true
+	}
+	return false
+}
+
 // SetProfanityCheckURL 覆盖敏感词检测接口地址（默认 DefaultProfanityCheckURL），仅用于测试/代理
 func (c *Client) SetProfanityCheckURL(address string) *Client {
 	if c == nil {
