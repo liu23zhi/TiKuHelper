@@ -10,6 +10,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
+	gormlog "gorm.io/gorm/logger"
 )
 
 func TestMariaDBDeviceHistoryUpgradeAndLifecycle(t *testing.T) {
@@ -261,5 +262,59 @@ func TestMariaDBDeviceHistoryAuditsStoredRevocationBeforeRebind(t *testing.T) {
 		!strings.Contains(logs[1].NewAnswer, legacy.RevokedAt.UTC().Format(time.RFC3339Nano)) ||
 		!strings.Contains(logs[1].NewAnswer, "idle_timeout") {
 		t.Fatalf("lost or duplicated audit for stored MariaDB transitions: %+v", logs)
+	}
+}
+
+type deviceAdminStatusProbe struct {
+	gormlog.Interface
+	afterGroup func()
+}
+
+func (p *deviceAdminStatusProbe) Trace(_ context.Context, _ time.Time, statement func() (string, int64), err error) {
+	if p.afterGroup == nil || err != nil {
+		return
+	}
+	query, _ := statement()
+	if strings.Contains(strings.ToLower(query), "group by") && strings.Contains(query, "device_status") {
+		afterGroup := p.afterGroup
+		p.afterGroup = nil
+		afterGroup()
+	}
+}
+
+func TestMariaDBDeviceHistoryAdminRowsAndSummaryShareReadCommittedSnapshot(t *testing.T) {
+	reader := mysqlTestFreshDB(t)
+	mustAutoMigrate(t, reader, &entity.SystemSetting{}, &entity.Log{}, &entity.BlacklistEntry{})
+	if err := ensureAccountDeviceBindingsSchema(reader); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Exec("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED").Error; err != nil {
+		t.Fatal(err)
+	}
+	writer := openMariaDBTestDB(t, mysqlTestDSN(t))
+	row := entity.AccountDeviceBinding{UserID: 9271, DeviceID: "extension:fixture-admin-read-committed", LastSeenAt: time.Now()}
+	if err := writer.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	probe := &deviceAdminStatusProbe{Interface: reader.Logger, afterGroup: func() {
+		if _, err := service.BlockAccountDevice(writer, row.ID, service.DeviceHistoryActor{UserID: row.UserID}, "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	query := service.AdminDeviceListQuery{UserID: row.UserID}
+	first, err := service.ListAdminDeviceBindingsWithDB(reader.Session(&gorm.Session{Logger: probe}), query, 1, 20)
+	if err != nil || len(first.Data) != 1 || probe.afterGroup != nil {
+		t.Fatalf("did not reach concurrent cut: %+v %v", first, err)
+	}
+	got := first.Data[0]
+	if first.Total != 1 || first.Active != 1 || first.Blocked != 0 || got.Status != "active" ||
+		got.AccountBlocked || got.RevokedAt != nil || got.Deletable {
+		t.Fatalf("mixed administrator status, summary and actions: %+v", first)
+	}
+	next, err := service.ListAdminDeviceBindingsWithDB(reader, query, 1, 20)
+	if err != nil || next.Total != 1 || next.Active != 0 || next.Blocked != 1 || len(next.Data) != 1 ||
+		next.Data[0].Status != "banned" || !next.Data[0].AccountBlocked || next.Data[0].RevokedAt == nil ||
+		next.Data[0].Deletable {
+		t.Fatalf("next response did not see committed block: %+v %v", next, err)
 	}
 }

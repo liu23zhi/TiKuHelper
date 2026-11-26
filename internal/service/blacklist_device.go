@@ -704,7 +704,7 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 		return AdminDeviceListResult{}, ErrBlacklistCacheNoDatabase
 	}
 	var result AdminDeviceListResult
-	err := db.Transaction(func(tx *gorm.DB) error {
+	err := ReadDeviceHistorySnapshot(db, func(tx *gorm.DB) error {
 		var err error
 		result, err = listAdminDeviceBindings(tx, query, page, pageSize)
 		return err
@@ -729,8 +729,6 @@ func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, 
 	result.RevocationSupported = deviceRevocationColumnsAvailable(db)
 
 	now := time.Now()
-	hasLabel := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label")
-	hasOwnerKind := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "owner_kind")
 	hasRevocation := result.RevocationSupported
 
 	base := VisibleDeviceHistory(db, deviceAdminSession(db).Table(entity.TableNameAccountDeviceBinding))
@@ -772,13 +770,8 @@ func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, 
 		args := append(append([]any{}, statusArgs...), status)
 		base = base.Where("("+statusExpr+") = ?", args...)
 	}
-	var counts []struct {
-		Status string `gorm:"column:device_status"`
-		Count  int64
-	}
-	if err := base.Session(&gorm.Session{}).
-		Select(statusExpr+" AS device_status, COUNT(*) AS count", statusArgs...).
-		Group("device_status").Scan(&counts).Error; err != nil {
+	counts, err := countAdminDeviceStatuses(base.Session(&gorm.Session{}), statusExpr, statusArgs)
+	if err != nil {
 		return AdminDeviceListResult{}, fmt.Errorf("统计设备失败：%w", err)
 	}
 	for _, row := range counts {
@@ -792,6 +785,46 @@ func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, 
 			result.Blocked = row.Count
 		}
 	}
+
+	var rows []adminDeviceBindingRow
+	if err := selectAdminDeviceRows(db, base.Session(&gorm.Session{}), hasRevocation, statusExpr, statusArgs).
+		Order("last_seen_at desc").Order("id desc").
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Scan(&rows).Error; err != nil {
+		return AdminDeviceListResult{}, fmt.Errorf("查询设备列表失败：%w", err)
+	}
+	result.Data, err = loadAdminDeviceItems(db, rows, hasRevocation, now)
+	if err != nil {
+		return AdminDeviceListResult{}, err
+	}
+
+	// Global rules without a visible account row are a separate list, not
+	// device-history stats; do not display them in a scoped account or another status.
+	if query.UserID == 0 && (status == "" || status == "all" || status == AdminDeviceStatusBanned) {
+		orphans, err := listOrphanDeviceBansWithKeyword(db, now, 50, strings.TrimSpace(query.Keyword))
+		if err != nil {
+			return AdminDeviceListResult{}, err
+		}
+		result.OrphanBans = orphans
+	}
+	return result, nil
+}
+
+type adminDeviceStatusCount struct {
+	Status string `gorm:"column:device_status"`
+	Count  int64
+}
+
+func countAdminDeviceStatuses(query *gorm.DB, statusExpr string, statusArgs []any) ([]adminDeviceStatusCount, error) {
+	var counts []adminDeviceStatusCount
+	err := query.Select(statusExpr+" AS device_status, COUNT(*) AS count", statusArgs...).
+		Group("device_status").Scan(&counts).Error
+	return counts, err
+}
+
+func selectAdminDeviceRows(db, query *gorm.DB, hasRevocation bool, statusExpr string, statusArgs []any) *gorm.DB {
+	hasLabel := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label")
+	hasOwnerKind := db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "owner_kind")
 
 	labelExpr := "'' AS device_label"
 	if hasLabel {
@@ -820,14 +853,10 @@ func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, 
 		revokedAtExpr, revokedReasonExpr,
 	}, ", ")
 
-	var rows []adminDeviceBindingRow
-	if err := base.Session(&gorm.Session{}).
-		Select(selectCols, statusArgs...).
-		Order("last_seen_at desc").Order("id desc").
-		Limit(pageSize).Offset((page - 1) * pageSize).
-		Scan(&rows).Error; err != nil {
-		return AdminDeviceListResult{}, fmt.Errorf("查询设备列表失败：%w", err)
-	}
+	return query.Select(selectCols, statusArgs...)
+}
+
+func loadAdminDeviceItems(db *gorm.DB, rows []adminDeviceBindingRow, hasRevocation bool, asOf time.Time) ([]AdminDeviceItem, error) {
 	userIDs := make([]int32, 0, len(rows))
 	deviceIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -840,11 +869,12 @@ func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, 
 		// 名字缺失只是「无法显示归属」。
 		logger.SysWarn("查询设备归属用户名失败：" + nameErr.Error())
 	}
-	bans, banErr := LoadActiveDeviceBansWithDB(db, deviceIDs, now)
+	bans, banErr := LoadActiveDeviceBansWithDB(db, deviceIDs, asOf)
 	if banErr != nil {
-		return AdminDeviceListResult{}, banErr
+		return nil, banErr
 	}
 
+	items := make([]AdminDeviceItem, 0, len(rows))
 	canDeleteHistory := hasRevocation && hasDeviceHistoryColumn(db)
 	for _, row := range rows {
 		item := AdminDeviceItem{
@@ -871,19 +901,36 @@ func listAdminDeviceBindings(db *gorm.DB, query AdminDeviceListQuery, page int, 
 		}
 		item.AccountBlocked = item.Status == AdminDeviceStatusBanned && !item.Banned
 		item.Deletable = item.Status == AdminDeviceStatusRevoked && canDeleteHistory
-		result.Data = append(result.Data, item)
+		items = append(items, item)
 	}
 
-	// Global rules without a visible account row are a separate list, not
-	// device-history stats; do not display them in a scoped account or another status.
-	if query.UserID == 0 && (status == "" || status == "all" || status == AdminDeviceStatusBanned) {
-		orphans, err := listOrphanDeviceBansWithKeyword(db, now, 50, strings.TrimSpace(query.Keyword))
-		if err != nil {
-			return AdminDeviceListResult{}, err
+	return items, nil
+}
+
+// readAdminDeviceItem uses the same projection and action rules as the list,
+// including one snapshot for both its status and rule details.
+func readAdminDeviceItem(db *gorm.DB, id int64) (AdminDeviceItem, error) {
+	var result AdminDeviceItem
+	err := ReadDeviceHistorySnapshot(db, func(tx *gorm.DB) error {
+		asOf := time.Now()
+		hasRevocation := deviceRevocationColumnsAvailable(tx)
+		statusExpr, statusArgs := adminDeviceStatusSQL(tx, hasRevocation, asOf)
+		base := VisibleDeviceHistory(tx, deviceAdminSession(tx).Table(entity.TableNameAccountDeviceBinding)).Where("id = ?", id)
+		var row adminDeviceBindingRow
+		if err := selectAdminDeviceRows(tx, base, hasRevocation, statusExpr, statusArgs).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeviceBindingNotFound
+			}
+			return err
 		}
-		result.OrphanBans = orphans
-	}
-	return result, nil
+		items, err := loadAdminDeviceItems(tx, []adminDeviceBindingRow{row}, hasRevocation, asOf)
+		if err != nil {
+			return err
+		}
+		result = items[0]
+		return nil
+	})
+	return result, err
 }
 
 // loadUsernamesWithDB 批量取用户名（id → username）。
@@ -971,8 +1018,8 @@ func unbindDeviceBinding(db *gorm.DB, id int64, now time.Time, actor *DeviceHist
 	if err != nil {
 		return AdminDeviceItem{}, err
 	}
-	var row adminDeviceBindingRow
 	err = withDeviceLifecycleWrite(db, NormalizeDevicePoolDeviceID(first.DeviceID), func(tx *gorm.DB) error {
+		var row adminDeviceBindingRow
 		if err := VisibleDeviceHistory(tx, deviceAdminSession(tx).Table(entity.TableNameAccountDeviceBinding)).
 			Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&row).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -988,54 +1035,18 @@ func unbindDeviceBinding(db *gorm.DB, id int64, now time.Time, actor *DeviceHist
 		if res.Error != nil {
 			return res.Error
 		}
+		if res.RowsAffected != 1 || actor == nil {
+			return nil
+		}
 		saved, err := findDeviceHistoryBinding(tx, id, 0)
 		if err != nil {
 			return err
 		}
-		row.RevokedAt, row.RevokedReason = saved.RevokedAt, saved.RevokedReason
-		if res.RowsAffected == 1 && actor != nil {
-			return deviceRevocationAudit(tx, *actor, 2, "强制解绑设备", saved, saved.RevokedReason)
-		}
-		return nil
+		return deviceRevocationAudit(tx, *actor, 2, "强制解绑设备", saved, saved.RevokedReason)
 	})
 	if err != nil {
 		return AdminDeviceItem{}, fmt.Errorf("强制解绑失败：%w", err)
 	}
 
-	names, nameErr := loadUsernamesWithDB(db, []int32{row.UserID})
-	if nameErr != nil {
-		logger.SysWarn("查询设备归属用户名失败：" + nameErr.Error())
-	}
-	deviceID := NormalizeBlacklistDeviceID(row.DeviceID)
-	item := AdminDeviceItem{
-		ID:            row.ID,
-		UserID:        row.UserID,
-		Username:      names[row.UserID],
-		DeviceID:      deviceID,
-		DeviceLabel:   row.DeviceLabel,
-		OwnerKind:     row.OwnerKind,
-		FirstSeenAt:   row.FirstSeenAt,
-		LastSeenAt:    row.LastSeenAt,
-		RevokedAt:     row.RevokedAt,
-		RevokedReason: row.RevokedReason,
-		Status:        AdminDeviceStatusActive,
-	}
-	if row.RevokedAt != nil {
-		item.Status = AdminDeviceStatusRevoked
-	}
-	// 解绑不封设备，但该 device_id 可能**本来就被封着**（另一条路径封的）：
-	// 此时状态必须如实显示「封禁中」，否则运营会以为解绑等于解封。
-	bans, banErr := LoadActiveDeviceBansWithDB(db, []string{deviceID}, now)
-	if banErr != nil {
-		logger.SysWarn("查询设备封禁状态失败：" + banErr.Error())
-	}
-	if ban, ok := bans[deviceID]; ok {
-		item.Status = AdminDeviceStatusBanned
-		item.Banned = true
-		item.BanEntryID = ban.EntryID
-		item.BanReason = ban.Reason
-		item.BanExpiresAt = ban.ExpiresAt
-		item.BanPermanent = ban.ExpiresAt == nil
-	}
-	return item, nil
+	return readAdminDeviceItem(db, id)
 }

@@ -326,7 +326,8 @@ func writeDeviceAdminError(c *gin.Context, err error) {
 		status = http.StatusBadRequest
 		message = err.Error()
 	case errors.Is(err, service.ErrDeviceHistoryNotRemoved):
-		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+		status = http.StatusConflict
+		message = err.Error()
 	case errors.Is(err, service.ErrDeviceBindingNotFound):
 		status = http.StatusNotFound
 		message = err.Error()

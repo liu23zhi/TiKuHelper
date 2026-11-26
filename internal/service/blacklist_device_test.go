@@ -1,6 +1,7 @@
 package service
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -987,5 +988,49 @@ func TestAdminDeviceListSkipsOrphanBansWhenFilteredByUser(t *testing.T) {
 	if len(all.OrphanBans) != 1 {
 		t.Fatalf("不指定 userId 时必须照常返回孤儿封禁（否则那台设备永远无法解封），实际 %d 条",
 			len(all.OrphanBans))
+	}
+}
+
+func TestDeviceHistoryAdminUnbindReceiptMatchesListForBlockedBindings(t *testing.T) {
+	for _, scope := range []string{"account", "global", "both"} {
+		t.Run(scope, func(t *testing.T) {
+			db := newDevicePoolTestDB(t)
+			const uid int32 = 9844
+			row := seedDeviceBinding(t, db, uid, "extension:fixture-receipt", false)
+			if scope != "global" {
+				if _, err := BlockAccountDevice(db, row.ID, DeviceHistoryActor{UserID: uid}, "fixture account reason"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scope != "account" {
+				if _, err := BanDevice(db, DeviceBanRequest{DeviceID: row.DeviceID, Reason: "fixture global reason"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				got, err := UnbindDeviceBindingAsAdmin(db, row.ID, time.Now(), DeviceHistoryActor{UserID: uid + 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				list, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{UserID: uid}, 1, 20)
+				if err != nil || list.Blocked != 1 || len(list.Data) != 1 {
+					t.Fatalf("unexpected rows: %+v %v", list, err)
+				}
+				want := list.Data[0]
+				if got.Status != "banned" || got.AccountBlocked != (scope == "account") || got.Banned != (scope != "account") ||
+					got.Status != want.Status || got.AccountBlocked != want.AccountBlocked || got.BanReason != want.BanReason ||
+					got.RevokedAt == nil || !got.RevokedAt.Equal(*want.RevokedAt) || got.RevokedReason != want.RevokedReason ||
+					got.Deletable || !reflect.DeepEqual(got, want) {
+					t.Fatalf("unbind receipt=%+v; list row=%+v", got, want)
+				}
+			}
+			var unbindAudits int64
+			if err := db.Model(&entity.Log{}).Where("module = ? AND action = ?", "device", 2).Count(&unbindAudits).Error; err != nil || unbindAudits != 0 {
+				t.Fatalf("idempotent unbind emitted transition audit: %d %v", unbindAudits, err)
+			}
+			if decision := CheckDeviceBlockWithDB(db, uid, row.DeviceID); decision.Allowed {
+				t.Fatalf("unbind changed existing access decision: %+v", decision)
+			}
+		})
 	}
 }
