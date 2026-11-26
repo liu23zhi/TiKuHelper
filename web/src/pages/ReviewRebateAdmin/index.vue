@@ -252,7 +252,14 @@
       >
         <p v-if="screenshotPreview.loading" role="status">正在加载截图…</p>
         <p v-else-if="screenshotPreview.error" class="form-error" role="alert">{{ screenshotPreview.error }}</p>
-        <img v-else-if="screenshotPreview.url" class="screenshot-preview" :src="screenshotPreview.url" alt="提交截图" />
+        <img
+          v-else-if="screenshotPreview.url"
+          :key="screenshotPreview.url"
+          class="screenshot-preview"
+          :src="screenshotPreview.url"
+          alt="提交截图"
+          @error="onScreenshotImageError"
+        />
       </a-modal>
 
       <ReviewRebateVerificationDialog
@@ -515,7 +522,7 @@ export default {
       const user = currentUser.value
       const id = Number(user?.id)
       return Number.isSafeInteger(id) && id > 0 && id <= 2147483647 && isAdminUser(user)
-        && !['disabled', '0'].includes(String(user?.status ?? 'enabled'))
+        && !['banned', 'disabled', '0'].includes(String(user?.status ?? 'enabled'))
     }
     const canManage = () => alive && route.path === mountedPath
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin()
@@ -1041,12 +1048,24 @@ export default {
       }
     }
 
+    const clearScreenshotImage = () => {
+      if (screenshotPreview.url) URL.revokeObjectURL(screenshotPreview.url)
+      screenshotPreview.url = ''
+    }
+
+    const onScreenshotImageError = event => {
+      const url = screenshotPreview.url
+      if (!url || event.currentTarget.getAttribute('src') !== url) return
+      clearScreenshotImage()
+      screenshotPreview.error = '截图无法解码，文件可能已损坏。'
+    }
+
     const closeScreenshot = () => {
       const pending = screenshotRequest
       screenshotRequest = null
       pending?.abort()
-      if (screenshotPreview.url) URL.revokeObjectURL(screenshotPreview.url)
-      Object.assign(screenshotPreview, { open: false, loading: false, url: '', error: '' })
+      clearScreenshotImage()
+      Object.assign(screenshotPreview, { open: false, loading: false, error: '' })
     }
 
     const openScreenshot = async record => {
@@ -1121,7 +1140,7 @@ export default {
       fieldId, canManage, busy, loading,
       programForm, programLoaded, savingProgram, programSaved, programValidation,
       programSource, selectProgramSource, verificationRecord,
-      screenshotPreview, openScreenshot, closeScreenshot,
+      screenshotPreview, openScreenshot, closeScreenshot, onScreenshotImageError,
       programMissing, programWarning, programWarningContextKey,
       rules, rulesLoaded, savingRule, ruleWarning, ruleColumns,
       claims, claimsLoaded, loadingClaims, deciding, decisionWarning, claimColumns,

@@ -10,13 +10,14 @@ const { setStoredCurrentUser, getStoredCurrentUser, clearStoredCurrentUser } = r
 
 for (const name of ['ConsolePageHeading', 'ConsolePanel', 'ConsoleSummaryGrid', 'ConsoleTableShell']) delete config.global.components[name]
 
-const originals = { adapter: axios.defaults.adapter, create: URL.createObjectURL, revoke: URL.revokeObjectURL }
+const originals = { adapter: axios.defaults.adapter, create: URL.createObjectURL, revoke: URL.revokeObjectURL, fetch: globalThis.fetch }
 const base = '/api/admin/review-rebate'
 const first = base + '/claims/42/screenshot'
 const second = base + '/claims/43/screenshot'
 const admin = { id: 101, role: 'admin', status: 'enabled' }
-const fixture = new Blob(['synthetic image'], { type: 'image/png' })
-const calls = [], created = [], revoked = []
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64')
+const fixture = new Blob([png], { type: 'image/png' })
+const calls = [], created = [], revoked = [], managementReads = []
 let claims, screenshot, wrapper, router
 URL.createObjectURL = blob => {
   created.push(blob)
@@ -24,12 +25,18 @@ URL.createObjectURL = blob => {
 }
 URL.revokeObjectURL = value => revoked.push(value)
 axios.defaults.adapter = async config => {
+  managementReads.push(config.url)
   if (config.url === base + '/claims') return { status: 200, config, data: { data: claims } }
   if ([base + '/programs', base + '/rules'].includes(config.url)) return { status: 200, config, data: { data: [] } }
-  calls.push(config)
-  if (![first, second].includes(config.url)) throw new Error('unexpected screenshot target')
-  const result = await screenshot(config)
-  return { ...result, config }
+  throw new Error('unexpected non-preview adapter dispatch')
+}
+globalThis.fetch = async (url, options) => {
+  const target = new URL(url)
+  assert.equal(target.origin, window.location.origin)
+  assert.ok([first, second].includes(target.pathname))
+  calls.push({ url: target.pathname, ...options })
+  const result = await screenshot(options)
+  return new Response(result.data, { status: result.status })
 }
 const Review = require('../../src/pages/ReviewRebateAdmin/index.vue')
 
@@ -72,12 +79,13 @@ afterEach(async () => {
   clearStoredCurrentUser()
   await settle()
   document.body.replaceChildren()
-  calls.length = created.length = revoked.length = 0
+  calls.length = created.length = revoked.length = managementReads.length = 0
 })
 after(() => {
   axios.defaults.adapter = originals.adapter
   URL.createObjectURL = originals.create
   URL.revokeObjectURL = originals.revoke
+  globalThis.fetch = originals.fetch
 })
 
 test('admin previews the canonical screenshot in-page with the existing authenticated request and revokes each blob', async () => {
@@ -86,9 +94,10 @@ test('admin previews the canonical screenshot in-page with the existing authenti
   assert.match(wrapper.text(), /无图/)
   assert.equal(wrapper.find('a[href="' + first + '"]').exists(), false)
   await show()
-  assert.deepEqual(calls.map(({ url, method, withCredentials, responseType }) => ({ url, method, withCredentials, responseType })),
-    [{ url: first, method: 'get', withCredentials: true, responseType: 'blob' }])
-  assert.deepEqual(created, [fixture])
+  assert.deepEqual(calls.map(({ url, credentials, redirect }) => ({ url, credentials, redirect })),
+    [{ url: first, credentials: 'same-origin', redirect: 'error' }])
+  assert.equal(created.length, 1)
+  assert.deepEqual(Buffer.from(await created[0].arrayBuffer()), png)
   assert.equal(image()?.getAttribute('src'), 'blob:http://localhost/review-rebate-1')
   await show(1)
   assert.equal(image()?.getAttribute('src'), 'blob:http://localhost/review-rebate-2')
@@ -168,4 +177,41 @@ test('401 reuses the existing session retirement flow and does not keep a previe
   assert.equal(previewButtons().length, 0)
   assert.ok(!image())
   assert.equal(created.length, 0)
+})
+
+test('current PNG decode failure revokes only its own Blob, not a replacement preview', async () => {
+  await open([first, second])
+  await show()
+  const retiredImage = image()
+  assert.ok(retiredImage)
+  screenshot = async () => ({ status: 200, data: new Blob(['invalid PNG'], { type: 'image/png' }) })
+  await show(1)
+  const currentImage = image()
+  assert.ok(currentImage)
+  retiredImage.dispatchEvent(new Event('error'))
+  await settle()
+  assert.equal(image(), currentImage)
+  assert.deepEqual(revoked, ['blob:http://localhost/review-rebate-1'])
+
+  currentImage.dispatchEvent(new Event('error'))
+  await settle()
+  assert.ok(!image(), 'do not leave a broken image for a decode error')
+  assert.match(dialog()?.textContent || '', /无法解码/)
+  assert.deepEqual(revoked, ['blob:http://localhost/review-rebate-1', 'blob:http://localhost/review-rebate-2'])
+  await close()
+  assert.equal(revoked.length, 2)
+})
+
+test('a screenshot ban retires the page without reading more administrator data', async () => {
+  await open([first])
+  const initialReads = managementReads.length
+  screenshot = async () => ({
+    status: 403,
+    data: new Blob(['{"code":"ACCOUNT_BANNED"}'], { type: 'application/json' }),
+  })
+  await show()
+  assert.equal(getStoredCurrentUser()?.status, 'banned')
+  assert.equal(previewButtons().length, 0)
+  assert.ok(!image())
+  assert.equal(managementReads.length, initialReads, 'do not replay admin list requests under the banned session')
 })
