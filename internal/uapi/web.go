@@ -45,6 +45,12 @@ type WebToMarkdownResult struct {
 // The documented endpoint accepts url as a query parameter, so no invented
 // JSON body is sent.
 func (c *Client) SubmitWebToMarkdown(ctx context.Context, rawURL string) (WebToMarkdownTask, error) {
+	return auditProviderCall(ctx, "web_submit", func(ctx context.Context) (WebToMarkdownTask, error) {
+		return c.submitWebToMarkdown(ctx, rawURL)
+	})
+}
+
+func (c *Client) submitWebToMarkdown(ctx context.Context, rawURL string) (WebToMarkdownTask, error) {
 	if err := c.ensureSearchReady(); err != nil {
 		return WebToMarkdownTask{}, err
 	}
@@ -74,6 +80,12 @@ func (c *Client) SubmitWebToMarkdown(ctx context.Context, rawURL string) (WebToM
 
 // GetWebToMarkdownStatus returns the current state for a task.
 func (c *Client) GetWebToMarkdownStatus(ctx context.Context, taskID string) (WebToMarkdownTask, error) {
+	return auditProviderCall(ctx, "web_poll", func(ctx context.Context) (WebToMarkdownTask, error) {
+		return c.getWebToMarkdownStatus(ctx, taskID)
+	})
+}
+
+func (c *Client) getWebToMarkdownStatus(ctx context.Context, taskID string) (WebToMarkdownTask, error) {
 	if err := c.ensureSearchReady(); err != nil {
 		return WebToMarkdownTask{}, err
 	}
