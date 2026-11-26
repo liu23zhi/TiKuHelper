@@ -10,13 +10,13 @@ type statusCompletionMinute struct {
 	endpoints    ServiceStatusEndpointCounters
 }
 
-func (r *ServiceStatusEndpointRecorder) completedBetween(start, end int64, asOf time.Time) []statusCompletionMinute {
+func (r *ServiceStatusEndpointRecorder) completedBetween(start, end int64) []statusCompletionMinute {
 	if r == nil || end < start {
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.completedBetweenLocked(start, end, asOf)
+	return r.completedBetweenLocked(start, end)
 }
 
 // Read the authoritative clock under the same lock as terminal observations;
@@ -26,15 +26,15 @@ func (r *ServiceStatusEndpointRecorder) completionSnapshot(startedAt time.Time, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	asOf := clock().UTC()
-	return asOf, r.completedBetweenLocked(serviceStatusMinute(startedAt), serviceStatusMinute(asOf), asOf)
+	return asOf, r.completedBetweenLocked(serviceStatusMinute(startedAt), serviceStatusMinute(asOf))
 }
 
-func (r *ServiceStatusEndpointRecorder) completedBetweenLocked(start, end int64, asOf time.Time) []statusCompletionMinute {
+func (r *ServiceStatusEndpointRecorder) completedBetweenLocked(start, end int64) []statusCompletionMinute {
 	start = max(start, end-ServiceStatusSlots+1, 0)
 	var observations []statusCompletionMinute
 	for minute := start; minute <= end; minute++ {
 		slot := r.completed[minute%ServiceStatusSlots]
-		if slot.minute == minute && slot.all.TotalRequests > 0 && !slot.latest.After(asOf) {
+		if slot.minute == minute && slot.all.TotalRequests > 0 {
 			observations = append(observations, slot)
 		}
 	}
@@ -58,7 +58,7 @@ func withStatusCompletions(point StatusPoint, event statusCompletionMinute) Stat
 
 // Merge only actual ticks or terminal evidence; a gap is never filled with zero.
 // An other-only completion does not prove public search coverage.
-func mergeStatusCompletions(periodic []StatusPoint, events []statusCompletionMinute) []StatusPoint {
+func mergeStatusCompletions(periodic []StatusPoint, events []statusCompletionMinute, asOf time.Time) []StatusPoint {
 	points := make([]StatusPoint, 0, max(len(periodic), len(events)))
 	for _, event := range events {
 		for len(periodic) > 0 && periodic[0].Minute < event.minute {
@@ -68,6 +68,12 @@ func mergeStatusCompletions(periodic []StatusPoint, events []statusCompletionMin
 		point := StatusPoint{Minute: event.minute, eventOnly: true}
 		if len(periodic) > 0 && periodic[0].Minute == event.minute {
 			point, periodic = periodic[0], periodic[1:]
+		}
+		if event.latest.After(asOf) {
+			// A wall-clock rewind can leave both before- and after-asOf
+			// completions in this indivisible minute. Its earlier periodic
+			// tick does not establish zero requests; omit traffic coverage.
+			continue
 		}
 		points = append(points, withStatusCompletions(point, event))
 	}

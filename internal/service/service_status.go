@@ -430,8 +430,11 @@ func (s *ServiceStatusSampler) Sample() StatusPoint {
 		s.pending.Endpoints.Search.Samples = 1
 		s.pending.Endpoints.Other.Samples = 1
 		s.pending.searchSampledAt = at
-		events := s.completions.completedBetween(minute, minute, at)
+		events := s.completions.completedBetween(minute, minute)
 		if len(events) != 0 {
+			if events[0].latest.After(at) {
+				return StatusPoint{Minute: minute, sampledAt: at, requestUnknown: true}
+			}
 			return withStatusCompletions(s.pending, events[0])
 		}
 		return s.pending
@@ -515,18 +518,18 @@ func (s *ServiceStatusSampler) Snapshot() ServiceStatusSnapshot {
 		AsOf: asOf, RestartedAt: s.startedAt, processPoints: make([]StatusProcessPoint, 0, len(points)),
 	}
 	for _, point := range points {
-		if point.Minute < start || point.Minute > end || point.sampledAt.After(asOf) {
+		if point.Minute < start || point.Minute > end {
 			continue
 		}
-		if point.process != nil {
+		if point.process != nil && !point.process.SampledAt.After(asOf) {
 			result.processPoints = append(result.processPoints, *point.process)
 		}
-		if !point.requestUnknown {
+		if !point.requestUnknown && !point.sampledAt.After(asOf) {
 			history = append(history, point)
 		}
 	}
 	if len(events) > 0 {
-		history = mergeStatusCompletions(history, events)
+		history = mergeStatusCompletions(history, events, asOf)
 	}
 	for _, point := range history {
 		if point.sampledAt.After(result.LatestSampleAt) {

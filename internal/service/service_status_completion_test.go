@@ -86,7 +86,7 @@ func TestServiceStatusCompletionOnlyClassifiesFailuresAndBoundsRing(t *testing.T
 	recorder.ObserveCompletion("/api/search/tasks", http.StatusOK, 4, StatusFailureAuth, clock)
 	recorder.ObserveCompletion("/api/search/tasks", http.StatusServiceUnavailable, -1, StatusFailureNone, clock)
 	recorder.ObserveCompletion("/api/search/tasks", http.StatusBadGateway, 6, StatusFailureUpstream, clock)
-	initial := recorder.completedBetween(serviceStatusMinute(clock), serviceStatusMinute(clock), clock)
+	initial := recorder.completedBetween(serviceStatusMinute(clock), serviceStatusMinute(clock))
 	if len(initial) != 1 || initial[0].all.TotalRequests != 3 || initial[0].all.FailedRequests != 2 ||
 		initial[0].all.UpstreamFailures != 1 || initial[0].all.AuthFailures != 0 || initial[0].all.LatencyTotalMillis != 10 {
 		t.Fatalf("classified an unrelated or successful terminal response: %+v", initial)
@@ -96,9 +96,50 @@ func TestServiceStatusCompletionOnlyClassifiesFailuresAndBoundsRing(t *testing.T
 	}
 	recorder.ObserveCompletion("/api/search/tasks", 503, 123, StatusFailureNone, clock) // late, already overwritten.
 	now := clock.Add(time.Duration(ServiceStatusSlots+2) * time.Minute)
-	retained := recorder.completedBetween(0, serviceStatusMinute(now), now)
+	retained := recorder.completedBetween(0, serviceStatusMinute(now))
 	if len(retained) != ServiceStatusSlots || retained[0].minute != serviceStatusMinute(clock)+3 ||
 		retained[len(retained)-3].all.FailedRequests != 0 {
 		t.Fatalf("outdated completion revived or displaced a current slot: n=%d first=%+v", len(retained), retained[0])
 	}
+}
+
+func TestServiceStatusMixedCompletionMinuteStaysUnknownUntilClockCatchesUp(t *testing.T) {
+	base := time.Date(2026, 11, 25, 15, 20, 0, 0, time.UTC)
+	now := base
+	recorder := &ServiceStatusEndpointRecorder{}
+	sampler := NewServiceStatusSamplerWithSources(nil, func() time.Time { return now }, ServiceStatusSources{
+		Completions: recorder, Process: func() StatusProcessMetrics { return StatusProcessMetrics{Goroutines: 7} },
+	})
+	sampler.Sample()
+	now = base.Add(5 * time.Second)
+	recorder.ObserveCompletion("/api/search/tasks", 503, 19, StatusFailureUpstream, now)
+	if first := sampler.Snapshot(); first.Summary.Endpoints.Search.FailedRequests != 1 {
+		t.Fatal("fixture did not first observe the failed search")
+	}
+	now = base.Add(30 * time.Second)
+	recorder.ObserveCompletion("/api/other", 200, 4, StatusFailureNone, now)
+	now = base.Add(20 * time.Second)
+	if probe := sampler.Sample(); !probe.requestUnknown || probe.Endpoints.Search.Samples != 0 {
+		t.Fatalf("direct sample exposed traffic from an indivisible minute: %+v", probe)
+	}
+	now = base.Add(25 * time.Second)
+	sampler.Sample() // also put the most recent periodic tick past the next asOf.
+	now = base.Add(20 * time.Second)
+	unknown := sampler.Snapshot()
+	if len(unknown.Points) != 0 || !unknown.LatestSearchSampleAt.IsZero() ||
+		unknown.Summary.Status != ServiceStatusUnknown || unknown.Summary.Endpoints.Search.Samples != 0 ||
+		unknown.Summary.Endpoints.Other.TotalRequests != 0 {
+		t.Fatalf("indivisible minute became idle or leaked future traffic: %+v", unknown)
+	}
+	if points := unknown.ProcessPoints(); len(points) != 1 || !points[0].SampledAt.Equal(base) || points[0].Goroutines != 7 {
+		t.Fatalf("valid earlier process observation lost: %+v", points)
+	}
+	now = base.Add(30 * time.Second)
+	recovered := sampler.Snapshot()
+	if len(recovered.Points) != 1 || recovered.Summary.TotalRequests != 2 ||
+		recovered.Summary.Endpoints.Search.FailedRequests != 1 || recovered.Summary.Endpoints.Other.SuccessRequests != 1 ||
+		!recovered.LatestSampleAt.Equal(now) || len(recovered.ProcessPoints()) != 1 {
+		t.Fatalf("traffic did not recover after clock caught up: %+v", recovered)
+	}
+	t.Log("asOf 20s: traffic unknown, future completion hidden, 00s process observation retained; asOf 30s: search failure and other success recovered")
 }
