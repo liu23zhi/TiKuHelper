@@ -1182,6 +1182,9 @@ func UpdateRechargeOrderStatusWithDB(db *gorm.DB, actor entity.User, orderID int
 				return ErrRechargeSettlementReviewRequired
 			}
 		}
+		if err := lockEffectiveOwner(tx, order.UserID); err != nil {
+			return err
+		}
 		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", orderID).Update("status", target).Error; err != nil {
 			return err
 		}

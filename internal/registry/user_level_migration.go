@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -48,12 +49,13 @@ func ensureUserLevelSchema(db *gorm.DB) error {
 		// 加列无从谈起，建出来的等级表也没有落点。
 		return nil
 	}
+	if err := ensureEffectiveAuditSchema(db); err != nil {
+		return fmt.Errorf("create effective ledger audit: %w", err)
+	}
 	if err := db.AutoMigrate(&entity.UserLevel{}); err != nil {
 		return fmt.Errorf("create user_levels fail: %w", err)
 	}
-	if err := db.AutoMigrate(&entity.UserLevelHistory{}); err != nil {
-		return fmt.Errorf("create user_level_histories fail: %w", err)
-	}
+
 	if err := ensureUserLevelIDColumn(db); err != nil {
 		return fmt.Errorf("add users.level_id fail: %w", err)
 	}
@@ -208,6 +210,10 @@ func backfillUserLevelsForRegister(db *gorm.DB) {
 			logger.SysLog(fmt.Sprintf("注册级回填评估失败（userID=%d，下次启动会重试）：%v", userID, err))
 			continue
 		}
+		if !result.Evaluated {
+			failed++
+			continue
+		} // Missing evidence is not a completed registration evaluation.
 		if result.Changed {
 			changed++
 		}
@@ -243,4 +249,46 @@ func userLevelSchemaAvailableForRegistry(db *gorm.DB) bool {
 		return false
 	}
 	return db.Migrator().HasColumn(entity.TableNameUser, "level_id")
+}
+
+// Shared by the startup migration and the isolated restored-copy verifier.
+// Only creates the append-only audit schema; never evaluates existing users.
+func ensureEffectiveAuditSchema(db *gorm.DB) error {
+	// Early unpublished candidates used the default Go field spelling as a
+	// database identifier; preserve any opt-in trial receipts across the rename.
+	if db.Migrator().HasTable(&entity.EffectiveRebuildAudit{}) && db.Migrator().HasColumn("effective_rebuild_audits", "examined") && !db.Migrator().HasColumn("effective_rebuild_audits", "scanned_count") {
+		if err := db.Migrator().RenameColumn("effective_rebuild_audits", "examined", "scanned_count"); err != nil {
+			return err
+		}
+	}
+	// SQLite startup intentionally suppresses generic column alterations. Only
+	// this unpublished audit table needs an exact integer -> text conversion;
+	// unlike REAL, both old INTEGER and the new digit strings are lossless.
+	audit := &entity.EffectiveAdjustment{}
+	if db.Dialector.Name() == "sqlite" && db.Migrator().HasTable(audit) {
+		cols, err := db.Migrator().ColumnTypes(audit)
+		if err != nil {
+			return err
+		}
+		for _, col := range cols {
+			var field string
+			switch col.Name() {
+			case "old_micros":
+				field = "OldMicros"
+			case "new_micros":
+				field = "NewMicros"
+			default:
+				continue
+			}
+			if strings.Contains(strings.ToUpper(col.DatabaseTypeName()), "INT") {
+				if err := db.Migrator().AlterColumn(audit, field); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := db.AutoMigrate(&entity.EffectiveAdjustment{}, &entity.EffectiveRebuildAudit{}); err != nil {
+		return err
+	}
+	return db.AutoMigrate(&entity.UserLevelHistory{})
 }

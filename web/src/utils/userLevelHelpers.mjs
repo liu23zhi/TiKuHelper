@@ -103,6 +103,8 @@ export function buildCurrentLevelText(summary) {
 export function buildLevelMetricText(summary, metric) {
   const key = metric === 'consumption' ? 'consumptionTotal' : 'rechargeTotal'
   const label = metric === 'consumption' ? '累计消费' : '累计充值'
+  const exact=summary?.ledger?.exact?.[metric === 'consumption' ? 'consumption' : 'recharge']
+  if (typeof exact === 'string') return {label,value:exact}
   const raw = summary?.[key]
   if (raw === null || raw === undefined || raw === '') return { label, value: '—' }
   const value = Number(raw)
@@ -148,6 +150,14 @@ export function pickNextLevel(levels, summary) {
  * gap 的口径：`max(0, 门槛 - 实际值)`。已达标的维度差额为 0，
  * 不能出现负数（负数在界面上会读成"超出要求 -50 元"，语义混乱）。
  */
+function exactLevelGaps(level, summary) {
+  const values=[level.minRechargeExact,level.minConsumptionExact,summary?.ledger?.exact?.recharge,summary?.ledger?.exact?.consumption]
+  if (!values.every(v=>typeof v==='string' && /^\d+\.\d{6}$/.test(v)))return null
+  const [r,c,haveR,haveC]=values.map(v=>BigInt(v.replace('.','')))
+  const gap=(a,b)=>{const n=(a>b?a-b:0n).toString().padStart(7,'0');return n.slice(0,-6)+'.'+n.slice(-6)}
+  return {minRechargeTotal:values[0],minConsumptionTotal:values[1],rechargeGap:gap(r,haveR),consumptionGap:gap(c,haveC),satisfied:haveR>=r&&haveC>=c}
+}
+
 export function buildNextLevelRequirement(levels, summary) {
   const rows = Array.isArray(levels) ? levels : []
   if (!rows.length) {
@@ -160,6 +170,8 @@ export function buildNextLevelRequirement(levels, summary) {
   if (!next) {
     return { available: false, capped: true, reason: '已是最高等级。' }
   }
+  const exact = exactLevelGaps(next, summary)
+  if (exact) return { available: true, levelName: String(next.name ?? '').trim(), rank: Number(next.rank ?? 0), ...exact }
   const rechargeTotal = Number(summary?.rechargeTotal ?? 0)
   const consumptionTotal = Number(summary?.consumptionTotal ?? 0)
   const minRecharge = Number(next.minRechargeTotal ?? 0)
@@ -275,7 +287,8 @@ export function buildLevelOverviewRows(levels, summary) {
     // ② 两个差额分别算，**不取 min**、不合并成一个字段。
     const rechargeGap = roundGap(Math.max(0, minRecharge - rechargeTotal))
     const consumptionGap = roundGap(Math.max(0, minConsumption - consumptionTotal))
-    const satisfied = rechargeGap === 0 && consumptionGap === 0
+    const exact=exactLevelGaps(row,summary)
+    const satisfied = exact?.satisfied ?? (rechargeGap === 0 && consumptionGap === 0)
     const isCurrent = index === currentIndex
     return {
       id: row.id,
@@ -288,6 +301,7 @@ export function buildLevelOverviewRows(levels, summary) {
       minConsumptionTotal: minConsumption,
       rechargeGap,
       consumptionGap,
+      ...(exact ?? {}),
       satisfied,
       isCurrent,
       status: isCurrent
@@ -328,6 +342,7 @@ function roundGap(value) {
 
 /** 差额展示：整数不带小数，有小数时最多 6 位并去掉尾零。 */
 function formatGapNumber(value) {
+  if (typeof value === "string" && /^\d+\.\d{6}$/.test(value)) return value.replace(/0+$/, "").replace(/\.$/, "")
   const number = Number(value)
   if (!Number.isFinite(number)) return '0'
   const fixed = number.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')

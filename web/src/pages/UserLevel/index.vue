@@ -2,7 +2,7 @@
   <div class="console-page user-level-page">
     <ConsolePageHeading
       title="等级与充值阶梯"
-      description="等级按「累计充值 + 累计消费」两个门槛判定，达标即取最高级（允许跳级，级数无上限）。退款会让累计充值回落并自动降级。充值阶梯决定充多少送多少；没有可用档位时不发放赠金。"
+      description="等级按「有效充值 + 有效消费」两个门槛判定，达标即取最高级（允许跳级，级数无上限）。退款会让累计充值回落并自动降级。充值阶梯决定充多少送多少；没有可用档位时不发放赠金。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || busy()" @click="load">刷新</a-button>
@@ -41,9 +41,16 @@
       <ConsolePanel title="等级定义" description="排序号决定高低（必须唯一；0 保留给「无等级」）。两个门槛同时满足才算达到该级。设备上限直接用于客户端设备准入，0 表示该等级不限设备数。">
         <template #actions>
           <a-button type="primary" :disabled="busy()" @click="openCreate">新增等级</a-button>
-          <a-button :loading="reevaluating" :disabled="busy()" @click="runReevaluate">重评一批用户</a-button>
+          <a-button :loading="reevaluating" :disabled="busy() || rebuildDone" @click="runReevaluate(false)">预览本批等级重评</a-button>
         </template>
 
+        <p>历史等级不会在启动时批量重写。按用户编号分页核对，每批最多 100 人；已确认重评后，设备上限随新等级生效，个人覆盖值不变。</p>
+        <section v-if="rebuildPreview">
+          <p>本批 {{ rebuildPreview.examined }} 人，预计变更 {{ rebuildPreview.changed }} 人，证据不足跳过 {{ rebuildPreview.skipped }} 人。</p>
+          <label v-if="rebuildPreview.examined">重评原因 <input v-model.trim="rebuildReason" maxlength="255"></label>
+          <a-button v-if="rebuildPreview.examined" :disabled="busy() || !rebuildReason" @click="runReevaluate(true)">确认并记录本批重评</a-button>
+        </section>
+        <p v-if="rebuildDone">已到最后一批。<a-button @click="restartRebuild">从头核对</a-button></p>
         <a-table
           :columns="levelColumns"
           :data-source="levels"
@@ -205,10 +212,10 @@
         <a-form-item label="排序号（越大越高，必须唯一）" :html-for="fieldId('level-rank')" required>
           <a-input-number :id="fieldId('level-rank')" :value="editor.rank" :min="1" :precision="0" @update:value="value => (editor.rank = value)" />
         </a-form-item>
-        <a-form-item label="累计充值门槛（元）" :html-for="fieldId('level-recharge')">
+        <a-form-item label="有效充值门槛（元）" :html-for="fieldId('level-recharge')">
           <a-input-number :id="fieldId('level-recharge')" :value="editor.minRechargeTotal" :min="0" :precision="2" @update:value="value => (editor.minRechargeTotal = value)" />
         </a-form-item>
-        <a-form-item label="累计消费门槛（元）" :html-for="fieldId('level-consumption')">
+        <a-form-item label="有效消费门槛（元）" :html-for="fieldId('level-consumption')">
           <a-input-number :id="fieldId('level-consumption')" :value="editor.minConsumptionTotal" :min="0" :precision="2" @update:value="value => (editor.minConsumptionTotal = value)" />
         </a-form-item>
         <a-form-item label="设备上限（0 表示不限）" :html-for="fieldId('level-device')">
@@ -240,7 +247,7 @@ import {
   getRechargePromotionTiers,
   getUserLevels,
   previewRechargePromotionTier,
-  reevaluateUserLevels,
+  rebuildEffectiveLevels,
   replaceRechargePromotionTiers,
   updateUserLevel,
 } from '@/api/UserLevelApi'
@@ -286,6 +293,7 @@ export default {
     const loading = ref(false)
     const mutating = ref(false)
     const reevaluating = ref(false)
+    const rebuildCursor=ref(0), rebuildPreview=shallowRef(null), rebuildReason=ref(''), rebuildDone=ref(false)
     const savingTiers = ref(false)
     const hasLoaded = ref(false)
     const actionWarning = ref('')
@@ -317,13 +325,13 @@ export default {
     }
     const canManage = () => alive && route.path === mountedPath
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin()
-    const busy = () => loading.value || mutating.value
+    const busy = () => loading.value || mutating.value || reevaluating.value
 
     const levelColumns = [
       { title: '名称', dataIndex: 'name', key: 'name' },
       { title: '排序号', key: 'rank', width: 90 },
-      { title: '累计充值门槛', key: 'recharge', width: 140 },
-      { title: '累计消费门槛', key: 'consumption', width: 140 },
+      { title: '有效充值门槛', key: 'recharge', width: 140 },
+      { title: '有效消费门槛', key: 'consumption', width: 140 },
       { title: '设备上限', key: 'deviceLimit', width: 150 },
       { title: '状态', key: 'enabled', width: 90 },
       { title: '备注', dataIndex: 'description', key: 'description' },
@@ -473,16 +481,26 @@ export default {
       }
     }
 
-    async function runReevaluate() {
+    function restartRebuild(){rebuildCursor.value=0;rebuildPreview.value=null;rebuildDone.value=false;rebuildReason.value=''}
+    async function runReevaluate(apply = false) {
       if (!canManage() || busy()) return
       reevaluating.value = true
       actionWarning.value = ''
       try {
-        const res = await reevaluateUserLevels(200)
-        const payload = res?.data ?? {}
-        actionNotice.value = `已重评 ${Number(payload.processed ?? 0)} 个用户，其中 ${Number(payload.changed ?? 0)} 个等级发生变化`
+        const res = await rebuildEffectiveLevels({afterId:rebuildCursor.value,limit:100,
+          applyDigest:apply ? rebuildPreview.value?.digest : '',reason:apply ? rebuildReason.value : ''})
+        const result = res?.data?.data
+        if (res?.status !== 200 || !result?.digest) throw new Error(res?.data?.message || '重评请求失败')
+        if (apply) {
+          rebuildCursor.value=result.nextId;rebuildDone.value=!result.hasMore;rebuildPreview.value=null;rebuildReason.value=''
+          actionNotice.value='已记录重评 #'+result.auditId+'，本批已变更 '+result.changed+' 人，跳过 '+result.skipped+' 人。'
+        }else{
+          rebuildPreview.value=result;rebuildDone.value=result.examined===0
+          actionNotice.value='预览未修改数据。'
+        }
       } catch (error) {
-        actionWarning.value = readErrorMessage(error, '重新评估失败')
+        rebuildPreview.value=null
+        actionWarning.value = readErrorMessage(error, '重评失败，请重新预览')
       } finally {
         reevaluating.value = false
       }
@@ -541,7 +559,7 @@ export default {
     load()
 
     return {
-      loading, mutating, reevaluating, savingTiers, hasLoaded,
+      rebuildPreview,rebuildReason,rebuildDone,restartRebuild, loading, mutating, reevaluating, savingTiers, hasLoaded,
       actionWarning, actionNotice,
       levels, tierRows, tierSource,
       previewAmount, previewLoading, previewError, previewResult,

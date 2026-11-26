@@ -42,7 +42,7 @@ import (
 func newRegisterLevelTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := newUserControllerTestDB(t)
-	if err := db.AutoMigrate(&entity.UserLevel{}, &entity.UserLevelHistory{},
+	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.BillingRecord{}, &entity.UserLevel{}, &entity.UserLevelHistory{},
 		&entity.AccountDeviceBinding{}, &entity.UserDeviceBlock{}); err != nil {
 		t.Fatalf("migrate level tables: %v", err)
 	}

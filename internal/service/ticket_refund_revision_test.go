@@ -102,6 +102,11 @@ func TestTicketRefundRevisionMultiOrderAndPartialSettlement(t *testing.T) {
 	}
 	first := seedTicketRefundOrder(t, db, 21, owner.ID, "paid", time.Now().Add(-2*time.Hour), 7.5, true)
 	second := seedTicketRefundOrder(t, db, 22, owner.ID, "paid", time.Now().Add(-time.Hour), 7.5, true)
+	if err := db.AutoMigrate(&entity.BillingRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	seedLevelCredit(t, db, first)
+	seedLevelCredit(t, db, second)
 	revision := TicketRefundRevisionInput{Manage: true, Kind: TicketRefundKindOriginal, RequestedCents: 1000, Reason: "按两笔原路核对",
 		Allocations: []TicketRefundOrderAllocation{{OrderID: first.ID, Cents: 750}, {OrderID: second.ID, Cents: 249}}}
 	if _, err := EditTicketRefundWithDB(db, admin, manual.ID, revision, testVerifyTicketRefundChannel); !errors.Is(err, ErrTicketRefundAmount) {

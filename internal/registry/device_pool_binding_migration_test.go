@@ -43,7 +43,7 @@ func newA1RegistryDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.TicketRefund{}); err != nil {
 		t.Fatalf("migrate base tables: %v", err)
 	}
 	return db

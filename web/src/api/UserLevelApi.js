@@ -131,3 +131,8 @@ export function getMyUserLevel() {
     method: 'get',
   })
 }
+
+// Preview by default. A write requires a matching preview digest and reason.
+export function rebuildEffectiveLevels(data) {
+  return request({url:'/api/admin/effective-ledger/rebuild', method:'post', errorFeedback:'local', data})
+}
