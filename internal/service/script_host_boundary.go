@@ -33,6 +33,13 @@ func declaredPlatformHost(host string) bool {
 	return h != nil && (*h)[host]
 }
 
+// IsConfiguredSiteAuthority matches only the normalized siteHosts snapshot.
+// Built-in loopback names and IPs do not implicitly grant registration.
+func IsConfiguredSiteAuthority(authority string) bool {
+	host := normalizeScriptLauncherHost(authority)
+	return host != "" && declaredPlatformHost(normalizePublicScriptHost(host))
+}
+
 // IsLocalSiteAuthority recognizes the actual Host only, never a forwarding header.
 func IsLocalSiteAuthority(authority string) bool {
 	h := normalizePublicScriptHost(normalizeScriptLauncherHost(authority))

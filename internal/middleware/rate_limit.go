@@ -19,7 +19,13 @@ func CORS(c *gin.Context) {
 	// Browser clients send the same device/session identity headers as native clients.
 	// If these are missing from the preflight allow-list, the browser reports only
 	// "Failed to fetch" and never reaches authentication or the API handler.
-	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity")
+	allowedHeaders := "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity"
+	// The installation credential is scoped to the agreement protocol only.
+	switch c.Request.URL.Path {
+	case "/api/agreements/current", "/api/agreements/status", "/api/agreements/consents":
+		allowedHeaders += ", X-Agreement-Device"
+	}
+	c.Header("Access-Control-Allow-Headers", allowedHeaders)
 	c.Header("Access-Control-Expose-Headers", "X-Request-ID, Retry-After")
 	c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 

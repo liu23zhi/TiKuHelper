@@ -196,6 +196,7 @@ func (p *sqpProxy) serve(c *gin.Context) {
 		req.URL.Host = sqpTarget.Host
 		req.Header.Del("Authorization")
 		req.Header.Del("Proxy-Authorization")
+		req.Header.Del(agreementDeviceHeader)
 		req.Header.Set("Cookie", "UID=1")
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
