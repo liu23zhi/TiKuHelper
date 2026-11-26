@@ -187,6 +187,20 @@ test('sensitive detection displays precheck failure and only the trusted diagnos
   assert.equal(wrapper.emitted('detected'), undefined)
 })
 
+test('T12 prefers the image log receipt over the local HTTP transport fallback', async () => {
+  user.setStoredCurrentUser(admin(80015)); const wrapper = await mounted(Detect, { sha: 'a'.repeat(64) })
+  await wrapper.get('button').trigger('click'); await settle(); confirmations[0].resolve({ isConfirmed: true }); await settle()
+  const id = 'IMG-' + 'a'.repeat(32)
+  detections[0].resolve(buildResponsePayload({ status: 502, headers: { 'x-request-id': '1'.repeat(32) }, data: {
+    code: 'SENSITIVE_IMAGE_UPSTREAM_QUOTA_EXHAUSTED', diagnosticId: id, message: 'FIXTURE_RAW_UPSTREAM_BODY',
+  } })); await settle()
+  assert.match(wrapper.get('[role="status"]').text(), /检测服务额度不足/)
+  assert.match(wrapper.text(), /SENSITIVE_IMAGE_UPSTREAM_QUOTA_EXHAUSTED/)
+  assert.equal(wrapper.get('[data-request-diagnostic]').text(), id)
+  assert.doesNotMatch(wrapper.text(), /FIXTURE_RAW_UPSTREAM_BODY|11111111/)
+  assert.equal(detections.length, 1)
+})
+
 test('an uncertain detection result tells the admin to refresh without offering an automatic retry', async () => {
   user.setStoredCurrentUser(admin(80014)); const wrapper = await mounted(Detect, { sha: 'b'.repeat(64) })
   await wrapper.get('button').trigger('click'); await settle(); confirmations[0].resolve({ isConfirmed: true }); await settle()

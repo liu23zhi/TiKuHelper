@@ -194,7 +194,8 @@ test('判据②：同步失败信息必须透出（缓存已改但附件没跟�
     affectedAttachments: 3,
     attachSyncError: 'database is locked',
   });
-  assert.equal(view.attachSyncError, 'database is locked');
+  assert.equal(view.attachSyncError, '附件状态未同步，请刷新核对。');
+  assert.doesNotMatch(JSON.stringify(view), /database is locked/);
   // 页面必须把它渲染出来，不能只在 console 里丢掉。
   assert.match(pageSource, /detectOutcome\.attachSyncError/, '页面必须展示 attachSyncError');
 });
@@ -563,3 +564,29 @@ test('records Tab 必须提示 sensitive 结论的歧义（额度耗尽与真违
 console.log(
   'SENSITIVE_IMAGE_PAGE 判据①②③④ 全部覆盖：两 Tab 独立分页 / 涉及行数不可退化为 0 / 字节与上游原文白名单净化 / 两 Tab key + GIF 控制器',
 );
+
+test('T12 管理端仅显示已登记分类和本地诊断编号，批量失败不伪装成全完成', () => {
+  const id = 'IMG-' + 'a'.repeat(32);
+  const local = helpersEsm.presentImageDetectionError({
+    code: 'SENSITIVE_IMAGE_UPSTREAM_RATE_LIMITED', diagnosticId: id, message: 'do-not-show',
+  });
+  assert.equal(local.code, 'SENSITIVE_IMAGE_UPSTREAM_RATE_LIMITED');
+  assert.equal(local.diagnosticId, id);
+  assert.match(local.message, /限流/);
+  const untrusted = helpersEsm.presentImageDetectionError({
+    code: 'uapi-untagged-key', diagnosticId: 'private-path', message: 'raw error',
+  });
+  assert.equal(untrusted.code, '');
+  assert.equal(untrusted.diagnosticId, '');
+  assert.doesNotMatch(JSON.stringify(untrusted), /raw error|untagged|private/);
+  const batch = projectDetectResponse({ ticketId: 2, total: 2, detected: 1, skipped: 1, failures: [
+    { attachmentId: 7, code: 'SENSITIVE_IMAGE_READ_FAILED', diagnosticId: id, message: 'raw error' },
+  ] });
+  assert.equal(batch.failures[0].diagnosticId, id);
+  assert.equal(batch.failures[0].attachmentId, 7);
+  assert.match(describeDetectOutcome(batch), /未完成/);
+  assert.doesNotMatch(JSON.stringify(batch.failures), /raw error/);
+  const button = readFileSync(path.resolve(here, '../components/SensitiveImageDetectButton.vue'), 'utf8');
+  assert.match(button, /presentImageDetectionError/);
+  assert.match(pageSource, /presentImageDetectionError/);
+});
