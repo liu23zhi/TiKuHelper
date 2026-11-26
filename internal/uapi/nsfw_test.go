@@ -116,6 +116,40 @@ func TestImageNSFWRejectsResponseWithoutVerdict(t *testing.T) {
 	}
 }
 
+// A response can fail after HTTP succeeds. Keep correlation in typed metadata,
+// but do not cause it (or upstream payload) to be interpolated into error strings.
+func TestImageNSFWResponseFailureKeepsDiagnosticMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		label, body, code string
+	}{
+		{"malformed", `{"is_nsfw":`, "NSFW_RESPONSE_JSON_INVALID"},
+		{"untyped", `{"is_nsfw":"fixture-response-note"}`, "NSFW_RESPONSE_JSON_INVALID"},
+		{"missing", `{"is_nsfw":null,"other":"fixture-response-note"}`, "NSFW_RESPONSE_VERDICT_MISSING"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			const requestID = "fixture-owned-correlation"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Request-ID", requestID)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			client := NewClient("uapi-test-only-key").SetImageNSFWURL(server.URL).SetMaxRetries(0)
+			_, err := client.ImageNSFW(context.Background(), ImageNSFWRequest{Image: []byte("fixture"), ImageName: "a.png"})
+			if !errors.Is(err, ErrUpstream) {
+				t.Fatalf("response failure must continue to match ErrUpstream: %T", err)
+			}
+			var upstream *APIError
+			if !errors.As(err, &upstream) || upstream.HTTPStatus != http.StatusOK || upstream.Code != tc.code || upstream.RequestID != requestID {
+				t.Fatalf("expected typed HTTP/status and unchanged correlation for %s, got %T", tc.code, err)
+			}
+			if strings.Contains(err.Error(), "fixture-response-note") || strings.Contains(err.Error(), requestID) {
+				t.Fatal("plain parse error includes untrusted upstream information")
+			}
+		})
+	}
+}
+
 // TestImageNSFWDoesNotRetryBillablePost 断言内部不重放可能计费的 POST。
 func TestImageNSFWDoesNotRetryBillablePost(t *testing.T) {
 	var calls int
