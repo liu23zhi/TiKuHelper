@@ -175,6 +175,33 @@ export const SENSITIVE_IMAGE_FORBIDDEN_FIELDS = Object.freeze([
   'originalText', 'original_text', 'rawResponse', 'raw', 'upstreamBody', 'upstreamResponse',
 ]);
 
+const IMAGE_DETECTION_MESSAGES = Object.freeze({
+  SENSITIVE_IMAGE_DETECTOR_UNCONFIGURED: '未配置图片检测通道，未完成检测。',
+  SENSITIVE_IMAGE_BYTES_UNAVAILABLE: '未找到图片原始字节，未调用检测服务。',
+  SENSITIVE_IMAGE_READ_FAILED: '读取或解密图片失败，未调用检测服务。',
+  SENSITIVE_IMAGE_REQUEST_INVALID: '图片检测参数无效，未调用检测服务。',
+  SENSITIVE_IMAGE_UPSTREAM_UNAUTHORIZED: '图片检测服务认证失败，请检查密钥配置。',
+  SENSITIVE_IMAGE_UPSTREAM_FORBIDDEN: '图片检测服务拒绝访问，请检查账号权限。',
+  SENSITIVE_IMAGE_UPSTREAM_RATE_LIMITED: '图片检测服务限流，请稍后重试。',
+  SENSITIVE_IMAGE_UPSTREAM_QUOTA_EXHAUSTED: '图片检测服务额度不足，请检查上游账户。',
+  SENSITIVE_IMAGE_UPSTREAM_4XX: '图片检测服务拒绝了请求，请核对输入格式及服务配置。',
+  SENSITIVE_IMAGE_UPSTREAM_5XX: '图片检测服务暂时故障，请稍后重试。',
+  SENSITIVE_IMAGE_UPSTREAM_TIMEOUT: '等待图片检测服务响应超时，未取得新判定。',
+  SENSITIVE_IMAGE_UPSTREAM_NETWORK: '图片检测服务网络连接失败，未取得新判定。',
+  SENSITIVE_IMAGE_UPSTREAM_UNEXPECTED: '图片检测服务未返回可识别的结果。',
+  SENSITIVE_IMAGE_RESPONSE_JSON_INVALID: '图片检测服务响应格式无效，未取得新判定。',
+  SENSITIVE_IMAGE_RESPONSE_VERDICT_MISSING: '图片检测服务未返回可用判定。',
+  SENSITIVE_IMAGE_STATE_SYNC_FAILED: '未能保存并同步新判定，请刷新核对后重试。',
+});
+
+export function presentImageDetectionError(payload) {
+  const body = payload && typeof payload === 'object' ? payload : {};
+  const code = typeof body.code === 'string' && Object.hasOwn(IMAGE_DETECTION_MESSAGES, body.code) ? body.code : '';
+  const diagnosticId = code && typeof body.diagnosticId === 'string' && /^IMG-[0-9a-f]{32}$/.test(body.diagnosticId)
+    ? body.diagnosticId : '';
+  return { code, diagnosticId, message: IMAGE_DETECTION_MESSAGES[code] || '图片检测请求未完成，请稍后核对。' };
+}
+
 // projectDetectResponse 把一次手动触发响应收敛成页面可用的安全视图。
 //
 // 输入是 controller 的原始 JSON：SHA 路径 {result, affectedAttachments, attachSyncError?}，
@@ -194,12 +221,16 @@ export function projectDetectResponse(payload) {
     result,
     // 影响行数三态：number=后端明确回报；null=后端没回这个字段（不能当 0）。
     affectedAttachments: readNonnegativeIntOrNull(body.affectedAttachments),
-    attachSyncError: typeof body.attachSyncError === 'string' ? body.attachSyncError : '',
+    attachSyncError: typeof body.attachSyncError === 'string' && body.attachSyncError !== '' ? '附件状态未同步，请刷新核对。' : '',
     ticketId: readNonnegativeIntOrNull(body.ticketId),
     total: readNonnegativeIntOrNull(body.total),
     detected: readNonnegativeIntOrNull(body.detected),
     skipped: readNonnegativeIntOrNull(body.skipped),
     resultCount: Array.isArray(body.results) ? body.results.length : null,
+    failures: Array.isArray(body.failures) ? body.failures.map(item => ({
+      attachmentId: readNonnegativeIntOrNull(item?.attachmentId),
+      ...presentImageDetectionError(item),
+    })) : [],
   };
   // 工单路径的 results[] 逐项投影，同样只留白名单字段。
   view.results = Array.isArray(body.results)
@@ -247,7 +278,7 @@ export function describeDetectOutcome(view) {
     const totalText = total === null ? '未知' : String(total);
     const detectedText = detected === null ? '未知' : String(detected);
     const skippedText = skipped === null ? '未知' : String(skipped);
-    return `${stateText}；本工单共 ${totalText} 张，重新检测 ${detectedText} 张，跳过 ${skippedText} 张（字节取不到）。`;
+    return `${stateText}；本工单共 ${totalText} 张，重新检测 ${detectedText} 张，跳过 ${skippedText} 张（未完成）。`;
   }
   const rows = safe.affectedAttachments;
   if (rows === null) {

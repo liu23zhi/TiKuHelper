@@ -61,7 +61,7 @@ func UploadTicketAttachment(c *gin.Context) {
 	// 反过来若让它回滚整个上传，一次迁移疏漏就会让功能整体不可用。
 	// 失败的信号进日志（含 attachmentId），而不是静默吞掉。
 	if refCount, linked, linkErr := service.LinkUploadedTicketAttachmentBlobWithDB(db, info.ID); linkErr != nil {
-		logger.SysWarn(fmt.Sprintf("ticket_attachment_blob_link_failed attachmentId=%d error=%v", info.ID, linkErr))
+		logger.SysWarn(fmt.Sprintf("ticket_attachment_blob_link_failed attachmentId=%d", info.ID))
 	} else if linked {
 		logger.SysLog(fmt.Sprintf("ticket_attachment_blob_linked attachmentId=%d refCount=%d", info.ID, refCount))
 	}

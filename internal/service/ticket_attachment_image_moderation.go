@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
-	"github.com/itihey/tikuAdapter/internal/uapi"
-	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -104,7 +102,7 @@ var (
 
 // ticketImageModeratorOverride 只给测试注入**假通道**用。
 //
-// 生产恒为 nil，此时 ticketImageModeratorWithDB 返回 uapi 实现。测试用它
+// 生产恒为 nil，此时走 uapi 实现。测试用它
 // 装「永远返回违规」「永远报错」以及纯计数器（验证关闭时零外呼）。
 var ticketImageModeratorOverride TicketImageModerator
 
@@ -133,58 +131,6 @@ func SetTicketImageModerationEnabledWithDB(db *gorm.DB, enabled *bool) error {
 		map[bool]string{true: "true", false: "false"}[*enabled], "是否启用工单图片内容审核")
 }
 
-// ticketImageModeratorWithDB 返回本次上传要用的审核通道。
-//
-// 优先级：测试注入 > 生产 uapi 实现。返回 nil 表示「没配置，不可用」。
-func ticketImageModeratorWithDB(db *gorm.DB) TicketImageModerator {
-	if ticketImageModeratorOverride != nil {
-		return ticketImageModeratorOverride
-	}
-	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
-	if !strings.HasPrefix(key, "uapi-") || len(key) <= len("uapi-") {
-		// 没配置密钥：不假装成功，也不浪费一次必然 401 的外呼（同 scanTicketAttachmentOnce）。
-		return nil
-	}
-	return newUAPITicketImageModerator(key)
-}
-
-// newUAPITicketImageModerator 构造生产实现：走 uapi 的 /image/nsfw（与后台 worker
-// 的 scanTicketAttachmentOnce 同一个上游通道、同一套判定规则）。
-//
-// 判定一律交给 judgeTicketAttachmentScan —— 那里是**唯一**的规则表，
-// 这里绝不另写一份 is_nsfw/suggestion 的分支，否则两处规则漂移会让
-// 「上传前打标」与「异步打标」给出不同答案。
-func newUAPITicketImageModerator(key string) TicketImageModerator {
-	return func(ctx context.Context, data []byte, mimeType string) (TicketImageModeration, error) {
-		client := uapi.NewClient(key).SetTimeout(ticketImageModerationTimeout).SetMaxRetries(0)
-		if override := strings.TrimSpace(ticketAttachmentNSFWURLOverride); override != "" {
-			client.SetImageNSFWURL(override)
-		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		callCtx, cancel := context.WithTimeout(ctx, ticketImageModerationTimeout)
-		defer cancel()
-		result, err := client.ImageNSFW(callCtx, uapi.ImageNSFWRequest{
-			Image:     data,
-			ImageName: "ticket-attachment" + ticketAttachmentExtension(mimeType),
-		})
-		if err != nil {
-			return TicketImageModeration{}, fmt.Errorf("%w: %v", ErrTicketImageModerationUnavailable, err)
-		}
-		state, reason := judgeTicketAttachmentScan(result)
-		switch state {
-		case entity.TicketAttachmentScanSensitive:
-			return TicketImageModeration{Approved: false, Reason: reason}, nil
-		case entity.TicketAttachmentScanApproved:
-			return TicketImageModeration{Approved: true}, nil
-		default:
-			// failed：上游 200 但没给出可用结论 —— 同样按不可用处理。
-			return TicketImageModeration{}, fmt.Errorf("%w: %s", ErrTicketImageModerationUnavailable, reason)
-		}
-	}
-}
-
 // moderateTicketAttachmentImage 在上传路径上同步做一次内容审核，返回**三态**结论。
 //
 // 调用方（StoreTicketAttachmentWithDB）的处置规则：
@@ -199,40 +145,39 @@ func newUAPITicketImageModerator(key string) TicketImageModerator {
 // 审核的是**重编码后**的字节（safeTicketAttachmentImage 的产物），而不是原始上传
 // 字节：这样「藏在 EXIF/尾部」的东西在送给上游之前就已经被剥掉了，上游看到的
 // 与用户最终能看到的不是同一份内容时，判定就没有意义。
-func moderateTicketAttachmentImage(ctx context.Context, db *gorm.DB, data []byte, mimeType string) TicketImageModerationDecision {
-	mod := ticketImageModeratorWithDB(db)
-	if mod == nil {
-		return TicketImageModerationDecision{State: TicketImageModerationUnavailable, Reason: "未配置图片审核通道"}
+func moderateTicketAttachmentImage(ctx context.Context, db *gorm.DB, ticketID int64, data []byte, mimeType string) TicketImageModerationDecision {
+	trace := startImageDetectionTrace("upload", HashSensitiveImage(data), mimeType, int64(len(data)), 0, ticketID)
+	unavailable := func(code string) TicketImageModerationDecision {
+		trace.fail(code)
+		reason := "审核调用失败"
+		if code == imageDetectorUnconfigured {
+			reason = "未配置图片审核通道"
+		}
+		return TicketImageModerationDecision{State: TicketImageModerationUnavailable, Reason: reason}
 	}
-	verdict, err := mod(ctx, data, mimeType)
-	if err != nil {
-		// 不把上游错误原文透给用户（可能是地址/密钥片段），只记日志。
-		logger.SysWarn(fmt.Sprintf("ticket_image_moderation_failed error=%v", err))
-		return TicketImageModerationDecision{State: TicketImageModerationUnavailable, Reason: "审核调用失败"}
-	}
-	reason := strings.TrimSpace(verdict.Reason)
-	if verdict.Approved {
-		if reason == "" {
+	if ticketImageModeratorOverride != nil {
+		verdict, err := ticketImageModeratorOverride(ctx, data, mimeType)
+		if err != nil {
+			return unavailable(trace.upstreamFailureCode(err))
+		}
+		if verdict.Approved && strings.TrimSpace(verdict.Reason) != "" {
+			return unavailable(imageResponseVerdictMissing)
+		}
+		if verdict.Approved {
+			trace.write("detect_result", "pass", "-")
 			return TicketImageModerationDecision{State: TicketImageModerationPass}
 		}
-		// Approved=true 但带着 Reason：上游既没说违规、也没说正常（suggestion=review、
-		// risk_level=medium 这类中间结论）。**不能**当成 flagged —— 那是对用户的明确
-		// 指控，而这里根本没有违规判定；也**不能**放行 —— 没拿到「正常」结论。
-		// 按 judgeTicketAttachmentScan「缺少判定字段 → failed」的同一取向归入
-		// unavailable，措辞与 flagged 严格区分（见 ticketAttachmentHiddenReason 的
-		// 注释：混为一谈会让用户以为图片被误判）。
-		logger.SysWarn(fmt.Sprintf("ticket_image_moderation_inconclusive reason=%s bytes=%d", reason, len(data)))
-		return TicketImageModerationDecision{
-			State:  TicketImageModerationUnavailable,
-			Reason: truncateUTF8(reason, 120),
-		}
+		trace.write("detect_result", "flagged", "-")
+		return TicketImageModerationDecision{State: TicketImageModerationFlagged, Reason: "上游判定为敏感图片"}
 	}
-	if reason == "" {
-		reason = "审核结论不可用"
+	scan, reason, code := fetchTicketAttachmentScan(ctx, GetUAPIAPIKeyWithDB(imageDetectionDB(db)), trace, data, mimeType, ticketImageModerationTimeout)
+	if code != "" {
+		return unavailable(code)
 	}
-	logger.SysLog(fmt.Sprintf("ticket_image_moderation_flagged reason=%s bytes=%d", reason, len(data)))
-	return TicketImageModerationDecision{
-		State:  TicketImageModerationFlagged,
-		Reason: truncateUTF8(reason, 120),
+	if scan.State == entity.TicketAttachmentScanSensitive {
+		trace.write("detect_result", "flagged", "-")
+		return TicketImageModerationDecision{State: TicketImageModerationFlagged, Reason: reason}
 	}
+	trace.write("detect_result", "pass", "-")
+	return TicketImageModerationDecision{State: TicketImageModerationPass}
 }
