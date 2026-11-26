@@ -143,7 +143,17 @@ func CurrentAgreement(c *gin.Context) {
 		agreementFail(c, op, e)
 		return
 	}
-	c.JSON(200, gin.H{"type": "user_agreement", "version": r.Version, "summary": r.Summary, "body": r.Body, "publishedAt": r.PublishedAt, "needsAcceptance": need})
+	if versions, pinned := c.GetQueryArray("version"); pinned {
+		if len(versions) != 1 || versions[0] == "" {
+			agreementFail(c, op, service.ErrAgreementInput)
+			return
+		}
+		if versions[0] != r.Version {
+			agreementFail(c, op, service.ErrAgreementConflict)
+			return
+		}
+	}
+	c.JSON(200, gin.H{"type": "user_agreement", "version": r.Version, "summary": r.Summary, "body": r.Body, "publishedAt": r.PublishedAt, "needsAcceptance": need, "content_hash": service.AgreementContentHash(r.Body)})
 }
 func AgreementDeviceStatus(c *gin.Context) {
 	const op = "status"
