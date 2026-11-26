@@ -136,6 +136,7 @@ func StartExtensionLogs(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// created reports a new launch registration, not a diagnostic file.
 	created, err := extensionLogFiles.Start(owner, session)
 	if err != nil {
 		diagnosticWriteError(c, err)

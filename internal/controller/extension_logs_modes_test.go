@@ -151,7 +151,7 @@ func TestDiagnosticHTTPThreeModesReadOnlyAuthAndFilteredFiles(t *testing.T) {
 	for _, q := range []struct {
 		query, mode, browser string
 		count                int
-	}{{"mode=extension", "extension", "", 2}, {"mode=native_exam", "native_exam", "", 2}, {"browser_id=native-profile-2", "native_browser", "native-profile-2", 2}, {"mode=native_browser", "native_browser", "", 6}} {
+	}{{"mode=extension", "extension", "", 1}, {"mode=native_exam", "native_exam", "", 1}, {"browser_id=native-profile-2", "native_browser", "native-profile-2", 1}, {"mode=native_browser", "native_browser", "", 3}} {
 		status, raw := call("GET", "/fixture-admin?"+q.query, "", "", nil)
 		var page extensionlogs.Page
 		if status != 200 || json.Unmarshal(raw, &page) != nil || len(page.Entries) != q.count {
@@ -167,9 +167,17 @@ func TestDiagnosticHTTPThreeModesReadOnlyAuthAndFilteredFiles(t *testing.T) {
 	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(k, k2) || dev != dev2 || bills != bills2 {
 		t.Fatal("telemetry mutated a script session, token usage, device binding or billing")
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
-	if len(files) != 5 {
-		t.Fatal("duplicate modes/hosts shared files")
+	var files []string
+	for destination, want := range map[string]int{
+		filepath.Join("client", "Browser_extensions"):                                       1,
+		filepath.Join("client", "Browser_extensions", "Multi-browser_mode", "host-fixture"): 3,
+		filepath.Join("client", "Exam_Client_Injection"):                                    1,
+	} {
+		matches, err := filepath.Glob(filepath.Join(dir, destination, "*.jsonl"))
+		if err != nil || len(matches) != want {
+			t.Fatalf("%s: got %d files, want %d (%v)", destination, len(matches), want, err)
+		}
+		files = append(files, matches...)
 	}
 	for _, p := range files {
 		b, e := os.ReadFile(p)

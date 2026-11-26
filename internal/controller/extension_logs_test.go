@@ -73,6 +73,13 @@ func TestExtensionLogsUploadReadAndConfigure(t *testing.T) {
 			t.Fatalf("idempotent start %d, want %d", c, code)
 		}
 	}
+	if c, raw := call("GET", adm, "", "", "admin"); c != 200 || raw != `{"entries":[],"next_cursor":""}` {
+		t.Fatalf("start is not a diagnostic event: %d %s", c, raw)
+	}
+	empty := strings.TrimSuffix(meta, "}") + `,"entries":[]}`
+	if c, _ := call("POST", base, empty, "Bearer fixture-only", ""); c != 400 {
+		t.Fatalf("zero-event upload accepted: %d", c)
+	}
 	if c, _ := call("POST", base, batch, "Bearer fixture-only", ""); c != 201 {
 		t.Fatalf("ingest %d", c)
 	}
@@ -102,7 +109,7 @@ func TestExtensionLogsUploadReadAndConfigure(t *testing.T) {
 	if c, _ = call("POST", base+"/start", meta, "Bearer fixture-only", ""); c != 403 {
 		t.Fatalf("disabled start %d", c)
 	}
-	if c, raw = call("GET", adm+"?user_id=17&device_id=fixture-device&launch_id=11111111-1111-4111-8111-111111111111", "", "", "admin"); c != 200 || !strings.Contains(raw, "session.start") {
+	if c, raw = call("GET", adm+"?user_id=17&device_id=fixture-device&launch_id=11111111-1111-4111-8111-111111111111", "", "", "admin"); c != 200 || !strings.Contains(raw, "network.offline") || strings.Contains(raw, "session.start") {
 		t.Fatalf("missing launch: %d", c)
 	}
 	if c, raw = call("GET", adm+"?user_id=18", "", "", "admin"); c != 200 || strings.Contains(raw, "fixture-device") {
