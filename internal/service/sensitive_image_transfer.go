@@ -49,6 +49,23 @@ func sensitiveImageExportLoader(includeOriginals bool) func(*gorm.DB, int) ([][]
 		var imageBytes int64
 		for _, entry := range entries {
 			encoded := ""
+			reason := entry.Reason
+			contentType := entry.ContentType
+			if !includeOriginals {
+				switch entry.Status {
+				case entity.SensitiveImageCacheStatusClean, entity.SensitiveImageCacheStatusSensitive,
+					entity.SensitiveImageCacheStatusPending, entity.SensitiveImageCacheStatusError:
+				default:
+					continue
+				}
+				if !isTicketImageDigest(entry.ImageSHA256) {
+					continue
+				}
+				reason = SafeSensitiveImageHistoryReason(entry.Status, entry.Reason)
+				if !ticketAttachmentMediaTypeAllowed(contentType) {
+					contentType = ""
+				}
+			}
 			if includeOriginals {
 				plain, _, err := LoadSensitiveImageBytesWithDB(db, entry.ImageSHA256)
 				switch {
@@ -62,7 +79,7 @@ func sensitiveImageExportLoader(includeOriginals bool) func(*gorm.DB, int) ([][]
 					return nil, err
 				}
 			}
-			rows = append(rows, []string{entry.ImageSHA256, entry.Status, entry.Reason, entry.ContentType, encoded, entry.UpdatedAt.Format(time.RFC3339Nano)})
+			rows = append(rows, []string{entry.ImageSHA256, entry.Status, reason, contentType, encoded, entry.UpdatedAt.Format(time.RFC3339Nano)})
 		}
 		return rows, nil
 	}

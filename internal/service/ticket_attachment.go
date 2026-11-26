@@ -307,6 +307,9 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 			ByteSize: int64(len(safe)), SHA256: hex.EncodeToString(digest[:]),
 			ScanState: scanState,
 		}
+		if err := applyTicketUploadVerdict(imageDetectionDB(tx), &created, time.Now()); err != nil {
+			return err
+		}
 		if err := tx.Create(&created).Error; err != nil {
 			return err
 		}
@@ -505,7 +508,7 @@ func scanTicketAttachment(ctx context.Context, db *gorm.DB, trace *imageDetectio
 	if code != "" {
 		return failedTicketAttachmentScan(trace.fail(code))
 	}
-	trace.write("detect_result", scan.State, "-")
+	trace.write("detect_upstream_result", scan.State, "-")
 	return scan
 }
 
@@ -591,24 +594,20 @@ func ProcessPendingTicketAttachmentScans(ctx context.Context, db *gorm.DB, now t
 }
 
 func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.TicketAttachment, scannedAt time.Time) error {
-	// Claim：把 pending 推进到 scanning，条件包含读到的 attempt_count/updated_at，
-	// 被别人抢先处理过的行这里会 RowsAffected=0，直接跳过。
-	//
-	// 时间**必须用调用方传入的 now**（而不是 time.Now()）：worker 的批量查询按 now
-	// 判定 next_attempt_at，claim 若用更晚的真实时间，会让「刚刚被退避到未来」的行
-	// 立刻可再次 claim，退避形同虚设（实测会导致 attempt_count 不增长、永远 pending）。
-	claim := db.Model(&entity.TicketAttachment{}).
-		Where("id = ? AND scan_state = ? AND attempt_count = ? AND updated_at = ?", row.ID, entity.TicketAttachmentScanPending, row.AttemptCount, row.UpdatedAt).
-		Where("next_attempt_at IS NULL OR next_attempt_at <= ?", scannedAt).
-		Updates(map[string]interface{}{"scan_state": entity.TicketAttachmentScanScanning, "updated_at": scannedAt})
-	if claim.Error != nil {
-		return claim.Error
+	trace := newImageDetectionTrace("background", row.SHA256, row.MediaType, row.ByteSize, row.ID, row.TicketID)
+	claim, err := claimTicketImageWorker(db, row, scannedAt, trace.id)
+	if err != nil {
+		return trace.fail(imageStateSyncFailed)
 	}
-	if claim.RowsAffected == 0 {
+	if !claim.owned {
+		if claim.reusedState != "" {
+			trace.write("detect_reused", claim.reusedState, "-")
+		}
 		return nil
 	}
-
-	trace := startImageDetectionTrace("background", row.SHA256, row.MediaType, row.ByteSize, row.ID, row.TicketID)
+	row = claim.row
+	trace.attachmentID, trace.ticketID = row.ID, row.TicketID
+	trace.write("detect_start", "-", "-")
 	plain, mimeType, readErr := loadTicketAttachmentScanBytes(db, row)
 	var scan TicketAttachmentScanResult
 	if readErr != nil {
@@ -616,9 +615,12 @@ func processTicketAttachmentScan(ctx context.Context, db *gorm.DB, row entity.Ti
 	} else {
 		scan = scanTicketAttachment(ctx, db, trace, plain, mimeType)
 	}
-	if err := persistTicketAttachmentScanResult(db, row, scan, scannedAt); err != nil {
+	outcome, err := completeTicketImageWorker(db, claim, scan, scannedAt)
+	if err != nil {
+		trace.write("detect_persist_failed", "-", imageStateSyncFailed)
 		return trace.fail(imageStateSyncFailed)
 	}
+	trace.write(outcome.event, outcome.state, "-")
 	return nil
 }
 
@@ -650,10 +652,11 @@ func decryptTicketAttachmentForScan(db *gorm.DB, row entity.TicketAttachment) ([
 // 异步结果都不能把它**改回 approved** —— 同步审核的结论更贴近上传时刻，
 // 异步复核只允许「pending → approved/sensitive」，不允许放宽已有结论。
 func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
-	return db.Transaction(func(tx *gorm.DB) error { return persistTicketAttachmentScanResultInTx(tx, row, scan, now) })
+	_, err := completeTicketImageWorker(db, ticketImageWorkerClaim{row: row}, scan, now)
+	return err
 }
 
-func persistTicketAttachmentScanResultInTx(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
+func ticketAttachmentScanUpdates(row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) (map[string]any, string) {
 	attempts := row.AttemptCount + 1
 	updates := map[string]interface{}{
 		"attempt_count": attempts,
@@ -680,27 +683,7 @@ func persistTicketAttachmentScanResultInTx(db *gorm.DB, row entity.TicketAttachm
 		}
 	}
 	updates["scan_state"] = storedScanState
-	// 只在「本次 claim 成功占住的 scanning 行」上写：若这期间状态已被改成
-	// sensitive（上传前同步审核的结论），RowsAffected=0，异步结果被丢弃，
-	// sensitive 得以保持。
-	result := db.Model(&entity.TicketAttachment{}).
-		Where("id = ? AND scan_state = ?", row.ID, entity.TicketAttachmentScanScanning).
-		Updates(updates)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 && scan.State == entity.TicketAttachmentScanApproved {
-		// 正常情况（行仍是 scanning）不会走到这里；走到了说明状态在检测期间被
-		// 改成非 scanning（典型：上传前已判 sensitive），此时不能静默——留一条
-		// 可追溯的日志，说明为什么这张图没被改成 approved。
-		logger.SysLog(fmt.Sprintf("ticket_attachment_scan_result_discarded attachmentId=%d want=%s reason=state_changed", row.ID, scan.State))
-	}
-	if result.RowsAffected > 0 {
-		if err := persistTicketImageSharedVerdict(db, row, scan, storedScanState, now); err != nil {
-			return err
-		}
-	}
-	return nil
+	return updates, storedScanState
 }
 
 // RecoverStaleTicketAttachmentScans 把卡在 scanning 的行放回 pending。
@@ -709,7 +692,7 @@ func RecoverStaleTicketAttachmentScans(db *gorm.DB, now time.Time) (int64, error
 	if db == nil {
 		return 0, errors.New("数据库未初始化")
 	}
-	staleBefore := now.Add(-2 * time.Minute)
+	staleBefore := now.Add(-ticketImageWorkerLeaseTime)
 	result := imageDetectionDB(db).Model(&entity.TicketAttachment{}).
 		Where("scan_state = ? AND updated_at < ?", entity.TicketAttachmentScanScanning, staleBefore).
 		Updates(map[string]interface{}{"scan_state": entity.TicketAttachmentScanPending, "next_attempt_at": now, "updated_at": now})

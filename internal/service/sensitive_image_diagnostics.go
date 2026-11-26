@@ -55,12 +55,17 @@ type imageDetectionTrace struct {
 }
 
 func startImageDetectionTrace(channel, sha, mime string, size, attachmentID, ticketID int64) *imageDetectionTrace {
+	trace := newImageDetectionTrace(channel, sha, mime, size, attachmentID, ticketID)
+	trace.write("detect_start", "-", "-")
+	return trace
+}
+
+func newImageDetectionTrace(channel, sha, mime string, size, attachmentID, ticketID int64) *imageDetectionTrace {
 	trace := &imageDetectionTrace{
 		id:      "IMG-" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 		channel: channel, attachmentID: attachmentID, ticketID: ticketID, started: time.Now(),
 	}
 	trace.setImage(sha, mime, size)
-	trace.write("detect_start", "-", "-")
 	return trace
 }
 
@@ -158,7 +163,7 @@ func SafeSensitiveImageHistoryReason(status, reason string) string {
 		return "检测失败，请重新检测"
 	case "sensitive":
 		switch reason {
-		case "上游建议 review", "上游建议 block", "上游风险等级 medium", "上游风险等级 high", "历史检测判定敏感", "上游判定为敏感图片":
+		case "上游建议 review", "上游建议 block", "上游风险等级 medium", "上游风险等级 high", "历史检测判定敏感", "历史判定", "上游判定为敏感图片":
 			return reason
 		default:
 			return "判定为敏感图片"
