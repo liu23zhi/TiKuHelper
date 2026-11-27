@@ -149,7 +149,7 @@ test('普通页面只展示搜题接口分桶，不渲染全站指标或管理�
     assert.ok(pageSource.includes(`data-metric="${metric}"`), `页面缺少 ${metric} 展示`)
   }
   assert.ok(pageSource.includes('data-status-label'), '页面缺少搜题状态文案')
-  assert.match(pageCode, /const endpointView = computed\(\(\) => view\.value\.endpoints\.search\)/)
+  assert.match(pageCode, /buildEndpointView\('search', currentSearchSnapshot\(historyPayload\.value\)\)/)
   assert.doesNotMatch(pageCode, /data-metric="(?:success-rate|avg-latency|total-requests|failed-requests)"/)
   assert.doesNotMatch(pageCode, /最近每分钟趋势|接口分桶|失败请求/)
   assert.match(pageCode, /getServiceStatusSeries/)
@@ -227,10 +227,11 @@ test('页面不得用成功率数值判分桶显灰（S3 变异的主要形态�
     '不得用 rateText 反推有没有数据')
 })
 
-test('分桶视图来自 buildServiceStatusView（唯一判定点），页面不自算', () => {
-  // 单一来源：页面只取 view.endpoints.search，不重新算 samples/total 的关系。
-  assert.match(pageCode, /const endpointView = computed\(\(\) => view\.value\.endpoints\.search\)/,
-    'endpointView 必须由 view.endpoints.search 派生')
+test('搜题概览有可确认时窗时只取同一份可信序列，页面不自算覆盖', () => {
+  assert.match(pageCode, /buildEndpointView\('search', currentSearchSnapshot\(historyPayload\.value\)\)/)
+  assert.match(pageCode, /overview\.value\?\.endpoints\?\.search/)
+  assert.doesNotMatch(pageCode, /endpoints\?\.other|overview\.value\?\.points|Date\.now/)
+  assert.match(pageCode, /hasTimedHistory\.value \? historyPayload\.value : payload\.value/)
   // endpointView 必须暴露给模板（否则模板里读不到，渲染成空）。
   assert.match(pageCode, /return \{[^}]*endpointView[^}]*\}/, 'setup() 的返回值里必须有 endpointView')
 })
