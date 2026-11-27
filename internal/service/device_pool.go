@@ -336,6 +336,10 @@ func devicePoolActiveScope(db *gorm.DB) (string, []any) {
 // 表未就绪时返回 ErrDevicePoolSchemaUnavailable（调用方 CanUseDevice 会把它
 // 当成 fail-open；显式查询的调用方则应把它视为「暂时算不出来」）。
 func CountDevices(db *gorm.DB, userID int32) (int, error) {
+	return countDeviceSlots(db, userID, false)
+}
+
+func countDeviceSlots(db *gorm.DB, userID int32, lockRows bool) (int, error) {
 	if db == nil || userID <= 0 {
 		return 0, nil
 	}
@@ -344,6 +348,9 @@ func CountDevices(db *gorm.DB, userID int32) (int, error) {
 	}
 	query := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).Where("user_id = ?", userID)
 	query = ActiveOrdinaryDeviceBindings(db, query)
+	if lockRows && db.Dialector.Name() == "mysql" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
 	selectClause := "id AS id"
 	if devicePoolSessionCountColumnAvailable(db) {
 		selectClause = "id AS id, session_count AS session_count"
@@ -533,6 +540,10 @@ func devicePoolGlobalDeviceBlacklistEntry(db *gorm.DB, normalizedDeviceID string
 // 新注册用户在被评估之前 level_id 就是 0，返回错误会让未评估用户
 // **立刻无法登录**（注册刚成功、第一次登录就被挡），而且是全量性的。
 func EffectiveDeviceLimit(db *gorm.DB, userID int32) (limit int32, source string, err error) {
+	return effectiveDeviceLimit(db, userID, false)
+}
+
+func effectiveDeviceLimit(db *gorm.DB, userID int32, lockLevel bool) (limit int32, source string, err error) {
 	if db == nil || userID <= 0 {
 		return DevicePoolUnlimited, DeviceLimitSourceLevelMissing, nil
 	}
@@ -576,9 +587,11 @@ func EffectiveDeviceLimit(db *gorm.DB, userID int32) (limit int32, source string
 	var levelRow struct {
 		DeviceLimit int32 `gorm:"column:device_limit"`
 	}
-	if err := devicePoolSession(db).Table(entity.TableNameUserLevel).
-		Select("device_limit AS device_limit").
-		Where("id = ?", levelID).Take(&levelRow).Error; err != nil {
+	q := devicePoolSession(db).Table(entity.TableNameUserLevel).Select("device_limit AS device_limit").Where("id = ?", levelID)
+	if lockLevel && db.Dialector.Name() == "mysql" {
+		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := q.Take(&levelRow).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// level_id 指向一个已删除的等级：脏数据，按无上限处理（fail-open 的一种）。
 			return DevicePoolUnlimited, DeviceLimitSourceLevelMissing, nil

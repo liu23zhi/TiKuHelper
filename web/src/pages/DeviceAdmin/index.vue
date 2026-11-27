@@ -75,6 +75,7 @@
         <p v-if="filterError" class="filter-error" role="alert">{{ filterError }}</p>
         <a-alert v-if="listError" type="error" show-icon :message="listError" class="status-alert" />
         <a-alert v-if="actionWarning" type="warning" show-icon :message="actionWarning" class="status-alert" />
+        <a-alert v-if="unbanFeedback" :type="unbanFeedback.type" show-icon :message="unbanFeedback.text" class="status-alert" />
       </ConsolePanel>
 
       <ConsolePanel title="设备绑定" :description="tableDescription">
@@ -135,7 +136,7 @@
                     v-else
                     type="link"
                     :disabled="busy()"
-                    @click="confirmUnban(record)"
+                    @click="openUnbanModal(record, true)"
                   >解封</a-button>
                   <a-button v-if="record.deletable" type="link" danger :disabled="busy()" @click="confirmDelete(record)">删除记录</a-button>
                 </a-space>
@@ -164,7 +165,7 @@
             <span v-else-if="column.key === 'expiresAt'" class="time-cell">{{ banExpiryText(record.expiresAt, formatDateTime) }}</span>
             <span v-else-if="column.key === 'reason'">{{ record.reason || '—' }}</span>
             <template v-else-if="column.key === 'action'">
-              <a-button type="link" :disabled="busy()" @click="confirmUnban(record)">解封</a-button>
+              <a-button type="link" :disabled="busy()" @click="openUnbanModal(record)">解封</a-button>
             </template>
           </template>
         </a-table>
@@ -223,6 +224,30 @@
         </a-form>
         <p v-if="banError" class="filter-error" role="alert">{{ banError }}</p>
       </a-modal>
+
+      <a-modal
+        :open="Boolean(unbanTarget)"
+        title="解除设备全局拉黑"
+        :ok-text="unbanRestoreSelected ? '确认解封并尝试恢复' : '仅解除全局拉黑'"
+        cancel-text="取消"
+        :confirm-loading="writing"
+        :mask-closable="!writing"
+        :keyboard="!writing"
+        :closable="!writing"
+        @ok="submitUnban"
+        @cancel="closeUnbanModal"
+      >
+        <template v-if="unbanTarget">
+          <p class="unban-device">设备 ID：{{ unbanTarget.deviceId }}</p>
+          <p>解封影响使用该设备的所有账号，但不会自动恢复任何绑定。</p>
+          <template v-if="unbanTarget.restore">
+            <p>恢复对象：{{ unbanTarget.restore.username || '账号' }}（账号 #{{ unbanTarget.restore.userId }}，绑定 #{{ unbanTarget.restore.bindingId }}）</p>
+            <a-checkbox v-model:checked="unbanRestoreSelected" :disabled="writing">同时尝试恢复此账号的原绑定</a-checkbox>
+            <p class="field-hint">只考虑上面这一条绑定；名额已满或其他限制仍生效时不会恢复。</p>
+          </template>
+          <p v-if="unbanError" class="filter-error" role="alert">{{ unbanError }}</p>
+        </template>
+      </a-modal>
     </template>
     <AdminDataTransfer v-if="!embedded && canManage()" resource="devices" title="设备绑定记录" />
 
@@ -261,6 +286,47 @@ import {
 
 const emptyFilters = () => ({ keyword: '', status: '' })
 const emptyDraft = () => ({ deviceId: '', reason: '', permanent: true, durationHours: 24 })
+
+const restoreReasonText = {
+  quota_full: '此账号的设备名额已满',
+  quota_forbidden: '此账号当前的名额规则不允许恢复',
+  account_banned: '此账号仍被封禁',
+  account_unavailable: '此账号已不可用',
+  account_blocked: '此设备仍在该账号的独立黑名单中',
+  binding_unavailable: '原绑定不存在或已不可用',
+  not_revoked_by_ban: '原绑定不是由本次全局拉黑撤销的',
+  device_still_banned: '此设备仍被全局拉黑',
+  binding_conflict: '此账号已有冲突的设备绑定',
+  credential_unavailable: '原绑定使用的凭据已不可用',
+}
+
+function unbanOutcome(data, restore) {
+  const deleted = Number.isInteger(data?.deleted) && data.deleted > 0
+  const summary = deleted ? '已解除设备的全局拉黑。' : '本次未删除全局拉黑规则。'
+  if (!restore) return { type: deleted ? 'success' : 'info', text: summary + '未恢复绑定。' }
+
+  const result = data?.restore
+  if (result?.userId !== restore.userId || result?.bindingId !== restore.bindingId) {
+    return { type: 'warning', text: summary + '未确认所选绑定的恢复结果，请刷新列表。' }
+  }
+  if (result.reason === 'ban_changed') {
+    return { type: 'warning', text: '全局拉黑规则已变更，本次未解封或恢复；请刷新列表后重新确认。' }
+  }
+  if (deleted && result.reason === 'device_still_banned') {
+    return { type: 'warning', text: '已删除所选封禁规则，但设备仍被全局拉黑。未恢复所选账号的原绑定。' }
+  }
+  if (result.status === 'restored' && deleted) {
+    return { type: 'success', text: summary + '已恢复所选账号的原绑定，占用 1 个设备名额。' }
+  }
+  if (result.status === 'unchanged' && result.reason === 'binding_active') {
+    return { type: 'info', text: summary + '所选绑定已在使用，本次未执行恢复，也未额外占用名额。' }
+  }
+  if (result.status === 'removed' || result.status === 'unchanged') {
+    const reason = Object.hasOwn(restoreReasonText, result.reason) ? restoreReasonText[result.reason] : '未返回原因，请刷新列表核对'
+    return { type: 'warning', text: summary + '未恢复所选账号的原绑定：' + reason + '。' }
+  }
+  return { type: 'warning', text: summary + '未确认所选绑定的恢复结果，请刷新列表。' }
+}
 
 export default {
   props: { userId: { type: Number, default: 0 }, embedded: Boolean },
@@ -308,6 +374,10 @@ export default {
     const banError = ref('')
     const banTarget = ref(null)
     const draft = reactive(emptyDraft())
+    const unbanTarget = ref(null)
+    const unbanRestoreSelected = ref(false)
+    const unbanError = ref('')
+    const unbanFeedback = ref(null)
 
     const pagination = reactive({
       current: 1, pageSize: 20, total: 0,
@@ -409,6 +479,7 @@ export default {
 
     const loadRows = async () => {
       if (!canManage()) return false
+      closeUnbanModal()
       const ticket = ++readVersion
       const params = buildParams()
       const owns = () => canManage() && ticket === readVersion
@@ -507,7 +578,7 @@ export default {
           actionWarning.value = String(res?.data?.message || '').trim() || '操作失败，请稍后重试。'
           return res
         }
-        message.success(typeof successText === 'function' ? successText(res) : successText)
+        if (successText) message.success(typeof successText === 'function' ? successText(res) : successText)
         return res
       } catch (error) {
         if (owns()) {
@@ -596,20 +667,53 @@ export default {
       }
     }
 
-    const confirmUnban = async record => {
-      if (!canManage() || busy()) return false
+    function openUnbanModal(record, fromBinding) {
+      if (!canManage() || busy() || unbanTarget.value) return
       const deviceId = String(record?.deviceId || '').trim()
-      if (!deviceId) return false
-      const result = await Swal.fire({
-        title: '确认解封这台设备？',
-        text: `设备 ${shortDeviceId(deviceId)} 将可以再次使用。解封不恢复已撤销的绑定（那是审计事实）。`,
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: '确认解封',
-        cancelButtonText: '取消',
-      })
-      if (!result.isConfirmed || !canManage()) return false
-      await runWrite(() => unbanAdminDevice(deviceId), '已解封该设备')
+      if (!deviceId) return
+
+      // 只使用管理员亲自选中的列表绑定；账号筛选和孤立封禁都不提供恢复目标。
+      const restore = fromBinding && revocationSupported.value && record.banned === true
+        && record.revokedAt && record.revokedReason === 'device_banned'
+        && [record.userId, record.id, record.banEntryId].every(id => Number.isSafeInteger(id) && id > 0)
+        && typeof record.banRevision === 'string' && record.banRevision.trim()
+        ? { userId: record.userId, username: record.username, bindingId: record.id,
+          banEntryId: record.banEntryId, banRevision: record.banRevision }
+        : null
+      unbanRestoreSelected.value = false
+      unbanError.value = ''
+      unbanFeedback.value = null
+      unbanTarget.value = { deviceId, restore, generation: readVersion }
+    }
+
+    function closeUnbanModal() {
+      if (writing.value) return
+      unbanTarget.value = null
+      unbanRestoreSelected.value = false
+      unbanError.value = ''
+    }
+
+    async function submitUnban() {
+      const target = unbanTarget.value
+      const owns = () => canManage() && unbanTarget.value === target && target?.generation === readVersion
+      if (!owns() || busy()) return false
+      const restore = unbanRestoreSelected.value ? target.restore : null
+      if (unbanRestoreSelected.value && !restore) return false
+      unbanError.value = ''
+      const res = await runWrite(() => restore
+        ? unbanAdminDevice(target.deviceId, {
+          restoreUserId: restore.userId, restoreBindingId: restore.bindingId,
+          banEntryId: restore.banEntryId, banRevision: restore.banRevision,
+        })
+        : unbanAdminDevice(target.deviceId))
+      if (!owns()) return false
+      if (!(res?.status >= 200 && res.status < 300)) {
+        unbanError.value = actionWarning.value || '解封失败，请刷新后重试。'
+        return false
+      }
+      unbanFeedback.value = unbanOutcome(res.data, restore)
+      closeUnbanModal()
+      if (restore && res.data?.restore?.reason === 'ban_changed') return false
       return loadRows()
     }
 
@@ -628,7 +732,9 @@ export default {
       writing.value = false
       listError.value = ''
       actionWarning.value = ''
+      unbanFeedback.value = null
       closeBanModal()
+      closeUnbanModal()
     }
 
     watch(() => [currentUserIdentity(currentUser.value), currentUser.value?.role, currentUser.value?.status], () => {
@@ -665,7 +771,7 @@ export default {
       revocationSupported, pagination, scopeLabel, tableDescription, emptyText, scopedUserId,
       statusOptions, formatDateTime, setFilter, reload, resetFilters, onTableChange,
       confirmUnbind, confirmDelete, openBanModal, banVisible, banTarget, banError, draft, setDraft, submitBan, closeBanModal,
-      confirmUnban, loadRows,
+      unbanTarget, unbanRestoreSelected, unbanError, unbanFeedback, openUnbanModal, closeUnbanModal, submitUnban, loadRows,
       // 纯展示 helper 直出给模板（页面不再重复一份格式化逻辑）。
       shortDeviceId, deviceStatusText, deviceStatusColor, revokeReasonText,
       banExpiryText, canUnbindDevice, unbindBlockedHint, deviceBanAction,
@@ -676,6 +782,7 @@ export default {
 </script>
 
 <style scoped>
+.unban-device { overflow-wrap: anywhere; }
 .page-alert, .filter-form, .status-alert { margin-bottom: 16px; }
 .device-summary { margin-bottom: 16px; }
 .summary-label { color: var(--console-muted); font-size: 14px; }
