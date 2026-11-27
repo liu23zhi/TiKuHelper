@@ -88,15 +88,22 @@ export function banAdminDevice(payload) {
   })
 }
 
-// 解封：参数是**设备 ID**（不是规则 id）—— 语义是「这台设备可以再被使用」。
-//
-// 必须 encodeURIComponent：deviceId 形如 `exe:a1b2c3`，含 `:`。
-export function unbanAdminDevice(deviceId) {
+// 解封的路径始终使用编码后的设备 ID。旧接口不带选中目标，不恢复任何绑定。
+export function unbanAdminDevice(deviceId, restoreTarget) {
   const value = String(deviceId == null ? '' : deviceId).trim()
   if (!value) throw new Error('解封参数错误')
-  return request({
+  const config = {
     errorFeedback: 'local',
     url: `/api/admin/device-bans/${encodeURIComponent(value)}`,
     method: 'delete',
-  })
+  }
+  if (restoreTarget !== undefined) {
+    const { restoreUserId, restoreBindingId, banEntryId, banRevision } = restoreTarget || {}
+    if (![restoreUserId, restoreBindingId, banEntryId].every(id => Number.isSafeInteger(id) && id > 0)
+      || typeof banRevision !== 'string' || !banRevision.trim()) {
+      throw new Error('恢复绑定参数错误')
+    }
+    config.params = { restoreUserId, restoreBindingId, banEntryId, banRevision }
+  }
+  return request(config)
 }

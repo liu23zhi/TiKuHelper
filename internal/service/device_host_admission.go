@@ -27,6 +27,10 @@ var (
 var sqliteDeviceAccountLocks [64]sync.Mutex
 
 func withDeviceRegistrationWrite(db *gorm.DB, userID int32, deviceID string, strict bool, action func(*gorm.DB) error) error {
+	return withDeviceRegistrationWriteUsing(db, userID, deviceID, strict, nil, action)
+}
+
+func withDeviceRegistrationWriteUsing(db *gorm.DB, userID int32, deviceID string, strict bool, transact deviceTransaction, action func(*gorm.DB) error) error {
 	isMySQL := db.Dialector.Name() == "mysql"
 	if !isMySQL {
 		lock := &sqliteDeviceAccountLocks[uint32(userID)%uint32(len(sqliteDeviceAccountLocks))]
@@ -38,8 +42,7 @@ func withDeviceRegistrationWrite(db *gorm.DB, userID int32, deviceID string, str
 		return ErrDeviceHostUnavailable
 	}
 
-	var transact deviceTransaction
-	if strict && db.Dialector.Name() == "sqlite" {
+	if transact == nil && strict && db.Dialector.Name() == "sqlite" {
 		transact = withSQLiteHostTransaction
 	}
 	return withDeviceLifecycleWriteUsing(db, deviceID, transact, func(tx *gorm.DB) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -291,18 +292,57 @@ func AdminDeviceUnban(c *gin.Context) {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	result, err := service.UnbanDeviceWithAudit(db, deviceID, deviceHistoryActor(operator))
+	target, err := parseDeviceRestoreTarget(c.Request.URL.RawQuery)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	var result service.DeviceUnbanResult
+	if target == nil {
+		result, err = service.UnbanDeviceWithAudit(db, deviceID, deviceHistoryActor(operator))
+	} else {
+		result, err = service.UnbanDeviceAndRestoreWithAudit(db, deviceID, *target, deviceHistoryActor(operator))
+	}
 	if err != nil {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	reloadBlacklistCacheAfterWrite(db)
-	c.JSON(http.StatusOK, gin.H{
-		"deviceId": result.DeviceID,
-		"deleted":  result.Deleted,
-		// unban 是幂等的：本来没封也返回 200（deleted=0），
-		// 因为运营看到「已解封」与「本来就没封」都不需要额外动作。
-	})
+	if target == nil || result.Deleted > 0 {
+		reloadBlacklistCacheAfterWrite(db)
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func parseDeviceRestoreTarget(raw string) (*service.DeviceRestoreTarget, error) {
+	invalid := errors.New("恢复必须明确选择有效账号、原绑定和当前封禁")
+	q, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil, invalid
+	}
+	keys := []string{"restoreUserId", "restoreBindingId", "banEntryId", "banRevision"}
+	present := 0
+	for _, k := range keys {
+		if vals, ok := q[k]; ok {
+			if len(vals) != 1 || vals[0] == "" {
+				return nil, invalid
+			}
+			present++
+		}
+	}
+	if present == 0 {
+		return nil, nil
+	}
+	if present != len(keys) {
+		return nil, invalid
+	}
+	u, eu := strconv.ParseInt(q.Get(keys[0]), 10, 32)
+	b, eb := strconv.ParseInt(q.Get(keys[1]), 10, 64)
+	e, ee := strconv.ParseInt(q.Get(keys[2]), 10, 64)
+	rev := q.Get(keys[3])
+	if len(rev) != 64 || eu != nil || eb != nil || ee != nil || u <= 0 || b <= 0 || e <= 0 {
+		return nil, invalid
+	}
+	return &service.DeviceRestoreTarget{UserID: int32(u), BindingID: b, BanEntryID: e, BanRevision: rev}, nil
 }
 
 // writeDeviceAdminError 把 service 错误映射成 HTTP 状态。
@@ -330,6 +370,7 @@ func writeDeviceAdminError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrDeviceBindingSchemaUnavailable),
 		errors.Is(err, service.ErrDeviceRevocationUnavailable),
 		errors.Is(err, service.ErrDeviceHistoryUnavailable),
+		errors.Is(err, service.ErrDeviceHostUnavailable),
 		errors.Is(err, errDeviceAdminDBUnavailable),
 		errors.Is(err, service.ErrBlacklistCacheNoDatabase):
 		status = http.StatusServiceUnavailable

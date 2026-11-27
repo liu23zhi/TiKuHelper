@@ -381,7 +381,8 @@ func revokeDeviceBindings(tx *gorm.DB, deviceID string, now time.Time, reason st
 
 // DeviceUnbanResult 是一次解封的结果。
 type DeviceUnbanResult struct {
-	DeviceID string `json:"deviceId"`
+	DeviceID string               `json:"deviceId"`
+	Restore  *DeviceRestoreResult `json:"restore,omitempty"`
 	// Deleted 是删掉的黑名单规则条数（0 表示本来就没封）。
 	Deleted int64 `json:"deleted"`
 }
@@ -437,15 +438,10 @@ func unbanDevice(db *gorm.DB, deviceID string, actor *DeviceHistoryActor) (Devic
 			}
 			result.Deleted += res.RowsAffected
 			if actor != nil {
-				// 展示掩码保留前 8 位和后 4 位，短标识可能一个字符都没有隐藏。
-				name := "***"
-				if utf8.RuneCountInString(normalized) > 12 {
-					name = MaskBlacklistDeviceID(normalized)
-				}
 				if err := WriteAccountAuditWithDB(tx, AccountAuditEvent{
 					UserID: actor.UserID, Username: actor.Username,
 					Module: "device", Action: 4, Description: "解封设备",
-					Result: map[string]any{"name": name, "scope": "global",
+					Result: map[string]any{"name": maskDeviceAuditID(normalized), "scope": "global",
 						"requestId": strconv.FormatInt(ruleID, 10)},
 				}); err != nil {
 					return fmt.Errorf("写入设备解封审计失败：%w", err)
@@ -464,6 +460,25 @@ func unbanDevice(db *gorm.DB, deviceID string, actor *DeviceHistoryActor) (Devic
 	return result, nil
 }
 
+func maskDeviceAuditID(deviceID string) string {
+	if utf8.RuneCountInString(deviceID) <= 12 {
+		return "***"
+	}
+	return MaskBlacklistDeviceID(deviceID)
+}
+
+// The database may round timestamps. Include effective contents, so two
+// edits in the same stored millisecond cannot authorize a stale selection.
+func deviceBanRevision(row entity.BlacklistEntry) string {
+	expiry := ""
+	if row.ExpiresAt != nil {
+		expiry = row.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return BlacklistPatternHashHex(fmt.Sprintf("%d|%t|%q|%q|%q|%q|%q|%q", row.ID, row.Enabled,
+		row.CreatedAt.UTC().Format(time.RFC3339Nano), row.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		expiry, row.ValueHash, row.MatchType, row.Reason))
+}
+
 // DeviceBanRecord 是一条生效中的设备封禁（列表展示 / 标记用）。
 type DeviceBanRecord struct {
 	EntryID     int64
@@ -472,6 +487,7 @@ type DeviceBanRecord struct {
 	Reason      string
 	ExpiresAt   *time.Time
 	CreatedAt   time.Time
+	Revision    string
 }
 
 // LoadActiveDeviceBansWithDB 按 device_id 批量查生效中的封禁规则。
@@ -527,6 +543,7 @@ func LoadActiveDeviceBansWithDB(db *gorm.DB, deviceIDs []string, now time.Time) 
 			Reason:      row.Reason,
 			ExpiresAt:   row.ExpiresAt,
 			CreatedAt:   row.CreatedAt,
+			Revision:    deviceBanRevision(row),
 		}
 	}
 	return bans, nil
@@ -657,6 +674,7 @@ type AdminDeviceItem struct {
 	AccountBlocked bool       `json:"accountBlocked"`
 	Deletable      bool       `json:"deletable"`
 	BanEntryID     int64      `json:"banEntryId"`
+	BanRevision    string     `json:"banRevision,omitempty"`
 	BanReason      string     `json:"banReason"`
 	BanExpiresAt   *time.Time `json:"banExpiresAt"`
 	BanPermanent   bool       `json:"banPermanent"`
@@ -944,6 +962,7 @@ func loadAdminDeviceItems(db *gorm.DB, rows []adminDeviceBindingRow, hasRevocati
 		if ban, ok := bans[item.DeviceID]; ok {
 			item.Banned = true
 			item.BanEntryID = ban.EntryID
+			item.BanRevision = ban.Revision
 			item.BanReason = ban.Reason
 			item.BanExpiresAt = ban.ExpiresAt
 			item.BanPermanent = ban.ExpiresAt == nil

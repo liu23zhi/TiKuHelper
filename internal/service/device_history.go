@@ -121,7 +121,7 @@ func deviceHistoryAudit(tx *gorm.DB, actor DeviceHistoryActor, action int32, des
 		UserID: actor.UserID, Username: actor.Username, Module: "device", Action: action, Description: description,
 		Result: map[string]any{
 			"targetUserId": row.UserID, "requestId": strconv.FormatInt(row.ID, 10),
-			"name": MaskBlacklistDeviceID(row.DeviceID), "remark": remark,
+			"name": maskDeviceAuditID(row.DeviceID), "remark": remark,
 		},
 	})
 }
@@ -144,7 +144,7 @@ func deviceRevocationAudit(tx *gorm.DB, actor DeviceHistoryActor, action int32, 
 		Description: description, CorrelationID: deviceRevocationAuditKey(row),
 		Result: map[string]any{
 			"targetUserId": row.UserID, "requestId": strconv.FormatInt(row.ID, 10),
-			"name": MaskBlacklistDeviceID(row.DeviceID), "remark": remark, "method": row.RevokedReason,
+			"name": maskDeviceAuditID(row.DeviceID), "remark": remark, "method": row.RevokedReason,
 			"scope": scope, "revokedAt": row.RevokedAt.UTC().Format(time.RFC3339Nano),
 		},
 	})
