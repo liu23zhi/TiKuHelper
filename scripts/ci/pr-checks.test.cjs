@@ -37,6 +37,48 @@ test('Go checks embed this frontend result and cover short, vet and core race',(
  assert.ok(cmd.includes('go vet ./...'))
  assert.ok(cmd.includes('go test -short -race -p 1 ./internal/api ./internal/controller ./internal/service ./internal/search -count=1'))
 })
+test('backend integration creates its output directory and retains HTTP and S04 evidence',()=>{
+ const steps=workflow().jobs.backend.steps
+ const smoke=steps.find(s=>s.run?.includes('scripts/ci/http-smoke.py'))
+ assert.match(smoke.run, /mkdir -p ci-output\n[^]*> ci-output\/http-smoke\.json/)
+ const uploads=steps.filter(s=>s.uses?.startsWith('actions/upload-artifact@'))
+ assert.equal(uploads.find(s=>s.with.name==='http-smoke-evidence')?.with.path,'ci-output/http-smoke.json')
+ const s04=steps.find(s=>s.run?.includes('scripts/ci/run-s04-main-flow.py'))
+ const evidence=uploads.find(s=>s.with.name==='s04-main-flow-evidence')
+ assert.ok(evidence,'upload structured S04 evidence')
+ assert.match(evidence.if,new RegExp(`steps\\.${s04.id}\\.outcome == 'failure'`))
+ assert.deepEqual(evidence.with.path.trim().split(/\r?\n/),[
+  'ci-output/s04-main-flow/LATEST.json',
+  'ci-output/s04-main-flow/attempt-*/RESULT.json',
+  'ci-output/s04-main-flow/attempt-*/*/RESULT.json'
+ ])
+})
+test('workflow jobs and steps have Chinese display names',()=>{
+ const flow=workflow(),hasChinese=value=>/[\u3400-\u9fff]/.test(value||'')
+ assert.ok(hasChinese(flow.name))
+ for(const job of Object.values(flow.jobs)){
+  assert.ok(hasChinese(job.name),'job display name should be Chinese')
+  for(const step of job.steps) assert.ok(hasChinese(step.name),'step display name should be Chinese')
+ }
+})
+test('PR summary receives every check result and links to uploaded artifacts',()=>{
+ const {jobs}=workflow()
+ const summary=jobs.summary
+ assert.ok(summary,'summary job is required')
+ assert.deepEqual([...summary.needs].sort(),['audit','backend','frontend'])
+ assert.equal(summary.if,'always()')
+ const step=summary.steps.find(s=>s.run?.includes('GITHUB_STEP_SUMMARY'))
+ assert.ok(step,'write the summary to the Actions job summary file')
+ for(const id of summary.needs) assert.ok(Object.values(step.env).some(value=>value.includes(`needs.${id}.result`)),id)
+ for(const [jobId,artifact] of [['frontend','frontend-dist'],['backend','http-smoke-evidence'],['backend','s04-main-flow-evidence'],['audit','dependency-audit']]){
+  const job=jobs[jobId]
+  const upload=job.steps.find(s=>s.uses?.startsWith('actions/upload-artifact@')&&s.with?.name===artifact)
+  assert.ok(upload?.id,artifact)
+  const output=Object.entries(job.outputs).find(([,value])=>value.includes(`steps.${upload.id}.outputs.artifact-url`))
+  assert.ok(output,artifact)
+  assert.ok(Object.values(step.env).some(value=>value.includes(`needs.${jobId}.outputs.${output[0]}`)),artifact)
+ }
+})
 test('dependency audit has an explicit checked policy rather than swallowed failures',()=>{
  const flow=workflow(),cmd=commands(flow.jobs.audit)
  assert.ok(cmd.includes('npm audit --json'))
