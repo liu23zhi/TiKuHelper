@@ -121,13 +121,15 @@ func performRiskRequestNoUser(t *testing.T, target string, handler gin.HandlerFu
 func TestRiskWarningListController(t *testing.T) {
 	db := newRiskControllerTestDB(t)
 	withRiskControllerDB(t, db)
-	now := time.Now()
-	for i := 0; i < 3; i++ {
+	day := time.Date(2026, 11, 26, 0, 0, 0, 0, time.Local)
+	nextDay := day.AddDate(0, 0, 1)
+	// Exercise both edges of a complete calendar day without depending on the runner clock.
+	for i, at := range []time.Time{day, day.Add(12 * time.Hour), nextDay.Add(-time.Second)} {
 		row := entity.RiskWarning{
 			RuleID:     entity.RiskRuleIDDebtUser,
 			SubjectKey: "user:" + riskTestItoa(int64(i+1)),
 			Severity:   entity.RiskSeverityMedium,
-			CreatedAt:  now.Add(time.Duration(i) * time.Minute),
+			CreatedAt:  at,
 		}
 		if err := db.Create(&row).Error; err != nil {
 			t.Fatalf("create: %v", err)
@@ -164,11 +166,31 @@ func TestRiskWarningListController(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", resp.Code, readRiskBody(t, resp))
 	}
-	// 正常时间范围（含当天整天）：createdTo=今天 必须能覆盖今天创建的行。
-	today := time.Now().Format("2006-01-02")
-	resp = performRiskRequest(t, admin, http.MethodGet, "/risk/alerts?createdFrom="+today+"&createdTo="+today, "", nil, RiskWarningList)
-	if resp.Code != http.StatusOK || !strings.Contains(readRiskBody(t, resp), `"total":3`) {
-		t.Fatalf("date-only range must cover the whole day, status=%d body=%s", resp.Code, readRiskBody(t, resp))
+	// 日期参数覆盖从本日零点到最后一秒，但不包含相邻两日。
+	for i, at := range []time.Time{day.Add(-time.Second), nextDay} {
+		row := entity.RiskWarning{
+			RuleID:     entity.RiskRuleIDDebtUser,
+			SubjectKey: "outside:" + riskTestItoa(int64(i+1)),
+			Severity:   entity.RiskSeverityMedium,
+			CreatedAt:  at,
+		}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatalf("create adjacent-day guard: %v", err)
+		}
+	}
+	date := day.Format("2006-01-02")
+	resp = performRiskRequest(t, admin, http.MethodGet, "/risk/alerts?createdFrom="+date+"&createdTo="+date, "", nil, RiskWarningList)
+	body = readRiskBody(t, resp)
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("unmarshal date-only response: %v, body=%s", err, body)
+	}
+	if resp.Code != http.StatusOK || list.Total != 3 || len(list.Data) != 3 {
+		t.Fatalf("date-only range must cover only the full day, status=%d body=%s", resp.Code, body)
+	}
+	for i, row := range list.Data {
+		if want := "user:" + riskTestItoa(int64(3-i)); row.SubjectKey != want {
+			t.Fatalf("date-only row %d=%q, want %q", i, row.SubjectKey, want)
+		}
 	}
 }
 
