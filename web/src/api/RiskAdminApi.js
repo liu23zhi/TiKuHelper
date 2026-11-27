@@ -291,10 +291,11 @@ export const getRiskWindow = () => localRequest({ url: RISK_BASE + '/offhours-wi
 export const putRiskWindow = (startHour, endHour) => localRequest({ url: RISK_BASE + '/offhours-window', method: 'put', data: { startHour, endHour } })
 export const resetRiskWindow = () => localRequest({ url: RISK_BASE + '/offhours-window', method: 'delete' })
 
-const policyURL = detector => RISK_BASE + '/response-policies/' + encodeURIComponent(detector)
-export const getRiskPolicy = detector => localRequest({ url: policyURL(detector), method: 'get' })
-export const putRiskPolicy = (detector, mode, durationMinutes) => localRequest({ url: policyURL(detector), method: 'put', data: { mode, durationMinutes } })
 const responseURL = id => RISK_BASE + '/alerts/' + readPositiveId(id, '风控告警') + '/response'
 export const getAlertResponse = id => localRequest({ url: responseURL(id), method: 'get' })
 export const applyAlertResponse = (id, { action, durationMinutes, reason, confirmed, expectedTarget }) =>
   localRequest({ url: responseURL(id), method: 'post', data: { action, durationMinutes, reason, confirmed, ...(action === 'ip' ? {} : { expectedTarget }) } })
+export const revokeAutomaticAlertResponse = (warningId, responseId) => localRequest({
+  url: responseURL(warningId), method: 'post',
+  data: { action: 'revoke_auto', responseId: Number(readPositiveId(responseId, '自动处置')), confirmed: true },
+})
