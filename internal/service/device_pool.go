@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -866,11 +867,17 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 		return CanUseDevice(db, userID, normalized), nil
 	}
 	var decision DevicePoolDecision
-	err := withDeviceLifecycleWrite(db, normalized, func(tx *gorm.DB) error {
+	err := withDeviceRegistrationWrite(db, userID, normalized, false, func(tx *gorm.DB) error {
 		var err error
 		decision, err = registerDeviceWithOptions(tx, userID, normalized, options)
+		if err == nil && !decision.Allowed {
+			return errDeviceRegistrationDenied
+		}
 		return err
 	})
+	if errors.Is(err, errDeviceRegistrationDenied) {
+		err = nil
+	}
 	return decision, err
 }
 
@@ -883,6 +890,10 @@ func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, opt
 	if !decision.Allowed {
 		return decision, nil
 	}
+	return decision, persistDeviceBinding(db, userID, normalized, options)
+}
+
+func persistDeviceBinding(db *gorm.DB, userID int32, normalized string, options DeviceBindingRegisterOptions) error {
 	now := time.Now()
 	session := devicePoolSession(db)
 	ownerKind := strings.TrimSpace(options.OwnerKind)
@@ -966,11 +977,23 @@ func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, opt
 		if err := preserveDeviceRevocation(db, existing); err != nil {
 			return false, err
 		}
-		return true, query().Where("id = ?", existing.ID).Updates(updates).Error
+		rebindUpdates := updates
+		if existing.RevokedAt != nil {
+			// Revocation ended the previous process's claim on this binding.
+			// Do not resurrect its browser count when a new host claims one slot.
+			rebindUpdates = maps.Clone(updates)
+			if devicePoolSessionCountColumnAvailable(db) {
+				rebindUpdates["session_count"] = 0
+			}
+			if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "session_reported_at") {
+				rebindUpdates["session_reported_at"] = nil
+			}
+		}
+		return true, query().Where("id = ?", existing.ID).Updates(rebindUpdates).Error
 	}
 	updated, err := updateExisting()
 	if err != nil || updated {
-		return decision, err
+		return err
 	}
 
 	// ② 行不存在：首次登记。FirstSeenAt 只在这里写一次。
@@ -1016,11 +1039,11 @@ func registerDeviceWithOptions(db *gorm.DB, userID int32, normalized string, opt
 		// 并发首次登记：另一个请求刚插入了同一行。这不是错误，
 		// 再走一次 UPDATE 把 last_seen_at 刷新即可（语义与成功分支一致）。
 		if updated, retryErr := updateExisting(); retryErr != nil || updated {
-			return decision, retryErr
+			return retryErr
 		}
-		return decision, err
+		return err
 	}
-	return decision, nil
+	return nil
 }
 
 // truncateDeviceLabel 把设备展示名截断到列宽（varchar(64)，按字符而不是字节）。
