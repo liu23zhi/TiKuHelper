@@ -80,6 +80,12 @@ func (c *Client) imageOCRAddress() string {
 // this method deliberately performs one attempt and leaves any retry decision
 // to the caller after it has established that replay is safe.
 func (c *Client) ImageOCR(ctx context.Context, request ImageOCRRequest) (ImageOCRResponse, error) {
+	return auditProviderCall(ctx, "ocr", func(ctx context.Context) (ImageOCRResponse, error) {
+		return c.imageOCR(ctx, request)
+	})
+}
+
+func (c *Client) imageOCR(ctx context.Context, request ImageOCRRequest) (ImageOCRResponse, error) {
 	if err := c.ensureReady(); err != nil {
 		return ImageOCRResponse{}, err
 	}
@@ -158,7 +164,11 @@ func (c *Client) postMultipart(ctx context.Context, address string, body []byte,
 	if c.apiKey != "" {
 		request.SetHeader("Authorization", "Bearer "+c.apiKey)
 	}
+	noteProviderAttempt(ctx)
 	response, err := request.Execute(http.MethodPost, address)
+	if response != nil {
+		noteProviderResponse(ctx, response.StatusCode(), response.Header().Get("X-Request-ID"))
+	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, contextRequestError(ctxErr)

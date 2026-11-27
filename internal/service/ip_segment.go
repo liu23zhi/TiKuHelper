@@ -139,7 +139,7 @@ func ParseIPSegmentFromInfo(sampleIP string, info uapi.IPInfo, source string, ra
 	}
 	if begin > end {
 		// begin > end 的段会让区间查询匹配到不该匹配的地址，必须拒绝。
-		logger.SysWarn(fmt.Sprintf("IP 段起点大于终点，已跳过：sample=%s begin=%s end=%s", sampleIP, info.BeginIP, info.EndIP))
+		logger.SysWarn("IP 段起点大于终点，已跳过 reason=range_bounds_reversed")
 		return entity.IPSegment{}, false
 	}
 	// Domain lookups still serve the generic location cache. For a literal IP

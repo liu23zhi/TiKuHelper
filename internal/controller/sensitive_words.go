@@ -61,7 +61,7 @@ var sensitiveWordClock = func() time.Time { return time.Now().In(logger.Shanghai
 // 关键：本函数只做内存操作（读 req/resp 的字段、起一个 goroutine），
 // **不读数据库、不发网络请求**，因此对答题耗时的增量接近 0。
 // 开关判断被特意放进 goroutine，主链路连一次 settings 查询都不增加。
-func startSensitiveWordCheck(resolved resolvedSearchRequestContext, req model.SearchRequest, resp model.SearchResponse) *sensitiveWordCheck {
+func startSensitiveWordCheck(_ resolvedSearchRequestContext, req model.SearchRequest, resp model.SearchResponse) *sensitiveWordCheck {
 	task := &sensitiveWordCheck{
 		logID:   make(chan int32, 1),
 		release: sensitiveWordCheckOwners.start(),
@@ -76,8 +76,8 @@ func startSensitiveWordCheck(resolved resolvedSearchRequestContext, req model.Se
 		defer task.release()
 		// 旁路任务自带的 recover：检测逻辑里的任何 panic 都不能带崩进程。
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				logger.SysError(fmt.Sprintf("敏感词检测异常已忽略 requestId=%s error=%v", strings.TrimSpace(resolved.RequestID), recovered))
+			if recover() != nil {
+				logger.SysError("敏感词检测异常已忽略 error_class=panic")
 			}
 		}()
 
@@ -102,15 +102,15 @@ func startSensitiveWordCheck(resolved resolvedSearchRequestContext, req model.Se
 
 		logID := task.awaitLogID()
 		if logID <= 0 {
-			logger.SysLog(fmt.Sprintf("敏感词检测跳过回写（审计行不可用） requestId=%s forbidden=%t", strings.TrimSpace(resolved.RequestID), outcome.Flag))
+			logger.SysLog(fmt.Sprintf("敏感词检测跳过回写（审计行不可用） forbidden=%t", outcome.Flag))
 			return
 		}
 		if err := service.SaveSensitiveWordOutcomeWithDB(db, logID, outcome, sensitiveWordClock()); err != nil {
 			// 打标失败只是「这次没标上」，答案早已返回，绝不能升级成搜索失败。
-			logger.SysWarn(fmt.Sprintf("敏感词标记落库失败 requestId=%s logId=%d error=%s", strings.TrimSpace(resolved.RequestID), logID, logger.RedactSecrets(err.Error())))
+			logger.SysWarn(fmt.Sprintf("敏感词标记落库失败 logId=%d error_class=storage", logID))
 			return
 		}
-		logger.SysLog(fmt.Sprintf("敏感词检测完成 requestId=%s logId=%d forbidden=%t error=%t", strings.TrimSpace(resolved.RequestID), logID, outcome.Flag, strings.TrimSpace(outcome.Error) != ""))
+		logger.SysLog(fmt.Sprintf("敏感词检测完成 logId=%d forbidden=%t error=%t", logID, outcome.Flag, strings.TrimSpace(outcome.Error) != ""))
 	}()
 	return task
 }

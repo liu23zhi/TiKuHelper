@@ -47,6 +47,16 @@ func (r ProfanityCheckResponse) Forbidden() bool {
 	return strings.EqualFold(strings.TrimSpace(r.Status), profanityStatusForbidden)
 }
 
+// IsDefinitiveProfanityStatus is the application's existing reuse rule;
+// arbitrary states can be parsed but are not a reusable detection verdict.
+func IsDefinitiveProfanityStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "clean", "ok", "pass", "passed", "normal", "safe", "forbidden", "blocked", "rejected", "hit", "sensitive":
+		return true
+	}
+	return false
+}
+
 // SetProfanityCheckURL 覆盖敏感词检测接口地址（默认 DefaultProfanityCheckURL），仅用于测试/代理
 func (c *Client) SetProfanityCheckURL(address string) *Client {
 	if c == nil {
@@ -69,6 +79,12 @@ func (c *Client) profanityCheckAddress() string {
 // 因此这里显式给一个总时限，避免后台任务被上游拖死。
 // 所有错误都只是「本次没检测成」，调用方必须按旁路失败处理。
 func (c *Client) CheckProfanity(ctx context.Context, input ProfanityCheckRequest) (ProfanityCheckResponse, error) {
+	return auditProviderCall(ctx, "profanity", func(ctx context.Context) (ProfanityCheckResponse, error) {
+		return c.checkProfanity(ctx, input)
+	})
+}
+
+func (c *Client) checkProfanity(ctx context.Context, input ProfanityCheckRequest) (ProfanityCheckResponse, error) {
 	if err := c.ensureProfanityReady(); err != nil {
 		return ProfanityCheckResponse{}, err
 	}

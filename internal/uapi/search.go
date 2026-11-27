@@ -107,6 +107,12 @@ func (c *Client) SetSearchAggregateURL(url string) *Client {
 }
 
 func (c *Client) GetSearchEngines(ctx context.Context) (SearchEnginesResponse, error) {
+	return auditProviderCall(ctx, "search_engines", func(ctx context.Context) (SearchEnginesResponse, error) {
+		return c.getSearchEngines(ctx)
+	})
+}
+
+func (c *Client) getSearchEngines(ctx context.Context) (SearchEnginesResponse, error) {
 	if err := c.ensureSearchReady(); err != nil {
 		return SearchEnginesResponse{}, err
 	}
@@ -135,6 +141,12 @@ func (c *Client) GetSearchEngines(ctx context.Context) (SearchEnginesResponse, e
 }
 
 func (c *Client) SearchAggregate(ctx context.Context, input SearchAggregateRequest) (SearchAggregateResponse, error) {
+	return auditProviderCall(ctx, "search_aggregate", func(ctx context.Context) (SearchAggregateResponse, error) {
+		return c.searchAggregate(ctx, input)
+	})
+}
+
+func (c *Client) searchAggregate(ctx context.Context, input SearchAggregateRequest) (SearchAggregateResponse, error) {
 	if err := c.ensureSearchReady(); err != nil {
 		return SearchAggregateResponse{}, err
 	}

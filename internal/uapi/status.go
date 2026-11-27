@@ -38,6 +38,12 @@ func (c *Client) SetStatusUsageURL(url string) *Client {
 
 // GetStatusUsage 查询 UAPI 端点使用统计；path 为空时查询全部端点。
 func (c *Client) GetStatusUsage(ctx context.Context, path string) (StatusUsageResponse, error) {
+	return auditProviderCall(ctx, "usage_status", func(ctx context.Context) (StatusUsageResponse, error) {
+		return c.getStatusUsage(ctx, path)
+	})
+}
+
+func (c *Client) getStatusUsage(ctx context.Context, path string) (StatusUsageResponse, error) {
 	if err := c.ensureReady(); err != nil {
 		return StatusUsageResponse{}, err
 	}
