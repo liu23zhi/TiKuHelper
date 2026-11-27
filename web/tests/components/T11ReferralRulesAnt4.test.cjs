@@ -130,19 +130,22 @@ test('partially refunded rebate details distinguish retained amount and the full
   rebates = [
     { id: 1, inviterUserId: 2, orderNo: 'REF-PART-FIXTURE', status: 'settled', baseAmount: 100, rate: 0.1, amount: 10, reversedAmount: 4, refundedCents: 4000 },
     { id: 2, inviterUserId: 2, orderNo: 'REF-FULL-FIXTURE', status: 'reversed', baseAmount: 100, rate: 0.1, amount: 10, reversedAmount: 10, refundedCents: 10000 },
+    { id: 3, inviterUserId: 2, orderNo: 'REF-EXACT-FIXTURE', status: 'settled', baseAmount: 9000000000, rate: 0.99999999, amount: 8999999910, reversedAmount: 8999999909.97, netAmount: '0.030000', refundedCents: 899999999997 },
   ]
   const wrapper = await open(Rebates)
   const rows = wrapper.findAll('tr')
   const partial = rows.find(row => row.text().includes('REF-PART-FIXTURE'))
   assert.ok(partial, 'partial order row is rendered')
   assert.equal(partial.get('[data-rebate-net]').text(), '¥ 6')
-  assert.match(partial.text(), /原额 ¥ 10.*已冲回 ¥ 4.*已退本金 ¥ 40/)
+  assert.match(partial.text(), /原额 ¥ 10.*应冲回 ¥ 4.*已退本金 ¥ 40/)
   assert.match(partial.text(), /已结算/)
   const full = rows.find(row => row.text().includes('REF-FULL-FIXTURE'))
   assert.ok(full, 'fully reversed order row is rendered')
   assert.equal(full.get('[data-rebate-net]').text(), '¥ 0')
   assert.match(full.text(), /已冲回/)
   assert.equal(full.find('button').exists(), false)
+  const exact = rows.find(row => row.text().includes('REF-EXACT-FIXTURE'))
+  assert.equal(exact.get('[data-rebate-net]').text(), '¥ 0.03')
 })
 
 test('my referral keeps the invite code when automatic rules are off and does not display a legacy scalar rate', async () => {

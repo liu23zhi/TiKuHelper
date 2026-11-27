@@ -283,7 +283,7 @@
                 <span data-rebate-net>{{ rebateNetText(record) }}</span>
                 <div v-if="hasRebateRefund(record)" class="rebate-refund">
                   <div>原额 {{ moneyTextFromMicros(readRebateMicros(record.amount)) }}</div>
-                  <div>已冲回 {{ moneyTextFromMicros(rebateCanceledMicros(record)) }}</div>
+                  <div>应冲回 {{ moneyTextFromMicros(rebateCanceledMicros(record)) }}</div>
                   <div v-if="rebateRefundedPrincipalText(record)">已退本金 {{ rebateRefundedPrincipalText(record) }}</div>
                 </div>
               </div>
@@ -721,6 +721,8 @@ export default {
     }
     function rebateNetText(record) {
       if (isFullyReversed(record)) return moneyTextFromMicros(0n)
+      const exactNet = readRebateMicros(record.netAmount)
+      if (exactNet !== null) return moneyTextFromMicros(exactNet)
       const gross = readRebateMicros(record.amount)
       if (gross === null) return '--'
       const net = gross - (rebateCanceledMicros(record) ?? 0n)

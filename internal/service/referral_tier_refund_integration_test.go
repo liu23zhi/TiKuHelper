@@ -317,3 +317,72 @@ func TestT11TierSignedGroupedRefundClawsBackOnlySucceededOrder(t *testing.T) {
 	}
 	requireTicketRefundWallet(t, f.db, payer.ID, 30_000_000)
 }
+
+func TestT11TierSignedRefundSurvivesArchivedInviter(t *testing.T) {
+	for _, status := range []string{entity.ReferralRebateStatusPending, entity.ReferralRebateStatusSettled} {
+		t.Run(status, func(t *testing.T) {
+			f := t11ReferralFixture(t)
+			inviter := seedReferralUser(t, f.db, 71, "t11-inviter", 0)
+			payer := seedReferralUser(t, f.db, 72, "t11-payer", inviter.ID)
+			admin := seedRechargeOrderUser(t, f.db, 73, "admin")
+			t11ReferralPolicy(t, f.db, `{"enabled":true,"rules":[{"enabled":true,"lowerCents":0,"upperCents":null,"rateUnits":10000000}]}`)
+			order := t11ReferralPaid(t, f, payer, "archive-"+status, 100)
+			award := t11ReferralAward(t, f.db, order)
+			if status == entity.ReferralRebateStatusSettled {
+				if _, err := SettleReferralRebateWithDB(f.db, admin, award.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			refund, err := CreateTicketRefundWithDB(f.db, payer, CreateTicketRefundInput{
+				Kind: TicketRefundKindOriginal, OrderID: &order.ID, RequestedCents: 4000,
+			}, f.cfg.VerifyOriginalOrder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReviewTicketRefundWithDB(f.db, admin, refund.ID, true, 3000, f.cfg.VerifyOriginalOrder); err != nil {
+				t.Fatal(err)
+			}
+			staged, err := BeginTicketRefundWithDB(f.db, admin, refund.ID, f.cfg.VerifyOriginalOrder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Delete(&inviter).Error; err != nil {
+				t.Fatal(err)
+			}
+			var before entity.User
+			if err := f.db.Unscoped().First(&before, inviter.ID).Error; err != nil || !before.DeletedAt.Valid {
+				t.Fatalf("archive fixture not persisted: %v", err)
+			}
+
+			t11SignedRefundReply(t, f, staged, order, "1", "30.00")
+			outcome, ref, err := QueryTicketRefundEPay(context.Background(), f.cfg, staged, order)
+			if err != nil || outcome != TicketRefundStatusSucceeded {
+				t.Fatalf("signed proof: outcome=%q err=%v", outcome, err)
+			}
+			for i := 0; i < 2; i++ {
+				got, err := ReconcileTicketRefundWithDB(f.db, admin, refund.ID, outcome, ref)
+				if err != nil || got.Status != TicketRefundStatusSucceeded {
+					t.Fatalf("verified refund %d must settle despite archived inviter: status=%q err=%v", i+1, got.Status, err)
+				}
+			}
+			if got := t11ReferralAward(t, f.db, order); got.Status != status || got.Amount != 10 ||
+				got.ReversedAmount != 3 || got.RefundedCents != 3000 {
+				t.Errorf("archival cannot lose or repeat the rebate reduction: status=%s award=%v reversed=%v refunded_cents=%v",
+					got.Status, got.Amount, got.ReversedAmount, got.RefundedCents)
+			}
+			var after entity.User
+			if err := f.db.Unscoped().First(&after, inviter.ID).Error; err != nil || !after.DeletedAt.Valid ||
+				after.Balance != before.Balance || after.GiftBalance != before.GiftBalance {
+				t.Errorf("archived inviter wallet changed: before=(%v,%v) after=(%v,%v) err=%v",
+					before.Balance, before.GiftBalance, after.Balance, after.GiftBalance, err)
+			}
+			var count int64
+			if err := f.db.Model(&entity.TicketRefundLedger{}).Where("refund_id = ? AND kind = ?", refund.ID, ticketRefundLedgerConsume).
+				Count(&count).Error; err != nil || count != 1 {
+				t.Errorf("expected one refund consume receipt, got %d err=%v", count, err)
+			}
+			requireTicketRefundWallet(t, f.db, payer.ID, 70_000_000)
+		})
+	}
+}

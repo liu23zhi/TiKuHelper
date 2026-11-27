@@ -100,6 +100,7 @@ type ReferralRebateListItem struct {
 	entity.ReferralRebate
 	InviterUsername string `json:"inviterUsername"`
 	InvitedUsername string `json:"invitedUsername"`
+	NetAmount       string `json:"netAmount" gorm:"column:net_amount"`
 }
 
 // ReferralRebateListSummary 是返佣列表的金额统计。
@@ -431,17 +432,12 @@ func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, refundCents i
 		return nil, ErrReferralRebateState
 	}
 	wallet, err := lockReferralWalletInTx(tx, head.InviterUserID)
-	if err != nil {
+	noWallet := errors.Is(err, ErrReferralRebateNotFound)
+	if err != nil && !noWallet {
 		return nil, err
 	}
-
-	var row struct {
-		entity.ReferralRebate
-		ExactBase  microColumn `gorm:"column:exact_base"`
-		ExactAward microColumn `gorm:"column:exact_award"`
-	}
-	if err = referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.Locking{Strength: "UPDATE"}).
-		Select("referral_rebates.*, base_amount AS exact_base, amount AS exact_award").Where("id = ?", head.ID).Take(&row).Error; err != nil {
+	row, err := lockExactReferralRebateInTx(tx, head.ID)
+	if err != nil {
 		return nil, err
 	}
 	rebate := row.ReferralRebate
@@ -466,11 +462,17 @@ func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, refundCents i
 	now := time.Now()
 	remark := "原路实退，按比例取消待结算返佣"
 	if rebate.Status == entity.ReferralRebateStatusSettled {
-		deducted, err := debitReferralRebateWalletInTx(tx, wallet, rebate, amount)
-		if err != nil {
-			return nil, err
+		if noWallet && amountMicros > 0 {
+			// Refunding the payer must not resurrect an archived inviter or
+			// depend on that wallet. Keep the gross reduction and actual zero.
+			remark = fmt.Sprintf("原订单退款，受益人账户不可用，实际冲回 ¥0，差额 ¥%s 记为不可回收", referralMicrosText(amountMicros))
+		} else if !noWallet {
+			deducted, err := debitReferralRebateWalletInTx(tx, wallet, rebate, amountMicros)
+			if err != nil {
+				return nil, err
+			}
+			remark = buildReferralReversalRemark(amountMicros, deducted)
 		}
-		remark = buildReferralReversalRemark(amount, deducted)
 	}
 	if amountMicros >= row.ExactAward.n {
 		rebate.Status = entity.ReferralRebateStatusReversed
@@ -491,14 +493,16 @@ func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, refundCents i
 //
 // 差额留痕是硬要求：应冲回 X 但只扣到 Y 时，不能静默吞掉 X-Y，
 // 否则「这笔返佣作废了，钱却还在用户手上」这件事在对账里查不到。
-func buildReferralReversalRemark(required, deducted float64) string {
-	amount := util.RoundMoney(required)
-	actual := util.RoundMoney(deducted)
-	if actual >= amount {
-		return "原订单退款，返佣已冲回"
+func buildReferralReversalRemark(required, actual int64) string {
+	if actual >= required {
+		return "原订单退款，返佣已按实退比例冲回"
 	}
-	return fmt.Sprintf("原订单退款，返佣已冲回（应冲回 ¥%s，赠金余额不足实际冲回 ¥%s，差额 ¥%s 记为不可回收）",
-		moneyTextForReferral(amount), moneyTextForReferral(actual), moneyTextForReferral(util.RoundMoney(amount-actual)))
+	return fmt.Sprintf("原订单退款，返佣按比例冲回（应冲回 ¥%s，赠金余额不足实际冲回 ¥%s，差额 ¥%s 记为不可回收）",
+		referralMicrosText(required), referralMicrosText(actual), referralMicrosText(required-actual))
+}
+
+func referralMicrosText(micros int64) string {
+	return strings.TrimRight(strings.TrimRight(fixedInt(micros, 6), "0"), ".")
 }
 
 // moneyTextForReferral 把金额格式化成不带多余零的十进制文本（仅用于备注/日志）。
@@ -548,13 +552,14 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 			return err
 		}
 
-		if err := referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", id).Take(&rebate).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrReferralRebateNotFound
-			}
+		row, err := lockExactReferralRebateInTx(tx, id)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrReferralRebateNotFound
+		}
+		if err != nil {
 			return err
 		}
+		rebate = row.ReferralRebate
 		switch rebate.Status {
 		case entity.ReferralRebateStatusSettled:
 			// 幂等：已经结算过，直接返回，**不重复加钱**。
@@ -568,10 +573,11 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 			return ErrReferralRebateState
 		}
 
-		amount := util.RoundMoney(rebate.Amount - rebate.ReversedAmount)
-		if amount < 0 {
+		if !row.ExactAward.known || !row.ExactReversed.known || row.ExactReversed.n < 0 ||
+			row.ExactAward.n < row.ExactReversed.n || row.ExactAward.n > maxEffectiveMicros {
 			return ErrReferralRebateState
 		}
+		amount := row.ExactAward.n - row.ExactReversed.n
 		now := time.Now()
 		remark := "管理员结算"
 		if admin.Username != "" {
@@ -617,17 +623,44 @@ func referralSettlementSchemaAvailable(db *gorm.DB) bool {
 	return db.Migrator().HasTable(entity.TableNameBillingRecord)
 }
 
-// lockReferralWalletInTx 锁住账户行并返回锁内读到的钱包快照。
-func lockReferralWalletInTx(tx *gorm.DB, userID int32) (entity.User, error) {
-	var user entity.User
-	if err := referralSession(tx).Model(&entity.User{}).Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ?", userID).Take(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return entity.User{}, ErrReferralRebateNotFound
-		}
-		return entity.User{}, err
+// Keep the DECIMAL read under the same row lock as the write. A float64
+// representation cannot preserve six places across the allowed money range.
+type lockedReferralWallet struct {
+	ID          int32
+	Balance     microColumn
+	GiftBalance microColumn
+}
+
+func lockReferralWalletInTx(tx *gorm.DB, userID int32) (lockedReferralWallet, error) {
+	var wallet lockedReferralWallet
+	err := referralSession(tx).Model(&entity.User{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "balance", "gift_balance").Where("id = ?", userID).Take(&wallet).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return wallet, ErrReferralRebateNotFound
 	}
-	return user, nil
+	if err != nil {
+		return wallet, err
+	}
+	if !wallet.Balance.known || !wallet.GiftBalance.known || wallet.Balance.n < -maxEffectiveMicros ||
+		wallet.Balance.n > maxEffectiveMicros || wallet.GiftBalance.n > maxEffectiveMicros {
+		return wallet, ErrReferralRebateState
+	}
+	return wallet, nil
+}
+
+type exactReferralRebate struct {
+	entity.ReferralRebate
+	ExactBase     microColumn `gorm:"column:exact_base"`
+	ExactAward    microColumn `gorm:"column:exact_award"`
+	ExactReversed microColumn `gorm:"column:exact_reversed"`
+}
+
+func lockExactReferralRebateInTx(tx *gorm.DB, id int32) (exactReferralRebate, error) {
+	var row exactReferralRebate
+	err := referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("referral_rebates.*, base_amount AS exact_base, amount AS exact_award, reversed_amount AS exact_reversed").
+		Where("id = ?", id).Take(&row).Error
+	return row, err
 }
 
 // creditReferralRebateWalletInTx 把结算金额加进邀请人的**赠送余额**，并写一条结算流水。
@@ -646,7 +679,7 @@ func lockReferralWalletInTx(tx *gorm.DB, userID int32) (entity.User, error) {
 //
 // 幂等兜底：request_id = referral_rebate_<rebateID> 的流水已存在 → 只当已加过钱，
 // 直接返回（行锁 + 状态判断之外的最后一道闸）。
-func creditReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate entity.ReferralRebate, amount float64, remark string) error {
+func creditReferralRebateWalletInTx(tx *gorm.DB, wallet lockedReferralWallet, rebate entity.ReferralRebate, amount int64, remark string) error {
 	return creditReferralGiftInTx(tx, wallet, amount,
 		referralRebateBillingRequestID(rebate.ID),
 		referralRebateRelatedOrderID(rebate),
@@ -664,41 +697,35 @@ func creditReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate enti
 // (source, recharge_order_id)，而 manual 行的 recharge_order_id 为 NULL，
 // **NULL 不参与唯一性判定** —— 表层面拦不住重复，只能靠这个 request_id 前置查询，
 // 并用 users 行锁把并发提交串行化（见 CreateManualReferralRebateWithDB）。
-func creditReferralGiftInTx(tx *gorm.DB, wallet entity.User, amount float64, requestID string, relatedOrderID int32, remark string) error {
+func creditReferralGiftInTx(tx *gorm.DB, wallet lockedReferralWallet, amount int64, requestID string, relatedOrderID int32, remark string) error {
 	exists, err := referralBillingRecordExists(tx, requestID)
-	if err != nil {
+	if err != nil || exists {
 		return err
 	}
-	if exists {
-		return nil
+	before, giftBefore := wallet.Balance.n, wallet.GiftBalance.n
+	// Same two-bucket rule as CreditGiftBuckets, using exact wallet micros.
+	offset := min(max(-before, 0), amount)
+	after, giftAfter := before+offset, max(giftBefore, 0)+amount-offset
+	if giftAfter > maxEffectiveMicros {
+		return ErrReferralRebateState
 	}
-	balanceBefore := util.RoundMoney(wallet.Balance)
-	giftBefore := util.RoundMoney(wallet.GiftBalance)
-	// 赠送入账按规则 3：先抵欠款（balance 可能为负），剩余才进赠金桶。
-	// 直接用 gift += amount 会让「欠款 1 元 + 返佣 2 元」变成 balance=-1 gift=2，
-	// 而正确结果是 balance=0 gift=1（43-*.md 算例 B）。
-	newBalance, giftAfter := CreditGiftBuckets(wallet.Balance, wallet.GiftBalance, amount)
-	if err := referralSession(tx).Model(&entity.User{}).Where("id = ?", wallet.ID).Updates(map[string]any{
-		"balance":      newBalance,
-		"gift_balance": giftAfter,
-	}).Error; err != nil {
+	if err := referralSession(tx).Model(&entity.User{}).Where("id = ?", wallet.ID).
+		Updates(map[string]any{"balance": fixedInt(after, 6), "gift_balance": fixedInt(giftAfter, 6)}).Error; err != nil {
 		return err
 	}
-	record := entity.BillingRecord{
-		UserID:            wallet.ID,
-		Type:              ReferralRebateBillingRecordType,
-		Provider:          "system",
-		Amount:            util.RoundMoney(amount),
-		BalanceBefore:     balanceBefore,
-		BalanceAfter:      newBalance,
-		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
-		RequestID:         requestID,
-		RelatedOrderID:    relatedOrderID,
-		// 抵欠款说明放在这里而不是调用方：调用方拿不到 balanceBefore/newBalance，
-		// 而「我得到 2 元但余额只涨 1 元」必须能被用户自己看懂（43-*.md §6）。
-		Remark: joinReferralNotes(remark, referralDebtOffsetNote(balanceBefore, newBalance)),
+	if offset > 0 {
+		remark = joinReferralNotes(remark, fmt.Sprintf("其中 ¥%s 用于抵扣欠款", referralMicrosText(offset)))
 	}
-	return referralSession(tx).Create(&record).Error
+	return writeExactReferralBillInTx(tx, wallet.ID, ReferralRebateBillingRecordType, amount, before, after, giftBefore, giftAfter, requestID, relatedOrderID, remark)
+}
+
+func writeExactReferralBillInTx(tx *gorm.DB, uid int32, kind string, amount, before, after, giftBefore, giftAfter int64, requestID string, orderID int32, remark string) error {
+	return referralSession(tx).Model(&entity.BillingRecord{}).Create(map[string]any{
+		"user_id": uid, "type": kind, "provider": "system", "amount": fixedInt(amount, 6),
+		"balance_before": fixedInt(before, 6), "balance_after": fixedInt(after, 6),
+		"unit_price_snapshot": fmt.Sprintf("giftBalanceBefore=%s giftBalanceAfter=%s", referralMicrosText(giftBefore), referralMicrosText(giftAfter)),
+		"request_id":          requestID, "related_order_id": orderID, "remark": remark, "created_at": time.Now(),
+	}).Error
 }
 
 // referralRebateRelatedOrderID 取返佣记录关联的充值订单 ID。
@@ -761,50 +788,32 @@ func referralGiftSnapshot(giftBefore, giftAfter float64) string {
 //   - 不删行：原 rebate 记录保留。
 //
 // 返回实际扣减金额（可能小于应扣金额，见上）。
-func debitReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate entity.ReferralRebate, amount float64) (float64, error) {
-	amount = util.RoundMoney(amount)
+func debitReferralRebateWalletInTx(tx *gorm.DB, wallet lockedReferralWallet, rebate entity.ReferralRebate, amount int64) (int64, error) {
 	if amount <= 0 {
 		return 0, nil
 	}
 	requestID := referralRebateReversalBillingRequestID(rebate.ID)
-	var existing entity.BillingRecord
-	err := referralSession(tx).Select("amount").Where("request_id = ?", requestID).Take(&existing).Error
+	var existing struct{ Amount microColumn }
+	err := referralSession(tx).Model(&entity.BillingRecord{}).Select("amount").Where("request_id = ?", requestID).Take(&existing).Error
 	if err == nil {
-		return existing.Amount, nil
+		if !existing.Amount.known {
+			return 0, ErrReferralRebateState
+		}
+		return existing.Amount.n, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
-	balanceBefore := util.RoundMoney(wallet.Balance)
-	giftBefore := util.RoundMoney(wallet.GiftBalance)
-	// 冲回只扣赠金桶，clamp 到 0；实际扣减额写进流水，差额在 remark 里留痕。
-	deducted, giftAfter := DeductGiftBucket(wallet.GiftBalance, amount)
-	if err := referralSession(tx).Model(&entity.User{}).Where("id = ?", wallet.ID).Updates(map[string]any{
-		"gift_balance": giftAfter,
-	}).Error; err != nil {
+	giftBefore := wallet.GiftBalance.n
+	deducted := min(max(giftBefore, 0), amount)
+	giftAfter := max(giftBefore, 0) - deducted
+	// Gift only; principal is a snapshot and never updated by clawback.
+	if err := referralSession(tx).Model(&entity.User{}).Where("id = ?", wallet.ID).Update("gift_balance", fixedInt(giftAfter, 6)).Error; err != nil {
 		return 0, err
 	}
-	record := entity.BillingRecord{
-		UserID:            wallet.ID,
-		Type:              ReferralRebateReversalBillingRecordType,
-		Provider:          "system",
-		Amount:            deducted,
-		BalanceBefore:     balanceBefore,
-		BalanceAfter:      balanceBefore,
-		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
-		RequestID:         requestID,
-		RelatedOrderID:    referralRebateRelatedOrderID(rebate),
-		Remark:            referralBillingRemark("邀请返佣冲回（扣赠送余额）", rebate, buildReferralReversalRemark(amount, deducted)),
-	}
-	if err := referralSession(tx).Create(&record).Error; err != nil {
-		return 0, err
-	}
-	return deducted, nil
+	remark := referralBillingRemark("邀请返佣冲回（扣赠送余额）", rebate, buildReferralReversalRemark(amount, deducted))
+	return deducted, writeExactReferralBillInTx(tx, wallet.ID, ReferralRebateReversalBillingRecordType, deducted, wallet.Balance.n, wallet.Balance.n, giftBefore, giftAfter, requestID, referralRebateRelatedOrderID(rebate), remark)
 }
-
-// clampWalletDeduction 已并入 DeductGiftBucket（见 wallet_bucket.go）：
-// 「应扣多少、桶里有多少、实际能扣多少」是双桶模型的公共判定，
-// 统一放在那里，避免返佣冲回与管理员减赠金各写一份。
 
 // referralBillingRecordExists 判断某条流水（按 request_id）是否已存在。
 func referralBillingRecordExists(tx *gorm.DB, requestID string) (bool, error) {
@@ -912,6 +921,10 @@ func CreateManualReferralRebateWithDB(db *gorm.DB, input ManualReferralRebateInp
 	if operator := strings.TrimSpace(input.OperatorUsername); operator != "" {
 		remark = joinReferralNotes(remark, "操作人 "+operator)
 	}
+	var exactAmount microColumn
+	if err := exactAmount.Scan(strconv.FormatFloat(amount, 'f', 6, 64)); err != nil || exactAmount.n <= 0 || exactAmount.n > maxEffectiveMicros {
+		return entity.ReferralRebate{}, ErrReferralRebateManualInvalid
+	}
 	requestID := manualReferralRebateRequestID(input.BeneficiaryUserID, amount, day)
 
 	var created entity.ReferralRebate
@@ -948,7 +961,7 @@ func CreateManualReferralRebateWithDB(db *gorm.DB, input ManualReferralRebateInp
 		if createErr := referralSession(tx).Create(&rebate).Error; createErr != nil {
 			return createErr
 		}
-		if creditErr := creditReferralGiftInTx(tx, wallet, amount, requestID, 0,
+		if creditErr := creditReferralGiftInTx(tx, wallet, exactAmount.n, requestID, 0,
 			referralBillingRemark("邀请返佣手动补录（入赠送余额）", rebate, "")); creditErr != nil {
 			return creditErr
 		}
@@ -1028,7 +1041,7 @@ func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error
 	}
 	var rows []rebateAggregateRow
 	if err := referralSession(db).Model(&entity.ReferralRebate{}).
-		Select("status, COALESCE(SUM(amount), 0) AS total, COALESCE(SUM(CASE WHEN status = 'reversed' AND reversed_amount = 0 THEN amount ELSE reversed_amount END), 0) AS reversed, COALESCE(SUM(base_amount), 0) AS base_sum, COUNT(*) AS row_count").
+		Select("status, COALESCE(SUM(amount - reversed_amount), 0) AS total, COALESCE(SUM(CASE WHEN status = 'reversed' AND reversed_amount = 0 THEN amount ELSE reversed_amount END), 0) AS reversed, COALESCE(SUM(base_amount), 0) AS base_sum, COUNT(*) AS row_count").
 		Where("inviter_user_id = ?", userID).
 		Group("status").
 		Scan(&rows).Error; err != nil {
@@ -1040,9 +1053,9 @@ func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error
 		summary.ReversedAmount += row.Reversed
 		switch row.Status {
 		case entity.ReferralRebateStatusPending:
-			summary.PendingAmount += row.Total - row.Reversed
+			summary.PendingAmount += row.Total
 		case entity.ReferralRebateStatusSettled:
-			summary.SettledAmount += row.Total - row.Reversed
+			summary.SettledAmount += row.Total
 		}
 	}
 	summary.PendingAmount = util.RoundMoney(summary.PendingAmount)
@@ -1101,7 +1114,7 @@ func ListReferralRebatesWithDB(db *gorm.DB, filter ReferralRebateListQuery, page
 	}
 	var aggregates []rebateAggregateRow
 	if err := baseQuery.Session(&gorm.Session{}).
-		Select("referral_rebates.status, COALESCE(SUM(referral_rebates.amount), 0) AS total, COALESCE(SUM(CASE WHEN referral_rebates.status = 'reversed' AND referral_rebates.reversed_amount = 0 THEN referral_rebates.amount ELSE referral_rebates.reversed_amount END), 0) AS reversed, COALESCE(SUM(referral_rebates.base_amount), 0) AS base_sum").
+		Select("referral_rebates.status, COALESCE(SUM(referral_rebates.amount - referral_rebates.reversed_amount), 0) AS total, COALESCE(SUM(CASE WHEN referral_rebates.status = 'reversed' AND referral_rebates.reversed_amount = 0 THEN referral_rebates.amount ELSE referral_rebates.reversed_amount END), 0) AS reversed, COALESCE(SUM(referral_rebates.base_amount), 0) AS base_sum").
 		Group("referral_rebates.status").
 		Scan(&aggregates).Error; err != nil {
 		return ReferralRebateListResult{}, err
@@ -1111,9 +1124,9 @@ func ListReferralRebatesWithDB(db *gorm.DB, filter ReferralRebateListQuery, page
 		result.Summary.ReversedAmount += row.Reversed
 		switch row.Status {
 		case entity.ReferralRebateStatusPending:
-			result.Summary.PendingAmount += row.Total - row.Reversed
+			result.Summary.PendingAmount += row.Total
 		case entity.ReferralRebateStatusSettled:
-			result.Summary.SettledAmount += row.Total - row.Reversed
+			result.Summary.SettledAmount += row.Total
 		}
 	}
 	result.Summary.PendingAmount = util.RoundMoney(result.Summary.PendingAmount)
@@ -1123,7 +1136,7 @@ func ListReferralRebatesWithDB(db *gorm.DB, filter ReferralRebateListQuery, page
 
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("referral_rebates.*, COALESCE(inviter.username, '') AS inviter_username, COALESCE(invited.username, '') AS invited_username").
+		Select("referral_rebates.*, CASE WHEN referral_rebates.status = 'reversed' THEN 0 ELSE referral_rebates.amount-referral_rebates.reversed_amount END AS net_amount, COALESCE(inviter.username, '') AS inviter_username, COALESCE(invited.username, '') AS invited_username").
 		Order("referral_rebates.id desc").
 		Limit(pageSize).Offset(offset).
 		Scan(&result.Data).Error; err != nil {
