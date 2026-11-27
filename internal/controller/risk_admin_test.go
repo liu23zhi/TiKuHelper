@@ -181,13 +181,18 @@ func TestRiskWarningListController(t *testing.T) {
 	date := day.Format("2006-01-02")
 	resp = performRiskRequest(t, admin, http.MethodGet, "/risk/alerts?createdFrom="+date+"&createdTo="+date, "", nil, RiskWarningList)
 	body = readRiskBody(t, resp)
-	if err := json.Unmarshal([]byte(body), &list); err != nil {
+	// Decode into fresh storage so a missing total cannot inherit the pagination result.
+	var dateList struct {
+		Data  []entity.RiskWarning `json:"data"`
+		Total int64                `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(body), &dateList); err != nil {
 		t.Fatalf("unmarshal date-only response: %v, body=%s", err, body)
 	}
-	if resp.Code != http.StatusOK || list.Total != 3 || len(list.Data) != 3 {
+	if resp.Code != http.StatusOK || dateList.Total != 3 || len(dateList.Data) != 3 {
 		t.Fatalf("date-only range must cover only the full day, status=%d body=%s", resp.Code, body)
 	}
-	for i, row := range list.Data {
+	for i, row := range dateList.Data {
 		if want := "user:" + riskTestItoa(int64(3-i)); row.SubjectKey != want {
 			t.Fatalf("date-only row %d=%q, want %q", i, row.SubjectKey, want)
 		}
