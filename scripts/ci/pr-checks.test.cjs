@@ -37,6 +37,30 @@ test('Go checks embed this frontend result and cover short, vet and core race',(
  assert.ok(cmd.includes('go vet ./...'))
  assert.ok(cmd.includes('go test -short -race -p 1 ./internal/api ./internal/controller ./internal/service ./internal/search -count=1'))
 })
+test('backend integration creates its output directory and retains HTTP and S04 evidence',()=>{
+ const steps=workflow().jobs.backend.steps
+ const smoke=steps.find(s=>s.run?.includes('scripts/ci/http-smoke.py'))
+ assert.match(smoke.run, /mkdir -p ci-output\n[^]*> ci-output\/http-smoke\.json/)
+ const uploads=steps.filter(s=>s.uses?.startsWith('actions/upload-artifact@'))
+ assert.equal(uploads.find(s=>s.with.name==='http-smoke-evidence')?.with.path,'ci-output/http-smoke.json')
+ const s04=steps.find(s=>s.run?.includes('scripts/ci/run-s04-main-flow.py'))
+ const evidence=uploads.find(s=>s.with.name==='s04-main-flow-evidence')
+ assert.ok(evidence,'upload structured S04 evidence')
+ assert.match(evidence.if,new RegExp(`steps\\.${s04.id}\\.outcome == 'failure'`))
+ assert.deepEqual(evidence.with.path.trim().split(/\r?\n/),[
+  'ci-output/s04-main-flow/LATEST.json',
+  'ci-output/s04-main-flow/attempt-*/RESULT.json',
+  'ci-output/s04-main-flow/attempt-*/*/RESULT.json'
+ ])
+})
+test('workflow jobs and steps have Chinese display names',()=>{
+ const flow=workflow(),hasChinese=value=>/[\u3400-\u9fff]/.test(value||'')
+ assert.ok(hasChinese(flow.name))
+ for(const job of Object.values(flow.jobs)){
+  assert.ok(hasChinese(job.name),'job display name should be Chinese')
+  for(const step of job.steps) assert.ok(hasChinese(step.name),'step display name should be Chinese')
+ }
+})
 test('dependency audit has an explicit checked policy rather than swallowed failures',()=>{
  const flow=workflow(),cmd=commands(flow.jobs.audit)
  assert.ok(cmd.includes('npm audit --json'))
