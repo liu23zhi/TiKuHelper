@@ -122,7 +122,7 @@ func (t *imageDetectionTrace) upstreamFailureCode(err error) string {
 		case status == http.StatusForbidden:
 			return imageUpstreamForbidden
 		case status == http.StatusPaymentRequired,
-			status == http.StatusTooManyRequests && strings.EqualFold(strings.TrimSpace(response.Code), "VISITOR_MONTHLY_QUOTA_EXHAUSTED"):
+			status == http.StatusTooManyRequests && errors.Is(err, uapi.ErrInsufficientCredits):
 			return imageUpstreamQuotaExhausted
 		case status == http.StatusTooManyRequests:
 			return imageUpstreamRateLimited
