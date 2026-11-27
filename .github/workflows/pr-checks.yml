@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     # 组件回归曾耗时 14–15 分钟，为整项任务预留超时余量。
     timeout-minutes: 30
+    outputs:
+      artifact-url: ${{ steps.upload_frontend.outputs.artifact-url }}
     defaults:
       run:
         shell: bash
@@ -56,6 +58,7 @@ jobs:
       - name: 检查前端资源体积预算
         run: npm run check:bundle
       - name: 上传前端构建产物
+        id: upload_frontend
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-dist
@@ -69,6 +72,9 @@ jobs:
     runs-on: ubuntu-24.04
     # 全部步骤曾耗时 16–17 分钟。离线测试和竞态检测的耗时随负载波动。
     timeout-minutes: 40
+    outputs:
+      smoke-artifact-url: ${{ steps.upload_smoke.outputs.artifact-url }}
+      s04-artifact-url: ${{ steps.upload_s04.outputs.artifact-url }}
     steps:
       - name: 检出代码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -120,6 +126,7 @@ jobs:
         id: s04
         run: python3 -B scripts/ci/run-s04-main-flow.py --binary ci-output/tiku-ci --evidence ci-output/s04-main-flow
       - name: 上传 HTTP 冒烟测试报告
+        id: upload_smoke
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
@@ -129,6 +136,7 @@ jobs:
           retention-days: 7
       # 仅归档结构化结果。命令记录可能包含合成凭据，运行目录还包含数据库和二进制。
       - name: 上传 S04 启动集成测试结果
+        id: upload_s04
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: ${{ !cancelled() && (steps.s04.outcome == 'success' || steps.s04.outcome == 'failure') }}
         with:
@@ -144,6 +152,8 @@ jobs:
     name: 前端依赖安全审计
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      artifact-url: ${{ steps.upload_audit.outputs.artifact-url }}
     defaults:
       run:
         shell: bash
@@ -167,6 +177,7 @@ jobs:
           set -e
           node ../scripts/ci/check-audit.cjs ../ci-output/npm-audit.json --npm-exit "$audit_status" --policy ../scripts/ci/audit-policy.json
       - name: 上传依赖审计报告
+        id: upload_audit
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
@@ -174,3 +185,80 @@ jobs:
           path: ci-output/npm-audit.json
           if-no-files-found: error
           retention-days: 7
+
+  summary:
+    name: PR 检查摘要
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    needs: [frontend, backend, audit]
+    if: always()
+    steps:
+      - name: 汇总检查结果与报告链接
+        shell: bash
+        env:
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          FRONTEND_ARTIFACT_URL: ${{ needs.frontend.outputs.artifact-url }}
+          SMOKE_ARTIFACT_URL: ${{ needs.backend.outputs.smoke-artifact-url }}
+          S04_ARTIFACT_URL: ${{ needs.backend.outputs.s04-artifact-url }}
+          AUDIT_ARTIFACT_URL: ${{ needs.audit.outputs.artifact-url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          result_label() {
+            case "$1" in
+              success) echo '通过' ;;
+              failure) echo '失败' ;;
+              cancelled) echo '已取消' ;;
+              skipped) echo '已跳过' ;;
+              *) echo '未知' ;;
+            esac
+          }
+
+          artifact_link() {
+            if [[ -n "$2" ]]; then
+              printf -- '- [%s](%s)\n' "$1" "$2"
+            else
+              printf -- '- %s（无下载链接）\n' "$1"
+            fi
+          }
+
+          if [[ "$FRONTEND_RESULT" == failure || "$BACKEND_RESULT" == failure || "$AUDIT_RESULT" == failure ]]; then
+            overall='检查失败，请查看失败作业的日志。'
+          elif [[ "$FRONTEND_RESULT" == success && "$BACKEND_RESULT" == success && "$AUDIT_RESULT" == success ]]; then
+            overall='全部检查通过。'
+          else
+            overall='检查未全部完成，请查看各作业状态。'
+          fi
+
+          repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          {
+            echo '# PR 检查结果'
+            echo
+            printf '**总体结果**　%s\n\n' "$overall"
+            if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+              printf -- '- 触发方式：拉取请求 [#%s](%s/pull/%s)\n' "$PR_NUMBER" "$repo_url" "$PR_NUMBER"
+            else
+              echo '- 触发方式：手动运行'
+            fi
+            printf -- '- 检查提交：[`%s`](%s/commit/%s)\n' "$GITHUB_SHA" "$repo_url" "$GITHUB_SHA"
+            printf -- '- [查看本次运行及日志](%s/actions/runs/%s)\n\n' "$repo_url" "$GITHUB_RUN_ID"
+            echo '| 检查作业 | 结果 | 检查范围 |'
+            echo '| --- | --- | --- |'
+            printf '| 前端构建与回归检查 | %s | 代码规范、单元与组件测试、Vue 编译、生产构建、资源体积 |\n' "$(result_label "$FRONTEND_RESULT")"
+            printf '| 后端构建与集成检查 | %s | Go 编译、静态检查、离线短测试、核心包竞态检测，及 SVG、解析代理、系统指标、HTTP 接口和服务启动集成 |\n' "$(result_label "$BACKEND_RESULT")"
+            printf '| 前端依赖安全审计 | %s | 按仓库审计策略检查 npm 锁定依赖 |\n' "$(result_label "$AUDIT_RESULT")"
+            if [[ "$BACKEND_RESULT" == skipped && "$FRONTEND_RESULT" != success ]]; then
+              echo
+              echo '后端需要本次前端构建产物。前端检查未通过，后端已跳过。'
+            fi
+            echo
+            echo '## 构建产物与诊断报告'
+            echo
+            artifact_link '前端构建产物' "$FRONTEND_ARTIFACT_URL"
+            artifact_link 'HTTP 冒烟测试报告' "$SMOKE_ARTIFACT_URL"
+            artifact_link 'S04 启动集成测试结果' "$S04_ARTIFACT_URL"
+            artifact_link 'npm 依赖审计报告' "$AUDIT_ARTIFACT_URL"
+            echo
+            echo '已上传的产物保留 7 天。'
+          } >> "$GITHUB_STEP_SUMMARY"

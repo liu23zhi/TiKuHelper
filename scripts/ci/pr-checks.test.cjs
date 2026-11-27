@@ -61,6 +61,24 @@ test('workflow jobs and steps have Chinese display names',()=>{
   for(const step of job.steps) assert.ok(hasChinese(step.name),'step display name should be Chinese')
  }
 })
+test('PR summary receives every check result and links to uploaded artifacts',()=>{
+ const {jobs}=workflow()
+ const summary=jobs.summary
+ assert.ok(summary,'summary job is required')
+ assert.deepEqual([...summary.needs].sort(),['audit','backend','frontend'])
+ assert.equal(summary.if,'always()')
+ const step=summary.steps.find(s=>s.run?.includes('GITHUB_STEP_SUMMARY'))
+ assert.ok(step,'write the summary to the Actions job summary file')
+ for(const id of summary.needs) assert.ok(Object.values(step.env).some(value=>value.includes(`needs.${id}.result`)),id)
+ for(const [jobId,artifact] of [['frontend','frontend-dist'],['backend','http-smoke-evidence'],['backend','s04-main-flow-evidence'],['audit','dependency-audit']]){
+  const job=jobs[jobId]
+  const upload=job.steps.find(s=>s.uses?.startsWith('actions/upload-artifact@')&&s.with?.name===artifact)
+  assert.ok(upload?.id,artifact)
+  const output=Object.entries(job.outputs).find(([,value])=>value.includes(`steps.${upload.id}.outputs.artifact-url`))
+  assert.ok(output,artifact)
+  assert.ok(Object.values(step.env).some(value=>value.includes(`needs.${jobId}.outputs.${output[0]}`)),artifact)
+ }
+})
 test('dependency audit has an explicit checked policy rather than swallowed failures',()=>{
  const flow=workflow(),cmd=commands(flow.jobs.audit)
  assert.ok(cmd.includes('npm audit --json'))
