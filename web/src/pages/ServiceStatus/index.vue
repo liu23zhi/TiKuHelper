@@ -93,6 +93,10 @@ function confirmedClock(snapshot) {
   return asOf !== null && restartedAt !== null && restartedAt <= asOf ? { asOf, restartedAt } : null
 }
 
+function respectsGeneration(candidate, checkpoint) {
+  return checkpoint === null || (candidate !== null && candidate.restartedAt >= checkpoint.restartedAt)
+}
+
 export default {
   name: 'ServiceStatusPage',
   components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, SearchStatusHistory },
@@ -148,14 +152,15 @@ export default {
         ])
         if (!owns()) return false
         const previousSummaryClock = confirmedClock(payload.value)
+        const cachedClock = confirmedClock(historyPayload.value)
         const freshSummaryClock = result.ok ? confirmedClock(result.data) : null
-        const acceptSummary = result.ok && (!previousSummaryClock ||
-          (freshSummaryClock && freshSummaryClock.restartedAt >= previousSummaryClock.restartedAt))
+        // 摘要和序列都能证实代际；其中任一端读失败，都不能接受另一端的旧代。
+        const acceptSummary = result.ok && respectsGeneration(freshSummaryClock, previousSummaryClock) &&
+          respectsGeneration(freshSummaryClock, cachedClock)
         if (acceptSummary) payload.value = result.data
         if (!result.ok) errorMessage.value = result.message
 
         const summaryClock = confirmedClock(payload.value)
-        const cachedClock = confirmedClock(historyPayload.value)
         const cachedDiscarded = summaryClock && cachedClock && (
           cachedClock.restartedAt < summaryClock.restartedAt ||
           (acceptSummary && freshSummaryClock && cachedClock.restartedAt === freshSummaryClock.restartedAt &&
@@ -163,12 +168,12 @@ export default {
         )
         const incoming = history.ok && parseStatusTimestamp(history.data?.asOf) !== null ? history.data : null
         const incomingClock = confirmedClock(incoming)
-        const olderGeneration = incomingClock && summaryClock && incomingClock.restartedAt < summaryClock.restartedAt
 
         // 同代两份新读不能按到达顺序拼合。优先可信新序列；缺读时仅明确
         // 重启或回拨使旧序列失效，普通前向更新/短暂读失败仍保留旧快照。
-        if (incoming && !olderGeneration && (!cachedDiscarded || incomingClock)) historyPayload.value = incoming
-        else if (cachedDiscarded) historyPayload.value = null
+        if (incoming && respectsGeneration(incomingClock, summaryClock) && respectsGeneration(incomingClock, cachedClock)) {
+          historyPayload.value = incoming
+        } else if (cachedDiscarded) historyPayload.value = null
         // 首次读失败仍保持空态。
         loaded.value = loaded.value || result.ok || history.ok
         return true

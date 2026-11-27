@@ -244,3 +244,37 @@ test('summary-only zero counts and historic coverage do not certify current sear
   assert.equal(overviewTotal(), '--')
   assert.doesNotMatch(wrapper.get('[data-endpoint-hint]').text(), /已采样 2 分钟/)
 })
+
+test('a generation confirmed by series alone cannot roll back when only an earlier series returns', async () => {
+  await open(Public, { summary: null, series: 'restart-series' })
+  assert.equal(overviewTotal(), '--')
+  assert.match(wrapper.get('[data-history-restart]').text(), /11-27 13:04/)
+  await refreshPublic({ summary: null, series: 'mixed-series' })
+  assert.equal(overviewTotal(), '--')
+  assert.match(wrapper.get('[data-history-restart]').text(), /11-27 13:04/)
+  assert.match(historyDetail(), /暂无采样/)
+  assert.deepEqual(calls.sort(), ['series', 'series', 'summary', 'summary'])
+})
+
+test('an older summary or a series without credible generation cannot replace a confirmed new series', async () => {
+  await open(Public, { summary: null, series: 'restart-series' })
+  const current = historyDetail()
+  await refreshPublic({ summary: 'mixed-summary', series: null })
+  assert.equal(overviewTotal(), '--')
+  assert.equal(historyDetail(), current)
+  await refreshPublic({ summary: 'mixed-summary', series: 'mixed-series' })
+  assert.equal(overviewTotal(), '--')
+  assert.equal(historyDetail(), current)
+  await refreshPublic({ summary: null, series: { ...fixtures['mixed-series'], restartedAt: '2100-01-01T00:00:00Z' } })
+  assert.equal(overviewTotal(), '--')
+  assert.equal(historyDetail(), current)
+
+  const minute = 29929265
+  await refreshPublic({ summary: 'mixed-summary', series: {
+    ...fixtures['restart-series'], asOf: '2026-11-27T05:05:30Z',
+    searchPoints: [{ minute, totalRequests: 1, successRequests: 1, avgLatencyMs: 11 }],
+    endpoints: { search: { totalRequests: 1, successRequests: 1, avgLatencyMs: 11, samples: 1 } },
+  } })
+  assert.equal(overviewTotal(), '1')
+  assert.match(historyDetail(), /13:01.*13:05.*1 次请求/)
+})
