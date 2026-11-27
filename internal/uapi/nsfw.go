@@ -67,6 +67,12 @@ func (c *Client) imageNSFWAddress() string {
 // 语义与 ImageOCR 一致：这是**可能计费的 POST**，本方法只尝试一次，重试编排交给
 // 调用方（工单附件的重试由 service 层按 attempt_count 做退避，不再叠加内部重试）。
 func (c *Client) ImageNSFW(ctx context.Context, request ImageNSFWRequest) (ImageNSFWResponse, error) {
+	return auditProviderCall(ctx, "image_nsfw", func(ctx context.Context) (ImageNSFWResponse, error) {
+		return c.imageNSFW(ctx, request)
+	})
+}
+
+func (c *Client) imageNSFW(ctx context.Context, request ImageNSFWRequest) (ImageNSFWResponse, error) {
 	if err := c.ensureReady(); err != nil {
 		return ImageNSFWResponse{}, err
 	}

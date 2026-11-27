@@ -211,6 +211,16 @@ func auditResponseShape(reply any) (string, map[string]int) {
 		return outcome, map[string]int{"has_ip": hasAuditField(v.IP), "has_region": hasAuditField(v.Region), "has_asn": hasAuditField(v.ASN), "segment_boundary_fields": hasAuditField(v.BeginIP) + hasAuditField(v.EndIP)}
 	case ImageOCRResponse:
 		return "success", map[string]int{"has_text": hasAuditField(v.Text), "has_markdown": hasAuditField(v.Markdown), "word_rows": len(v.WordsResult)}
+	case ImageNSFWResponse:
+		hasNSFW := 0
+		if v.IsNSFW != nil {
+			hasNSFW = 1
+		}
+		return "success", map[string]int{
+			"has_is_nsfw":    hasNSFW,
+			"has_suggestion": hasAuditField(v.Suggestion),
+			"has_risk_level": hasAuditField(v.RiskLevel),
+		}
 	case ProfanityCheckResponse:
 		outcome := "clear"
 		if v.Forbidden() {
