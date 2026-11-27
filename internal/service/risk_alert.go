@@ -537,8 +537,8 @@ func loadRiskRules(db *gorm.DB) ([]entity.RiskRule, error) {
 
 // EvaluateDebtAlerts 执行 3 条欠款规则的判定，写 risk_warnings，并按风控 webhook 推送。
 //
-// 96 C1（只告警不拦截）在本函数里体现为：**只 INSERT risk_warnings + 发 webhook**，
-// 不改 users、不拒绝请求、不动黑名单。
+// 欠款规则只记告警和推送；仅支持单一来源归因的核心行为规则允许独立授权
+// 黑名单处置（只在创建新告警之后执行），不会修改用户状态。
 //
 // 三条规则（118 §2.4）：
 //
@@ -596,8 +596,8 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 			result.Suppressed++
 			continue
 		}
-		if responseErr := respondToNewWarning(db, effectiveRiskRuleType(candidate.Rule), target); responseErr != nil {
-			logger.SysWarn(fmt.Sprintf("risk_alert_response_failed ruleId=%s warningId=%d error=%v", candidate.Rule.RuleID, target.ID, responseErr))
+		if responseErr := respondToNewWarning(db, candidate.Rule, target); responseErr != nil {
+			logger.SysWarn(fmt.Sprintf("risk_alert_response_failed ruleId=%s warningId=%d", candidate.Rule.RuleID, target.ID))
 		}
 		// 规则可以自己声明「这一条只留痕、先别推送」（96 §2.1 R16 的连续天数门槛）。
 		//

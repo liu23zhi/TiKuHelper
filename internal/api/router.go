@@ -356,6 +356,7 @@ func SetAPIRouter(router *gin.Engine) {
 	// 上面六条不动的理由：它们的消费方是 Web 前端（登录态），且会改 last_seen_at /
 	// 撤销行等副作用，放宽鉴权面没有收益。本端点只读。
 	apiRouter.GET("/user/device-quota", controller.AuthOrAccessToken, controller.DeviceQuota)
+	apiRouter.POST("/user/device-admission", controller.DeviceHostAdmission)
 	// exe 会话数上报（141 §6.2）。鉴权用 AuthOrAccessToken 而不是 Auth：exe 只持
 	// adapter key（access_tokens 表里的令牌），没有登录 JWT —— 挂 Auth 会让真实客户端
 	// 恒 401，表现是「exe 从不上报会话数」，且不报任何错（与 /tiku/evidence 同一取舍）。

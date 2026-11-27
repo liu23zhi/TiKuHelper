@@ -210,10 +210,14 @@ func TestIPSegmentBackfillBatchesEachAtMost500(t *testing.T) {
 	// 1200 行 → 期望 500 + 500 + 200 = 3 批。
 	const totalRows = 1200
 	for index := 0; index < totalRows; index++ {
-		// 四个不同的第三段轮换，使段表最终 4 行；行数仍是 1200。
-		third := index % 4
-		seedIPCacheRow(t, db, entity.LocationKindIP,
-			lookupKeyForTest(index), "", ipSegmentRawJSON(third))
+		// 四个 /23 来自 RFC 2544 的基准测试网段，每段 300 个不同样本。
+		// 缓存查询键和响应首尾必须一致，仍保持 4 段、1200 行与原分批断言。
+		third := (index % 4) * 2
+		offset := index / 4
+		prefix := "198.18."
+		key := prefix + itoa(third+offset/256) + "." + itoa(offset%256)
+		raw := `{"beginip":"` + prefix + itoa(third) + `.0","endip":"` + prefix + itoa(third+1) + `.255"}`
+		seedIPCacheRow(t, db, entity.LocationKindIP, key, "", raw)
 	}
 
 	var batchSizes []int
@@ -261,12 +265,6 @@ func TestIPSegmentBackfillBatchesEachAtMost500(t *testing.T) {
 	if stats.NewlyCreated != 4 {
 		t.Fatalf("must report 4 newly created segments, got %d", stats.NewlyCreated)
 	}
-}
-
-// lookupKeyForTest 生成 1200 个互不相同的 IP（120.239.x.y 形式，避开 0/255）。
-func lookupKeyForTest(index int) string {
-	// x = index/200 + 1（1..6），y = index%200 + 1（1..200）
-	return "10." + itoa(index/200+1) + "." + itoa(index%200+1) + ".1"
 }
 
 // 判据⑤：raw_json 为空或不可解析的行必须**跳过并计数**，且不能让整批失败。

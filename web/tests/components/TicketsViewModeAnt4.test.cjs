@@ -213,11 +213,21 @@ test('管理详情接收顶层退款关联，直接审核和办理，并且全�
 })
 
 test('封禁账号可通过申诉深链直接打开表单并提交自己的申诉', async () => {
-  const { wrapper } = await openPage({ ...user, status: 'banned', banReason: '异常请求' }, '/tickets?appeal=1')
+  const { wrapper } = await openPage({ ...user, status: 'banned', banReason: '异常请求',
+    createdAt: '2026-04-02T10:30:00Z', phone: '13900001372', wechatId: 'synthetic-private-wechat-id' }, '/tickets?appeal=1')
   assert.equal(state(wrapper, 'createVisible'), true)
   assert.equal(state(wrapper, 'draft').issueType, 'banned')
   const form = [...document.querySelectorAll('[data-ticket-step="form"]')].find(visible)
   assert.ok(form)
+  const summary = form.querySelector('[data-ticket-appeal-account]')
+  assert.ok(summary)
+  assert.equal(buttons('为本账号申诉', summary)[0]?.getAttribute('aria-pressed'), 'true')
+  assert.ok(buttons('为其他账号申诉', summary)[0]?.disabled)
+  assert.match(summary.textContent, /注册时间.*2026/)
+  assert.match(summary.textContent, /绑定手机号.*\*+1372/)
+  assert.match(summary.textContent, /微信.*已绑定/)
+  assert.doesNotMatch(summary.textContent, /13900001372|synthetic-private-wechat-id/)
+  assert.equal([...document.querySelectorAll('input[type=password]')].filter(visible).length, 0)
   await type(form.querySelector('textarea'), '请核对账号封禁情况')
   await click(button('提交', form.closest('.ant-modal')))
   assert.equal(createCalls().length, 1)
@@ -228,6 +238,17 @@ test('封禁账号可通过申诉深链直接打开表单并提交自己的申�
 test('用户通过独立验证为另一个封禁账号申诉，不替换登录身份', async () => {
   const before = { ...user }
   await openPage(user, '/tickets?appeal=1')
+  const summary = document.querySelector('[data-ticket-appeal-account]')
+  assert.equal(buttons('为本账号申诉', summary)[0]?.getAttribute('aria-pressed'), 'true')
+  assert.equal([...document.querySelectorAll('input[type=password]')].filter(visible).length, 0)
+  assert.match(summary.textContent, /本账号未封禁/)
+  const initialForm = [...document.querySelectorAll('[data-ticket-step="form"]')].find(visible)
+  await type(initialForm.querySelector('textarea'), '尝试为本账号提交封禁申诉')
+  await click(button('提交', initialForm.closest('.ant-modal')))
+  assert.equal(createCalls().length, 0, 'non-eligible self selection does not submit')
+  assert.equal([...document.querySelectorAll('input[type=password]')].filter(visible).length, 0, 'self submit never opens the other-account form')
+  assert.equal(calls.filter(call => call.url === '/api/tickets/appeal-verification').length, 0)
+  await click(button('为其他账号申诉', summary))
   for (let i = 0; i < 30 && !buttons('验证账号').length; i++) { await new Promise(resolve => setTimeout(resolve, 10)); await settle() }
   const verification = document.querySelector('.ant-modal input[type=password]')?.closest('.ant-modal')
   assert.ok(verification)
@@ -247,6 +268,7 @@ test('用户通过独立验证为另一个封禁账号申诉，不替换登录�
 
 test('申诉返回类型选择后销毁验证结果，迟到的验证不能带回旧目标', async () => {
   const { wrapper } = await openPage(user, '/tickets?appeal=1')
+  await click(button('为其他账号申诉'))
   state(wrapper, 'onAppealVerified')({ proof: 'a'.repeat(64), expiresAt: new Date(Date.now()+300000).toISOString() })
   await settle(); assert.ok(state(wrapper, 'appealVerification'))
   await click(button('上一步'))
@@ -254,6 +276,21 @@ test('申诉返回类型选择后销毁验证结果，迟到的验证不能带�
   state(wrapper, 'onAppealVerified')({ proof: 'b'.repeat(64) }); await settle()
   assert.equal(state(wrapper, 'appealVerification'), null)
   assert.equal(createCalls().length, 0)
+})
+
+test('取消主动进入的其他账号验证后恢复本账号，迟到结果不改变目标', async () => {
+  const { wrapper } = await openPage(user, '/tickets?appeal=1')
+  await click(button('为其他账号申诉'))
+  for (let i = 0; i < 30 && !buttons('验证账号').length; i++) { await new Promise(resolve => setTimeout(resolve, 10)); await settle() }
+  const verification = document.querySelector('.ant-modal input[type=password]')?.closest('.ant-modal')
+  assert.ok(verification)
+  await click(button('取消', verification))
+  const summary = document.querySelector('[data-ticket-appeal-account]')
+  assert.equal(buttons('为本账号申诉', summary)[0]?.getAttribute('aria-pressed'), 'true')
+  assert.equal([...document.querySelectorAll('input[type=password]')].filter(visible).length, 0)
+  state(wrapper, 'onAppealVerified')({ proof: 'a'.repeat(64), expiresAt: new Date(Date.now() + 300000).toISOString() })
+  assert.equal(state(wrapper, 'appealVerification'), null)
+  assert.equal(calls.filter(call => call.method === 'post').length, 0)
 })
 
 test('管理员申诉详情展示目标状态和完整业务资料，处理面板指向该目标', async () => {

@@ -541,11 +541,24 @@
               :onUpdate:value="createEntry.bind(setDraft, 'issueType')" /><template #help><span v-if="createValidationMessage('issueType')" role="alert">{{ createValidationMessage('issueType') }}</span><span v-else>选择后标题会自动带上该类型，便于管理员分诊。</span></template></a-form-item
           >
           <section v-if="draft.issueType === 'banned'" class="detail-user-summary" data-ticket-appeal-account>
-            <template v-if="bannedApplicant"><div><span>申诉账号</span><strong>{{ currentUser.nickname || currentUser.username }}（#{{ currentUser.id }}）</strong></div><div><span>封禁原因</span><strong>{{ currentUser.banReason || '未填写，请联系管理员核对' }}</strong></div></template>
+            <div role="group" aria-label="申诉对象">
+              <a-space wrap>
+                <a-button :aria-pressed="appealTargetChoice === 'self'" :disabled="createLoading" @click="resetAppealVerification">为本账号申诉</a-button>
+                <a-button :aria-pressed="appealTargetChoice === 'other'" :disabled="createLoading || bannedApplicant" @click="selectOtherAppealAccount">为其他账号申诉</a-button>
+              </a-space>
+            </div>
+            <template v-if="appealTargetChoice === 'self'">
+              <div><span>当前申诉对象</span><strong>{{ currentUser?.nickname || currentUser?.username || '本账号' }}</strong></div>
+              <div><span>注册时间</span><strong>{{ formatTicketTime(currentUser?.createdAt) }}</strong></div>
+              <div><span>绑定手机号</span><strong>{{ currentAppealPhone }}</strong></div>
+              <div><span>微信</span><strong>{{ currentUser?.wechatId ? '已绑定' : '未绑定' }}</strong></div>
+              <div v-if="bannedApplicant"><span>封禁原因</span><strong>{{ currentUser?.banReason || '未填写，请联系管理员核对' }}</strong></div>
+              <p v-else>本账号未封禁，不能为本账号提交封禁申诉。</p>
+            </template>
             <template v-else>
-              <div><span>为其他账号申诉</span><strong>{{ appealVerification ? '账号已验证' : '请登录验证需要申诉的账号，当前登录保持不变。' }}</strong></div>
-              <template v-if="appealVerification"><div><span>申诉账号</span><strong>{{ appealVerification.username || '已验证账号' }}</strong></div><div><span>注册时间</span><strong>{{ formatTicketTime(appealVerification.registeredAt) }}</strong></div><div><span>绑定手机号</span><strong>{{ appealVerification.maskedPhone || '未绑定' }}</strong></div></template>
-              <a-button :disabled="createLoading" @click="appealVerificationOpen = true">{{ appealVerification ? '更换申诉账号' : '登录验证申诉账号' }}</a-button>
+              <div><span>当前申诉对象</span><strong>{{ appealVerification?.username || '其他账号（待验证）' }}</strong></div>
+              <template v-if="appealVerification"><div><span>注册时间</span><strong>{{ formatTicketTime(appealVerification.registeredAt) }}</strong></div><div><span>绑定手机号</span><strong>{{ appealVerification.maskedPhone || '未绑定' }}</strong></div></template>
+              <p v-else>请验证要申诉的账号。当前登录身份不会切换。</p>
             </template>
           </section>
           <a-form-item label="问题说明" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
@@ -657,7 +670,7 @@
         >
       </div>
     </a-modal>
-    <AccountAppealVerification v-if="appealVerificationOpen && createVisible && createNeedsAccountFields && draft.issueType === 'banned' && createStep === TICKET_WIZARD_STEP_FORM && !bannedApplicant" :open="appealVerificationOpen" @update:open="appealVerificationOpen = $event" @verified="onAppealVerified" />
+    <AccountAppealVerification v-if="appealVerificationOpen && createVisible && createNeedsAccountFields && draft.issueType === 'banned' && createStep === TICKET_WIZARD_STEP_FORM && !bannedApplicant" :open="appealVerificationOpen" @update:open="onAppealVerificationOpen" @verified="onAppealVerified" />
     <a-modal
       :key="pageEpoch + ':' + detailRequestVersion" :open="detailVisible" :onUpdate:open="detailEntry.bind(setDetailVisible)"
       :wrap-props="{ 'aria-modal': true }"
@@ -1111,10 +1124,34 @@ const createNeedsClosureFields = computed(() => isAccountClosureTicketType(draft
 const bannedApplicant = computed(() => currentUser.value?.status === 'banned');
 const createTypeOptions = computed(() => TICKET_CREATE_TYPE_OPTIONS.filter(item => !bannedApplicant.value || item.value === TICKET_CREATE_TYPE_ACCOUNT).map(({ value, label, hint }) => ({ value, label, hint })));
 const createIssueOptions = computed(() => TICKET_ACCOUNT_ISSUE_OPTIONS.filter(item => !bannedApplicant.value || item.value === 'banned').map(({ value, label }) => ({ value, label })));
+const appealTargetChoice = ref('self');
 const appealVerificationOpen = ref(false), appealVerification = shallowRef(null);
-function resetAppealVerification() { appealVerificationOpen.value = false; appealVerification.value = null; }
+const currentAppealPhone = computed(() => {
+  const phone = String(currentUser.value?.phone || '').trim();
+  if (!phone) return '未绑定';
+  const suffix = phone.match(/[0-9]{4}$/);
+  return suffix ? '****' + suffix[0] : '已绑定';
+});
+function resetAppealVerification() {
+  appealTargetChoice.value = 'self';
+  appealVerificationOpen.value = false;
+  appealVerification.value = null;
+}
+function canSelectOtherAppealAccount() {
+  return canCreateTickets() && createVisible.value && createNeedsAccountFields.value &&
+    createStep.value === TICKET_WIZARD_STEP_FORM && draft.issueType === 'banned' && !bannedApplicant.value && !createLoading.value;
+}
+function selectOtherAppealAccount() {
+  if (!canSelectOtherAppealAccount() || appealVerificationOpen.value) return;
+  appealTargetChoice.value = 'other';
+  appealVerification.value = null;
+  appealVerificationOpen.value = true;
+}
+function onAppealVerificationOpen(open) {
+  if (!open && appealVerificationOpen.value) resetAppealVerification();
+}
 function onAppealVerified(value) {
-  if (!appealVerificationOpen.value || !createVisible.value || !createNeedsAccountFields.value || createStep.value !== TICKET_WIZARD_STEP_FORM || draft.issueType !== 'banned' || bannedApplicant.value || !value?.proof) return;
+  if (!appealVerificationOpen.value || appealTargetChoice.value !== 'other' || !canSelectOtherAppealAccount() || !value?.proof) return;
   appealVerification.value = value; appealVerificationOpen.value = false;
 }
 // 第一步「下一步」是否可用：必须选了一个**白名单内**的类型。
@@ -1564,10 +1601,7 @@ function toggleRefundOrder(id) {
 function setDraft(key, value) {
   if (!createVisible.value) return;
   draft[key] = value;
-  if (key === 'issueType') {
-    resetAppealVerification();
-    if (value === 'banned' && !bannedApplicant.value) appealVerificationOpen.value = true;
-  }
+  if (key === 'issueType') resetAppealVerification();
 }
 function setCreateVisible(value) { createVisible.value = value; }
 function setDetailVisible(value) { if (!value) closeDetail(); }
@@ -1764,7 +1798,6 @@ function advanceFromTypeStep() {
   if (!createVisible.value || !createTypeChosen.value) return;
   retireCreateValidation();
   createStep.value = ticketWizardNextStep(draft.ticketType);
-  if (createNeedsAccountFields.value && draft.issueType === 'banned' && !bannedApplicant.value) appealVerificationOpen.value = true;
 }
 // goCreateForm 是引导页**次按钮**（仍然提交工单）的回调：
 // 用户已明确拒绝自助注销，这一步才允许进入注销工单表单。
@@ -1804,8 +1837,17 @@ async function submitTicket() {
   const validation = currentDraftValidation();
   if (validation.message) { createValidation.value = validation; message.warning(validation.message); return; }
   const isBanAppeal = createNeedsAccountFields.value && draft.issueType === 'banned';
-  if (isBanAppeal && !bannedApplicant.value && (!appealVerification.value?.proof || !Number.isFinite(Date.parse(appealVerification.value.expiresAt)) || Date.parse(appealVerification.value.expiresAt) <= Date.now())) {
-    resetAppealVerification(); appealVerificationOpen.value = true; message.warning('请先登录验证需要申诉的账号'); return;
+  if (isBanAppeal && !bannedApplicant.value) {
+    if (appealTargetChoice.value !== 'other') {
+      message.warning('本账号未封禁，不能为本账号提交封禁申诉');
+      return;
+    }
+    const expiresAt = Date.parse(appealVerification.value?.expiresAt);
+    if (!appealVerification.value?.proof || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      appealVerification.value = null;
+      message.warning('请主动选择并验证要申诉的其他账号');
+      return;
+    }
   }
   retireCreateValidation();
   const owns = captureCreate(), subject = draft.subject, body = draft.body;
@@ -2267,7 +2309,6 @@ onMounted(() => { loadTickets(); if (canManage()) loadNotificationConfig(); });
 watch(() => [route.query?.appeal, route.query?.appealRequest], ([value]) => {
   if (String(value) !== '1' || !canCreateTickets()) return;
   openCreate(); draft.ticketType = TICKET_CREATE_TYPE_ACCOUNT; draft.issueType = 'banned'; createStep.value = TICKET_WIZARD_STEP_FORM;
-  if (!bannedApplicant.value) appealVerificationOpen.value = true;
 }, { immediate: true });
 onBeforeUnmount(() => {
   ++listRequestVersion;
