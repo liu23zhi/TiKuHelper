@@ -22,7 +22,11 @@
           <span class="status-hero__dot" aria-hidden="true"></span>
           <div>
             <strong>{{ statusLabel }}</strong>
-            <p>最近 {{ summary.windowMinutes }} 分钟 · 成功率 {{ percent(summary.successRate) }}</p>
+            <p v-if="historyView.available">
+              截至 {{ historyView.updatedText }}（Asia/Shanghai） · 最近 {{ summary.windowMinutes }} 个自然分钟 ·
+              成功率 {{ summary.totalRequests > 0 ? percent(summary.successRate) : '—' }}
+            </p>
+            <p v-else>服务未提供可确认统计时点；下列仅为遗留统计，不表示当前健康。</p>
           </div>
         </div>
         <ConsoleSummaryGrid class="status-summary" aria-label="API 调用摘要">
@@ -40,15 +44,16 @@
           <a-descriptions-item label="保留采样点">{{ count(payload.retained) }} / {{ count(payload.capacity) }}</a-descriptions-item>
         </a-descriptions>
         <p class="hint">这些是 API 请求诊断事件，不代表用户数、账务金额或上游调用量。</p>
+        <SearchStatusHistory :payload="payload" scope="admin" />
       </ConsolePanel>
 
-      <ConsolePanel title="请求趋势与分布" description="图表使用最近 24 小时的实际分钟采样，空白时段不补造数据。">
+      <ConsolePanel v-if="historyView.available" title="请求趋势与分布" description="图表使用最近 24 小时的实际分钟采样，空白时段不补造数据。">
         <div class="status-charts">
           <PortraitChart v-for="chart in statusCharts" :key="chart.key" :title="chart.title" :hint="chart.hint" :options="chart.options" :aria-label="chart.title" />
         </div>
       </ConsolePanel>
 
-      <ConsolePanel title="逐分钟 API 调用" description="最近 24 小时的分钟级采样；明细表展示最近 30 个点，图表展示全部保留点。">
+      <ConsolePanel v-if="historyView.available" title="逐分钟 API 调用" description="最近 24 小时的分钟级采样；明细表展示最近 30 个点，图表展示全部保留点。">
         <p v-if="recentPoints.length === 0" class="hint" role="status">暂无采样点，服务启动或重启后会逐分钟积累。</p>
         <div v-else class="table-scroll">
           <table class="status-table">
@@ -57,7 +62,7 @@
               <tr v-for="point in recentPoints" :key="point.minute">
                 <td>{{ pointTime(point.minute) }}</td><td>{{ count(point.totalRequests) }}</td><td>{{ count(point.successRequests) }}</td>
                 <td>{{ count(point.failedRequests) }}</td><td>{{ count(point.upstreamFailures) }}</td><td>{{ count(point.timeoutFailures) }}</td>
-                <td>{{ count(point.authFailures) }}</td><td>{{ count(point.quotaFailures) }}</td><td>{{ latency(point.avgLatencyMs) }}</td>
+                <td>{{ count(point.authFailures) }}</td><td>{{ count(point.quotaFailures) }}</td><td>{{ point.totalRequests ? latency(point.avgLatencyMs) : '—' }}</td>
               </tr>
             </tbody>
           </table>
@@ -77,6 +82,8 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import SystemMetricsPanel from '@/pages/SystemSettings/SystemMetricsPanel.vue'
 import PortraitChart from '@/pages/UserPortrait/PortraitChart.vue'
+import SearchStatusHistory from '@/components/SearchStatusHistory.vue'
+import { buildStatusHistory, formatStatusTime } from '@/utils/searchStatusHistory.mjs'
 import { useChartPalette } from '@/utils/useChartPalette'
 import { buildServiceStatusCharts } from '@/utils/operationalCharts.mjs'
 import { getAdminServiceStatus } from '@/api/AdminServiceStatusApi'
@@ -94,13 +101,14 @@ function isSupportedStatus(value) {
 
 export default {
   name: 'AdminServiceStatusPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, SystemMetricsPanel, PortraitChart },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, SystemMetricsPanel, PortraitChart, SearchStatusHistory },
   setup() {
     const { currentUser } = useCurrentUserDisplay()
     const canView = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
     const payload = shallowRef(null)
     const palette = useChartPalette()
-    const statusCharts = computed(() => buildServiceStatusCharts(payload.value, palette.value))
+    const historyView = computed(() => buildStatusHistory(payload.value, 'admin'))
+    const statusCharts = computed(() => buildServiceStatusCharts({ summary: payload.value?.summary, points: historyView.value.series }, palette.value))
     const loading = ref(false)
     const errorMessage = ref('')
     let requestVersion = 0
@@ -117,13 +125,13 @@ export default {
       const ticket = ++requestVersion
       const owns = captureDataOwner()
       const isCurrent = () => owns() && ticket === requestVersion && canView.value
-      payload.value = null
       errorMessage.value = ''
       loading.value = true
       try {
         const response = await getAdminServiceStatus()
         if (!isCurrent()) return false
         if (Number(response?.status) !== 200) {
+          if ([401, 403].includes(Number(response?.status))) payload.value = null
           errorMessage.value = Number(response?.status) === 403 ? '无权读取服务器详情，请确认管理员权限。' : '读取服务器详情失败，请稍后重试。'
           return false
         }
@@ -134,7 +142,11 @@ export default {
         payload.value = response.data
         return true
       } catch (error) {
-        if (isCurrent()) errorMessage.value = Number(error?.response?.status) === 403 ? '无权读取服务器详情，请确认管理员权限。' : '读取服务器详情失败，请稍后重试。'
+        if (isCurrent()) {
+          const status = Number(error?.response?.status)
+          if ([401, 403].includes(status)) payload.value = null
+          errorMessage.value = status === 403 ? '无权读取服务器详情，请确认管理员权限。' : '读取服务器详情失败，请稍后重试。'
+        }
         return false
       } finally {
         if (isCurrent()) loading.value = false
@@ -144,11 +156,11 @@ export default {
     onBeforeUnmount(clear)
 
     const summary = computed(() => payload.value?.summary || { windowMinutes: 0, successRate: 0, totalRequests: 0, successRequests: 0, failedRequests: 0, avgLatencyMs: 0, breakdown: {} })
-    const recentPoints = computed(() => (payload.value?.points || []).slice(-30))
+    const recentPoints = computed(() => historyView.value.series.slice(-30))
     const statusLabels = { healthy: '正常', degraded: '降级', down: '异常', unknown: '暂无数据' }
-    const statusLabel = computed(() => statusLabels[summary.value.status] || '状态未知')
-    const tone = computed(() => ({ healthy: 'ok', degraded: 'warn', down: 'danger', unknown: 'muted' }[summary.value.status] || 'muted'))
-    const count = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('zh-CN') : '—'
+    const statusLabel = computed(() => historyView.value.available ? (statusLabels[summary.value.status] || '状态未知') : '时窗未确认')
+    const tone = computed(() => !historyView.value.available ? 'muted' : ({ healthy: 'ok', degraded: 'warn', down: 'danger', unknown: 'muted' }[summary.value.status] || 'muted'))
+    const count = value => nonnegative(value) ? value.toLocaleString('zh-CN') : '—'
     const percent = value => `${(Number(value || 0) * 100).toFixed(2).replace(/\.00$/, '')}%`
     const latency = value => `${count(value)} 毫秒`
     const restartedAt = computed(() => {
@@ -156,8 +168,8 @@ export default {
       const date = value ? new Date(value) : null
       return date && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '未知'
     })
-    const pointTime = minute => new Date(Number(minute) * 60000).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
-    return { payload, loading, errorMessage, summary, recentPoints, statusLabel, tone, count, percent, latency, restartedAt, pointTime, load, statusCharts }
+    const pointTime = minute => formatStatusTime(minute * 60_000)
+    return { payload, loading, errorMessage, summary, recentPoints, statusLabel, tone, count, percent, latency, restartedAt, pointTime, load, statusCharts, historyView }
   },
 }
 </script>

@@ -14,6 +14,9 @@ let summaryResult
 let seriesResult
 let wrapper
 const calls = []
+const AS_OF = '2026-11-27T05:04:30.123Z'
+const MINUTE = Math.floor(Date.parse(AS_OF) / 60000)
+const seriesAt = (points, extra = {}) => ({ schemaVersion: 1, asOf: AS_OF, searchPoints: points, ...extra })
 const api = new Module(apiPath)
 api.loaded = true
 api.exports = {
@@ -53,22 +56,21 @@ afterEach(async () => {
 
 test('status page renders a search-only 24-hour band and supports keyboard inspection', async () => {
   summaryResult = summary()
-  seriesResult = { status: 200, data: {
-    schemaVersion: 1,
-    points: [{ minute: Math.floor(Date.now() / 60000), totalRequests: 99, successRequests: 0, avgLatencyMs: 30 }],
-    searchPoints: [{ minute: Math.floor(Date.now() / 60000), totalRequests: 3, successRequests: 3, avgLatencyMs: 12 }],
-  } }
+  seriesResult = { status: 200, data: seriesAt(
+    [{ minute: MINUTE, totalRequests: 3, successRequests: 3, avgLatencyMs: 12 }],
+    { points: [{ minute: MINUTE, totalRequests: 99, successRequests: 0, avgLatencyMs: 30 }] },
+  ) }
   await openPage()
   assert.deepEqual(calls.sort(), ['series', 'summary'])
   assert.ok(wrapper.text().includes('最近 24 小时'))
   const cells = wrapper.findAll('[data-search-history-cell]')
   assert.equal(cells.length, 288)
   assert.equal(cells.at(-1).attributes('data-history-tier'), 't100')
-  assert.equal(cells[0].attributes('data-history-tier'), 'none')
+  assert.equal(cells[0].attributes('data-history-tier'), 'unknown')
   const band = wrapper.find('[data-search-history-band]')
   assert.equal(band.attributes('role'), 'slider')
   await band.trigger('keydown', { key: 'Home' })
-  assert.match(wrapper.find('[data-search-history-detail]').text(), /无请求/)
+  assert.match(wrapper.find('[data-search-history-detail]').text(), /暂无采样/)
   await band.trigger('keydown', { key: 'End' })
   assert.match(wrapper.find('[data-search-history-detail]').text(), /100%.*3 次请求/)
   assert.ok(!wrapper.text().includes('99 次请求'), 'must never mix site-wide series into search history')
@@ -82,14 +84,14 @@ test('series failure or an older response preserves the summary and shows unavai
     assert.equal(wrapper.find('[data-metric="search-success-rate"]').text(), '100%')
     assert.match(wrapper.find('[data-search-history-hint]').text(), /历史状态暂不可用/)
     assert.equal(wrapper.findAll('[data-search-history-cell]').length, 288)
-    assert.ok(wrapper.findAll('[data-search-history-cell]').every(cell => cell.attributes('data-history-tier') === 'none'))
+    assert.ok(wrapper.findAll('[data-search-history-cell]').every(cell => cell.attributes('data-history-tier') === 'unknown'))
     wrapper.unmount()
   }
 })
 
 test('summary failure does not discard successful search history', async () => {
   summaryResult = { status: 500 }
-  seriesResult = { status: 200, data: { schemaVersion: 1, searchPoints: [{ minute: Math.floor(Date.now() / 60000), totalRequests: 2, successRequests: 0, avgLatencyMs: 10 }] } }
+  seriesResult = { status: 200, data: seriesAt([{ minute: MINUTE, totalRequests: 2, successRequests: 0, avgLatencyMs: 10 }]) }
   await openPage()
   assert.equal(wrapper.findAll('[data-search-history-cell]').at(-1).attributes('data-history-tier'), 't0')
   assert.match(wrapper.find('[data-search-history-detail]').text(), /0%.*2 次请求/)
@@ -98,8 +100,9 @@ test('summary failure does not discard successful search history', async () => {
 
 test('refresh failure keeps the last rendered summary and history snapshot', async () => {
   summaryResult = summary()
-  const minute = Math.floor(Date.now() / 60000)
-  seriesResult = { status: 200, data: { schemaVersion: 1, searchPoints: [{ minute, totalRequests: 2, successRequests: 2, avgLatencyMs: 10 }] } }
+  seriesResult = { status: 200, data: seriesAt([{ minute: MINUTE, totalRequests: 2, successRequests: 2, avgLatencyMs: 10 }], {
+    endpoints: { search: { totalRequests: 2, successRequests: 2, avgLatencyMs: 10, samples: 1 } },
+  }) }
   await openPage()
   assert.equal(wrapper.findAll('[data-search-history-cell]').at(-1).attributes('data-history-tier'), 't100')
 

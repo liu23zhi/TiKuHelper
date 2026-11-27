@@ -36,13 +36,13 @@
         :data-endpoint-kind="endpointView.key"
         :data-endpoint-state="endpointView.state"
         :data-endpoint-greyed="endpointView.greyed ? 'true' : 'false'"
-        :data-status-tone="endpointView.tone"
+        :data-status-tone="overviewAsOf === null ? 'muted' : endpointView.tone"
       >
         <span class="search-status__dot" aria-hidden="true"></span>
         <div>
-          <p class="search-status__label" data-status-label>{{ endpointView.statusLabel }}</p>
+          <p class="search-status__label" data-status-label>{{ overviewAsOf === null ? '时窗未确认' : endpointView.statusLabel }}</p>
           <p class="search-status__hint" data-endpoint-hint>
-            {{ endpointView.hint || statusHint }}
+            {{ overviewAsOf === null ? '服务未提供可确认统计时点；下列仅为遗留统计，不表示当前健康。' : (endpointView.hint || statusHint) }}
           </p>
         </div>
       </div>
@@ -63,8 +63,8 @@
         </div>
       </ConsoleSummaryGrid>
 
-      <p class="hint">数据更新于 {{ historyUpdatedText }}。统计窗口：最近 {{ view.windowText }}。服务重启后采样会重新积累。</p>
-      <SearchStatusHistory :payload="historyPayload" :sampled-at="historySampledAt" />
+      <p class="hint" data-search-overview-time v-if="overviewAsOf !== null">搜题概览：截至 {{ overviewTime }}（Asia/Shanghai），最近 5 个自然分钟。</p>
+      <SearchStatusHistory :payload="historyPayload" />
     </ConsolePanel>
 
     <p v-else-if="!errorMessage" class="hint" role="status">正在准备读取搜题接口状态。</p>
@@ -82,10 +82,20 @@ import { getServiceStatusSeries, getServiceStatusSummary } from '@/api/ServiceSt
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import {
-  buildServiceStatusView,
+  buildEndpointView,
   loadServiceStatusSummary,
 } from '@/utils/serviceStatusSummary.mjs'
-import { loadSearchStatusHistory } from '@/utils/searchStatusHistory.mjs'
+import { currentSearchSnapshot, formatStatusTime, loadSearchStatusHistory, parseStatusTimestamp, searchSummaryFallback } from '@/utils/searchStatusHistory.mjs'
+
+function confirmedClock(snapshot) {
+  const asOf = parseStatusTimestamp(snapshot?.asOf)
+  const restartedAt = parseStatusTimestamp(snapshot?.restartedAt)
+  return asOf !== null && restartedAt !== null && restartedAt <= asOf ? { asOf, restartedAt } : null
+}
+
+function respectsGeneration(candidate, checkpoint) {
+  return checkpoint === null || (candidate !== null && candidate.restartedAt >= checkpoint.restartedAt)
+}
 
 export default {
   name: 'ServiceStatusPage',
@@ -98,7 +108,6 @@ export default {
     const loaded = ref(false)
     const payload = shallowRef(null)
     const historyPayload = shallowRef(null)
-    const historySampledAt = ref(Date.now())
     const errorMessage = ref('')
 
     let alive = true
@@ -110,9 +119,16 @@ export default {
     const canLoad = () => pageActive() && getCurrentUserLogoutEpoch() === mountedLogoutEpoch
       && Boolean(currentUserIdentity(currentUser.value))
 
-    const view = computed(() => buildServiceStatusView(payload.value))
-    // 普通用户只显示 search 桶。全站汇总会被健康检查、管理页等请求稀释。
-    const endpointView = computed(() => view.value.endpoints.search)
+    // 同一份可信 series 同时提供时间轴和当前搜题桶。独立 GET 的 summary
+    // 可能来自时间回拨前或另一代进程，不能把它与 series 的 asOf 拼接。
+    const hasTimedHistory = computed(() => parseStatusTimestamp(historyPayload.value?.asOf) !== null)
+    const overview = computed(() => hasTimedHistory.value ? historyPayload.value : payload.value)
+    const overviewAsOf = computed(() => parseStatusTimestamp(overview.value?.asOf))
+    const overviewTime = computed(() => formatStatusTime(overviewAsOf.value))
+    const endpointView = computed(() => {
+      if (hasTimedHistory.value) return buildEndpointView('search', currentSearchSnapshot(historyPayload.value))
+      return buildEndpointView('search', searchSummaryFallback(overview.value?.endpoints?.search))
+    })
     const statusHint = computed(() => {
       if (endpointView.value.state === 'idle') return endpointView.value.hint
       if (endpointView.value.tone === 'ok') return '最近窗口内搜题请求基本正常。'
@@ -120,9 +136,7 @@ export default {
       if (endpointView.value.tone === 'danger') return '最近窗口内搜题请求大部分失败，答题可能不可用。'
       return '状态根据搜题接口最近窗口的采样推导。'
     })
-    const historyUpdatedText = computed(() => new Date(historySampledAt.value).toLocaleTimeString('zh-CN', {
-      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
-    }))
+
 
     const load = async () => {
       if (!canLoad() || loading.value) return false
@@ -137,16 +151,30 @@ export default {
           loadSearchStatusHistory(() => getServiceStatusSeries()),
         ])
         if (!owns()) return false
-        if (!result.ok) {
-          errorMessage.value = result.message
-        } else {
-          payload.value = result.data
-        }
-        if (history.ok) {
-          historyPayload.value = history.data
-          historySampledAt.value = Date.now()
-        }
-        // 刷新失败时保留已显示的快照；首次读取失败才保持空态。
+        const previousSummaryClock = confirmedClock(payload.value)
+        const cachedClock = confirmedClock(historyPayload.value)
+        const freshSummaryClock = result.ok ? confirmedClock(result.data) : null
+        // 摘要和序列都能证实代际；其中任一端读失败，都不能接受另一端的旧代。
+        const acceptSummary = result.ok && respectsGeneration(freshSummaryClock, previousSummaryClock) &&
+          respectsGeneration(freshSummaryClock, cachedClock)
+        if (acceptSummary) payload.value = result.data
+        if (!result.ok) errorMessage.value = result.message
+
+        const summaryClock = confirmedClock(payload.value)
+        const cachedDiscarded = summaryClock && cachedClock && (
+          cachedClock.restartedAt < summaryClock.restartedAt ||
+          (acceptSummary && freshSummaryClock && cachedClock.restartedAt === freshSummaryClock.restartedAt &&
+            cachedClock.asOf > freshSummaryClock.asOf)
+        )
+        const incoming = history.ok && parseStatusTimestamp(history.data?.asOf) !== null ? history.data : null
+        const incomingClock = confirmedClock(incoming)
+
+        // 同代两份新读不能按到达顺序拼合。优先可信新序列；缺读时仅明确
+        // 重启或回拨使旧序列失效，普通前向更新/短暂读失败仍保留旧快照。
+        if (incoming && respectsGeneration(incomingClock, summaryClock) && respectsGeneration(incomingClock, cachedClock)) {
+          historyPayload.value = incoming
+        } else if (cachedDiscarded) historyPayload.value = null
+        // 首次读失败仍保持空态。
         loaded.value = loaded.value || result.ok || history.ok
         return true
       } finally {
@@ -171,7 +199,7 @@ export default {
       retire()
     })
 
-    return { loading, loaded, errorMessage, view, endpointView, statusHint, historyPayload, historySampledAt, historyUpdatedText, load }
+    return { loading, loaded, errorMessage, endpointView, statusHint, historyPayload, overviewAsOf, overviewTime, load }
   },
 }
 </script>
