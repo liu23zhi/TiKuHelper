@@ -295,14 +295,19 @@ func b01RunDetachVector(t *testing.T, vector string) {
 		leaderContext = own
 	}
 	leader := launch(leaderContext, keyed)
-	if !stage("real original/new producer entered channel-only work and registered flight", func() bool { return work.Load() == 1 && searchFlights.inFlight() == 1 }) {
-		return
-	}
-	select {
-	case <-entered:
-	default:
-		ledger.SetupIssue = "missing actual provider entry"
-		t.Error("SETUP_INCONCLUSIVE: provider handshake")
+	if !stage("real original/new producer entered channel-only work and registered flight", func() bool {
+		if work.Load() != 1 || searchFlights.inFlight() != 1 {
+			return false
+		}
+		// The provider increments work before sending entered. Observe both
+		// under the existing fixture guard instead of assuming no preemption.
+		select {
+		case <-entered:
+			return true
+		default:
+			return false
+		}
+	}) {
 		return
 	}
 	var retiring, processing, live *b01DetachCall
