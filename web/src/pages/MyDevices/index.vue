@@ -45,6 +45,10 @@
             <dd class="limit-value" data-device-limit-maximum>{{ limitCeilingText }}</dd>
             <dd class="limit-hint">{{ limitCeilingHint }}</dd>
           </div>
+          <div class="limit-metric">
+            <dt class="limit-label">已用名额</dt>
+            <dd class="limit-value" data-device-usage>{{ deviceUsageText }}</dd>
+          </div>
         </dl>
 
         <div class="limit-editor">
@@ -80,20 +84,19 @@
       <p class="hint">
         调低后超出的设备不会被立刻踢下线，但新设备会被拒绝，直到在用台数降到上限以内。
       </p>
-    </ConsolePanel>
-
-    <ConsolePanel
-      title="设备闲置自动移除"
-      description="设备连续无 API 活跃达到设定天数后会自动移除绑定，释放设备名额。"
-    >
-      <div class="limit-controls">
-        <a-input-number v-model:value="expiryDays" :min="expiryAllowDisable ? 0 : 1" :max="expiryMaxDays || undefined" :precision="0" :disabled="!expiryLoaded || expirySaving || busy() || expiryMaxDays === 0" />
-        <span class="limit-suffix">天</span>
-        <a-button type="primary" :loading="expirySaving" :disabled="!expiryLoaded || busy() || expiryDays === null || expiryMaxDays === 0" @click="saveExpiry">保存</a-button>
-      </div>
-      <p v-if="!expiryLoaded" class="hint">{{ loading ? '正在读取设备自动移除策略…' : '设备自动移除策略暂不可用，请刷新重试。' }}</p>
-      <p v-else-if="expiryMaxDays === 0" class="hint">管理员已关闭设备闲置自动移除，当前不会因闲置自动移除设备绑定。</p>
-      <p v-else class="hint">管理员上限：{{ expiryMaxDays }} 天。{{ expiryAllowDisable ? '你可以设置 0 天来关闭自己的自动移除。' : '管理员未允许用户关闭自动移除，最小为 1 天。' }}</p>
+      <section class="expiry-section" aria-label="设备闲置自动移除">
+        <h3 class="limit-label">设备闲置自动移除</h3>
+        <p class="hint">自动移除只释放设备名额，不等于拉黑；设备再次请求时仍按现有绑定规则处理。</p>
+        <p class="hint" data-device-expiry-state>{{ expiryStateText }}</p>
+        <div class="limit-controls">
+          <a-input-number v-model:value="expiryDays" :min="expiryAllowDisable ? 0 : 1" :max="expiryMaxDays || undefined" :precision="0" :disabled="!expiryLoaded || expirySaving || busy() || expiryMaxDays === 0" />
+          <span class="limit-suffix">天</span>
+          <a-button type="primary" :loading="expirySaving" :disabled="!expiryLoaded || busy() || expiryDays === null || expiryMaxDays === 0" @click="saveExpiry">保存</a-button>
+        </div>
+        <p v-if="!expiryLoaded" class="hint">{{ loading ? '正在读取设备自动移除策略…' : '设备自动移除策略暂不可用，请刷新重试。' }}</p>
+        <p v-else-if="expiryMaxDays === 0" class="hint">管理员已关闭设备闲置自动移除，当前不会因闲置自动移除设备绑定。</p>
+        <p v-else class="hint">管理员上限：{{ expiryMaxDays }} 天。{{ expiryAllowDisable ? '你可以设置 0 天来关闭自己的自动移除。' : '管理员未允许用户关闭自动移除，最小为 1 天。' }}</p>
+      </section>
     </ConsolePanel>
 
     <!-- ───────────── 设备列表 ───────────── -->
@@ -264,6 +267,7 @@ import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
+import request from '@/utils/request'
 import {
   blockMyDevice,
   deleteMyRemovedDevice,
@@ -278,7 +282,7 @@ import {
   updateMyDeviceExpiry,
 } from '@/api/TikuComponentApi'
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
-import { currentUserIdentity } from '@/utils/currentUserScope'
+import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import {
   DEVICE_LABEL_MAX_RUNES,
   formatDeviceUsageTime,
@@ -354,10 +358,25 @@ export default {
     const limitDraft = ref(null)
     const limitError = ref('')
     const expiryDays = ref(null)
+    const expiryAppliedDays = ref(null)
     const expiryLoaded = ref(false)
     const expiryMaxDays = ref(0)
     const expiryAllowDisable = ref(false)
     const expirySaving = ref(false)
+    const quotaUsed = ref(null)
+    const quotaLoading = ref(false)
+    let quotaRequest = null
+    const deviceUsageText = computed(() => {
+      if (quotaLoading.value) return '读取中…'
+      return quotaUsed.value === null ? '暂不可用' : quotaUsed.value + ' 个'
+    })
+    const expiryStateText = computed(() => {
+      if (!expiryLoaded.value) return loading.value ? '读取中…' : '暂不可用'
+      if (expiryMaxDays.value === 0) return '管理员已关闭'
+      if (expiryAppliedDays.value === 0 && expiryAllowDisable.value) return '已关闭'
+      if (expiryAppliedDays.value > 0) return '已启用（' + expiryAppliedDays.value + ' 天）'
+      return '暂不可用'
+    })
 
     // 重命名弹窗的状态。四个字段而不是一个对象：
     // 弹窗关闭时要清空 draft/error 但**保留** target 供过渡动画读，
@@ -385,6 +404,7 @@ export default {
     const pageActive = () => alive && route.path === mountedPath
     const canLoad = () => pageActive() && getCurrentUserLogoutEpoch() === mountedLogoutEpoch
       && Boolean(currentUserIdentity(currentUser.value))
+    const quotaScope = useCurrentUserRequestScope(currentUser, { clear: clearQuotaRead, reset: () => {}, reload: loadQuota })
     const busy = () => loading.value || actionBusy.value !== '' || savingLimit.value || renameSaving.value || expirySaving.value
     const limitEditable = computed(() => limitView.value.loaded && limitView.value.editable
       && limitView.value.hookReady && !busy())
@@ -529,6 +549,42 @@ export default {
       })
     }
 
+    function clearQuotaRead() {
+      quotaRequest?.abort()
+      quotaRequest = null
+      quotaUsed.value = null
+      quotaLoading.value = false
+    }
+
+    async function loadQuota() {
+      if (!canLoad() || !quotaScope.canLoadForCurrentUser()) return
+      clearQuotaRead()
+      const controller = new AbortController()
+      const isCurrentOwner = quotaScope.captureDataOwner()
+      quotaRequest = controller
+      quotaLoading.value = true
+      const owns = () => quotaRequest === controller && canLoad() && isCurrentOwner()
+      try {
+        const res = await request({
+          url: '/api/user/device-quota', method: 'get', errorFeedback: 'local',
+          retryPolicy: 'single', signal: controller.signal,
+        })
+        if (!owns()) return
+        // 槽位按服务端口径计算，不从绑定行或可用数推算。
+        const data = res?.data
+        if (res?.status === 200 && data?.schemaReady === true && Number.isSafeInteger(data.used) && data.used >= 0) {
+          quotaUsed.value = data.used
+        }
+      } catch {
+        // 只让本项显示暂不可用；不阻塞设备列表与原有设置。
+      } finally {
+        if (owns()) {
+          quotaRequest = null
+          quotaLoading.value = false
+        }
+      }
+    }
+
     async function loadList() {
       const owner = currentUserIdentity(currentUser.value)
       const owns = () => canLoad() && owner === currentUserIdentity(currentUser.value)
@@ -569,6 +625,7 @@ export default {
       if (!canLoad() || loading.value) return
       clearNotice()
       loading.value = true
+      void loadQuota()
       try {
         await Promise.all([loadList(), loadLimit(), loadExpiry()])
       } catch (error) {
@@ -619,6 +676,7 @@ export default {
       const data = res?.data?.data || res?.data
       if (res?.status !== 200 || !data || !Number.isInteger(data.days) || !Number.isInteger(data.maxDays)) { expiryLoaded.value = false; failure.value = '设备过期策略读取失败' + (res?.message ? '：' + res.message : ''); return }
       expiryDays.value = data.days
+      expiryAppliedDays.value = data.days
       expiryMaxDays.value = data.maxDays
       expiryAllowDisable.value = Boolean(data.allowDisable)
       expiryLoaded.value = true
@@ -739,6 +797,7 @@ export default {
       limitDraft.value = null
       limitError.value = ''
       expiryDays.value = null
+      expiryAppliedDays.value = null
       expiryLoaded.value = false
       expiryMaxDays.value = 0
       expiryAllowDisable.value = false
@@ -768,7 +827,7 @@ export default {
       loading, actionBusy, savingLimit, failure, notice, ipLocations,
       listView, listError, listDescription, listEmptyText, filteredDevices, statusFilter, statusFilterId, statusOptions, ipText, limitView, limitDraft, limitError, limitEditable, expiryDays, expiryLoaded, expiryMaxDays, expiryAllowDisable, expirySaving,
       limitText, limitHint, limitPanelDescription, limitCeilingText, limitCeilingHint,
-      limitRuleText,
+      limitRuleText, deviceUsageText, expiryStateText,
       limitInputId, limitRuleId, columns, busy,
       reload, removeDevice, deleteRemovedDevice, blockDevice, unblockDevice, saveDeviceLimit, saveExpiry,
       hasAnyAction, formatDeviceUsageTime, maskDeviceId, blockTarget, openBlockConfirm, closeBlockConfirm, confirmBlockDevice,
@@ -795,6 +854,8 @@ export default {
 .limit-editor { display: grid; gap: 8px; min-width: 0; }
 .limit-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .limit-label { color: var(--console-muted); font-size: 13px; }
+.expiry-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--console-border); }
+.expiry-section h3 { margin: 0; font-weight: 600; }
 .limit-input { width: 120px; }
 .limit-suffix { color: var(--console-muted); font-size: 13px; }
 .limit-error { margin: 0; color: var(--console-danger, #b91c1c); font-size: 13px; }

@@ -312,6 +312,9 @@ function unbanOutcome(data, restore) {
   if (result.reason === 'ban_changed') {
     return { type: 'warning', text: '全局拉黑规则已变更，本次未解封或恢复；请刷新列表后重新确认。' }
   }
+  if (deleted && result.reason === 'device_still_banned') {
+    return { type: 'warning', text: '已删除所选封禁规则，但设备仍被全局拉黑。未恢复所选账号的原绑定。' }
+  }
   if (result.status === 'restored' && deleted) {
     return { type: 'success', text: summary + '已恢复所选账号的原绑定，占用 1 个设备名额。' }
   }

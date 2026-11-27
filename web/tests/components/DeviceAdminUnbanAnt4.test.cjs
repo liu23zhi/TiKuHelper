@@ -186,6 +186,7 @@ for (const [change, retire] of [
 
 for (const [label, deleted, status, reason, expected] of [
   ['full quota', 1, 'removed', 'quota_full', /未恢复.*名额已满/],
+  ['another active global ban', 1, 'removed', 'device_still_banned', /已删除所选封禁规则，但设备仍被全局拉黑。未恢复/],
   ['changed ban', 0, 'unchanged', 'ban_changed', /未.*恢复.*刷新列表/],
   ['already active', 1, 'unchanged', 'binding_active', /已在使用.*未.*恢复/],
 ]) {
@@ -198,6 +199,7 @@ for (const [label, deleted, status, reason, expected] of [
     assert.equal(writes().length, 1)
     assert.match(wrapper.text(), expected)
     assert.doesNotMatch(wrapper.text(), /已恢复.*原绑定/)
+    if (reason === 'device_still_banned') assert.doesNotMatch(wrapper.text(), /已解除设备的全局拉黑/)
   })
 }
 

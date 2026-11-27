@@ -507,3 +507,28 @@ func TestAdminDeviceRestoreConcurrentSelectionsCommitOne(t *testing.T) {
 		t.Fatal("want one committed unban audit for the winning administrator")
 	}
 }
+
+func TestAdminDeviceRestoreKeepsBindingRemovedWithOtherLiveGlobalRule(t *testing.T) {
+	db, _, router := adminRestoreFixture(t)
+	owner := seedDeviceUserUser(t, db, "fixture-t18-another-global-rule", 0, 0)
+	binding := adminRestoreSeedBinding(t, db, owner.ID, adminRestoreDevice, 3)
+	rule := adminRestoreBan(t, db, router, adminRestoreDevice, "fixture selected active rule")
+	another := rule.BlacklistEntry
+	another.ID = 0
+	another.CreatedAt, another.UpdatedAt = time.Time{}, time.Time{}
+	another.MatchType = "legacy"
+	another.Reason = "fixture another active rule for the same exact hash"
+	if err := db.Create(&another).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := adminRestoreReadBinding(t, db, binding.ID)
+	out := deviceAdminRequest(router, http.MethodDelete, adminRestorePath(adminRestoreDevice, owner.ID, binding.ID, rule), "")
+	adminRestoreRequireReceipt(t, out, owner.ID, binding.ID, 1, "removed", "device_still_banned")
+	if err := db.Take(&entity.BlacklistEntry{}, another.ID).Error; err != nil {
+		t.Fatalf("the other rule must stay active: %v", err)
+	}
+	if after := adminRestoreReadBinding(t, db, binding.ID); !reflect.DeepEqual(before, after) {
+		t.Fatal("binding changed while another global rule was still active")
+	}
+	adminRestoreRequireQuota(t, owner, 0, 0, -1)
+}
