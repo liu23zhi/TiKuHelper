@@ -229,7 +229,7 @@
               <span v-else-if="column.key === 'matchedRule'">{{ record.matchedRuleId ?? '—' }}</span>
               <span v-else-if="column.key === 'awardAmount'" class="money-cell">{{ moneyText(record.awardAmount) }}</span>
               <span v-else-if="column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record.createdAt) }}</span>
-              <a-space v-else-if="column.key === 'action'" wrap>
+              <a-space v-else-if="column.key === 'action'" :size="4" class="claim-actions">
                 <template v-if="isReviewable(record)">
                   <a-button type="link" :disabled="loading || busy" @click="openDecisionDialog(record, 'approve')">批准</a-button>
                   <a-button type="link" danger :disabled="loading || busy" @click="openDecisionDialog(record, 'reject')">拒绝</a-button>
@@ -558,7 +558,7 @@ export default {
       { title: '命中规则', dataIndex: 'matchedRule', key: 'matchedRule', width: 100 },
       { title: '金额', dataIndex: 'awardAmount', key: 'awardAmount', width: 130 },
       { title: '提交时间', dataIndex: 'createdAt', key: 'createdAt', width: 175 },
-      { title: '操作', key: 'action', width: 140 },
+      { title: '操作', key: 'action', width: 140, fixed: 'right', className: 'claim-action-cell' },
     ]
 
     // 提交列表的状态筛选项：与 CLAIM_STATUS 同源，避免文案漂移。
@@ -1188,6 +1188,12 @@ export default {
 .scorer-tag { margin-inline-start: 6px; }
 .screenshot-preview { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
 .action-disabled { color: var(--console-muted); font-size: 13px; }
+.claim-actions :deep(.ant-btn-link) { padding-inline: 8px; }
+@media (max-width: 768px) {
+  /* 通用表格窄屏会取消固定列；仅保留提交列表的紧凑操作列。 */
+  .review-rebate-admin-page :deep(.claim-action-cell.ant-table-cell-fix-right) { position: sticky !important; }
+  .review-rebate-admin-page :deep(.claim-action-cell.ant-table-cell-fix-right-first::after) { display: block; }
+}
 .is-low-confidence { color: var(--console-danger, #c13e41); font-weight: 600; }
 .low-tag { margin-inline-start: 6px; }
 .decision-summary { margin-bottom: 16px; }
