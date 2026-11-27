@@ -85,9 +85,14 @@ test('restart and stale/rollback requests stay unknown without manufacturing idl
   await open(Public, { summary: 'restart-summary', series: 'restart-series' })
   assert.match(wrapper.get('[data-status-history-active]').text(), /暂无采样/)
   assert.match(wrapper.get('[data-history-restart]').text(), /重启.*清零/)
-  keys.series = 'rewind-unknown-public-series'
-  await wrapper.get('[data-action="refresh-service-status"]').trigger('click')
-  await settle()
+  wrapper.unmount()
+  router.options.history.destroy()
+  await open(Public, { summary: 'restart-summary', series: 'rewind-unknown-public-series' })
+  // The two contradictory generations must not establish a history together.
+  assert.match(wrapper.get('[data-status-history-active]').text(), /暂无可确认时窗/)
+  wrapper.unmount()
+  router.options.history.destroy()
+  await open(Public, { summary: { ...fixtures['mixed-summary'], ...fixtures['rewind-unknown-public-series'] }, series: 'rewind-unknown-public-series' })
   await toggle().trigger('click')
   assert.match(zoom().get('[data-history-minute="29927000"]').text(), /暂无采样/)
   keys.series = 'rewind-catchup-public-series'
@@ -172,4 +177,70 @@ test('historic samples cannot make a current five-minute gap look idle', async (
   await settle()
   assert.equal(wrapper.get('[data-endpoint-state]').attributes('data-endpoint-state'), 'idle')
   assert.match(wrapper.get('[data-endpoint-hint]').text(), /已采样 1 分钟/)
+})
+
+const summaryWithSeries = name => ({ ...fixtures['mixed-summary'], ...fixtures[name] })
+async function refreshPublic(next) {
+  Object.assign(keys, next)
+  await wrapper.get('[data-action="refresh-service-status"]').trigger('click')
+  await settle()
+}
+const overviewTotal = () => wrapper.get('[data-metric="search-total-requests"]').text()
+const historyDetail = () => wrapper.get('[data-status-history-active]').text()
+
+test('a confirmed restart clears the old generation when series is unavailable or invalid', async () => {
+  await open(Public, mixed)
+  await toggle().trigger('click')
+  assert.equal(overviewTotal(), '3')
+  await refreshPublic({ summary: 'restart-summary', series: null })
+  assert.equal(overviewTotal(), '--')
+  assert.match(historyDetail(), /暂无可确认时窗/)
+  assert.doesNotMatch(zoom().text(), /66\.7%|3 次请求/)
+  await refreshPublic({ summary: null, series: 'mixed-series' })
+  assert.equal(overviewTotal(), '--', 'an old generation series arriving later cannot resurrect it')
+  assert.match(historyDetail(), /暂无可确认时窗/)
+  await refreshPublic({ summary: 'restart-summary', series: 'restart-series' })
+  assert.match(historyDetail(), /13:00.*13:04.*暂无采样/)
+  assert.match(wrapper.get('[data-history-restart]').text(), /重启.*清零/)
+})
+
+test('a confirmed same-generation rewind does not show the future cached snapshot after a split refresh', async () => {
+  await open(Public, { summary: summaryWithSeries('rewind-catchup-public-series'), series: 'rewind-catchup-public-series' })
+  assert.equal(overviewTotal(), '2')
+  const rewind = summaryWithSeries('rewind-unknown-public-series')
+  const invalidSeries = { ...fixtures['rewind-unknown-public-series'], asOf: undefined }
+  for (const series of [null, invalidSeries]) {
+    await refreshPublic({ summary: rewind, series })
+    assert.equal(overviewTotal(), '1')
+    assert.match(historyDetail(), /暂无可确认时窗/)
+    assert.doesNotMatch(historyDetail(), /50%|2 次请求/)
+    await refreshPublic({ summary: summaryWithSeries('rewind-catchup-public-series'), series: 'rewind-catchup-public-series' })
+    assert.match(historyDetail(), /2 次请求/)
+  }
+})
+
+test('a same-generation forward or untrusted clock refresh keeps the last coherent cached snapshot', async () => {
+  await open(Public, { summary: summaryWithSeries('rewind-unknown-public-series'), series: 'rewind-unknown-public-series' })
+  assert.equal(overviewTotal(), '1')
+  const prior = historyDetail()
+  await refreshPublic({ summary: summaryWithSeries('rewind-catchup-public-series'), series: null })
+  assert.equal(overviewTotal(), '1')
+  assert.equal(historyDetail(), prior)
+  await refreshPublic({
+    summary: { ...summaryWithSeries('rewind-catchup-public-series'), restartedAt: '2100-01-01T00:00:00Z' },
+    series: { ...fixtures['rewind-unknown-public-series'], asOf: undefined },
+  })
+  assert.equal(historyDetail(), prior)
+  assert.equal(overviewTotal(), '1')
+})
+
+test('summary-only zero counts and historic coverage do not certify current search idle', async () => {
+  const summary = {
+    ...fixtures['mixed-summary'], latestSampleAt: '2026-11-27T04:59:10.123Z',
+    endpoints: { search: { totalRequests: 0, successRequests: 0, avgLatencyMs: 0, samples: 2 } },
+  }
+  await open(Public, { summary, series: null })
+  assert.equal(wrapper.get('[data-endpoint-state]').attributes('data-endpoint-state'), 'unsampled')
+  assert.equal(overviewTotal(), '--')
+  assert.doesNotMatch(wrapper.get('[data-endpoint-hint]').text(), /已采样 2 分钟/)
 })

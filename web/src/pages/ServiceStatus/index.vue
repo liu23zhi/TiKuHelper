@@ -85,7 +85,13 @@ import {
   buildEndpointView,
   loadServiceStatusSummary,
 } from '@/utils/serviceStatusSummary.mjs'
-import { currentSearchSnapshot, formatStatusTime, loadSearchStatusHistory, parseStatusTimestamp } from '@/utils/searchStatusHistory.mjs'
+import { currentSearchSnapshot, formatStatusTime, loadSearchStatusHistory, parseStatusTimestamp, searchSummaryFallback } from '@/utils/searchStatusHistory.mjs'
+
+function confirmedClock(snapshot) {
+  const asOf = parseStatusTimestamp(snapshot?.asOf)
+  const restartedAt = parseStatusTimestamp(snapshot?.restartedAt)
+  return asOf !== null && restartedAt !== null && restartedAt <= asOf ? { asOf, restartedAt } : null
+}
 
 export default {
   name: 'ServiceStatusPage',
@@ -117,10 +123,7 @@ export default {
     const overviewTime = computed(() => formatStatusTime(overviewAsOf.value))
     const endpointView = computed(() => {
       if (hasTimedHistory.value) return buildEndpointView('search', currentSearchSnapshot(historyPayload.value))
-      const bucket = overview.value?.endpoints?.search
-      const valid = ['totalRequests', 'successRequests', 'avgLatencyMs', 'samples']
-        .every(key => Number.isSafeInteger(bucket?.[key]) && bucket[key] >= 0)
-      return buildEndpointView('search', valid && bucket.successRequests <= bucket.totalRequests ? bucket : null)
+      return buildEndpointView('search', searchSummaryFallback(overview.value?.endpoints?.search))
     })
     const statusHint = computed(() => {
       if (endpointView.value.state === 'idle') return endpointView.value.hint
@@ -144,13 +147,29 @@ export default {
           loadSearchStatusHistory(() => getServiceStatusSeries()),
         ])
         if (!owns()) return false
-        if (!result.ok) {
-          errorMessage.value = result.message
-        } else {
-          payload.value = result.data
-        }
-        if (history.ok) historyPayload.value = history.data
-        // 刷新失败时保留已显示的快照；首次读取失败才保持空态。
+        const previousSummaryClock = confirmedClock(payload.value)
+        const freshSummaryClock = result.ok ? confirmedClock(result.data) : null
+        const acceptSummary = result.ok && (!previousSummaryClock ||
+          (freshSummaryClock && freshSummaryClock.restartedAt >= previousSummaryClock.restartedAt))
+        if (acceptSummary) payload.value = result.data
+        if (!result.ok) errorMessage.value = result.message
+
+        const summaryClock = confirmedClock(payload.value)
+        const cachedClock = confirmedClock(historyPayload.value)
+        const cachedDiscarded = summaryClock && cachedClock && (
+          cachedClock.restartedAt < summaryClock.restartedAt ||
+          (acceptSummary && freshSummaryClock && cachedClock.restartedAt === freshSummaryClock.restartedAt &&
+            cachedClock.asOf > freshSummaryClock.asOf)
+        )
+        const incoming = history.ok && parseStatusTimestamp(history.data?.asOf) !== null ? history.data : null
+        const incomingClock = confirmedClock(incoming)
+        const olderGeneration = incomingClock && summaryClock && incomingClock.restartedAt < summaryClock.restartedAt
+
+        // 同代两份新读不能按到达顺序拼合。优先可信新序列；缺读时仅明确
+        // 重启或回拨使旧序列失效，普通前向更新/短暂读失败仍保留旧快照。
+        if (incoming && !olderGeneration && (!cachedDiscarded || incomingClock)) historyPayload.value = incoming
+        else if (cachedDiscarded) historyPayload.value = null
+        // 首次读失败仍保持空态。
         loaded.value = loaded.value || result.ok || history.ok
         return true
       } finally {

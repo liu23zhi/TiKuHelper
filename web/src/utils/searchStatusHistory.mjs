@@ -83,6 +83,16 @@ function requestRows(series, first, last, administrator) {
   return points
 }
 
+// The summary's samples may cover retained history, and latestSampleAt
+// isn't search-specific. Only a timed search series can prove current idle.
+export function searchSummaryFallback(bucket) {
+  if (!safeCount(bucket?.totalRequests) || bucket.totalRequests === 0
+    || !safeCount(bucket.successRequests) || bucket.successRequests > bucket.totalRequests
+    || !safeCount(bucket.avgLatencyMs) || !safeCount(bucket.samples)) return null
+  const { totalRequests, successRequests, avgLatencyMs, samples } = bucket
+  return { totalRequests, successRequests, avgLatencyMs, samples }
+}
+
 // The provider's endpoint samples field can count historical observations.
 // A five-minute overview gets its coverage from the same search series slots.
 export function currentSearchSnapshot(payload) {
