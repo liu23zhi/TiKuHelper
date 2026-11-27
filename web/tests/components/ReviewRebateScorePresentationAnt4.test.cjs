@@ -112,3 +112,35 @@ test('legacy terminal rows retain persisted scores only when the dedicated ratio
   ])
   assert.doesNotMatch(actual.flat().join(' '), /legacy score evidence|legacy zero-score evidence|manual decision/)
 })
+
+test('the fixed submissions action column preserves both manual review dialogs and terminal rows', async () => {
+  await open()
+  const table = wrapper.get('[aria-label="评价返现提交列表"]')
+  const header = table.findAll('th').at(-1)
+  assert.equal(header.text(), '操作')
+  assert.ok(header.classes().includes('ant-table-cell-fix-right'), 'the real table must pin the submissions action column to the right')
+
+  const actionCell = id => row(id).findAll('td').at(-1)
+  const reviewCell = actionCell(42)
+  assert.ok(reviewCell.classes().includes('ant-table-cell-fix-right'))
+  const buttons = reviewCell.findAll('button')
+  assert.deepEqual(buttons.map(button => button.text()), ['批准', '拒绝'])
+  for (const [index, title, disabled] of [
+    [0, '批准这条评价返现？', false],
+    [1, '拒绝这条评价返现？', true],
+  ]) {
+    await buttons[index].trigger('click')
+    await settle()
+    const dialog = document.querySelector('[role="dialog"]')
+    assert.equal(dialog.querySelector('.ant-modal-title').textContent, title)
+    assert.match(dialog.querySelector('.ant-descriptions').textContent, /提交号\s*42/)
+    const submit = [...dialog.querySelectorAll('button')].find(button => button.textContent.trim() === '提交结论')
+    assert.equal(submit.disabled, disabled)
+    const cancel = [...dialog.querySelectorAll('button')].find(button => button.textContent.replace(/\s+/g, '') === '取消')
+    cancel.click()
+    await settle()
+  }
+  assert.deepEqual(actionCell(48).findAll('button').map(button => button.text()), ['重核验与追缴'])
+  assert.equal(actionCell(44).text(), '已拒绝')
+  assert.equal(actionCell(44).findAll('button').length, 0)
+})
