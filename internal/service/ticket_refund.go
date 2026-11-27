@@ -716,6 +716,13 @@ func reconcileTicketRefundWithOrders(db *gorm.DB, admin entity.User, id int64, o
 				return err
 			}
 		}
+		// Only the verified original route attributes an actual payout to
+		// this order. Line-backed refunds apply each successful line separately.
+		if row.Kind == TicketRefundKindOriginal && outcome == TicketRefundStatusSucceeded && row.OrderID != nil {
+			if _, err := ReverseReferralRebateForOrderInTx(tx, *row.OrderID, row.ApprovedCents); err != nil {
+				return err
+			}
+		}
 		return finalizeTicketRefundInTx(tx, row, admin.ID, outcome, ref, amountMicros)
 	})
 }
@@ -740,14 +747,6 @@ func finalizeTicketRefundInTx(tx *gorm.DB, row *entity.TicketRefund, operatorID 
 	}
 	if err := insertTicketRefundLedger(tx, *row, operatorID, kind, amountMicros, wallet.micros, after); err != nil {
 		return err
-	}
-	// 退款成功 → 冲回该订单产生的邀请返佣（同一事务，可追踪）。
-	// 已 settled 的记录会从受益人**赠送余额**扣回（gift_balance，clamp 到 0，
-	// 差额写进冲回流水备注）；未 settled 的只改状态。balance（可退本金）不受影响。
-	if outcome == entity.TicketRefundStatusSucceeded && row.OrderID != nil && *row.OrderID > 0 {
-		if _, err := ReverseReferralRebateForOrderInTx(tx, *row.OrderID, "原订单退款，返佣已冲回"); err != nil {
-			return err
-		}
 	}
 	return updateTicketRefund(tx, row, map[string]any{
 		"status": outcome, "resolved_at": time.Now(), "resolved_by": operatorID, "outcome_reference": ref,

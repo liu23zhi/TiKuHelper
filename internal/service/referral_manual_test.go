@@ -214,22 +214,20 @@ func TestManualReferralRebateRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-// TestManualReferralRebateRequiresEnabledAndSchema 开关关闭/结构缺失时必须明确失败。
+// TestManualReferralRebateIndependentOfAutoRulesAndRequiresSchema 开关关闭/结构缺失时必须明确失败。
 //
 // 补录要真的发钱：降级成「假装成功」会让管理员以为已入账，事后对不上账。
-func TestManualReferralRebateRequiresEnabledAndSchema(t *testing.T) {
+func TestManualReferralRebateIndependentOfAutoRulesAndRequiresSchema(t *testing.T) {
 	db := newReferralTestDB(t)
 	beneficiary := seedReferralUser(t, db, 405, "manual-gate-beneficiary", 0)
 
-	// 默认关闭。
+	// The old total switch and the new automatic policy are both off.
 	setReferralSettings(t, db, false, 0.2)
-	if _, err := CreateManualReferralRebateWithDB(db, ManualReferralRebateInput{
-		BeneficiaryUserID: beneficiary.ID, Amount: 1,
-	}); !errors.Is(err, ErrReferralRebateDisabled) {
-		t.Fatalf("disabled switch must reject, got %v", err)
+	row, err := CreateManualReferralRebateWithDB(db, ManualReferralRebateInput{BeneficiaryUserID: beneficiary.ID, Amount: 1})
+	if err != nil || row.Status != entity.ReferralRebateStatusSettled {
+		t.Fatalf("automatic configuration must not block manual posting: row=%+v err=%v", row, err)
 	}
 
-	setReferralSettings(t, db, true, 0.2)
 	// 结构缺失：把 referral_rebates 表删掉模拟未迁移。
 	if err := db.Migrator().DropTable(&entity.ReferralRebate{}); err != nil {
 		t.Fatalf("drop table: %v", err)

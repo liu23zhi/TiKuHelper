@@ -157,9 +157,6 @@ func writeReferralRebateError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrReferralRebateState):
 		status = http.StatusConflict
 		message = err.Error()
-	case errors.Is(err, service.ErrReferralRebateDisabled):
-		status = http.StatusBadRequest
-		message = err.Error()
 	case errors.Is(err, service.ErrReferralRebateSchemaUnavailable):
 		// 结构没就绪时**不能**假装成功：结算要真的发钱，降级成功会让管理员
 		// 以为已经入账，事后对不上账。
@@ -234,9 +231,6 @@ func writeManualReferralRebateError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrReferralRebateDuplicate):
 		// 幂等命中：不是错误操作，但也不能返回 200 让管理员以为又记了一笔。
 		status = http.StatusConflict
-		message = err.Error()
-	case errors.Is(err, service.ErrReferralRebateDisabled):
-		status = http.StatusBadRequest
 		message = err.Error()
 	case errors.Is(err, service.ErrReferralRebateSchemaUnavailable):
 		// 结构没就绪时不能假装成功：补录要真的发钱。

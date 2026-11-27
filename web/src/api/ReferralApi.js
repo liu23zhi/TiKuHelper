@@ -3,6 +3,8 @@ import request from '../utils/request'
 // 邀请返现：用户端「我的邀请」+ 管理端「赠送记录」。
 // 后端契约（internal/api/router.go）：
 //   GET  /api/user/referral                      本人邀请码与返佣汇总
+//   GET  /api/admin/referral-rebate-rules        读取自动返佣规则（按优先级）
+//   PUT  /api/admin/referral-rebate-rules        原子保存整套规则及启用状态
 //   GET  /api/admin/referral-rebates             返佣列表（状态/受益人/受邀人/订单号）
 //   POST /api/admin/referral-rebates/:id/settle  结算：状态置 settled + 入赠送余额
 //   POST /api/admin/referral-rebates             手动补录一笔返佣（创建即入账）
@@ -17,6 +19,23 @@ export function getMyReferral() {
     errorFeedback: 'local',
     url: '/api/user/referral',
     method: 'get',
+  })
+}
+
+export function getReferralRebateRules() {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/admin/referral-rebate-rules',
+    method: 'get',
+  })
+}
+
+export function saveReferralRebateRules(policy) {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/admin/referral-rebate-rules',
+    method: 'put',
+    data: policy,
   })
 }
 

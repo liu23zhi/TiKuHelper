@@ -69,6 +69,11 @@ func setReferralSettings(t *testing.T, db *gorm.DB, enabled bool, rate float64) 
 	if err := saveSystemSettingValue(db, ReferralRebateRateSettingKey, formatReferralRate(rate), "返佣比例（0–1，不含 1）"); err != nil {
 		t.Fatalf("save rate setting: %v", err)
 	}
+	if err := SaveReferralAutoRulesWithDB(db, ReferralAutoRules{Enabled: enabled, Rules: []ReferralAutoRule{
+		{Enabled: true, RateUnits: int64(rate*float64(referralRateScale) + 0.5)},
+	}}); err != nil {
+		t.Fatalf("save explicit test tier: %v", err)
+	}
 }
 
 func boolString(value bool) string {
@@ -98,6 +103,16 @@ func seedReferralPaidOrder(t *testing.T, db *gorm.DB, orderNo string, userID int
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("create recharge order: %v", err)
+	}
+	return order
+}
+
+func seedReferralCreditedOrder(t *testing.T, db *gorm.DB, orderNo string, userID int32, amount float64) entity.RechargeOrder {
+	t.Helper()
+	order := seedReferralPaidOrder(t, db, orderNo, userID, amount)
+	record := entity.BillingRecord{UserID: userID, RelatedOrderID: order.ID, RequestID: orderNo, Type: rechargeBillingRecordType, Amount: amount}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatalf("create matching recharge credit: %v", err)
 	}
 	return order
 }
@@ -133,7 +148,7 @@ func TestReferralPaymentNotifySkipsRebateWhenDisabled(t *testing.T) {
 	db := newReferralTestDB(t)
 	inviter := seedReferralUser(t, db, 21, "referral-off-inviter", 0)
 	invited := seedReferralUser(t, db, 22, "referral-off-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_off", invited.ID, 1688)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_off", invited.ID, 1688)
 
 	setReferralSettings(t, db, false, 0.1)
 
@@ -281,7 +296,7 @@ func TestReferralRebateIsUniquePerOrder(t *testing.T) {
 	setReferralSettings(t, db, true, 0.1)
 	inviter := seedReferralUser(t, db, 71, "referral-dedupe-inviter", 0)
 	invited := seedReferralUser(t, db, 72, "referral-dedupe-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_dedupe", invited.ID, 100)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_dedupe", invited.ID, 100)
 
 	first, err := CreateReferralRebateInTx(db, order)
 	if err != nil {
@@ -318,7 +333,7 @@ func TestReferralRebateBaseExcludesBonus(t *testing.T) {
 	// 1688 档：实付 1688，赠 3376，到账 5064。
 	const paidPrincipal = 1688.0
 	const bonus = 3376.0
-	order := seedReferralPaidOrder(t, db, "rcg_referral_1688", invited.ID, paidPrincipal)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_1688", invited.ID, paidPrincipal)
 	// 到账总额进钱包（含赠金），返佣基数不能跟着变大。
 	if err := db.Model(&entity.User{}).Where("id = ?", invited.ID).
 		Update("balance", paidPrincipal+bonus).Error; err != nil {
@@ -347,8 +362,8 @@ func TestReferralRebateBaseExcludesBonus(t *testing.T) {
 	if rebate.Status != entity.ReferralRebateStatusPending {
 		t.Fatalf("new rebate status = %q, want pending", rebate.Status)
 	}
-	if rebate.PolicyVersion != ReferralRebatePolicyVersion {
-		t.Fatalf("policy version = %q, want %q", rebate.PolicyVersion, ReferralRebatePolicyVersion)
+	if rebate.PolicyVersion != referralTierRebatePolicyVersion {
+		t.Fatalf("policy version = %q, want %q", rebate.PolicyVersion, referralTierRebatePolicyVersion)
 	}
 
 	// 产生返佣（pending）时不动任何钱包：结算才入账（§2.5）。
@@ -374,7 +389,7 @@ func TestReferralRebateReversedOnRefund(t *testing.T) {
 	setReferralSettings(t, db, true, 0.2)
 	inviter := seedReferralUser(t, db, 91, "referral-refund-inviter", 0)
 	invited := seedReferralUser(t, db, 92, "referral-refund-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_refund", invited.ID, 288)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_refund", invited.ID, 288)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
@@ -402,7 +417,7 @@ func TestReferralRebateReversedOnRefund(t *testing.T) {
 		t.Fatalf("settle must NOT touch the refundable principal, got balance=%v", afterSettle.Balance)
 	}
 
-	reversed, err := ReverseReferralRebateForOrderInTx(db, order.ID, "原订单退款，返佣已冲回")
+	reversed, err := ReverseReferralRebateForOrderInTx(db, order.ID, int64(order.Amount*100))
 	if err != nil {
 		t.Fatalf("reverse rebate: %v", err)
 	}
@@ -434,7 +449,7 @@ func TestReferralRebateReversedOnRefund(t *testing.T) {
 
 	// 幂等：再冲一次不报错、不重复扣钱、不覆盖首次时间戳。
 	firstReversedAt := *stored.ReversedAt
-	again, err := ReverseReferralRebateForOrderInTx(db, order.ID, "")
+	again, err := ReverseReferralRebateForOrderInTx(db, order.ID, int64(order.Amount*100))
 	if err != nil {
 		t.Fatalf("idempotent reversal: %v", err)
 	}
@@ -605,7 +620,7 @@ func TestReferralRebateSkippedForUninvitedPayer(t *testing.T) {
 	db := newReferralTestDB(t)
 	setReferralSettings(t, db, true, 0.1)
 	payer := seedReferralUser(t, db, 111, "referral-uninvited", 0)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_uninvited", payer.ID, 88)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_uninvited", payer.ID, 88)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil {
@@ -624,8 +639,8 @@ func TestReferralListAndSummary(t *testing.T) {
 	first := seedReferralUser(t, db, 122, "referral-list-first", inviter.ID)
 	second := seedReferralUser(t, db, 123, "referral-list-second", inviter.ID)
 
-	orderA := seedReferralPaidOrder(t, db, "rcg_referral_list_a", first.ID, 100)
-	orderB := seedReferralPaidOrder(t, db, "rcg_referral_list_b", second.ID, 200)
+	orderA := seedReferralCreditedOrder(t, db, "rcg_referral_list_a", first.ID, 100)
+	orderB := seedReferralCreditedOrder(t, db, "rcg_referral_list_b", second.ID, 200)
 	if _, err := CreateReferralRebateInTx(db, orderA); err != nil {
 		t.Fatalf("create rebate A: %v", err)
 	}
@@ -642,8 +657,8 @@ func TestReferralListAndSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	if !summary.Enabled || summary.Rate != 0.5 {
-		t.Fatalf("summary must expose switch/rate: %+v", summary)
+	if !summary.Enabled || summary.Rate != 0 {
+		t.Fatalf("summary must expose auto configuration without a misleading flat rate: %+v", summary)
 	}
 	if summary.InvitedCount != 2 {
 		t.Fatalf("invited count = %d, want 2 (one per account, not per key)", summary.InvitedCount)
@@ -692,7 +707,7 @@ func TestReferralSettleCreditsBalance(t *testing.T) {
 		Updates(map[string]any{"balance": 12.5, "gift_balance": 3}).Error; err != nil {
 		t.Fatalf("seed inviter wallet: %v", err)
 	}
-	order := seedReferralPaidOrder(t, db, "rcg_referral_settle", invited.ID, 1688)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_settle", invited.ID, 1688)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
@@ -775,7 +790,7 @@ func TestReferralSettleIsIdempotent(t *testing.T) {
 	setReferralSettings(t, db, true, 0.25)
 	inviter := seedReferralUser(t, db, 141, "referral-idem-inviter", 0)
 	invited := seedReferralUser(t, db, 142, "referral-idem-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_idem", invited.ID, 400)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_idem", invited.ID, 400)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
@@ -829,7 +844,7 @@ func TestReferralSettleBillingRecordGuardsDoubleCredit(t *testing.T) {
 	setReferralSettings(t, db, true, 0.5)
 	inviter := seedReferralUser(t, db, 151, "referral-guard-inviter", 0)
 	invited := seedReferralUser(t, db, 152, "referral-guard-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_guard", invited.ID, 200)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_guard", invited.ID, 200)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
@@ -873,7 +888,7 @@ func TestReferralReversalClampsGiftToZeroAndRecordsShortfall(t *testing.T) {
 	setReferralSettings(t, db, true, 0.5)
 	inviter := seedReferralUser(t, db, 161, "referral-floor-inviter", 0)
 	invited := seedReferralUser(t, db, 162, "referral-floor-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_floor", invited.ID, 200)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_floor", invited.ID, 200)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
@@ -889,7 +904,7 @@ func TestReferralReversalClampsGiftToZeroAndRecordsShortfall(t *testing.T) {
 		t.Fatalf("spend gift balance: %v", err)
 	}
 
-	if _, err := ReverseReferralRebateForOrderInTx(db, order.ID, ""); err != nil {
+	if _, err := ReverseReferralRebateForOrderInTx(db, order.ID, int64(order.Amount*100)); err != nil {
 		t.Fatalf("reverse: %v", err)
 	}
 	var wallet entity.User
@@ -948,7 +963,7 @@ func TestReferralReversalPartialGiftDeduction(t *testing.T) {
 	setReferralSettings(t, db, true, 0.5)
 	inviter := seedReferralUser(t, db, 165, "referral-partial-inviter", 0)
 	invited := seedReferralUser(t, db, 166, "referral-partial-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_partial", invited.ID, 200)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_partial", invited.ID, 200)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
@@ -964,7 +979,7 @@ func TestReferralReversalPartialGiftDeduction(t *testing.T) {
 		t.Fatalf("spend gift balance: %v", err)
 	}
 
-	if _, err := ReverseReferralRebateForOrderInTx(db, order.ID, ""); err != nil {
+	if _, err := ReverseReferralRebateForOrderInTx(db, order.ID, int64(order.Amount*100)); err != nil {
 		t.Fatalf("reverse: %v", err)
 	}
 	var wallet entity.User
@@ -999,13 +1014,13 @@ func TestReferralReversalOfPendingDoesNotTouchWallet(t *testing.T) {
 	setReferralSettings(t, db, true, 0.5)
 	inviter := seedReferralUser(t, db, 171, "referral-pending-inviter", 0)
 	invited := seedReferralUser(t, db, 172, "referral-pending-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_pending", invited.ID, 200)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_pending", invited.ID, 200)
 
 	rebate, err := CreateReferralRebateInTx(db, order)
 	if err != nil || rebate == nil {
 		t.Fatalf("create rebate: %+v err=%v", rebate, err)
 	}
-	if _, err := ReverseReferralRebateForOrderInTx(db, order.ID, "原订单退款"); err != nil {
+	if _, err := ReverseReferralRebateForOrderInTx(db, order.ID, int64(order.Amount*100)); err != nil {
 		t.Fatalf("reverse pending: %v", err)
 	}
 	var wallet entity.User
@@ -1039,7 +1054,7 @@ func TestReferralSettleRequiresSchema(t *testing.T) {
 	// 注意顺序：先种好数据再删列，否则连 seed 都插不进去。
 	inviter := seedReferralUser(t, db, 181, "referral-schema-inviter", 0)
 	invited := seedReferralUser(t, db, 182, "referral-schema-invited", inviter.ID)
-	order := seedReferralPaidOrder(t, db, "rcg_referral_schema", invited.ID, 100)
+	order := seedReferralCreditedOrder(t, db, "rcg_referral_schema", invited.ID, 100)
 	rebate := entity.ReferralRebate{
 		InviterUserID: inviter.ID, InvitedUserID: invited.ID, Source: entity.ReferralRebateSourceAuto, RechargeOrderID: referralOrderIDPtr(order.ID),
 		OrderNo: order.OrderNo, BaseAmount: 100, Rate: 0.1, Amount: 10,

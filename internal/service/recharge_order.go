@@ -766,7 +766,7 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		// 重复回调走不到这里（上面 paid 已提前 return），即使走到了也只会拿到既有记录。
 		// 返佣**不写 users.balance / gift_balance**，只进返佣账本（settled 时才入
 		// 受益人赠送余额，见 SettleReferralRebateWithDB）。
-		// 也不读 gift_balance：返佣基数只认实付本金（referralRebateBaseAmount）。
+		// 也不读 gift_balance：返佣基数只认单笔已记账本金。
 		rebate, err := CreateReferralRebateInTx(tx, order)
 		if err != nil {
 			return err

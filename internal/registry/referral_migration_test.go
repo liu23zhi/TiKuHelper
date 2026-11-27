@@ -124,3 +124,34 @@ func TestEnsureReferralSchemaSkipsWhenUsersMissing(t *testing.T) {
 // entity.ReferralRebate.RechargeOrderID 自 task_doc/70 起可为 nil：
 // 管理员手动补录的记录（source=manual）没有对应充值订单。
 func referralOrderIDPtr(id int32) *int32 { return &id }
+
+// An existing v1 ready flag must not suppress the additive tier migration.
+func TestEnsureReferralSchemaUpgradesLegacyReadyLedger(t *testing.T) {
+	db := newReferralMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.ReferralRebate{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"refunded_cents", "reversed_amount"} {
+		if err := db.Exec("ALTER TABLE referral_rebates DROP COLUMN " + column).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec("INSERT INTO referral_rebates (inviter_user_id,invited_user_id,amount,status) VALUES (1,2,10,'reversed')").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := setSystemSettingFlag(db, "referral_schema_ready"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := ensureReferralSchema(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var row entity.ReferralRebate
+	if err := db.First(&row).Error; err != nil || row.Amount != 10 || row.Status != entity.ReferralRebateStatusReversed || row.RefundedCents != 0 || row.ReversedAmount != 0 {
+		t.Fatalf("legacy reversed ledger changed: row=%+v err=%v", row, err)
+	}
+	if !db.Migrator().HasColumn(&entity.ReferralRebate{}, "refunded_cents") || !db.Migrator().HasColumn(&entity.ReferralRebate{}, "reversed_amount") {
+		t.Fatal("legacy migration flag skipped the tier columns")
+	}
+}
