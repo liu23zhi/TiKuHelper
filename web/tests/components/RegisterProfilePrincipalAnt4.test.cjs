@@ -161,8 +161,12 @@ test('REGISTER_PROFILE existing ordinary phone SMS202 cooldown and successful ph
 })
 test('REGISTER_PROFILE existing ordinary WeChat code bind and native confirm unbind self update correctly', async () => {
   const w = await open(Profile, A); await w.get('input[placeholder="请输入微信验证码"]').setValue('x654321'); click(w, '微信验证码绑定'); await settle()
+  const oldPanel = w.get('.wechat-bind-panel').element
   assert.deepEqual(calls.codeBind[0].payload, { code: '654321' }); const bound = { ...A, wechatId: 'SYNTHETIC_WECHAT_ID' }; await resolve('codeBind', bound)
-  assert.deepEqual(user.getStoredCurrentUser(), bound); assert.equal(w.vm.wechatCodeForm.code, ''); click(w, '解绑微信');
+  assert.deepEqual(user.getStoredCurrentUser(), bound); assert.equal(w.vm.wechatCodeForm.code, '')
+  assert.notEqual(w.get('.wechat-bound-panel').element, oldPanel, 'mounted bound panel must not reuse the first empty panel')
+  assert.equal(stateOf(w, 'wechat'), 'ready'); assert.match(card(w, 'wechat').text(), /已绑定/)
+  click(w, '解绑微信');
   const popup = await until(() => { const found = [...document.querySelectorAll('.ant-popover:not(.ant-popover-hidden)')].filter(node => node.textContent.includes('确定解绑当前微信吗')); return found.length === 1 && found[0] }, 'CURRENT_NATIVE_POPOVER_READY')
   const confirm = [...popup.querySelectorAll('button')].find(node => node.textContent.replace(/\s/g, '') === '确认解绑'); assert.ok(confirm, 'REAL_ANTD_POPOVER_CONFIRM'); confirm.click(); await settle(); assert.equal(calls.unbind.length, 1)
   await resolve('unbind', A); assert.equal(stateOf(w, 'wechat'), 'empty'); assert.match(card(w, 'wechat').text(), /微信已解绑/); assert.deepEqual(user.getStoredCurrentUser(), A); assert.equal(w.vm.unbindingWechat, false); assert.ok(notices.some(x => x.text === '微信已解绑'))

@@ -177,7 +177,7 @@
         </AccountCard>
         <AccountCard kind="wechat" :heading-id="fieldId('wechat-heading')" title="微信绑定"
           description="绑定后可使用微信扫码或验证码登录。" :view="cards.wechat">
-          <div v-if="profileReady && hasWechatField && currentUser.wechatId" class="wechat-bound-panel">
+          <div v-if="profileReady && hasWechatField && currentUser.wechatId" key="wechat-bound" class="wechat-bound-panel">
             <a-tag color="green">已绑定</a-tag>
             <div data-profile-private class="wechat-binding-id">
               {{ maskedWechat }}
@@ -195,7 +195,7 @@
             </a-popconfirm>
           </div>
 
-          <div v-else-if="profileReady && hasWechatField" :key="wechatModeKey" class="wechat-bind-panel">
+          <div v-else-if="profileReady && hasWechatField" :key="'wechat-unbound-' + wechatModeKey" class="wechat-bind-panel">
             <div class="wechat-binding-id wechat-binding-id--empty">未绑定</div>
             <a-alert
               v-if="settingsState === 'ready' && bindingSettingsKnown.wechat && !publicAuthSettings.wechatLoginEnabled"
