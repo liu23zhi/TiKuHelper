@@ -27,7 +27,7 @@ test('Profile page displays account status, phone change, and wechat bind/unbind
   assert.match(content, /管理员尚未开启微信，当前无法绑定。/)
   assert.match(content, /phoneBoundAt/)
   assert.match(content, /wechatBoundAt/)
-  assert.match(content, /微信ID：\{\{ currentUser\.wechatId \}\}/)
+  assert.doesNotMatch(content, /\{\{\s*currentUser\.wechatId\s*\}\}/)
   assert.match(content, /wechat-binding-id--empty">未绑定/)
   assert.match(content, /sendUserPhoneChangeSMSCode/)
   assert.match(content, /updateCurrentUserPhone/)
