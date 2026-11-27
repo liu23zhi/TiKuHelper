@@ -17,6 +17,7 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	gormlog "gorm.io/gorm/logger"
 )
 
 // SensitiveWordCheckEnabledSettingKey 是敏感词检测总开关，默认 **false**。
@@ -209,26 +210,24 @@ func hasUsableUAPIKey(key string) bool {
 // Words 始终是**全部对象的完整结果**（含未命中的），这样排障时能看出
 // 「这次到底检测了什么、哪些通过了」，而不是只知道有没有命中。
 func BuildSensitiveWordOutcome(results []SensitiveWordScopeResult) SensitiveWordCheckOutcome {
-	outcome := SensitiveWordCheckOutcome{Results: results, Checked: true}
-	payload, err := json.Marshal(results)
+	safeResults := append(results[:0:0], results...)
+	for i := range safeResults {
+		safeResults[i].Error = safeSensitiveWordDiagnostic(safeResults[i].Error)
+	}
+	outcome := SensitiveWordCheckOutcome{Results: safeResults, Checked: true}
+	payload, err := json.Marshal(safeResults)
 	if err != nil {
 		// 序列化失败不影响标记本身：只丢明细，Flag 照常计算。
 		outcome.Words = "[]"
 	} else {
 		outcome.Words = string(payload)
 	}
-	failures := make([]string, 0, len(results))
-	for _, result := range results {
+	for _, result := range safeResults {
 		if result.Forbidden {
 			outcome.Flag = true
 		}
-		if message := strings.TrimSpace(result.Error); message != "" {
-			failures = append(failures, fmt.Sprintf("%s: %s", result.Scope, message))
-		}
 	}
-	if len(failures) > 0 {
-		outcome.Error = truncateSensitiveWordError(strings.Join(failures, "; "))
-	}
+	outcome.Error = safeSensitiveWordAggregate(safeResults)
 	return outcome
 }
 
@@ -288,6 +287,7 @@ func sensitiveWordCacheDB(db *gorm.DB, ctx context.Context) *gorm.DB {
 	return db.Session(&gorm.Session{
 		Context: dbqueue.WithPriority(ctx, dbqueue.PriorityLow),
 		NewDB:   true,
+		Logger:  db.Logger.LogMode(gormlog.Silent),
 	})
 }
 
@@ -311,8 +311,7 @@ func loadSensitiveWordCacheWithDB(ctx context.Context, db *gorm.DB, textHash str
 		if !db.Migrator().HasTable(entity.TableNameSensitiveWordCache) {
 			logger.SysLog("敏感词缓存表不存在，本次按未命中处理（不影响答题）")
 		} else {
-			logger.SysWarn(fmt.Sprintf("敏感词缓存查询失败，本次按未命中处理：%s",
-				logger.RedactSecrets(result.Error.Error())))
+			logger.SysWarn("敏感词缓存查询失败，本次按未命中处理")
 		}
 		return nil, false
 	}
@@ -339,7 +338,7 @@ func saveSensitiveWordCacheWithDB(ctx context.Context, db *gorm.DB, row entity.S
 		}),
 	}).Create(&row).Error
 	if err != nil {
-		logger.SysLog(fmt.Sprintf("敏感词缓存写入失败，检测结果照常使用：%s", logger.RedactSecrets(err.Error())))
+		logger.SysLog("敏感词缓存写入失败，检测结果照常使用")
 	}
 }
 
@@ -423,7 +422,7 @@ func resolveSensitiveWordPayloadWithDB(ctx context.Context,
 			payload := sensitiveWordCachePayload{
 				Status: "error",
 				Words:  []string{},
-				Error:  truncateSensitiveWordError(row.Error),
+				Error:  safeSensitiveWordDiagnostic(row.Error),
 			}
 			memo[textHash] = payload
 			return payload
@@ -442,14 +441,12 @@ func resolveSensitiveWordPayloadWithDB(ctx context.Context,
 		// 固化进缓存会让同一文本在预算修好之后仍然拿不到结果，而且会白白占掉
 		// AttemptCount 的重试额度 —— 预算修正属于代码变更，不该由缓存行来记。
 		if errors.Is(err, uapi.ErrTextTooLong) {
-			message := truncateSensitiveWordError(
-				fmt.Sprintf("%s: 送检文本 %d 字节超出上游长度限制（预算 %d 字节）：%s",
-					SensitiveWordErrorTextTooLong, len(rawText), maxBytes, err.Error()))
+			message := sensitiveWordFailure(err)
 			payload := sensitiveWordCachePayload{Status: "error", Words: []string{}, Error: message}
 			memo[textHash] = payload
 			return payload
 		}
-		message := truncateSensitiveWordError(err.Error())
+		message := sensitiveWordFailure(err)
 		saveSensitiveWordCacheWithDB(ctx, db, entity.SensitiveWordCache{
 			TextHash:     textHash,
 			Sensitive:    false,
@@ -483,10 +480,7 @@ func resolveSensitiveWordPayloadWithDB(ctx context.Context,
 		// 分支被无限复用，等于把一次上游异常固化成「这段文本永远干净」
 		// （写入必须带可用性判据，空结果不能进缓存）。
 		// 走失败语义：Error 非空 + AttemptCount 递增，AttemptCount 到上限后自然停止重试。
-		cacheError = fmt.Sprintf("上游未给出可判定状态 status=%q", status)
-		if cacheError = truncateSensitiveWordError(cacheError); cacheError == "" {
-			cacheError = "上游未给出可判定状态"
-		}
+		cacheError = "invalid_response"
 	}
 	saveSensitiveWordCacheWithDB(ctx, db, entity.SensitiveWordCache{
 		TextHash:     textHash,
@@ -509,11 +503,7 @@ func resolveSensitiveWordPayloadWithDB(ctx context.Context,
 // 只有明确表示「查过了」的状态才允许进缓存：未命中（clean/ok/pass）与命中。
 // 其余（空串、pending、failed、未知枚举）都是「不知道」，不能固化成缓存。
 func isTrustworthySensitiveWordStatus(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "clean", "ok", "pass", "passed", "normal", "safe", "forbidden", "blocked", "rejected", "hit", "sensitive":
-		return true
-	}
-	return false
+	return uapi.IsDefinitiveProfanityStatus(status)
 }
 
 // RunSensitiveWordCheck 依次检测题目与答案，返回可落库的结论。
@@ -572,7 +562,7 @@ func checkSensitiveWordScope(ctx context.Context, db *gorm.DB, detector Sensitiv
 		result.Words = payload.Words
 	}
 	if strings.TrimSpace(payload.Error) != "" {
-		result.Error = truncateSensitiveWordError(payload.Error)
+		result.Error = safeSensitiveWordDiagnostic(payload.Error)
 	}
 	return result
 }
@@ -680,15 +670,19 @@ func SaveSensitiveWordOutcomeWithDB(db *gorm.DB, logID int32, outcome SensitiveW
 	if logID <= 0 {
 		return errors.New("敏感词标记落库失败：缺少日志主键")
 	}
+	diagnostic := safeSensitiveWordDiagnostic(outcome.Error)
+	if len(outcome.Results) > 0 {
+		diagnostic = safeSensitiveWordAggregate(outcome.Results)
+	}
 	updates := map[string]any{
 		"sensitive_flag":        outcome.Flag,
 		"sensitive_words":       outcome.Words,
 		"sensitive_checked_at":  checkedAt,
-		"sensitive_check_error": strings.TrimSpace(outcome.Error),
+		"sensitive_check_error": diagnostic,
 	}
 	// Session(NewDB) + 主键条件：不继承调用方可能残留的 Where，
 	// 避免把「一次检测结果」写到多行上。
-	result := db.Session(&gorm.Session{NewDB: true}).
+	result := db.Session(&gorm.Session{NewDB: true, Logger: db.Logger.LogMode(gormlog.Silent)}).
 		Model(&entity.LogSensitive{}).
 		Where("id = ?", logID).
 		Updates(updates)
