@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 // 本文件只放「按接口族分桶」的固定枚举与内存计数器（task_doc/138 §4.2 / §4.2.1）。
@@ -103,6 +104,8 @@ type EndpointCounters struct {
 	// AvgLatencyMs 是该桶内的平均耗时；请求数为 0 时保持 0。
 	AvgLatencyMs int64 `json:"avgLatencyMs"`
 
+	latency statusLatencyTally
+
 	// Samples 是该桶「被采样到」的分钟数 —— **判有没有数据的唯一依据**。
 	//
 	// 不能用 TotalRequests == 0 判断，因为两件事在数值上完全同形：
@@ -135,8 +138,9 @@ type ServiceStatusEndpointCounters struct {
 // 只增不减、定长内存（两个 StatusCounters）、无动态标签 —— 与 diagnostics 的
 // 内存礼仪一致。
 type ServiceStatusEndpointRecorder struct {
-	mu       sync.Mutex
-	counters ServiceStatusEndpointCounters
+	mu        sync.Mutex
+	counters  ServiceStatusEndpointCounters
+	completed [ServiceStatusSlots]statusCompletionMinute
 }
 
 // DefaultServiceStatusEndpoints 是进程内默认的分桶计数记录器。
@@ -150,22 +154,53 @@ var DefaultServiceStatusEndpoints = &ServiceStatusEndpointRecorder{}
 // status >= 400 计为失败（与 diagnostics 的 HTTP 计数口径一致）。
 // latencyMillis 为负时按 0 处理（时钟回退）。
 func (r *ServiceStatusEndpointRecorder) ObserveEndpoint(route string, status int, latencyMillis int64) {
+	r.ObserveCompletion(route, status, latencyMillis, StatusFailureNone, time.Now())
+}
+
+// ObserveCompletion records one terminal response at its actual completion time.
+// No path, status code or identity is retained in the minute ring.
+func (r *ServiceStatusEndpointRecorder) ObserveCompletion(route string, status int, latencyMillis int64, failure StatusFailure, at time.Time) {
 	if r == nil {
 		return
 	}
-	if latencyMillis < 0 {
-		latencyMillis = 0
-	}
 	kind := ClassifyEndpoint(route)
+	at = at.Round(0)
+	minute := serviceStatusMinute(at)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	counters := r.bucketLocked(kind)
+	recordStatusCompletion(r.bucketLocked(kind), status, latencyMillis, failure)
+	if minute < 0 {
+		return
+	}
+	slot := &r.completed[minute%ServiceStatusSlots]
+	if slot.minute > minute {
+		return // A delayed completion must not overwrite a newer ring slot.
+	}
+	if slot.minute != minute {
+		*slot = statusCompletionMinute{minute: minute}
+	}
+	recordStatusCompletion(&slot.all, status, latencyMillis, failure)
+	bucket := &slot.endpoints.Other
+	if kind == EndpointSearch {
+		bucket = &slot.endpoints.Search
+		if at.After(slot.latestSearch) {
+			slot.latestSearch = at
+		}
+	}
+	recordStatusCompletion(bucket, status, latencyMillis, failure)
+	if at.After(slot.latest) {
+		slot.latest = at
+	}
+}
+
+func recordStatusCompletion(counters *StatusCounters, status int, latencyMillis int64, failure StatusFailure) {
 	counters.TotalRequests++
 	if status >= 400 {
 		counters.FailedRequests++
+		observeStatusFailure(counters, failure)
 	}
 	counters.LatencyCount++
-	counters.LatencyTotalMillis += uint64(latencyMillis)
+	counters.LatencyTotalMillis += uint64(max(latencyMillis, 0))
 }
 
 // bucketLocked 返回指定桶的指针。调用方必须持锁。
@@ -198,9 +233,9 @@ func ObserveServiceStatusEndpoint(route string, status int, latencyMillis int64)
 	DefaultServiceStatusEndpoints.ObserveEndpoint(route, status, latencyMillis)
 }
 
-// defaultServiceStatusEndpointCounters 从默认记录器取分桶累计计数。
-func defaultServiceStatusEndpointCounters() ServiceStatusEndpointCounters {
-	return DefaultServiceStatusEndpoints.Snapshot()
+// ObserveServiceStatusCompletion is used only at the transport completion boundary.
+func ObserveServiceStatusCompletion(route string, status int, latencyMillis int64, failure StatusFailure, at time.Time) {
+	DefaultServiceStatusEndpoints.ObserveCompletion(route, status, latencyMillis, failure, at)
 }
 
 // endpointCountersDelta 把分桶累计值做差成分钟增量。
@@ -240,43 +275,50 @@ func applyEndpointBucket(target *EndpointCounters, delta StatusCounters, sampled
 	if success := total - failed; success > 0 {
 		target.SuccessRequests = saturatingInt64Add(target.SuccessRequests, success)
 	}
+	target.latency.addDelta(delta)
+	target.AvgLatencyMs = target.latency.average()
 	// 点的 Samples 是 0/1 标记：本分钟是否被采样。窗口聚合时按分钟相加。
 	if sampled {
 		target.Samples = 1
 	}
 }
 
-// endpointLatencyAccumulator 按请求数加权累加平均耗时。
-//
-// 为什么不直接对点里的 AvgLatencyMs 取算术平均：每点的请求数不同，算术平均会
-// 让「1 个请求的 3000ms」压过「1000 个请求的 30ms」。全局计数器用的是加权口径，
-// 分桶必须同口径，否则两个数字互相矛盾。
-type endpointLatencyAccumulator struct {
-	weightedSum int64
-	weight      int64
+// statusLatencyTally keeps the original sample count and sum across minutes:
+// weighting truncated per-minute averages by request total can lose both
+// measured zero-duration requests and the fractional remainder.
+type statusLatencyTally struct {
+	total int64
+	count int64
 }
 
-func (a *endpointLatencyAccumulator) add(average, weight int64) {
-	if average <= 0 || weight <= 0 {
-		return
+func (t *statusLatencyTally) addDelta(delta StatusCounters) {
+	if delta.LatencyCount > 0 {
+		t.total = saturatingInt64Add(t.total, toInt64(delta.LatencyTotalMillis))
+		t.count = saturatingInt64Add(t.count, toInt64(delta.LatencyCount))
 	}
-	a.weightedSum = saturatingInt64Add(a.weightedSum, saturatingInt64Mul(average, weight))
-	a.weight = saturatingInt64Add(a.weight, weight)
 }
 
-func (a *endpointLatencyAccumulator) average() int64 {
-	if a.weight <= 0 {
+func (t *statusLatencyTally) merge(point statusLatencyTally, average, requests int64) {
+	// Explicit StatusPoint fixtures can provide only an average.
+	if point.count == 0 && average > 0 && requests > 0 {
+		point = statusLatencyTally{total: saturatingInt64Mul(average, requests), count: requests}
+	}
+	t.total = saturatingInt64Add(t.total, point.total)
+	t.count = saturatingInt64Add(t.count, point.count)
+}
+
+func (t statusLatencyTally) average() int64 {
+	if t.count == 0 {
 		return 0
 	}
-	return a.weightedSum / a.weight
+	return t.total / t.count
 }
 
-// mergeEndpointBucket 把一个分钟点并进窗口聚合，耗时走加权累加器。
-func mergeEndpointBucket(target *EndpointCounters, point EndpointCounters, latency *endpointLatencyAccumulator) {
+func mergeEndpointBucket(target *EndpointCounters, point EndpointCounters) {
 	target.TotalRequests = saturatingInt64Add(target.TotalRequests, point.TotalRequests)
 	target.SuccessRequests = saturatingInt64Add(target.SuccessRequests, point.SuccessRequests)
 	target.FailedRequests = saturatingInt64Add(target.FailedRequests, point.FailedRequests)
-	latency.add(point.AvgLatencyMs, point.TotalRequests)
+	target.latency.merge(point.latency, point.AvgLatencyMs, point.TotalRequests)
 }
 
 // summarizeEndpointCounters 把分钟点聚合成分桶摘要（138 §4.2.2）。
@@ -292,13 +334,12 @@ func mergeEndpointBucket(target *EndpointCounters, point EndpointCounters, laten
 // 138 §4.2.2 的示例也是这个口径（windowMinutes=5 而 samples=12）。
 func summarizeEndpointCounters(all, window []StatusPoint) StatusCountersByEndpoint {
 	var result StatusCountersByEndpoint
-	var searchLatency, otherLatency endpointLatencyAccumulator
 	for _, point := range window {
-		mergeEndpointBucket(&result.Search, point.Endpoints.Search, &searchLatency)
-		mergeEndpointBucket(&result.Other, point.Endpoints.Other, &otherLatency)
+		mergeEndpointBucket(&result.Search, point.Endpoints.Search)
+		mergeEndpointBucket(&result.Other, point.Endpoints.Other)
 	}
-	result.Search.AvgLatencyMs = searchLatency.average()
-	result.Other.AvgLatencyMs = otherLatency.average()
+	result.Search.AvgLatencyMs = result.Search.latency.average()
+	result.Other.AvgLatencyMs = result.Other.latency.average()
 
 	// samples 取各点自带的 Samples 字段（而不是重新用 TotalRequests>0 推），
 	// 这样「该桶在这一分钟被采样到」这件事只有一个来源，不会两处漂移。
