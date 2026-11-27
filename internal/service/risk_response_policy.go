@@ -14,6 +14,8 @@ const (
 	riskResponseManualMaxMinutes = 365 * 24 * 60
 )
 
+var ErrLegacyRiskResponsePolicyReadOnly = errors.New("按类型共享的旧处置策略已停用，请在风控规则编辑器保存独立处置策略")
+
 var ErrRiskResponseInvalid = errors.New("风控处置参数无效")
 
 func invalidRiskResponse(message string) error {
@@ -32,8 +34,22 @@ type RiskResponsePolicy struct {
 func validRiskResponsePolicy(mode string, minutes int) bool {
 	return (mode == "notify" || mode == "temp_ip") && minutes >= 1 && minutes <= riskResponseAutoMaxMinutes
 }
+func defaultLegacyRiskResponsePolicy() RiskResponsePolicy {
+	return RiskResponsePolicy{Mode: "notify", DurationMinutes: 30}
+}
+
+// Decode over the historical defaults: omission (rather than an explicit
+// invalid duration) used to enable a 30-minute temporary single-IP policy.
+func decodeLegacyRiskResponsePolicy(raw string) (RiskResponsePolicy, error) {
+	p := defaultLegacyRiskResponsePolicy()
+	if err := json.Unmarshal([]byte(raw), &p); err != nil || !validRiskResponsePolicy(p.Mode, p.DurationMinutes) {
+		return RiskResponsePolicy{}, fmt.Errorf("风控处置策略配置损坏")
+	}
+	return p, nil
+}
+
 func GetRiskResponsePolicy(db *gorm.DB, detector string) (RiskResponsePolicy, error) {
-	p := RiskResponsePolicy{Mode: "notify", DurationMinutes: 30}
+	p := defaultLegacyRiskResponsePolicy()
 	if !riskResponseDetector(detector) {
 		return p, invalidRiskResponse("该检测器不支持网络处置")
 	}
@@ -42,8 +58,9 @@ func GetRiskResponsePolicy(db *gorm.DB, detector string) (RiskResponsePolicy, er
 		return p, err
 	}
 	if found {
-		if err := json.Unmarshal([]byte(setting.Value), &p); err != nil || !validRiskResponsePolicy(p.Mode, p.DurationMinutes) {
-			return RiskResponsePolicy{}, fmt.Errorf("风控处置策略配置损坏")
+		p, err = decodeLegacyRiskResponsePolicy(setting.Value)
+		if err != nil {
+			return p, err
 		}
 	}
 	p.BlacklistEnabled = GetBlacklistEnabledWithDB(db)
@@ -55,6 +72,15 @@ func PutRiskResponsePolicy(db *gorm.DB, detector, mode string, minutes int, acto
 	}
 	p := RiskResponsePolicy{Mode: mode, DurationMinutes: minutes}
 	err := db.Transaction(func(tx *gorm.DB) error {
+		// The old endpoint is retained for archived configuration inspection only
+		// after the one-time copy. Never silently accept a disconnected write.
+		flag, found, err := getSystemSettingByKey(tx, RiskRuleResponseMigrationKey)
+		if err != nil {
+			return err
+		}
+		if found && flag.Value == "1" {
+			return ErrLegacyRiskResponsePolicyReadOnly
+		}
 		// Never persist or change blacklist_enabled here.
 		data, err := json.Marshal(map[string]any{"mode": mode, "durationMinutes": minutes})
 		if err != nil {

@@ -198,13 +198,13 @@ func applyRiskWarningsSchema(db *gorm.DB) (bool, error) {
 //   - 已存在的行**不动**（管理员可能调过 enabled / threshold，覆盖等于抹掉他的配置）
 //   - 只插入缺的（新规则上线时自动补齐）
 //   - 幂等：重复启动不会重复插入（rule_id 有唯一索引 + 先查后插在同一次遍历内）
-func seedDefaultRiskRules(db *gorm.DB) {
+func seedDefaultRiskRules(db *gorm.DB) error {
 	existing := make(map[string]struct{}, 32)
 	var ruleIDs []string
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).Unscoped().
 		Pluck("rule_id", &ruleIDs).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("读取风控规则 rule_id 失败（跳过种子数据）：%v", err))
-		return
+		return err
 	}
 	for _, id := range ruleIDs {
 		existing[id] = struct{}{}
@@ -230,14 +230,16 @@ func seedDefaultRiskRules(db *gorm.DB) {
 		})
 	}
 	if len(rows) == 0 {
-		return
+		return nil
 	}
-	if err := db.Create(&rows).Error; err != nil {
+	// Can run while the old table still lacks the independently migrated field.
+	if err := db.Omit("ResponsePolicyJSON").Create(&rows).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("写入风控规则种子失败（管理员可在后台补）：%v", err))
-		return
+		return err
 	}
 	logger.SysLog(fmt.Sprintf("已补齐 %d 条缺失的风控规则种子（共 %d 条代码默认规则）",
 		len(rows), len(entity.DefaultRiskRules())))
+	return nil
 }
 
 // backfillRiskRuleMetadata labels legacy built-in rows without touching operator-edited fields.

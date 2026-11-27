@@ -150,6 +150,14 @@ func deviceConflictClaimedInstances(db *gorm.DB, normalizedDeviceID string) []st
 	if normalizedDeviceID == "" || !deviceConflictInstanceColumnAvailable(db) {
 		return nil
 	}
+	instances, err := loadDeviceConflictClaimedInstances(db, normalizedDeviceID)
+	if err != nil {
+		deviceConflictLogFailOpen(0, "查询 "+normalizedDeviceID+" 的实例占用失败："+err.Error())
+	}
+	return instances
+}
+
+func loadDeviceConflictClaimedInstances(db *gorm.DB, normalizedDeviceID string) ([]string, error) {
 	query := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
 		Select("client_instance AS client_instance").
 		Where("device_id = ?", normalizedDeviceID)
@@ -160,10 +168,7 @@ func deviceConflictClaimedInstances(db *gorm.DB, normalizedDeviceID string) []st
 		ClientInstance string `gorm:"column:client_instance"`
 	}
 	if err := query.Find(&rows).Error; err != nil {
-		// 查询失败按「没有占用证据」处理并留痕：这条判定出错时的最坏后果是
-		// 「这次没判出冲突」，而把错误抛上去会让登录直接失败。
-		deviceConflictLogFailOpen(0, "查询 "+normalizedDeviceID+" 的实例占用失败："+err.Error())
-		return nil
+		return nil, err
 	}
 	instances := make([]string, 0, len(rows))
 	seen := make(map[string]bool, len(rows))
@@ -174,7 +179,7 @@ func deviceConflictClaimedInstances(db *gorm.DB, normalizedDeviceID string) []st
 		seen[row.ClientInstance] = true
 		instances = append(instances, row.ClientInstance)
 	}
-	return instances
+	return instances, nil
 }
 
 // DecideDeviceRegistration 判定「(userID, deviceID, clientInstance) 这次登记是否会冲突」。

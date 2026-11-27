@@ -126,7 +126,10 @@ func responseTargets(db *gorm.DB, w entity.RiskWarning, detector string, now tim
 	return v, nil
 }
 func loadResponseHistory(db *gorm.DB, warningID int64, v *RiskAlertResponseView) error {
-	return db.Where("warning_id = ?", warningID).Order("id DESC").Find(&v.History).Error
+	if err := db.Where("warning_id = ?", warningID).Order("id DESC").Find(&v.History).Error; err != nil {
+		return err
+	}
+	return annotateAutomaticRevoke(db, db.NowFunc(), v.History)
 }
 func GetRiskAlertResponse(db *gorm.DB, warningID int64) (RiskAlertResponseView, error) {
 	var w entity.RiskWarning

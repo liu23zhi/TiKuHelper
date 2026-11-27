@@ -99,14 +99,14 @@ func TestBuildServiceStatusResponseIncludesPendingMinute(t *testing.T) {
 	sampler.Sample()
 
 	body := buildServiceStatusResponse(sampler)
-	if len(body.Points) != 1 {
-		t.Fatalf("只有第一分钟有流量，points 期望 1 个，got=%d", len(body.Points))
+	if len(body.Points) != 2 || body.Points[1].Minute != now.Unix()/60 || body.Points[1].TotalRequests != 0 {
+		t.Fatalf("管理员 points 应保留正在采样的零流量分钟，got=%+v", body.Points)
 	}
 	if body.Points[0].TotalRequests != 100 || body.Points[0].FailedRequests != 40 {
 		t.Fatalf("封存的点内容错: %+v", body.Points[0])
 	}
-	if body.Retained != 1 {
-		t.Fatalf("retained 期望 1，got=%d", body.Retained)
+	if body.Retained != 2 {
+		t.Fatalf("retained 期望 2，got=%d", body.Retained)
 	}
 	// 100 次 60 成功 = 60% → down
 	if body.Status != "down" {

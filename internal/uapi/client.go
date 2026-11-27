@@ -124,6 +124,12 @@ func (c *Client) SetIPInfoURL(url string) *Client {
 // 所有手机号查询都必须配置密钥；不使用访客外呼。
 // 参数不合法时在本地直接返回错误，不发起 HTTP 请求、不消耗积分。
 func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, error) {
+	return auditProviderCall(ctx, "phone_lookup", func(ctx context.Context) (PhoneInfo, error) {
+		return c.getPhoneInfo(ctx, phone)
+	})
+}
+
+func (c *Client) getPhoneInfo(ctx context.Context, phone string) (PhoneInfo, error) {
 	if err := c.ensureInitialized(); err != nil {
 		return PhoneInfo{}, err
 	}
@@ -152,6 +158,12 @@ func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, err
 // source 为空时不下发该 query；唯一合法值为 "commercial"，其它取值在本地拒绝，
 // 不发起 HTTP 请求。普通与商业增强来源均要求密钥，不使用访客外呼。
 func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInfo, error) {
+	return auditProviderCall(ctx, "ip_lookup", func(ctx context.Context) (IPInfo, error) {
+		return c.getIPInfo(ctx, ip, source)
+	})
+}
+
+func (c *Client) getIPInfo(ctx context.Context, ip string, source string) (IPInfo, error) {
 	if err := c.ensureInitialized(); err != nil {
 		return IPInfo{}, err
 	}
@@ -273,7 +285,11 @@ func (c *Client) requestWithPolicy(ctx context.Context, method string, url strin
 		if body != nil {
 			request.SetHeader("Content-Type", "application/json").SetBody(body)
 		}
+		noteProviderAttempt(ctx)
 		resp, err := request.Execute(method, url)
+		if resp != nil {
+			noteProviderResponse(ctx, resp.StatusCode(), resp.Header().Get("X-Request-ID"))
+		}
 		if err != nil {
 			// 调用方上下文已结束：不再重试，直接返回其错误
 			if ctxErr := ctx.Err(); ctxErr != nil {

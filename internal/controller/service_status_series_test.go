@@ -26,8 +26,8 @@ import (
 //
 // 与 admin 端点 serviceStatusResponse 的对照：
 //
-//	admin   schemaVersion / status / windowMinutes / points / summary / capacity / retained / restartedAt
-//	public  schemaVersion / points / searchPoints / endpoints / capacity / retained / restartedAt
+//	admin   has full status points, processPoints and summary.
+//	public  has the allow-listed fields below; sample time refers only to search.
 //
 // status/windowMinutes/summary 不在公开序列里 —— 那些由 summary 端点提供，
 // 序列端点只负责「时间轴」。两个端点各管一段，避免同一份数据两条契约漂移。
@@ -37,7 +37,7 @@ import (
 // 「摘要说健康、曲线里全是搜题失败点」。它只含两个固定枚举桶的聚合数字，
 // 不含 minute，也不含任何路由字符串，所以不破坏「摘要端点不返回时间轴」的分层。
 var publicSeriesKeys = []string{
-	"schemaVersion", "points", "searchPoints", "endpoints", "capacity", "retained", "restartedAt",
+	"schemaVersion", "points", "searchPoints", "endpoints", "capacity", "retained", "restartedAt", "asOf", "latestSampleAt",
 }
 
 // 单个点的允许字段集合（白名单）。
@@ -50,7 +50,8 @@ func seededSampler(t *testing.T, minutes int) (*service.ServiceStatusSampler, ti
 	t.Helper()
 	fixed := time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
 	ring := service.NewServiceStatusRing()
-	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return fixed }, nil)
+	now := fixed
+	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return now }, nil)
 	for i := 0; i < minutes; i++ {
 		ring.Append(service.StatusPoint{
 			Minute:          fixed.Unix()/60 + int64(i),
@@ -64,8 +65,12 @@ func seededSampler(t *testing.T, minutes int) (*service.ServiceStatusSampler, ti
 			AuthFailures:     2,
 			QuotaFailures:    0,
 			AvgLatencyMs:     240,
+			Endpoints: service.StatusCountersByEndpoint{
+				Search: service.EndpointCounters{Samples: 1},
+			},
 		})
 	}
+	now = fixed.Add(time.Duration(max(0, minutes-1)) * time.Minute)
 	return sampler, fixed
 }
 
@@ -131,6 +136,8 @@ func TestPublicStatusSearchSeriesDoesNotUseOtherRequestTraffic(t *testing.T) {
 	fixed := time.Date(2026, 11, 20, 6, 0, 0, 0, time.UTC)
 	ring := service.NewServiceStatusRing()
 	startMinute := fixed.Unix() / 60
+	now := fixed
+	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return now }, nil)
 	for i, point := range []service.StatusPoint{
 		{
 			TotalRequests: 10002, SuccessRequests: 10000, FailedRequests: 2, AvgLatencyMs: 2,
@@ -143,7 +150,8 @@ func TestPublicStatusSearchSeriesDoesNotUseOtherRequestTraffic(t *testing.T) {
 		{
 			TotalRequests: 200, SuccessRequests: 200, AvgLatencyMs: 4,
 			Endpoints: service.StatusCountersByEndpoint{
-				Other: service.EndpointCounters{TotalRequests: 200, SuccessRequests: 200, AvgLatencyMs: 4, Samples: 1},
+				Search: service.EndpointCounters{Samples: 1},
+				Other:  service.EndpointCounters{TotalRequests: 200, SuccessRequests: 200, AvgLatencyMs: 4, Samples: 1},
 			},
 		},
 		{
@@ -157,7 +165,7 @@ func TestPublicStatusSearchSeriesDoesNotUseOtherRequestTraffic(t *testing.T) {
 		point.Minute = startMinute + int64(i)
 		ring.Append(point)
 	}
-	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return fixed }, nil)
+	now = fixed.Add(2 * time.Minute)
 	raw, err := json.Marshal(buildServiceStatusSeriesResponse(sampler))
 	if err != nil {
 		t.Fatal(err)

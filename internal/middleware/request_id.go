@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,28 @@ import (
 )
 
 var transportFallbackSequence atomic.Uint64
+
+const statusFailureContextKey = "service_status_failure"
+
+// SetServiceStatusFailure marks a known business-side terminal reason. It is
+// applied only once, if this request ultimately completes as a failure.
+func SetServiceStatusFailure(c *gin.Context, failure service.StatusFailure) {
+	if failure != service.StatusFailureNone {
+		c.Set(statusFailureContextKey, failure)
+	}
+}
+
+func serviceStatusCompletionFailure(c *gin.Context, status int, panicking bool) service.StatusFailure {
+	if status < http.StatusBadRequest || panicking {
+		return service.StatusFailureNone
+	}
+	if value, ok := c.Get(statusFailureContextKey); ok {
+		if failure, ok := value.(service.StatusFailure); ok {
+			return failure
+		}
+	}
+	return service.ClassifyServiceStatusHTTPStatus(status)
+}
 
 // RequestCorrelation provides a transport-only diagnostic ID. It does not use
 // incoming IDs or replace search/audit/billing request IDs.
@@ -41,6 +64,7 @@ func requestCorrelation(c *gin.Context, reader io.Reader, now time.Time, sequenc
 	c.Set("transport_request_id", id)
 	panicking := true
 	defer func() {
+		finished := time.Now()
 		status := c.Writer.Status()
 		// The existing outer Gin recovery writes 500 only before headers have
 		// been committed. Preserve an already committed response on panic.
@@ -52,7 +76,7 @@ func requestCorrelation(c *gin.Context, reader io.Reader, now time.Time, sequenc
 		if route == "" {
 			route = "__unmatched__"
 		}
-		duration := time.Since(started).Milliseconds()
+		duration := finished.Sub(started).Milliseconds()
 		if duration < 0 {
 			duration = 0
 		}
@@ -62,7 +86,7 @@ func requestCorrelation(c *gin.Context, reader io.Reader, now time.Time, sequenc
 		// 不是具体 URL —— 具体 URL 含题目 id 之类，且 diagnostics 的红线明确
 		// 禁止存 route。ClassifyEndpoint 只认固定的三个模板，其余（含 __unmatched__）
 		// 一律落 other，且分类后原文即弃、不落库、不写日志。
-		service.ObserveServiceStatusEndpoint(route, status, duration)
+		service.ObserveServiceStatusCompletion(route, status, duration, serviceStatusCompletionFailure(c, status, panicking), finished)
 		writeTransportCompletion(transportCompletion{
 			Event:      "transport_complete",
 			RequestID:  id,

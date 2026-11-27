@@ -315,9 +315,8 @@ func TestServiceStatusSamplerSealsOnNaturalMinuteBoundary(t *testing.T) {
 	}
 }
 
-// TestServiceStatusSamplerSkipsEmptyMinutes 钉「只封存有流量的分钟」：
-// 空闲进程不能把缓冲填成 1440 个零点，否则判据 ③ 在运行期失效。
-func TestServiceStatusSamplerSkipsEmptyMinutes(t *testing.T) {
+// An actual idle observation is distinct from a minute the sampler skipped.
+func TestServiceStatusSamplerRetainsObservedIdleButDoesNotFillGaps(t *testing.T) {
 	base := time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
 	now := base
 	var counters StatusCounters
@@ -326,15 +325,21 @@ func TestServiceStatusSamplerSkipsEmptyMinutes(t *testing.T) {
 
 	counters = StatusCounters{TotalRequests: 1}
 	sampler.Sample()
-	for minute := 1; minute <= 30; minute++ {
+	for minute := 2; minute <= 30; minute++ { // minute 1 never had a tick.
 		now = base.Add(time.Duration(minute) * time.Minute)
 		sampler.Sample()
 	}
-	if ring.Len() != 1 {
-		t.Fatalf("空转的分钟不得写进缓冲，Len 期望 1 got=%d", ring.Len())
+	if ring.Len() != 29 {
+		t.Fatalf("expected 29 actual sealed observations, got %d", ring.Len())
 	}
-	if got := ring.Points()[0]; got.TotalRequests != 1 || got.Minute != base.Unix()/60 {
-		t.Fatalf("封存的必须是有流量的那一分钟，got=%+v", got)
+	points := sampler.Points()
+	if len(points) != 30 || points[0].Minute != base.Unix()/60 || points[0].TotalRequests != 1 {
+		t.Fatalf("expected requestful and idle observations, got %+v", points)
+	}
+	for i, point := range points[1:] {
+		if point.Minute != base.Unix()/60+int64(i)+2 || point.TotalRequests != 0 {
+			t.Fatalf("idle observation missing or unobserved minute filled: %+v", point)
+		}
 	}
 }
 
@@ -416,6 +421,6 @@ func TestStartServiceStatusSamplingStopsOnClose(t *testing.T) {
 	close(stop)
 	time.Sleep(20 * time.Millisecond)
 	if ring.Len() != 0 {
-		t.Fatalf("零流量时不应封存任何点，Len=%d", ring.Len())
+		t.Fatalf("before the first sampling tick there should be no retained point, Len=%d", ring.Len())
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/middleware"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/uapi"
@@ -102,6 +103,11 @@ func writeUAPISearchError(c *gin.Context, err error) {
 	message := "搜索服务请求失败"
 	var apiErr *uapi.APIError
 	if errors.As(err, &apiErr) {
+		failure := service.ClassifyServiceStatusHTTPStatus(apiErr.HTTPStatus)
+		if failure == service.StatusFailureNone && apiErr.HTTPStatus >= http.StatusInternalServerError {
+			failure = service.StatusFailureUpstream // Typed UAPI response proves the origin.
+		}
+		middleware.SetServiceStatusFailure(c, failure)
 		status = apiErr.HTTPStatus
 		code = strings.TrimSpace(apiErr.Code)
 		message = apiErr.Message
@@ -119,11 +125,20 @@ func writeUAPISearchError(c *gin.Context, err error) {
 	} else if errors.Is(err, uapi.ErrInvalidArgument) {
 		status, code, message = http.StatusBadRequest, "INVALID_REQUEST", err.Error()
 	} else if errors.Is(err, uapi.ErrUnauthorized) {
+		middleware.SetServiceStatusFailure(c, service.ClassifyServiceStatusFailure(err))
 		status, code, message = http.StatusBadGateway, "UPSTREAM_AUTH_ERROR", "UApiPro 令牌鉴权失败，请检查系统设置"
 	} else if errors.Is(err, uapi.ErrTimeout) {
+		middleware.SetServiceStatusFailure(c, service.ClassifyServiceStatusFailure(err))
 		status, code, message = http.StatusGatewayTimeout, "TIMEOUT", "搜索服务请求超时"
 	} else if errors.Is(err, uapi.ErrNetwork) {
+		middleware.SetServiceStatusFailure(c, service.StatusFailureUpstream)
 		message = "搜索服务网络请求失败"
+	} else if errors.Is(err, uapi.ErrForbidden) || errors.Is(err, uapi.ErrRateLimited) || errors.Is(err, uapi.ErrInsufficientCredits) {
+		middleware.SetServiceStatusFailure(c, service.ClassifyServiceStatusFailure(err))
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		middleware.SetServiceStatusFailure(c, service.StatusFailureTimeout)
+	} else if errors.Is(err, uapi.ErrUpstream) {
+		middleware.SetServiceStatusFailure(c, service.StatusFailureUpstream)
 	}
 	c.JSON(status, gin.H{"code": code, "message": message})
 }

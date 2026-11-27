@@ -1,9 +1,12 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -62,6 +65,65 @@ func ipv4ToUint32(raw string) (uint32, bool) {
 	return uint32(v4[0])<<24 | uint32(v4[1])<<16 | uint32(v4[2])<<8 | uint32(v4[3]), true
 }
 
+// Segment evidence may omit the echoed address on old responses. An explicit
+// field must be well-typed, unscoped and equivalent to the request/projection.
+type ipSegmentRawEvidence struct {
+	IP, BeginIP, EndIP json.RawMessage
+}
+
+// Parse only the evidence fields. Unlike a last-value-wins JSON decode, a
+// duplicate or alternate spelling cannot hide another asserted address.
+func decodeIPSegmentRawEvidence(raw string) (ipSegmentRawEvidence, bool) {
+	var evidence ipSegmentRawEvidence
+	d := json.NewDecoder(strings.NewReader(raw))
+	if token, err := d.Token(); err != nil || token != json.Delim('{') {
+		return evidence, false
+	}
+	for d.More() {
+		token, err := d.Token()
+		key, ok := token.(string)
+		var value json.RawMessage
+		if err != nil || !ok || d.Decode(&value) != nil {
+			return evidence, false
+		}
+		canonical := strings.ToLower(key)
+		var field *json.RawMessage
+		switch canonical {
+		case "ip":
+			field = &evidence.IP
+		case "beginip":
+			field = &evidence.BeginIP
+		case "endip":
+			field = &evidence.EndIP
+		default:
+			continue
+		}
+		if key != canonical || *field != nil {
+			return evidence, false
+		}
+		*field = value
+	}
+	if token, err := d.Token(); err != nil || token != json.Delim('}') {
+		return evidence, false
+	}
+	_, err := d.Token()
+	return evidence, err == io.EOF
+}
+
+func sameIPv4SegmentAddress(value, want string) bool {
+	got, err := netip.ParseAddr(strings.TrimSpace(value))
+	expected, expectedErr := netip.ParseAddr(strings.TrimSpace(want))
+	return err == nil && expectedErr == nil && got.Zone() == "" && got.Unmap().Is4() && got.Unmap() == expected.Unmap()
+}
+
+func (e ipSegmentRawEvidence) matches(sample, begin, end string) bool {
+	same := func(field json.RawMessage, want string) bool {
+		var value string
+		return len(field) == 0 || (json.Unmarshal(field, &value) == nil && sameIPv4SegmentAddress(value, want))
+	}
+	return same(e.IP, sample) && same(e.BeginIP, begin) && same(e.EndIP, end)
+}
+
 // ParseIPSegmentFromInfo 把一次上游查询结果解析成段记录。
 //
 // 返回 (segment, true) 表示可以写段表；返回 (_, false) 表示这条响应不含可用的段信息
@@ -77,8 +139,22 @@ func ParseIPSegmentFromInfo(sampleIP string, info uapi.IPInfo, source string, ra
 	}
 	if begin > end {
 		// begin > end 的段会让区间查询匹配到不该匹配的地址，必须拒绝。
-		logger.SysWarn(fmt.Sprintf("IP 段起点大于终点，已跳过：sample=%s begin=%s end=%s", sampleIP, info.BeginIP, info.EndIP))
+		logger.SysWarn("IP 段起点大于终点，已跳过 reason=range_bounds_reversed")
 		return entity.IPSegment{}, false
+	}
+	// Domain lookups still serve the generic location cache. For a literal IP
+	// lookup, never materialize an interval for another provider/request IP.
+	if _, err := netip.ParseAddr(strings.TrimSpace(sampleIP)); err == nil {
+		sample, ok := ipv4ToUint32(sampleIP)
+		if !ok || sample < begin || sample > end || (info.IP != "" && !sameIPv4SegmentAddress(info.IP, sampleIP)) {
+			return entity.IPSegment{}, false
+		}
+		if strings.TrimSpace(rawJSON) != "" {
+			evidence, ok := decodeIPSegmentRawEvidence(rawJSON)
+			if !ok || !evidence.matches(sampleIP, info.BeginIP, info.EndIP) {
+				return entity.IPSegment{}, false
+			}
+		}
 	}
 	segment := entity.IPSegment{
 		BeginIP:   begin,

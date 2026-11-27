@@ -28,7 +28,8 @@ func seededEndpointSampler(t *testing.T, minutes int) *service.ServiceStatusSamp
 	t.Helper()
 	fixed := time.Date(2026, 11, 14, 13, 0, 0, 0, time.UTC)
 	ring := service.NewServiceStatusRing()
-	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return fixed }, nil)
+	now := fixed
+	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return now }, nil)
 	for i := 0; i < minutes; i++ {
 		ring.Append(service.StatusPoint{
 			Minute:          fixed.Unix()/60 + int64(i),
@@ -54,6 +55,7 @@ func seededEndpointSampler(t *testing.T, minutes int) *service.ServiceStatusSamp
 			},
 		})
 	}
+	now = fixed.Add(time.Duration(max(0, minutes-1)) * time.Minute)
 	return sampler
 }
 

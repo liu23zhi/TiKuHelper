@@ -223,13 +223,13 @@
                 <a-tag v-if="scorerLabel(record)" :color="scorerColor(record)" class="scorer-tag">{{ scorerLabel(record) }}</a-tag>
               </span>
               <span v-else-if="column.key === 'agentConfidence'" :class="{ 'is-low-confidence': isLowConfidence(record) }">
-                {{ formatConfidence(record.agentConfidence) }}
+                {{ formatConfidence(record) }}
                 <a-tag v-if="isLowConfidence(record)" color="orange" class="low-tag">低于门槛</a-tag>
               </span>
               <span v-else-if="column.key === 'matchedRule'">{{ record.matchedRuleId ?? '—' }}</span>
               <span v-else-if="column.key === 'awardAmount'" class="money-cell">{{ moneyText(record.awardAmount) }}</span>
               <span v-else-if="column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record.createdAt) }}</span>
-              <a-space v-else-if="column.key === 'action'" wrap>
+              <a-space v-else-if="column.key === 'action'" :size="4" class="claim-actions">
                 <template v-if="isReviewable(record)">
                   <a-button type="link" :disabled="loading || busy" @click="openDecisionDialog(record, 'approve')">批准</a-button>
                   <a-button type="link" danger :disabled="loading || busy" @click="openDecisionDialog(record, 'reject')">拒绝</a-button>
@@ -346,7 +346,7 @@
             <span class="note-cell">{{ decisionRecord.agentRationale || '—' }}</span>
           </a-descriptions-item>
           <a-descriptions-item label="置信度">
-            <span :class="{ 'is-low-confidence': isLowConfidence(decisionRecord) }">{{ formatConfidence(decisionRecord.agentConfidence) }}</span>
+            <span :class="{ 'is-low-confidence': isLowConfidence(decisionRecord) }">{{ formatConfidence(decisionRecord) }}</span>
             <a-tag v-if="isLowConfidence(decisionRecord)" color="orange" class="low-tag">低于门槛</a-tag>
           </a-descriptions-item>
           <a-descriptions-item label="命中规则">{{ decisionRecord.matchedRuleId ?? '—' }}</a-descriptions-item>
@@ -418,6 +418,13 @@ const CLAIM_STATUS = {
   limit_reached: { label: '超出上限', color: 'orange' },
 }
 const REVIEWABLE = ['submitted', 'scraping', 'scored', 'pending_review']
+// 这些状态由评分写入；批准/拒绝等终态也可来自未评分记录，不能作评分证据。
+const SCORE_RESULT_STATUSES = ['scored', 'pending_review', 'below_threshold']
+const scorerKind = record => String(record?.agentScorer || '').trim().toLowerCase()
+const hasRecordedAgentScore = record => ['agent', 'stub'].includes(scorerKind(record))
+  || SCORE_RESULT_STATUSES.includes(String(record?.status || '').trim().toLowerCase())
+  // 旧评分事务已写专用理由，但尚无 scorer 字段。只检查存证是否存在，不读取内容作判断。
+  || (typeof record?.agentRationale === 'string' && record.agentRationale.trim() !== '')
 
 function readNonnegativeNumber(value) {
   if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null
@@ -551,7 +558,7 @@ export default {
       { title: '命中规则', dataIndex: 'matchedRule', key: 'matchedRule', width: 100 },
       { title: '金额', dataIndex: 'awardAmount', key: 'awardAmount', width: 130 },
       { title: '提交时间', dataIndex: 'createdAt', key: 'createdAt', width: 175 },
-      { title: '操作', key: 'action', width: 140 },
+      { title: '操作', key: 'action', width: 140, fixed: 'right', className: 'claim-action-cell' },
     ]
 
     // 提交列表的状态筛选项：与 CLAIM_STATUS 同源，避免文案漂移。
@@ -613,8 +620,9 @@ export default {
       const amount = readNonnegativeNumber(value)
       return amount === null ? '—' : `¥ ${formatMoneyValue(amount)}`
     }
-    const formatConfidence = value => {
-      const confidence = readNonnegativeNumber(value)
+    const formatConfidence = record => {
+      if (!hasRecordedAgentScore(record)) return '—'
+      const confidence = readNonnegativeNumber(record?.agentConfidence)
       return confidence === null ? '—' : confidence.toFixed(2)
     }
     const formatDateTime = value => {
@@ -633,6 +641,7 @@ export default {
       return '—'
     }
     const buildAgentScore = record => {
+      if (!hasRecordedAgentScore(record)) return '—'
       const stars = readNonnegativeNumber(record?.agentStars)
       const score = readNonnegativeNumber(record?.agentContentScore)
       if (stars === null && score === null) return '—'
@@ -646,7 +655,8 @@ export default {
     // 于是照样点批准。这里的分数是由截图 SHA-256 哈希派生出来的 5 星，
     // 模型从未看过截图，把它当核验结论等于凭空发钱。
     const scorerLabel = record => {
-      const kind = String(record?.agentScorer || '').trim().toLowerCase()
+      if (!hasRecordedAgentScore(record)) return ''
+      const kind = scorerKind(record)
       if (kind === 'agent') return ''
       if (kind === 'stub') return '占位分数 · 非模型产出，不可作为核验依据'
       return record?.agentStars ? '来源未知' : ''
@@ -659,7 +669,7 @@ export default {
     // 「低于门槛」标签用的就是 Ant Design 的 orange（warning 语义），
     // 自造新色值会让同一页出现两个不同的警告色。
     function scorerColor(record) {
-      const kind = String(record?.agentScorer || '').trim().toLowerCase()
+      const kind = scorerKind(record)
       return kind === 'stub' ? 'orange' : 'default'
     }
     function claimStatusLabel(value) {
@@ -674,6 +684,7 @@ export default {
       return REVIEWABLE.includes(String(record?.status || '').trim().toLowerCase())
     }
     function isLowConfidence(record) {
+      if (!hasRecordedAgentScore(record)) return false
       const confidence = readNonnegativeNumber(record?.agentConfidence)
       const threshold = minConfidence.value
       return confidence !== null && threshold !== null && confidence < threshold
@@ -1177,6 +1188,12 @@ export default {
 .scorer-tag { margin-inline-start: 6px; }
 .screenshot-preview { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
 .action-disabled { color: var(--console-muted); font-size: 13px; }
+.claim-actions :deep(.ant-btn-link) { padding-inline: 8px; }
+@media (max-width: 768px) {
+  /* 通用表格窄屏会取消固定列；仅保留提交列表的紧凑操作列。 */
+  .review-rebate-admin-page :deep(.claim-action-cell.ant-table-cell-fix-right) { position: sticky !important; }
+  .review-rebate-admin-page :deep(.claim-action-cell.ant-table-cell-fix-right-first::after) { display: block; }
+}
 .is-low-confidence { color: var(--console-danger, #c13e41); font-weight: 600; }
 .low-tag { margin-inline-start: 6px; }
 .decision-summary { margin-bottom: 16px; }

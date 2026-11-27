@@ -15,6 +15,7 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	gormlog "gorm.io/gorm/logger"
 )
 
 const (
@@ -185,13 +186,7 @@ func FormatPhoneLocationAddress(province, city, sp string) string {
 // 注意：region 本身已含空格（国家 省份 城市），不要再做拼接去空格处理。
 func FormatIPLocationAddress(region, llc, isp string) string {
 	region = strings.TrimSpace(region)
-	operator := strings.TrimSpace(llc)
-	if isPlaceholderLocationValue(operator) {
-		operator = strings.TrimSpace(isp)
-	}
-	if isPlaceholderLocationValue(operator) {
-		operator = ""
-	}
+	operator := uapi.LocationDisplayOperator(llc, isp)
 	switch {
 	case region == "":
 		return operator
@@ -205,12 +200,7 @@ func FormatIPLocationAddress(region, llc, isp string) string {
 // isPlaceholderLocationValue 判断归属地字段是不是「没有值」的占位写法。
 // 本地合成的回环/私有地址会写 isp="N/A"，不能显示成「私有地址 N/A」。
 func isPlaceholderLocationValue(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "n/a", "na", "-", "--", "null", "none", "unknown", "未知":
-		return true
-	default:
-		return false
-	}
+	return uapi.IsLocationPlaceholder(value)
 }
 
 // NormalizeLocationPhone 归一化手机号，明显非法时返回空串。
@@ -411,9 +401,10 @@ func loadLocationCacheRows(db *gorm.DB, kind string, source string, lookupKeys [
 	}
 
 	rows := make([]entity.LocationCache, 0, len(normalized))
-	if err := db.Where("kind = ? AND source = ? AND lookup_key IN ?", kind, source, normalized).Find(&rows).Error; err != nil {
+	if err := db.Session(&gorm.Session{NewDB: true, Logger: db.Logger.LogMode(gormlog.Silent)}).Model(&entity.LocationCache{}).
+		Where("kind = ? AND source = ? AND lookup_key IN ?", kind, source, normalized).Find(&rows).Error; err != nil {
 		// 缓存读失败不影响正确性：回源查询即可。
-		logger.SysLog(fmt.Sprintf("读取归属地缓存失败（将回源查询）：%v", err))
+		logger.SysLog("读取归属地缓存失败（将回源查询）")
 		return result
 	}
 
@@ -437,11 +428,11 @@ func storeLocationCacheRows(db *gorm.DB, rows []entity.LocationCache) error {
 		rows[i].FetchedAt = now
 	}
 
-	if err := db.Clauses(clause.OnConflict{
+	if err := db.Session(&gorm.Session{NewDB: true, Logger: db.Logger.LogMode(gormlog.Silent)}).Model(&entity.LocationCache{}).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "kind"}, {Name: "lookup_key"}, {Name: "source"}},
 		DoUpdates: clause.AssignmentColumns([]string{"address", "raw_json", "fetched_at", "updated_at"}),
 	}).Create(&rows).Error; err != nil {
-		logger.SysLog(fmt.Sprintf("写入归属地缓存失败（不影响本次结果）：%v", err))
+		logger.SysLog("写入归属地缓存失败（不影响本次结果）")
 		return err
 	}
 	return nil
@@ -745,11 +736,13 @@ func queryLocationRowsWithPersistence(db *gorm.DB, client *uapi.Client, kind str
 					}
 					return fetched
 				}
-				logKey := lookupKey
-				if kind == entity.LocationKindPhone {
-					logKey = maskPhoneForLog(logKey)
+				failure := uapi.DescribeProviderFailure(fetched.err)
+				if errors.Is(fetched.err, ErrLocationEmptyResponse) {
+					failure.Class = "empty_result"
 				}
-				logger.SysLog(fmt.Sprintf("归属地查询失败 kind=%s key=%s attempt=%d/%d error=%v", kind, logKey, attempt, locationLookupMaxAttempts, fetched.err))
+				// Request data and provider error text are not diagnostics.
+				logger.SysLog(fmt.Sprintf("归属地查询失败 kind=%s attempt=%d/%d error_class=%s http_status=%d upstream_id_hash=%s",
+					kind, attempt, locationLookupMaxAttempts, failure.Class, failure.HTTPStatus, failure.UpstreamIDHash))
 				if !isLocationRetryableError(fetched.err) {
 					break
 				}

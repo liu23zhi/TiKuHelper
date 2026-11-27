@@ -24,6 +24,12 @@ var ErrDeviceAlreadyGloballyBanned = errors.New("该设备已被全局拉黑，�
 var deviceLifecycleStripes [64]sync.Mutex
 
 func withDeviceLifecycleWrite(db *gorm.DB, deviceID string, fn func(*gorm.DB) error) error {
+	return withDeviceLifecycleWriteUsing(db, deviceID, nil, fn)
+}
+
+type deviceTransaction func(*gorm.DB, func(*gorm.DB) error) error
+
+func withDeviceLifecycleWriteUsing(db *gorm.DB, deviceID string, transact deviceTransaction, fn func(*gorm.DB) error) error {
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(deviceID))
 	lock := &deviceLifecycleStripes[hash.Sum32()%uint32(len(deviceLifecycleStripes))]
@@ -31,7 +37,7 @@ func withDeviceLifecycleWrite(db *gorm.DB, deviceID string, fn func(*gorm.DB) er
 	defer lock.Unlock()
 	db = db.Session(&gorm.Session{NewDB: true})
 	hasLockTable := db.Migrator().HasTable(&entity.DeviceLifecycleLock{})
-	return db.Transaction(func(tx *gorm.DB) error {
+	run := func(tx *gorm.DB) error {
 		if hasLockTable {
 			row := entity.DeviceLifecycleLock{DeviceKey: BlacklistPatternHashHex(deviceID)}
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
@@ -39,7 +45,11 @@ func withDeviceLifecycleWrite(db *gorm.DB, deviceID string, fn func(*gorm.DB) er
 			}
 		}
 		return fn(tx)
-	})
+	}
+	if transact != nil {
+		return transact(db, run)
+	}
+	return db.Transaction(run)
 }
 
 // ReadDeviceHistorySnapshot keeps the rules and the binding version from one

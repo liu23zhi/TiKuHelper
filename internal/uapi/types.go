@@ -37,6 +37,29 @@ type IPInfo struct {
 	RawJSON string `json:"-"`
 }
 
+// LocationDisplayOperator is the existing display preference: the LLC first,
+// then ISP, excluding provider placeholders.
+func LocationDisplayOperator(llc, isp string) string {
+	operator := strings.TrimSpace(llc)
+	if IsLocationPlaceholder(operator) {
+		operator = strings.TrimSpace(isp)
+	}
+	if IsLocationPlaceholder(operator) {
+		return ""
+	}
+	return operator
+}
+
+// IsLocationPlaceholder identifies provider strings that do not name a value.
+func IsLocationPlaceholder(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "n/a", "na", "-", "--", "null", "none", "unknown", "未知":
+		return true
+	default:
+		return false
+	}
+}
+
 // decodePhoneInfo 解析手机归属地 200 响应，同时保留完整原始 body。
 // 响应字段用 map 逐字段容错读取，多余的未知字段不影响解析。
 func decodePhoneInfo(body []byte) (PhoneInfo, error) {
