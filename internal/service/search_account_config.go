@@ -293,6 +293,14 @@ func BuildSearchTokensWithDB(db *gorm.DB, query url.Values, allowDefaultAccount 
 }
 
 func ResolveAccessTokenFromBasicAuth(db *gorm.DB, authorization string) (AccessTokenAuthContext, error) {
+	return resolveOrdinaryAccessToken(db, authorization, false)
+}
+
+func ResolveDeviceHostAccessToken(db *gorm.DB, authorization string) (AccessTokenAuthContext, error) {
+	return resolveOrdinaryAccessToken(db, authorization, true)
+}
+
+func resolveOrdinaryAccessToken(db *gorm.DB, authorization string, deviceHost bool) (AccessTokenAuthContext, error) {
 	tokenValue, err := parseBasicToken(authorization)
 	if err != nil {
 		reason := "访问令牌不能为空"
@@ -334,6 +342,16 @@ func ResolveAccessTokenFromBasicAuth(db *gorm.DB, authorization string) (AccessT
 		}
 		return AccessTokenAuthContext{}, err
 	}
+	if deviceHost {
+		if err := checkDeviceHostAccount(db, user); err != nil {
+			return AccessTokenAuthContext{}, err
+		}
+		if accessToken.ScriptID != 0 {
+			return AccessTokenAuthContext{}, ErrInvalidAccessTokenAuthorization
+		}
+		return AccessTokenAuthContext{User: user, AccessToken: accessToken}, nil
+	}
+
 	if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌所属用户已禁用", ErrInvalidAccessTokenAuthorization)
 	}

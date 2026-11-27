@@ -204,3 +204,62 @@ var _ interface {
 	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
 } = (*Pool)(nil)
+
+func TestPoolPinnedConnectionKeepsLeaseUntilCleanupReturns(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:pinned-queue-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(2) // A spare physical connection cannot bypass the scheduler.
+	scheduler := NewScheduler()
+	t.Cleanup(func() { scheduler.Close(); _ = db.Close() })
+	pool := Wrap(db, scheduler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	entered := make(chan struct{})
+	finish := make(chan struct{})
+	pinnedDone, outsideDone := make(chan error, 1), make(chan error, 1)
+	go func() {
+		pinnedDone <- pool.WithPinnedConnection(WithPriority(ctx, PriorityLow), func(conn *sql.Conn) error {
+			close(entered)
+			select {
+			case <-finish:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_, err := conn.ExecContext(ctx, "SELECT 1")
+			return err
+		})
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("did not get the pinned connection")
+	}
+	go func() {
+		_, err := pool.ExecContext(WithPriority(ctx, PriorityHigh), "SELECT 1")
+		outsideDone <- err
+	}()
+	for {
+		scheduler.mu.Lock()
+		queued := scheduler.waiters.Len()
+		scheduler.mu.Unlock()
+		if queued == 1 {
+			break
+		}
+		select {
+		case err := <-outsideDone:
+			t.Fatalf("outside statement escaped the pinned lease: %v", err)
+		case <-ctx.Done():
+			t.Fatal("outside statement never entered the queue")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(finish)
+	if err := <-pinnedDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-outsideDone; err != nil {
+		t.Fatal(err)
+	}
+}
