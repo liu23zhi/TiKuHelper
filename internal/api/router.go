@@ -477,6 +477,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/user/referral", controller.Auth, controller.ReferralSummary)
 	apiRouter.GET("/admin/referral-settings", controller.Auth, middleware.RequireAdmin, controller.ReferralSettingsGet)
 	apiRouter.PUT("/admin/referral-settings", controller.Auth, middleware.RequireAdmin, controller.ReferralSettingsPut)
+	apiRouter.GET("/admin/referral-rebate-rules", controller.Auth, middleware.RequireAdmin, controller.ReferralAutoRulesGet)
+	apiRouter.PUT("/admin/referral-rebate-rules", controller.Auth, middleware.RequireAdmin, controller.ReferralAutoRulesPut)
 	apiRouter.GET("/admin/referral-invites", controller.Auth, middleware.RequireAdmin, controller.ReferralInviteAdminList)
 	apiRouter.GET("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.ReferralRebateList)
 	apiRouter.POST("/admin/referral-rebates/:id/settle", controller.Auth, middleware.RequireAdmin, controller.SettleReferralRebate)

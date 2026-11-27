@@ -21,6 +21,7 @@ mock('../../src/api/ScriptActivationCodeApi.js', {
   getScriptActivationCodeDetail: async () => ok({}), updateScriptActivationCode: async () => ok({}),
 })
 mock('../../src/api/ReferralApi.js', {
+  getReferralRebateRules: async () => ok({ enabled: false, rules: [] }),
   getReferralRebates: async () => ok({ items: [], total: 0 }),
   getGiftRecords: async () => ok({ items: [], total: 0 }), getGiftRecordSources: async () => ok([]),
   createManualReferralRebate: async data => { writes.push(data); return ok({ amount: data.amount }) },

@@ -147,7 +147,7 @@ func CancelUnsentTicketRefundLineWithDB(db *gorm.DB, admin entity.User, id int64
 
 func settleTicketRefundLine(tx *gorm.DB, row *entity.TicketRefund, line *entity.TicketRefundOrderLine, adminID int32, outcome, reference string) error {
 	if outcome == TicketRefundStatusSucceeded {
-		if _, err := ReverseReferralRebateForOrderInTx(tx, line.OrderID, "原订单退款，返佣已冲回"); err != nil {
+		if _, err := ReverseReferralRebateForOrderInTx(tx, line.OrderID, line.Cents); err != nil {
 			return err
 		}
 	}
@@ -264,11 +264,7 @@ func settleManualRefundLines(tx *gorm.DB, row entity.TicketRefund, actorID int32
 		}
 	}
 	for _, line := range lines {
-		if outcome == TicketRefundStatusSucceeded && (row.OrderID == nil || *row.OrderID != line.OrderID) {
-			if _, err := ReverseReferralRebateForOrderInTx(tx, line.OrderID, "关联人工退款，返佣已冲回"); err != nil {
-				return err
-			}
-		}
+		// Manual order links do not allocate an actual payout to each order.
 		if err := updateTicketRefundLine(tx, &line, map[string]any{"status": outcome}); err != nil {
 			return err
 		}

@@ -52,20 +52,24 @@ type ReferralRebate struct {
 	// Source 区分 auto（充值订单自动产生）与 manual（管理员手动补录）。
 	// 与 RechargeOrderID 组成复合唯一索引：auto 的一单一条靠它保证，
 	// manual 的 recharge_order_id 为 NULL（NULL 不参与唯一性判定）。
-	Source          string     `gorm:"column:source;type:varchar(16);not null;default:auto" json:"source"`
-	InviterUserID   int32      `gorm:"column:inviter_user_id;not null;index" json:"inviterUserId"`
-	InvitedUserID   int32      `gorm:"column:invited_user_id;not null;index" json:"invitedUserId"`
-	RechargeOrderID *int32     `gorm:"column:recharge_order_id;uniqueIndex:idx_referral_rebate_source_order" json:"rechargeOrderId,omitempty"`
-	OrderNo         string     `gorm:"column:order_no;type:varchar(64);not null;default:''" json:"orderNo"`
-	BaseAmount      float64    `gorm:"column:base_amount;type:decimal(18,6);not null;default:0" json:"baseAmount"`
-	Rate            float64    `gorm:"column:rate;type:decimal(18,8);not null;default:0" json:"rate"`
-	Amount          float64    `gorm:"column:amount;type:decimal(18,6);not null;default:0" json:"amount"`
-	Status          string     `gorm:"column:status;type:varchar(24);not null;index" json:"status"`
-	PolicyVersion   string     `gorm:"column:policy_version;type:varchar(32);not null;default:''" json:"policyVersion"`
-	Remark          string     `gorm:"column:remark;type:varchar(255);not null;default:''" json:"remark"`
-	CreatedAt       time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	SettledAt       *time.Time `gorm:"column:settled_at" json:"settledAt,omitempty"`
-	ReversedAt      *time.Time `gorm:"column:reversed_at" json:"reversedAt,omitempty"`
+	Source          string  `gorm:"column:source;type:varchar(16);not null;default:auto" json:"source"`
+	InviterUserID   int32   `gorm:"column:inviter_user_id;not null;index" json:"inviterUserId"`
+	InvitedUserID   int32   `gorm:"column:invited_user_id;not null;index" json:"invitedUserId"`
+	RechargeOrderID *int32  `gorm:"column:recharge_order_id;uniqueIndex:idx_referral_rebate_source_order" json:"rechargeOrderId,omitempty"`
+	OrderNo         string  `gorm:"column:order_no;type:varchar(64);not null;default:''" json:"orderNo"`
+	BaseAmount      float64 `gorm:"column:base_amount;type:decimal(18,6);not null;default:0" json:"baseAmount"`
+	Rate            float64 `gorm:"column:rate;type:decimal(18,8);not null;default:0" json:"rate"`
+	// RefundedCents is the confirmed principal payout, not the requested amount.
+	RefundedCents int64 `gorm:"column:refunded_cents;not null;default:0" json:"refundedCents"`
+	// ReversedAmount is the gross award reduction. The reversal bill records what was actually recovered.
+	ReversedAmount float64    `gorm:"column:reversed_amount;type:decimal(18,6);not null;default:0" json:"reversedAmount"`
+	Amount         float64    `gorm:"column:amount;type:decimal(18,6);not null;default:0" json:"amount"`
+	Status         string     `gorm:"column:status;type:varchar(24);not null;index" json:"status"`
+	PolicyVersion  string     `gorm:"column:policy_version;type:varchar(32);not null;default:''" json:"policyVersion"`
+	Remark         string     `gorm:"column:remark;type:varchar(255);not null;default:''" json:"remark"`
+	CreatedAt      time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	SettledAt      *time.Time `gorm:"column:settled_at" json:"settledAt,omitempty"`
+	ReversedAt     *time.Time `gorm:"column:reversed_at" json:"reversedAt,omitempty"`
 }
 
 func (*ReferralRebate) TableName() string { return TableNameReferralRebate }

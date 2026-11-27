@@ -1,6 +1,6 @@
 <template>
   <div class="console-page referral-rebates-page">
-    <ConsolePageHeading title="赠送记录" description="四类赠送来源的聚合账本：注册赠送、评价返现、邀请返佣、充值赠金。邀请返佣可手动补录（创建即入账，进赠送余额）。">
+    <ConsolePageHeading title="赠送记录" description="四类赠送来源的聚合账本：注册赠送、评价返现、邀请返佣、充值赠金。管理自动返佣规则，也可手动补录返佣（创建即入账，进赠送余额）。">
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || loading || settling" @click="load">刷新</a-button>
       </template>
@@ -93,6 +93,8 @@
         />
         <a-alert v-else-if="actionWarning" type="warning" show-icon :message="actionWarning" class="status-alert" />
       </ConsolePanel>
+
+      <ReferralRebateRulesPanel />
 
       <!-- B1：管理员手动补录一笔返佣（无需充值订单）。创建即入账，直接进赠送余额。 -->
       <ConsolePanel title="手动补录返佣" description="给指定受益人补一笔返佣。创建即入账（进赠送余额、欠款先抵），同一受益人 + 同一金额 + 同一日期只会记一笔。">
@@ -257,7 +259,7 @@
         </ConsoleTableShell>
       </ConsolePanel>
 
-      <ConsolePanel title="返佣明细" :description="scopeDescription">
+      <ConsolePanel title="返佣明细" :description="scopeDescription + ' 金额为扣除退款冲回后的净额。'">
           <ConsoleTableShell label="返佣明细">
           <a-table
             table-layout="fixed"
@@ -277,7 +279,14 @@
               <span v-else-if="column.key === 'orderNo'" class="order-cell">{{ record.orderNo || '—' }}</span>
               <span v-else-if="column.key === 'baseAmount'" class="money-cell">{{ moneyText(record.baseAmount) }}</span>
               <span v-else-if="column.key === 'rate'">{{ formatRate(record.rate) }}</span>
-              <span v-else-if="column.key === 'amount'" class="money-cell">{{ moneyText(record.amount) }}</span>
+              <div v-else-if="column.key === 'amount'" class="money-cell">
+                <span data-rebate-net>{{ rebateNetText(record) }}</span>
+                <div v-if="hasRebateRefund(record)" class="rebate-refund">
+                  <div>原额 {{ moneyTextFromMicros(readRebateMicros(record.amount)) }}</div>
+                  <div>已冲回 {{ moneyTextFromMicros(rebateCanceledMicros(record)) }}</div>
+                  <div v-if="rebateRefundedPrincipalText(record)">已退本金 {{ rebateRefundedPrincipalText(record) }}</div>
+                </div>
+              </div>
               <a-tag v-else-if="column.key === 'status'" :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
               <span v-else-if="column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record.createdAt) }}</span>
               <span v-else-if="column.key === 'settledAt'" class="time-cell">{{ formatDateTime(record.settledAt) }}</span>
@@ -310,6 +319,7 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
 import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import ReferralRebateRulesPanel from '@/components/ReferralSettingsPanel.vue'
 import { createManualReferralRebate, getGiftRecordSources, getGiftRecords, getReferralRebates, settleReferralRebate } from '@/api/ReferralApi'
 import AdminDataTransfer from '@/components/AdminDataTransfer.vue'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
@@ -335,7 +345,7 @@ const emptyFilters = () => ({ status: undefined, inviterUserId: '', orderNo: '' 
 
 export default {
   name: 'ReferralRebatesPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert, AdminDataTransfer },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert, AdminDataTransfer, ReferralRebateRulesPanel },
   setup() {
     const route = useRoute()
     const prefix = 'referral-rebates-' + useId()
@@ -389,7 +399,7 @@ export default {
       { title: '订单号', dataIndex: 'orderNo', key: 'orderNo', width: 230 },
       { title: '基数', dataIndex: 'baseAmount', key: 'baseAmount', width: 140 },
       { title: '比例', dataIndex: 'rate', key: 'rate', width: 100 },
-      { title: '金额', dataIndex: 'amount', key: 'amount', width: 140 },
+      { title: '返佣净额', dataIndex: 'amount', key: 'amount', width: 165 },
       { title: '状态', dataIndex: 'status', key: 'status', width: 110 },
       { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 175 },
       { title: '结算时间', dataIndex: 'settledAt', key: 'settledAt', width: 175 },
@@ -688,12 +698,45 @@ export default {
       const amount = readNonnegativeNumber(value)
       return amount === null ? '--' : `¥ ${formatMoneyValue(amount)}`
     }
-    // 返佣比例是 0–1 分数，展示成百分数并去尾零。
+    // 金额差用整数微元计算。接口若提供十进制字符串，保留其原始精度。
+    function readRebateMicros(value) {
+      const input = typeof value === 'number' && Number.isFinite(value) ? value.toFixed(6)
+        : typeof value === 'string' ? value.trim() : ''
+      const parts = /^(\d+)(?:\.(\d{1,6}))?$/.exec(input)
+      return parts ? BigInt(parts[1] + (parts[2] || '').padEnd(6, '0')) : null
+    }
+    function moneyTextFromMicros(value) {
+      if (value === null) return '--'
+      const raw = String(value).padStart(7, '0')
+      return '¥ ' + formatMoneyValue(raw.slice(0, -6) + '.' + raw.slice(-6))
+    }
+    function isFullyReversed(record) {
+      return String(record.status || '').toLowerCase() === 'reversed'
+    }
+    function rebateCanceledMicros(record) {
+      const value = readRebateMicros(record.reversedAmount)
+      // 老版整单冲回只标记状态，没有单独的金额字段。
+      if (isFullyReversed(record) && (value === null || value === 0n)) return readRebateMicros(record.amount)
+      return value ?? 0n
+    }
+    function rebateNetText(record) {
+      if (isFullyReversed(record)) return moneyTextFromMicros(0n)
+      const gross = readRebateMicros(record.amount)
+      if (gross === null) return '--'
+      const net = gross - (rebateCanceledMicros(record) ?? 0n)
+      return moneyTextFromMicros(net >= 0n ? net : 0n)
+    }
+    function rebateRefundedPrincipalText(record) {
+      const cents = readNonnegativeNumber(record.refundedCents)
+      return Number.isSafeInteger(cents) && cents > 0 ? moneyTextFromMicros(BigInt(cents) * 10000n) : null
+    }
+    function hasRebateRefund(record) {
+      return isFullyReversed(record) || (rebateCanceledMicros(record) ?? 0n) > 0n || rebateRefundedPrincipalText(record) !== null
+    }
+    // 返佣比例是 0–1 分数，展示精度对应八位小数的比例快照。
     function formatRate(value) {
       const rate = readNonnegativeNumber(value)
-      if (rate === null) return '--'
-      const percent = Number((rate * 100).toFixed(4))
-      return `${String(percent).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')}%`
+      return rate === null ? '--' : (rate * 100).toFixed(6).replace(/0+$/, '').replace(/\.$/, '') + '%'
     }
     function formatDateTime(value) {
       if (!value) return '—'
@@ -801,7 +844,7 @@ export default {
       const owns = () => canManage()
       const result = await Swal.fire({
         title: '确认结算这条返佣？',
-        text: `受益人 ${buildUserName(record.inviterUsername, record.inviterUserId)}，金额 ${moneyText(record.amount)}。结算会把该金额计入受益人的赠送余额（可消费、不可退款），可退本金不变，且不可撤销。`,
+        text: `受益人 ${buildUserName(record.inviterUsername, record.inviterUserId)}，当前待结算净额 ${rebateNetText(record)}。入账先抵欠款，剩余计入不可退款的赠送余额；原订单后续退款仍会按比例冲回。`,
         icon: 'warning',
         showCancelButton: true,
         confirmButtonText: '确认结算',
@@ -903,6 +946,7 @@ export default {
       loadFailure, failureContextKey, failureMessage, isCurrentFailure,
       pagination, statusOptions, scopeDescription, emptyText,
       statusLabel, statusColor, isPending, buildUserName, moneyText, formatRate,
+      readRebateMicros, moneyTextFromMicros, rebateCanceledMicros, rebateNetText, rebateRefundedPrincipalText, hasRebateRefund,
       formatDateTime, setFilter, load, reload, resetFilters, onTableChange, confirmSettle,
       sumTableColumnWidths,
       // B1：手动补录
@@ -927,6 +971,7 @@ export default {
 .filter-id, .filter-order { width: 200px; }
 .filter-error { margin: 0 0 16px; color: var(--console-danger, #c13e41); font-size: 13px; }
 .money-cell, .time-cell { font-variant-numeric: tabular-nums; }
+.rebate-refund { margin-top: 4px; font-size: 12px; color: var(--console-muted); overflow-wrap: anywhere; }
 .order-cell { overflow-wrap: anywhere; }
 .action-disabled { color: var(--console-muted); font-size: 13px; }
 @media (max-width: 640px) {

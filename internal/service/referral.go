@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -37,8 +38,6 @@ var (
 	ErrReferralRebateDuplicate = errors.New("该受益人在该日期已有同金额的手动返佣记录")
 	// ErrReferralRebateManualInvalid 手动补录的入参不合法（金额/日期）。
 	ErrReferralRebateManualInvalid = errors.New("返佣补录参数无效")
-	// ErrReferralRebateDisabled 总开关关闭时管理员接口不可用。
-	ErrReferralRebateDisabled = errors.New("邀请返佣功能未启用")
 	// ErrReferralRebateSchemaUnavailable 结算/冲回需要的表或列还没迁移到位。
 	//
 	// 与创建返佣时的「静默降级」不同：结算是管理员显式发钱的动作，
@@ -64,11 +63,11 @@ const referralCodeMaxAttempts = 8
 // 全部字段按**本人**口径：InvitedCount 只数直接邀请的一级账户，
 // 金额只统计 pending/settled（reversed 已冲回，不计入应付）。
 type ReferralSummary struct {
-	// Enabled 是总开关状态；关闭时 Code 可能仍为空（历史账户未生成）。
+	// Enabled 表示已配置且启用了自动返佣规则；邀请码不依赖规则开关。
 	Enabled bool `json:"enabled"`
 	// Code 是本人邀请码，开关关闭且从未生成过时为空字符串。
 	Code string `json:"code"`
-	// Rate 是当前生效的返佣比例快照（只用于展示，不代表历史记录的比例）。
+	// Rate 是旧版响应兼容字段；分档政策没有单一比例。
 	Rate float64 `json:"rate"`
 	// InvitedCount 是按账户计的一级受邀人数，不按 Key 或设备数累加。
 	InvitedCount int64 `json:"invitedCount"`
@@ -319,19 +318,6 @@ func RegisterReferralInviteForNewUser(tx *gorm.DB, userID int32) (entity.Referra
 	return EnsureReferralInviteWithDB(tx, userID)
 }
 
-// referralRebateBaseAmount 计算返佣基数。
-//
-// **基数 = 订单实付本金，不含赠金/返现**：1688 充值赠 3376、到账 5064，
-// 返佣基数仍然是 1688 而不是 5064。`order.Amount` 就是实付本金（充值链路只把
-// 实付额写进订单，赠金走 recharge_promotion_grants 与 gift_balance）—— 这个函数
-// 存在的意义是把「口径」写在一个地方，将来口径变了只改这里。
-//
-// 双桶模型下这条口径更关键：返佣的钱进 gift_balance，而 gift_balance **不参与**
-// 这里的计算，否则 A 邀 B、B 邀 C 就能靠赠金层层放大返佣。
-func referralRebateBaseAmount(order entity.RechargeOrder) float64 {
-	return util.RoundMoneyToDecimals(order.Amount, util.RechargePrecision)
-}
-
 // referralSchemaAvailable 判断返佣相关表/列是否已就绪。
 //
 // 存在的意义：充值回调与退款链路是**既有核心路径**，不能因为返佣迁移还没跑过
@@ -350,24 +336,47 @@ func referralSchemaAvailable(db *gorm.DB) bool {
 	return db.Migrator().HasColumn(entity.TableNameUser, "invited_by_user_id")
 }
 
-// CreateReferralRebateInTx 在充值到账事务内产生一条待结算返佣。
-//
-// 幂等由 referral_rebates.recharge_order_id 的唯一索引保证：
-// 重复支付回调第二次插入会撞唯一键，这里用 DoNothing + RowsAffected==0 静默跳过，
-// 既不会重复发钱，也不会把已经提交的到账事务打回滚。
+// CreateReferralRebateInTx snapshots the first matching explicit tier after
+// the original order has a matching principal credit in the same transaction.
 func CreateReferralRebateInTx(tx *gorm.DB, order entity.RechargeOrder) (*entity.ReferralRebate, error) {
-	if tx == nil {
+	if tx == nil || order.ID <= 0 || order.UserID <= 0 || !referralSchemaAvailable(tx) {
 		return nil, nil
 	}
-	// 开关关闭 → 不产生返佣（需求：关闭时支付回调不产生返佣）。
-	if !GetReferralRebateEnabledWithDB(tx) {
+	policy, err := GetReferralAutoRulesWithDB(tx)
+	if errors.Is(err, ErrReferralAutoRulesInvalid) {
+		// Malformed optional policy must not pay a default rate or stop
+		// the successful principal payment. Admin GET surfaces the error.
+		logger.SysWarn("自动返佣规则无效，充值不产生自动返佣")
 		return nil, nil
 	}
-	// 表/列还没迁移 → 降级，不影响充值到账。
-	if !referralSchemaAvailable(tx) {
+	if err != nil {
+		return nil, err
+	}
+	if !policy.active() {
 		return nil, nil
 	}
-	if order.ID <= 0 || order.UserID <= 0 {
+
+	var credited struct {
+		OrderNo string
+		Amount  microColumn
+	}
+	if err := referralSession(tx).Table("recharge_orders").Select("order_no, amount").
+		Where("id = ? AND user_id = ? AND status = ? AND "+entity.RechargeCreditEvidenceSQL, order.ID, order.UserID, rechargeOrderStatusPaid).
+		Take(&credited).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !credited.Amount.known || credited.Amount.n <= 0 || credited.Amount.n > maxEffectiveMicros {
+		return nil, nil
+	}
+	rate := policy.rateFor(credited.Amount.n)
+	if rate == 0 {
+		return nil, nil
+	}
+	amount := referralRatioMicros(credited.Amount.n, rate, referralRateScale)
+	if amount == 0 {
 		return nil, nil
 	}
 
@@ -378,108 +387,103 @@ func CreateReferralRebateInTx(tx *gorm.DB, order entity.RechargeOrder) (*entity.
 		}
 		return nil, err
 	}
-	// 没有被邀请过 → 没有受益人，不产生返佣。
 	if invited.InvitedByUserID <= 0 || invited.InvitedByUserID == invited.ID {
 		return nil, nil
 	}
 
-	rate := GetReferralRebateRateWithDB(tx)
-	base := referralRebateBaseAmount(order)
-	amount := util.RoundMoney(base * rate)
-	rebate := entity.ReferralRebate{
-		Source:          entity.ReferralRebateSourceAuto,
-		InviterUserID:   invited.InvitedByUserID,
-		InvitedUserID:   invited.ID,
-		RechargeOrderID: &order.ID,
-		OrderNo:         order.OrderNo,
-		BaseAmount:      base,
-		Rate:            rate,
-		Amount:          amount,
-		Status:          entity.ReferralRebateStatusPending,
-		PolicyVersion:   ReferralRebatePolicyVersion,
-		Remark:          "充值到账产生待结算返佣",
+	// Persist exact DECIMAL snapshots instead of rounding through float64.
+	// The unique (source, recharge_order_id) key handles a replay.
+	if err := referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{
+		"source": entity.ReferralRebateSourceAuto, "inviter_user_id": invited.InvitedByUserID,
+		"invited_user_id": invited.ID, "recharge_order_id": order.ID, "order_no": credited.OrderNo,
+		"base_amount": fixedInt(credited.Amount.n, 6), "rate": fixedInt(rate, 8), "amount": fixedInt(amount, 6),
+		"status": entity.ReferralRebateStatusPending, "policy_version": referralTierRebatePolicyVersion,
+		"remark": "单笔有效充值产生待结算返佣", "created_at": time.Now(),
+	}).Error; err != nil {
+		return nil, err
 	}
-	result := referralSession(tx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rebate)
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	if result.RowsAffected == 0 {
-		// 这笔订单已经有一条返佣（重复回调）→ 返回既有记录，不新建。
-		var existing entity.ReferralRebate
-		if err := referralSession(tx).Model(&entity.ReferralRebate{}).Where("recharge_order_id = ?", order.ID).Take(&existing).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, nil
-			}
-			return nil, err
-		}
-		return &existing, nil
+	var rebate entity.ReferralRebate
+	err = referralSession(tx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("source = ? AND recharge_order_id = ?", entity.ReferralRebateSourceAuto, order.ID).Take(&rebate).Error
+	if err != nil {
+		return nil, err
 	}
 	return &rebate, nil
 }
 
-// ReverseReferralRebateForOrderInTx 在退款成功的事务内冲回对应返佣。
-//
-// 语义（对应 16-*.md §2.5「退款冲回」+ 2026-11-09 双桶模型）：
-//   - 找到原订单的返佣记录 → 状态置 reversed + reversed_at，**不删行**；
-//   - **已 settled 的记录要把钱从邀请人赠送余额里扣回来**（结算入 gift_balance，冲回自然从
-//     同一桶出）：gift_balance 扣回，**clamp 到 0 永不为负**，并写一条冲回流水；
-//   - 扣不足额（赠金已被消费）时**差额留在流水备注里**，不静默吞掉；
-//   - **不动 users.balance**：本金桶从来没收到过返佣；
-//   - 未 settled（仍 pending）→ 只改状态，没有钱要退；
-//   - 已经是 reversed → 幂等返回，不重复扣钱、不覆盖首次时间戳；
-//   - 没有对应返佣（没开活动 / 没被邀请）→ 什么都不做。
-//
-// 锁顺序：退款链路已经持有 users 行锁，这里再锁 referral_rebates 行 ——
-// 与 SettleReferralRebateWithDB 保持 **users → referral_rebates** 的同一顺序，
-// 避免「结算持 rebate 等 user、退款持 user 等 rebate」的交叉死锁。
-func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, remark string) (*entity.ReferralRebate, error) {
-	if tx == nil || orderID <= 0 {
+// ReverseReferralRebateForOrderInTx applies the original route's confirmed
+// successful amount, not the requested amount, hold, or a manual order link.
+// The current refund model admits a single confirmed refund per order.
+// Serialize in the same order as settlement: inviter wallet, then rebate row.
+func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, refundCents int64) (*entity.ReferralRebate, error) {
+	if tx == nil || orderID <= 0 || !referralSchemaAvailable(tx) {
 		return nil, nil
 	}
-	// 表没迁移过 → 一定没有返佣可冲回，直接降级（退款链路不能被返佣拖住）。
-	if !referralSchemaAvailable(tx) {
-		return nil, nil
-	}
-	var rebate entity.ReferralRebate
-	if err := referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("recharge_order_id = ?", orderID).Take(&rebate).Error; err != nil {
+	var head entity.ReferralRebate
+	if err := referralSession(tx).Select("id", "inviter_user_id").
+		Where("source = ? AND recharge_order_id = ?", entity.ReferralRebateSourceAuto, orderID).Take(&head).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if rebate.Status == entity.ReferralRebateStatusReversed {
-		return &rebate, nil
+	if refundCents <= 0 || refundCents > maxReferralRuleCents {
+		return nil, ErrReferralRebateState
 	}
-	now := time.Now()
-	trimmedRemark := strings.TrimSpace(remark)
-	updates := map[string]any{
-		"status":      entity.ReferralRebateStatusReversed,
-		"reversed_at": &now,
-	}
-	if trimmedRemark != "" {
-		updates["remark"] = trimmedRemark
+	wallet, err := lockReferralWalletInTx(tx, head.InviterUserID)
+	if err != nil {
+		return nil, err
 	}
 
-	// 只有「钱真的进过邀请人余额」的结算记录才需要扣回。
+	var row struct {
+		entity.ReferralRebate
+		ExactBase  microColumn `gorm:"column:exact_base"`
+		ExactAward microColumn `gorm:"column:exact_award"`
+	}
+	if err = referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("referral_rebates.*, base_amount AS exact_base, amount AS exact_award").Where("id = ?", head.ID).Take(&row).Error; err != nil {
+		return nil, err
+	}
+	rebate := row.ReferralRebate
+	if rebate.RefundedCents != 0 {
+		if rebate.RefundedCents != refundCents {
+			return nil, ErrReferralRebateState
+		}
+		return &rebate, nil
+	}
+	if rebate.Status == entity.ReferralRebateStatusReversed {
+		// Historical full reversals are final, not replayed or backfilled.
+		return &rebate, nil
+	}
+	if (rebate.Status != entity.ReferralRebateStatusPending && rebate.Status != entity.ReferralRebateStatusSettled) ||
+		!row.ExactBase.known || !row.ExactAward.known || row.ExactBase.n <= 0 ||
+		row.ExactAward.n < 0 || row.ExactAward.n > maxEffectiveMicros {
+		return nil, ErrReferralRebateState
+	}
+	refundMicros := min(refundCents*ticketRefundMicrosPerCent, row.ExactBase.n)
+	amountMicros := referralRatioMicros(row.ExactAward.n, refundMicros, row.ExactBase.n)
+	amount := fixedFloat(fixedInt(amountMicros, 6))
+	now := time.Now()
+	remark := "原路实退，按比例取消待结算返佣"
 	if rebate.Status == entity.ReferralRebateStatusSettled {
-		deducted, err := debitReferralRebateWalletInTx(tx, rebate)
+		deducted, err := debitReferralRebateWalletInTx(tx, wallet, rebate, amount)
 		if err != nil {
 			return nil, err
 		}
-		if trimmedRemark == "" {
-			updates["remark"] = buildReferralReversalRemark(rebate, deducted)
-		}
+		remark = buildReferralReversalRemark(amount, deducted)
 	}
-
-	if err := referralSession(tx).Model(&entity.ReferralRebate{}).Where("id = ?", rebate.ID).Updates(updates).Error; err != nil {
+	if amountMicros >= row.ExactAward.n {
+		rebate.Status = entity.ReferralRebateStatusReversed
+	}
+	if err := referralSession(tx).Model(&entity.ReferralRebate{}).Where("id = ?", rebate.ID).Updates(map[string]any{
+		"status": rebate.Status, "refunded_cents": refundCents, "reversed_amount": fixedInt(amountMicros, 6), "reversed_at": &now, "remark": remark,
+	}).Error; err != nil {
 		return nil, err
 	}
-	rebate.Status = entity.ReferralRebateStatusReversed
+	rebate.RefundedCents = refundCents
+	rebate.ReversedAmount = amount
 	rebate.ReversedAt = &now
-	if value, ok := updates["remark"]; ok {
-		rebate.Remark, _ = value.(string)
-	}
+	rebate.Remark = remark
 	return &rebate, nil
 }
 
@@ -487,8 +491,8 @@ func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, remark string
 //
 // 差额留痕是硬要求：应冲回 X 但只扣到 Y 时，不能静默吞掉 X-Y，
 // 否则「这笔返佣作废了，钱却还在用户手上」这件事在对账里查不到。
-func buildReferralReversalRemark(rebate entity.ReferralRebate, deducted float64) string {
-	amount := util.RoundMoney(rebate.Amount)
+func buildReferralReversalRemark(required, deducted float64) string {
+	amount := util.RoundMoney(required)
 	actual := util.RoundMoney(deducted)
 	if actual >= amount {
 		return "原订单退款，返佣已冲回"
@@ -523,9 +527,6 @@ func moneyTextForReferral(amount float64) string {
 func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entity.ReferralRebate, error) {
 	if db == nil || id <= 0 {
 		return entity.ReferralRebate{}, ErrReferralRebateNotFound
-	}
-	if !GetReferralRebateEnabledWithDB(db) {
-		return entity.ReferralRebate{}, ErrReferralRebateDisabled
 	}
 	if !referralSettlementSchemaAvailable(db) {
 		return entity.ReferralRebate{}, ErrReferralRebateSchemaUnavailable
@@ -567,7 +568,7 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 			return ErrReferralRebateState
 		}
 
-		amount := util.RoundMoney(rebate.Amount)
+		amount := util.RoundMoney(rebate.Amount - rebate.ReversedAmount)
 		if amount < 0 {
 			return ErrReferralRebateState
 		}
@@ -760,22 +761,18 @@ func referralGiftSnapshot(giftBefore, giftAfter float64) string {
 //   - 不删行：原 rebate 记录保留。
 //
 // 返回实际扣减金额（可能小于应扣金额，见上）。
-func debitReferralRebateWalletInTx(tx *gorm.DB, rebate entity.ReferralRebate) (float64, error) {
-	amount := util.RoundMoney(rebate.Amount)
+func debitReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate entity.ReferralRebate, amount float64) (float64, error) {
+	amount = util.RoundMoney(amount)
 	if amount <= 0 {
 		return 0, nil
 	}
 	requestID := referralRebateReversalBillingRequestID(rebate.ID)
-	exists, err := referralBillingRecordExists(tx, requestID)
-	if err != nil {
-		return 0, err
+	var existing entity.BillingRecord
+	err := referralSession(tx).Select("amount").Where("request_id = ?", requestID).Take(&existing).Error
+	if err == nil {
+		return existing.Amount, nil
 	}
-	if exists {
-		// 冲回流水已存在 → 已经扣过，绝不重复扣。
-		return amount, nil
-	}
-	wallet, err := lockReferralWalletInTx(tx, rebate.InviterUserID)
-	if err != nil {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
 	balanceBefore := util.RoundMoney(wallet.Balance)
@@ -797,7 +794,7 @@ func debitReferralRebateWalletInTx(tx *gorm.DB, rebate entity.ReferralRebate) (f
 		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
 		RequestID:         requestID,
 		RelatedOrderID:    referralRebateRelatedOrderID(rebate),
-		Remark:            referralBillingRemark("邀请返佣冲回（扣赠送余额）", rebate, buildReferralReversalRemark(rebate, deducted)),
+		Remark:            referralBillingRemark("邀请返佣冲回（扣赠送余额）", rebate, buildReferralReversalRemark(amount, deducted)),
 	}
 	if err := referralSession(tx).Create(&record).Error; err != nil {
 		return 0, err
@@ -903,9 +900,6 @@ func CreateManualReferralRebateWithDB(db *gorm.DB, input ManualReferralRebateInp
 		return entity.ReferralRebate{}, err
 	}
 	// 总开关关闭时不允许新增返佣（与自动路径一致：关闭就不产生返佣）。
-	if !GetReferralRebateEnabledWithDB(db) {
-		return entity.ReferralRebate{}, ErrReferralRebateDisabled
-	}
 	// 入账要写钱包与账单，结构没就绪必须明确报错（不能假装成功）。
 	if !referralSettlementSchemaAvailable(db) {
 		return entity.ReferralRebate{}, ErrReferralRebateSchemaUnavailable
@@ -998,13 +992,15 @@ func manualReferralRebateRequestID(userID int32, amount float64, day time.Time) 
 //   - 金额按 status 分桶，reversed 单独统计且不计入应付；
 //   - 全部按账户计，不按 Key 或设备数。
 func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error) {
-	summary := ReferralSummary{
-		Enabled: GetReferralRebateEnabledWithDB(db),
-		Rate:    GetReferralRebateRateWithDB(db),
-	}
+	var summary ReferralSummary
 	if db == nil || userID <= 0 {
 		return summary, nil
 	}
+	policy, err := GetReferralAutoRulesWithDB(db)
+	if err != nil && !errors.Is(err, ErrReferralAutoRulesInvalid) {
+		return summary, err
+	}
+	summary.Enabled = policy.active()
 
 	var invite entity.ReferralInvite
 	if err := referralSession(db).Model(&entity.ReferralInvite{}).Where("user_id = ?", userID).Take(&invite).Error; err == nil {
@@ -1026,12 +1022,13 @@ func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error
 	type rebateAggregateRow struct {
 		Status   string  `gorm:"column:status"`
 		Total    float64 `gorm:"column:total"`
+		Reversed float64 `gorm:"column:reversed"`
 		BaseSum  float64 `gorm:"column:base_sum"`
 		RowCount int64   `gorm:"column:row_count"`
 	}
 	var rows []rebateAggregateRow
 	if err := referralSession(db).Model(&entity.ReferralRebate{}).
-		Select("status, COALESCE(SUM(amount), 0) AS total, COALESCE(SUM(base_amount), 0) AS base_sum, COUNT(*) AS row_count").
+		Select("status, COALESCE(SUM(amount), 0) AS total, COALESCE(SUM(CASE WHEN status = 'reversed' AND reversed_amount = 0 THEN amount ELSE reversed_amount END), 0) AS reversed, COALESCE(SUM(base_amount), 0) AS base_sum, COUNT(*) AS row_count").
 		Where("inviter_user_id = ?", userID).
 		Group("status").
 		Scan(&rows).Error; err != nil {
@@ -1040,13 +1037,12 @@ func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error
 	for _, row := range rows {
 		summary.RebateCount += row.RowCount
 		summary.TotalBaseAmount += row.BaseSum
+		summary.ReversedAmount += row.Reversed
 		switch row.Status {
 		case entity.ReferralRebateStatusPending:
-			summary.PendingAmount += row.Total
+			summary.PendingAmount += row.Total - row.Reversed
 		case entity.ReferralRebateStatusSettled:
-			summary.SettledAmount += row.Total
-		case entity.ReferralRebateStatusReversed:
-			summary.ReversedAmount += row.Total
+			summary.SettledAmount += row.Total - row.Reversed
 		}
 	}
 	summary.PendingAmount = util.RoundMoney(summary.PendingAmount)
@@ -1098,26 +1094,26 @@ func ListReferralRebatesWithDB(db *gorm.DB, filter ReferralRebateListQuery, page
 	}
 
 	type rebateAggregateRow struct {
-		Status  string  `gorm:"column:status"`
-		Total   float64 `gorm:"column:total"`
-		BaseSum float64 `gorm:"column:base_sum"`
+		Status   string  `gorm:"column:status"`
+		Total    float64 `gorm:"column:total"`
+		Reversed float64 `gorm:"column:reversed"`
+		BaseSum  float64 `gorm:"column:base_sum"`
 	}
 	var aggregates []rebateAggregateRow
 	if err := baseQuery.Session(&gorm.Session{}).
-		Select("referral_rebates.status, COALESCE(SUM(referral_rebates.amount), 0) AS total, COALESCE(SUM(referral_rebates.base_amount), 0) AS base_sum").
+		Select("referral_rebates.status, COALESCE(SUM(referral_rebates.amount), 0) AS total, COALESCE(SUM(CASE WHEN referral_rebates.status = 'reversed' AND referral_rebates.reversed_amount = 0 THEN referral_rebates.amount ELSE referral_rebates.reversed_amount END), 0) AS reversed, COALESCE(SUM(referral_rebates.base_amount), 0) AS base_sum").
 		Group("referral_rebates.status").
 		Scan(&aggregates).Error; err != nil {
 		return ReferralRebateListResult{}, err
 	}
 	for _, row := range aggregates {
 		result.Summary.TotalBaseAmount += row.BaseSum
+		result.Summary.ReversedAmount += row.Reversed
 		switch row.Status {
 		case entity.ReferralRebateStatusPending:
-			result.Summary.PendingAmount += row.Total
+			result.Summary.PendingAmount += row.Total - row.Reversed
 		case entity.ReferralRebateStatusSettled:
-			result.Summary.SettledAmount += row.Total
-		case entity.ReferralRebateStatusReversed:
-			result.Summary.ReversedAmount += row.Total
+			result.Summary.SettledAmount += row.Total - row.Reversed
 		}
 	}
 	result.Summary.PendingAmount = util.RoundMoney(result.Summary.PendingAmount)

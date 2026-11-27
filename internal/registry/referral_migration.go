@@ -11,7 +11,7 @@ import (
 
 const (
 	// referralSchemaReadyKey 标记「邀请码/返佣表与 users 归因列已就绪」。
-	referralSchemaReadyKey = "referral_schema_ready"
+	referralSchemaReadyKey = "referral_tier_schema_ready"
 )
 
 // ensureReferralSchema 建立邀请码与返佣所需的表结构。

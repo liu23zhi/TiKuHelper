@@ -215,11 +215,8 @@ func TestRechargePromotionEnabledGrantsByTier(t *testing.T) {
 		grant.PolicyVersion != RechargePromotionPolicyVersion {
 		t.Fatalf("unexpected grant snapshot: %+v", grant)
 	}
-	// 返佣基数只认实付本金：赠金不能被算进 BaseAmount（见 referralRebateBaseAmount）。
-	if base := referralRebateBaseAmount(order); base != 1688 {
-		t.Fatalf("referral base = %v, want 1688 (gift must not enter the base)", base)
-	}
-
+	// The cross-feature award assertion uses the signed callback with an
+	// actual rebate row in TestT11TierVerifiedRechargeExcludesPromotionAndLegacySwitch.
 	// 两条流水：充值（实付）+ 赠送（赠金），且赠送行金额/类型/汇总归类都对。
 	var rechargeRow, promotionRow *entity.BillingRecord
 	for i := range records {

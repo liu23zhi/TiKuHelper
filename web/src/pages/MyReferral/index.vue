@@ -1,21 +1,21 @@
 <template>
   <div class="console-page my-referral-page">
-    <ConsolePageHeading title="我的邀请" description="把邀请码分享给新用户，对方充值后你会获得返佣。返佣只记在独立账本，不直接进余额。">
+    <ConsolePageHeading title="我的邀请" description="把邀请码分享给新用户，保留邀请关系。只有符合自动返佣规则的单笔充值才会产生返佣，结算后可用于消费，不可退款。">
       <template #actions>
         <a-button :loading="loading" :disabled="loading" @click="load">刷新</a-button>
       </template>
     </ConsolePageHeading>
 
-    <!-- 总开关关闭：不展示空邀请码，只说明功能未开启。 -->
+    <!-- 自动返佣状态不限制邀请码的发放和使用。 -->
     <a-alert
       v-if="loaded && !enabled"
       type="info"
       show-icon
       class="page-alert"
-      message="邀请返现功能未开启"
+      message="自动返佣未开启"
     >
       <template #description>
-        <p class="hint">当前站点没有开放邀请返佣。你仍可分享专属邀请码，邀请关系会保留；关闭期间的充值不产生返佣。</p>
+        <p class="hint">你仍可分享专属邀请码，邀请关系会保留；未开启期间的充值不产生自动返佣。</p>
       </template>
     </a-alert>
 
@@ -41,7 +41,7 @@
             <span v-if="copyStatus" class="copy-status" role="status" aria-live="polite">{{ copyStatus }}</span>
           </div>
         </div>
-        <p class="hint">只能邀请新注册账户；自己邀请自己会被拒绝。返佣比例以当前配置为准，历史记录保留产生时的比例快照。</p>
+        <p class="hint">只能邀请新注册账户；自己邀请自己会被拒绝。符合规则的充值按到账时的规则计算；规则调整不改写历史。</p>
       </ConsolePanel>
 
       <ConsoleSummaryGrid class="referral-summary">
@@ -58,13 +58,13 @@
           <div class="summary-value">¥ {{ formatMoneyValue(settledAmount) }}</div>
         </div>
         <div>
-          <div class="summary-label">返佣比例</div>
-          <div class="summary-value">{{ formatRate(rate) }}</div>
-          <div class="summary-hint">每笔返佣 = 受邀人充值净实付本金 × 该比例</div>
+          <div class="summary-label">自动返佣</div>
+          <div class="summary-value">{{ enabled ? '已开启' : '未开启' }}</div>
+          <div class="summary-hint">按单笔实付本金匹配金额区间；未命中规则不产生自动返佣。</div>
         </div>
       </ConsoleSummaryGrid>
 
-      <ConsolePanel title="返佣情况" description="已冲回的记录不计入应付金额，只作对账展示。">
+      <ConsolePanel title="返佣情况" description="待结算、已结算金额均已扣除退款冲回；已冲回金额单独列示。">
         <a-descriptions :column="1" size="small" bordered class="referral-descriptions">
           <a-descriptions-item label="返佣记录条数">{{ rebateCount }} 条</a-descriptions-item>
           <a-descriptions-item label="产生返佣的实付本金合计">¥ {{ formatMoneyValue(totalBaseAmount) }}</a-descriptions-item>
@@ -73,9 +73,9 @@
 
         <div v-if="invitedCount === 0" class="empty-block">
           <p class="empty-title">还没有邀请任何人</p>
-          <p class="hint">把上面的邀请码发给还没注册过本站的朋友。对方注册并成功充值后，这里会出现一条待结算返佣。</p>
+          <p class="hint">把上面的邀请码发给还没注册过本站的朋友。对方注册后，命中规则的充值到账才会生成待结算返佣。</p>
         </div>
-        <p v-else-if="rebateCount === 0" class="hint">已邀请 {{ invitedCount }} 人，但还没有产生返佣：返佣在受邀人充值成功后生成。</p>
+        <p v-else-if="rebateCount === 0" class="hint">已邀请 {{ invitedCount }} 人，尚无返佣记录；符合规则的充值到账才会产生自动返佣。</p>
         <p v-else-if="pendingAmount <= 0 && settledAmount <= 0" class="hint">已有 {{ rebateCount }} 条返佣记录，但都已被冲回（原充值订单退款）。</p>
       </ConsolePanel>
     </template>
@@ -131,21 +131,12 @@ export default {
       && Boolean(currentUserIdentity(currentUser.value))
 
     const code = computed(() => String(summary.value.code || ''))
-    const rate = computed(() => readNumber(summary.value.rate))
     const invitedCount = computed(() => readNumber(summary.value.invitedCount) ?? 0)
     const rebateCount = computed(() => readNumber(summary.value.rebateCount) ?? 0)
     const pendingAmount = computed(() => readNumber(summary.value.pendingAmount) ?? 0)
     const settledAmount = computed(() => readNumber(summary.value.settledAmount) ?? 0)
     const reversedAmount = computed(() => readNumber(summary.value.reversedAmount) ?? 0)
     const totalBaseAmount = computed(() => readNumber(summary.value.totalBaseAmount) ?? 0)
-
-    // 返佣比例是 0–1 的分数（internal/service/system_setting.go GetReferralRebateRateWithDB）。
-    // 展示成百分数并去掉尾零：0.05 → 5%，0.0333 → 3.33%。
-    const formatRate = value => {
-      if (value === null) return '--'
-      const percent = Number((value * 100).toFixed(4))
-      return `${String(percent).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')}%`
-    }
 
     const clearFailure = () => { failure.value = null; failureOwner = () => false; failureContextKey.value += 1 }
     const isCurrentFailure = (source, context) => failureOwner() && source === failure.value
@@ -223,10 +214,10 @@ export default {
     })
 
     return {
-      loading, loaded, enabled, code, rate, invitedCount, rebateCount,
+      loading, loaded, enabled, code, invitedCount, rebateCount,
       pendingAmount, settledAmount, reversedAmount, totalBaseAmount, copyStatus,
       failure, failureContextKey, failureMessage, isCurrentFailure,
-      formatMoneyValue, formatRate, load, copyCode,
+      formatMoneyValue, load, copyCode,
     }
   },
 }
