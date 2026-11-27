@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -163,5 +165,39 @@ func TestAdminDeviceUnbanRollsBackOnAuditWriteFailure(t *testing.T) {
 	t.Logf("audit INSERT failed: HTTP %d rule_retained=%t cache_blocks=%t committed_audits=%d", out.Code, ruleErr == nil, hit, len(rows))
 	if out.Code != http.StatusInternalServerError || ruleErr != nil || !hit || len(rows) != 0 {
 		t.Fatal("failed audit must roll back the global delete and leave the cache active")
+	}
+}
+
+func TestAdminDeviceUnbanDoesNotAuditUnmaskedShortIdentifiers(t *testing.T) {
+	db := ownedUnbanDB(t)
+	admin := seedDeviceAdminActor(t, db, 1206, "fixture-short-id-admin")
+	router := deviceAdminTestRouter(&admin)
+	for _, device := range []string{"own:Seven", "own:OnlyTest", "own:Only-Test"} {
+		if _, err := service.BanDevice(db, service.DeviceBanRequest{DeviceID: device, Reason: "owned test rule"}); err != nil {
+			t.Fatal(err)
+		}
+		out := deviceAdminRequest(router, http.MethodDelete, "/api/admin/device-bans/"+url.PathEscape(" "+device+" "), "")
+		var body service.DeviceUnbanResult
+		if out.Code != http.StatusOK || json.Unmarshal(out.Body.Bytes(), &body) != nil || body.DeviceID != device || body.Deleted != 1 {
+			t.Fatalf("unban must preserve normalized device ID and deletion contract, HTTP %d", out.Code)
+		}
+		var audit entity.Log
+		if err := db.Where("module = ? AND action = ? AND description = ?", "device", 4, "解封设备").Order("id DESC").Take(&audit).Error; err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(audit.NewAnswer), &fields); err != nil {
+			t.Fatal("invalid audit result")
+		}
+		count := utf8.RuneCountInString(device)
+		want := "***"
+		if count > 12 {
+			want = service.MaskBlacklistDeviceID(device)
+		}
+		ok := fields["name"] == want
+		t.Logf("T18_PRIVACY identifier_chars=%d expected_redaction=%t", count, ok)
+		if !ok {
+			t.Error("audit must hide short IDs and preserve safe masking for longer IDs")
+		}
 	}
 }

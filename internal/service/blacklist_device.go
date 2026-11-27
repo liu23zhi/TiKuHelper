@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
@@ -436,10 +437,15 @@ func unbanDevice(db *gorm.DB, deviceID string, actor *DeviceHistoryActor) (Devic
 			}
 			result.Deleted += res.RowsAffected
 			if actor != nil {
+				// 展示掩码保留前 8 位和后 4 位，短标识可能一个字符都没有隐藏。
+				name := "***"
+				if utf8.RuneCountInString(normalized) > 12 {
+					name = MaskBlacklistDeviceID(normalized)
+				}
 				if err := WriteAccountAuditWithDB(tx, AccountAuditEvent{
 					UserID: actor.UserID, Username: actor.Username,
 					Module: "device", Action: 4, Description: "解封设备",
-					Result: map[string]any{"name": MaskBlacklistDeviceID(normalized), "scope": "global",
+					Result: map[string]any{"name": name, "scope": "global",
 						"requestId": strconv.FormatInt(ruleID, 10)},
 				}); err != nil {
 					return fmt.Errorf("写入设备解封审计失败：%w", err)
