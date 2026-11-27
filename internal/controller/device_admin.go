@@ -291,16 +291,12 @@ func AdminDeviceUnban(c *gin.Context) {
 		writeDeviceAdminError(c, err)
 		return
 	}
-	result, err := service.UnbanDevice(db, deviceID)
+	result, err := service.UnbanDeviceWithAudit(db, deviceID, deviceHistoryActor(operator))
 	if err != nil {
 		writeDeviceAdminError(c, err)
 		return
 	}
 	reloadBlacklistCacheAfterWrite(db)
-	recordAccountAudit(c, &operator, "device", 4, "解封设备", map[string]any{
-		"deviceId": result.DeviceID,
-		"deleted":  result.Deleted,
-	})
 	c.JSON(http.StatusOK, gin.H{
 		"deviceId": result.DeviceID,
 		"deleted":  result.Deleted,

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,11 @@ type BlacklistRule struct {
 }
 
 // BlacklistCIDRRule 是一条 CIDR 规则。
+type blacklistRangeRule struct {
+	Range blacklistIPv4Range
+	Rule  *BlacklistRule
+}
+
 type BlacklistCIDRRule struct {
 	Network *net.IPNet
 	Rule    *BlacklistRule
@@ -101,11 +107,12 @@ type BlacklistSnapshot struct {
 	// SkippedCount 是加载时被跳过的坏行条数（CIDR 解析失败等）。
 	SkippedCount int
 
-	ipExact map[string]*BlacklistRule
-	ipCIDR  []BlacklistCIDRRule
-	phone   map[[32]byte]*BlacklistRule
-	wechat  map[[32]byte]*BlacklistRule
-	region  []BlacklistRegionRule
+	ipExact  map[string]*BlacklistRule
+	ipCIDR   []BlacklistCIDRRule
+	ipRanges []blacklistRangeRule
+	phone    map[[32]byte]*BlacklistRule
+	wechat   map[[32]byte]*BlacklistRule
+	region   []BlacklistRegionRule
 	// device 是设备粒度（137 §3.4）：key = sha256(归一化后的 device_id)。
 	//
 	// 用 [32]byte 而非 string key：与 phone / wechat 一致，
@@ -172,6 +179,14 @@ func (s *BlacklistSnapshot) MatchIP(clientIP string) (BlacklistMatch, bool) {
 	for _, cidrRule := range s.ipCIDR {
 		if cidrRule.Network != nil && cidrRule.Network.Contains(ip) && cidrRule.Rule.activeAt(now) {
 			return cidrRule.Rule.toMatch(), true
+		}
+	}
+	if len(s.ipRanges) != 0 {
+		addr, _ := netip.AddrFromSlice(ip)
+		for _, rangeRule := range s.ipRanges {
+			if rangeRule.Rule.activeAt(now) && rangeRule.Range.contains(addr) {
+				return rangeRule.Rule.toMatch(), true
+			}
 		}
 	}
 	return BlacklistMatch{}, false
@@ -315,7 +330,7 @@ func LoadBlacklistSnapshot(db *gorm.DB, now time.Time) (*BlacklistSnapshot, erro
 			snapshot.SkippedCount++
 		}
 	}
-	snapshot.RuleCount = len(snapshot.ipExact) + len(snapshot.ipCIDR) +
+	snapshot.RuleCount = len(snapshot.ipExact) + len(snapshot.ipCIDR) + len(snapshot.ipRanges) +
 		len(snapshot.phone) + len(snapshot.wechat) + len(snapshot.region) + len(snapshot.device)
 	return snapshot, nil
 }
@@ -328,6 +343,13 @@ func (s *BlacklistSnapshot) addRule(rule *BlacklistRule) bool {
 	switch rule.Kind {
 	case BlacklistKindIP:
 		switch rule.MatchType {
+		case blacklistMatchIPv4Range:
+			bounds, ok := parseBlacklistIPv4Range(rule.Pattern)
+			if !ok {
+				return false
+			}
+			s.ipRanges = append(s.ipRanges, blacklistRangeRule{Range: bounds, Rule: rule})
+			return true
 		case BlacklistMatchCIDR, BlacklistMatchPrefix:
 			_, network, err := net.ParseCIDR(strings.TrimSpace(rule.Pattern))
 			if err != nil || network == nil {

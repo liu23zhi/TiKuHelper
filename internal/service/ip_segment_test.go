@@ -245,3 +245,26 @@ func TestFindIPSegmentIgnoresIPv6(t *testing.T) {
 		t.Fatalf("IPv6 must not hit IPv4 segments, got %+v", got)
 	}
 }
+
+func TestIPSegmentProjectionRejectsContradictoryLiteralEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		ok        bool
+	}{
+		{"matching sample", `{"ip":"192.0.2.49","beginip":"192.0.2.46","endip":"192.0.2.53"}`, true},
+		{"old response omitted IP", `{"beginip":"192.0.2.46","endip":"192.0.2.53"}`, true},
+		{"same range other sample", `{"ip":"192.0.2.50","beginip":"192.0.2.46","endip":"192.0.2.53"}`, false},
+		{"sample out of interval", `{"ip":"192.0.2.49","beginip":"192.0.2.50","endip":"192.0.2.53"}`, false},
+		{"duplicate evidence", `{"ip":"198.51.100.71","ip":"192.0.2.49","beginip":"192.0.2.46","endip":"192.0.2.53"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			segment, reason, ok := ParseIPSegmentFromCacheRow(entity.LocationCache{
+				Kind: entity.LocationKindIP, LookupKey: "192.0.2.49", Source: "standard", RawJSON: tc.raw,
+			})
+			if ok != tc.ok || (ok && (segment.BeginText != "192.0.2.46" || segment.EndText != "192.0.2.53")) ||
+				(!ok && reason != IPSegmentSkipNoUsableRange) {
+				t.Fatalf("projection=%+v ok=%v reason=%q", segment, ok, reason)
+			}
+		})
+	}
+}

@@ -21,40 +21,44 @@ var (
 
 // RiskRuleInput is the complete editable rule payload. Type and RuleID are immutable after creation.
 type RiskRuleInput struct {
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	Type            string          `json:"type"`
-	Config          json.RawMessage `json:"config"`
-	Severity        string          `json:"severity"`
-	Enabled         bool            `json:"enabled"`
-	Threshold       float64         `json:"threshold"`
-	ThrottleSeconds int             `json:"throttleSeconds"`
+	ResponsePolicy  *RiskRuleResponseInput `json:"responsePolicy,omitempty"`
+	Name            string                 `json:"name"`
+	Description     string                 `json:"description"`
+	Type            string                 `json:"type"`
+	Config          json.RawMessage        `json:"config"`
+	Severity        string                 `json:"severity"`
+	Enabled         bool                   `json:"enabled"`
+	Threshold       float64                `json:"threshold"`
+	ThrottleSeconds int                    `json:"throttleSeconds"`
 }
 
 // RiskRuleRecord is the admin API shape, including both detector and audit metadata.
 type RiskRuleRecord struct {
-	RuleID          string          `json:"ruleId"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	Type            string          `json:"type"`
-	Config          json.RawMessage `json:"config"`
-	Severity        string          `json:"severity"`
-	Enabled         bool            `json:"enabled"`
-	Source          string          `json:"source"`
-	Threshold       float64         `json:"threshold"`
-	ThrottleSeconds int             `json:"throttleSeconds"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	UpdatedAt       time.Time       `json:"updatedAt"`
-	CreatedBy       int32           `json:"createdBy"`
-	UpdatedBy       int32           `json:"updatedBy"`
-	DeletedAt       *time.Time      `json:"deletedAt,omitempty"`
-	Exists          bool            `json:"exists"`
-	Unit            string          `json:"unit"`
-	HasThreshold    bool            `json:"hasThreshold"`
+	ResponsePolicy          RiskRuleResponsePolicy `json:"responsePolicy"`
+	EffectiveResponsePolicy RiskRuleResponsePolicy `json:"effectiveResponsePolicy"`
+	RuleID                  string                 `json:"ruleId"`
+	Name                    string                 `json:"name"`
+	Description             string                 `json:"description"`
+	Type                    string                 `json:"type"`
+	Config                  json.RawMessage        `json:"config"`
+	Severity                string                 `json:"severity"`
+	Enabled                 bool                   `json:"enabled"`
+	Source                  string                 `json:"source"`
+	Threshold               float64                `json:"threshold"`
+	ThrottleSeconds         int                    `json:"throttleSeconds"`
+	CreatedAt               time.Time              `json:"createdAt"`
+	UpdatedAt               time.Time              `json:"updatedAt"`
+	CreatedBy               int32                  `json:"createdBy"`
+	UpdatedBy               int32                  `json:"updatedBy"`
+	DeletedAt               *time.Time             `json:"deletedAt,omitempty"`
+	Exists                  bool                   `json:"exists"`
+	Unit                    string                 `json:"unit"`
+	HasThreshold            bool                   `json:"hasThreshold"`
 }
 
 // RiskRuleType describes a server-side detector available for rule instances.
 type RiskRuleType struct {
+	SupportsResponsePolicy bool           `json:"supportsResponsePolicy"`
 	Type                   string         `json:"type"`
 	Name                   string         `json:"name"`
 	Description            string         `json:"description"`
@@ -74,7 +78,8 @@ func RiskRuleTypes() []RiskRuleType {
 	for _, item := range defaults {
 		spec, hasThreshold := riskPrimaryThresholdSpec(item.RuleID)
 		items = append(items, RiskRuleType{
-			Type: item.RuleID, Name: item.Name, Description: item.Description,
+			SupportsResponsePolicy: riskResponseDetector(item.RuleID),
+			Type:                   item.RuleID, Name: item.Name, Description: item.Description,
 			DefaultThreshold: item.Threshold, ThresholdUnit: spec.Unit, HasThreshold: hasThreshold,
 			ThresholdKind: spec.Kind, ThresholdMax: spec.MaxValue, DefaultSeverity: item.Severity, DefaultThrottleSeconds: item.ThrottleSeconds,
 			ConfigSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}},
@@ -98,9 +103,10 @@ func ListRiskRules(db *gorm.DB) ([]RiskRuleRecord, error) {
 			existing[id] = true
 		}
 	}
+	blacklistEnabled := GetBlacklistEnabledWithDB(db)
 	items := make([]RiskRuleRecord, 0, len(rules))
 	for _, rule := range rules {
-		items = append(items, riskRuleRecord(db, rule, existing[rule.RuleID]))
+		items = append(items, riskRuleRecordWithBlacklist(db, rule, existing[rule.RuleID], blacklistEnabled))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Source != items[j].Source {
@@ -123,9 +129,13 @@ func CreateRiskRule(db *gorm.DB, input RiskRuleInput, actorID int32) (RiskRuleRe
 	if err != nil {
 		return RiskRuleRecord{}, err
 	}
+	policy, err := encodeRuleResponse(typeDefault.RuleID, input.ResponsePolicy, `{"mode":"notify"}`)
+	if err != nil {
+		return RiskRuleRecord{}, err
+	}
 	ruleID := "custom_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	row := entity.RiskRule{RuleID: ruleID, Name: strings.TrimSpace(input.Name), Description: strings.TrimSpace(input.Description),
-		Type: typeDefault.RuleID, ConfigJSON: config, Severity: strings.TrimSpace(input.Severity), Enabled: input.Enabled,
+		Type: typeDefault.RuleID, ConfigJSON: config, ResponsePolicyJSON: policy, Severity: strings.TrimSpace(input.Severity), Enabled: input.Enabled,
 		Threshold: input.Threshold, ThrottleSeconds: input.ThrottleSeconds, Source: "custom", CreatedBy: actorID, UpdatedBy: actorID}
 	err = db.Transaction(func(tx *gorm.DB) error {
 		// GORM can replace an explicitly false bool with the column default on INSERT.
@@ -160,7 +170,7 @@ func UpdateRiskRule(db *gorm.DB, ruleID string, input RiskRuleInput, actorID int
 	var updated entity.RiskRule
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var row entity.RiskRule
-		if err := tx.Where("rule_id = ? AND deleted_at IS NULL", ruleID).First(&row).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("rule_id = ? AND deleted_at IS NULL", ruleID).First(&row).Error; err != nil {
 			return err
 		}
 		if strings.TrimSpace(input.Type) != "" && input.Type != row.Type {
@@ -174,11 +184,16 @@ func UpdateRiskRule(db *gorm.DB, ruleID string, input RiskRuleInput, actorID int
 		if err != nil {
 			return err
 		}
+		policy, err := encodeRuleResponse(typeDefault.RuleID, input.ResponsePolicy, row.ResponsePolicyJSON)
+		if err != nil {
+			return err
+		}
+		row.ResponsePolicyJSON = policy
 		row.Name, row.Description, row.ConfigJSON = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description), config
 		row.Severity, row.Threshold, row.ThrottleSeconds = strings.TrimSpace(input.Severity), input.Threshold, input.ThrottleSeconds
 		row.UpdatedBy = actorID
 		if err := tx.Model(&entity.RiskRule{}).Where("rule_id = ?", ruleID).Updates(map[string]any{
-			"name": row.Name, "description": row.Description, "config_json": row.ConfigJSON,
+			"name": row.Name, "description": row.Description, "config_json": row.ConfigJSON, "response_policy_json": policy,
 			"severity": row.Severity, "threshold": row.Threshold, "throttle_seconds": row.ThrottleSeconds,
 			"updated_by": actorID, "updated_at": time.Now(),
 		}).Error; err != nil {
@@ -311,12 +326,23 @@ func persistRiskRuleThreshold(tx *gorm.DB, row entity.RiskRule) error {
 }
 
 func riskRuleRecord(db *gorm.DB, row entity.RiskRule, exists bool) RiskRuleRecord {
+	return riskRuleRecordWithBlacklist(db, row, exists, GetBlacklistEnabledWithDB(db))
+}
+
+func riskRuleRecordWithBlacklist(db *gorm.DB, row entity.RiskRule, exists, blacklistEnabled bool) RiskRuleRecord {
+	p := resolveRuleResponse(row)
+	effective := p
+	if !row.Enabled {
+		effective = RiskRuleResponsePolicy{Mode: "disabled"}
+	} else if !blacklistEnabled {
+		effective = RiskRuleResponsePolicy{Mode: riskRuleNotify}
+	}
 	spec, hasThreshold := riskPrimaryThresholdSpec(effectiveRiskRuleType(row))
 	config := json.RawMessage(row.ConfigJSON)
 	if len(config) == 0 || !json.Valid(config) {
 		config = json.RawMessage(`{}`)
 	}
-	return RiskRuleRecord{RuleID: row.RuleID, Name: row.Name, Description: row.Description, Type: row.Type,
+	return RiskRuleRecord{ResponsePolicy: p, EffectiveResponsePolicy: effective, RuleID: row.RuleID, Name: row.Name, Description: row.Description, Type: row.Type,
 		Config: config, Severity: row.Severity, Enabled: row.Enabled, Source: row.Source,
 		Threshold: riskRuleThreshold(db, row, riskDefaultThreshold(row.RuleID)), ThrottleSeconds: row.ThrottleSeconds,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy,

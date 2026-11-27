@@ -1,4 +1,4 @@
-name: PR checks (no publish)
+name: PR 检查（仅验证）
 
 on:
   pull_request:
@@ -17,43 +17,46 @@ env:
 
 jobs:
   frontend:
+    name: 前端构建与回归检查
     runs-on: ubuntu-24.04
-    # 组件回归（1521 项真实组件测试）实测 14–15 分钟，15 分钟会在健康运行时
-    # 被取消并记成 failure。留出足够余量，让失败只来自真实回归。
+    # 组件回归曾耗时 14–15 分钟，为整项任务预留超时余量。
     timeout-minutes: 30
     defaults:
       run:
         shell: bash
         working-directory: web
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, verified official tag
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - name: 配置 Node.js 环境
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22.23.1'
           package-manager-cache: false
-      - name: Install locked dependencies
+      - name: 安装锁定版本的前端依赖
         run: npm ci
-      - name: CI contracts and audit parser behavior
+      - name: 测试 CI 配置与审计报告解析
         run: node --test ../scripts/ci/*.test.cjs
-      - name: Verify actual frontend embed helper on missing and present artifacts
+      - name: 验证前端嵌入脚本处理产物存在与缺失的情况
         run: node --test ../scripts/prepare-web-dist.test.mjs
-      - name: Lint without modifying source
+      - name: 检查前端代码规范（关闭自动修复）
         run: npm run lint -- --no-fix
-      - name: Dependency compatibility consumers
+      - name: 测试前端依赖使用兼容性
         run: npm run test:security
-      - name: Utilities
+      - name: 运行工具函数单元测试
         run: npm run test:unit
-      - name: Real components
+      - name: 运行实际组件回归测试
         run: npm run test:components
-      - name: All SFC parse and compile
+      - name: 解析并编译全部 Vue 单文件组件
         run: npm run check:sfc
-      - name: Production frontend
+      - name: 构建生产环境前端
         run: npm run build
-      - name: Resource budgets
+      - name: 检查前端资源体积预算
         run: npm run check:bundle
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - name: 上传前端构建产物
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-dist
           path: web/dist
@@ -61,66 +64,84 @@ jobs:
           retention-days: 7
 
   backend:
+    name: 后端构建与集成检查
     needs: frontend
     runs-on: ubuntu-24.04
-    # 实测健康运行 16–17 分钟；负载高时（Offline short tests 5m47s、Core race 11m12s）
-    # 会摸到 20 分钟边界被取消并记成 cancelled。与 frontend 同理：超时预算属于
-    # 基础设施，不应该成为失败来源，留出余量让失败只来自真实回归。
+    # 全部步骤曾耗时 16–17 分钟。离线测试和竞态检测的耗时随负载波动。
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+      - name: 按 go.mod 配置 Go 环境
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
           cache: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: 下载本次前端构建产物
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: frontend-dist
           path: web/dist
-      # 统一走仓库脚本，避免「CI 一套、本地一套」两套复制逻辑漂移。
-      # 脚本内部会自证 web/dist/index.html 存在且含 id="app"，缺失即 exit 1。
-      - name: Embed this run's frontend
+      # 复用本地嵌入脚本，校验入口文件及其挂载点。
+      - name: 嵌入本次前端构建产物
         shell: pwsh
         run: ./scripts/prepare-web-dist.ps1 -SkipBuild -Json
-      - name: HTTP gate behavior including deliberate failures
+      - name: 测试 CI 验证脚本（含模拟失败场景）
         run: python3 -B -m unittest discover -s scripts/ci -p '*_test.py'
-      - name: Build
+      - name: 编译全部 Go 包
         run: go build ./...
-      - name: Vet
+      - name: 执行 Go 静态检查
         run: go vet ./...
-      - name: Offline short tests
+      - name: 运行 Go 离线短测试
         run: go test -short -p 1 ./... -count=1
-      - name: Core race
+      - name: 对核心 Go 包运行竞态检测
         run: go test -short -race -p 1 ./internal/api ./internal/controller ./internal/service ./internal/search -count=1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - name: 配置 Node.js 环境
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22.23.1'
           package-manager-cache: false
-      - name: Locked UI dependencies for persisted SVG integration
+      - name: 安装集成测试所需的锁定依赖
         run: npm ci --prefix web
-      - name: Persisted SVG write read and native consumer integration
+      - name: 验证 SVG 持久化读写与原生界面集成
         run: npm run --prefix web test:integration:s02
-      - name: Fixed parser proxy HTTP and native import page integration
+      - name: 验证解析代理 HTTP 接口与原生导入页集成
         run: npm run --prefix web test:integration:s03
-      - name: Actual metrics handler JSON and native API panel integration
+      - name: 验证实际指标接口的 JSON 响应与原生 API 面板集成
         run: npm run --prefix web test:integration:metrics
-      - name: Actual binary, API auth and embedded SPA integration
+      - name: 用实际服务二进制验证 API 鉴权和嵌入式前端
         run: |
+          mkdir -p ci-output
           CGO_ENABLED=0 go build -o ci-output/tiku-ci ./cmd/adapter-service
           python3 -B scripts/ci/http-smoke.py --binary ci-output/tiku-ci --dist web/dist --log-dir ci-output/http-smoke > ci-output/http-smoke.json
-      - name: Actual main safe defaults and synthetic database startup integration
+      - name: 验证服务启动的安全默认值与合成数据库场景（S04）
+        id: s04
         run: python3 -B scripts/ci/run-s04-main-flow.py --binary ci-output/tiku-ci --evidence ci-output/s04-main-flow
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - name: 上传 HTTP 冒烟测试报告
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: http-smoke-evidence
           path: ci-output/http-smoke.json
           if-no-files-found: warn
           retention-days: 7
+      # 仅归档结构化结果。命令记录可能包含合成凭据，运行目录还包含数据库和二进制。
+      - name: 上传 S04 启动集成测试结果
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ !cancelled() && (steps.s04.outcome == 'success' || steps.s04.outcome == 'failure') }}
+        with:
+          name: s04-main-flow-evidence
+          path: |
+            ci-output/s04-main-flow/LATEST.json
+            ci-output/s04-main-flow/attempt-*/RESULT.json
+            ci-output/s04-main-flow/attempt-*/*/RESULT.json
+          if-no-files-found: warn
+          retention-days: 7
 
   audit:
+    name: 前端依赖安全审计
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -128,14 +149,16 @@ jobs:
         shell: bash
         working-directory: web
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - name: 配置 Node.js 环境
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22.23.1'
           package-manager-cache: false
-      - name: Audit locked graph; preserve npm failure and fail closed
+      - name: 审计锁定依赖并按策略判定结果
         run: |
           mkdir -p ../ci-output
           set +e
@@ -143,7 +166,8 @@ jobs:
           audit_status=$?
           set -e
           node ../scripts/ci/check-audit.cjs ../ci-output/npm-audit.json --npm-exit "$audit_status" --policy ../scripts/ci/audit-policy.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - name: 上传依赖审计报告
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: dependency-audit
