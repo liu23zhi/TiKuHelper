@@ -332,6 +332,27 @@ func (p *Pool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool,
 	return &transactionPool{underlying: tx, release: release, dbConn: dbConn}, nil
 }
 
+// WithPinnedConnection lends a physical connection under a single existing
+// scheduler lease. Callers that need connection-local cleanup must complete it
+// before returning; the ordinary query and transaction paths are unchanged.
+func (p *Pool) WithPinnedConnection(ctx context.Context, run func(*sql.Conn) error) error {
+	release, err := p.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	db, err := p.GetDBConn()
+	if err != nil {
+		return err
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return run(conn)
+}
+
 func (p *Pool) GetDBConn() (*sql.DB, error) {
 	if connector, ok := p.underlying.(gorm.GetDBConnector); ok {
 		return connector.GetDBConn()
