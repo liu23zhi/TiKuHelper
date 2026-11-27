@@ -241,6 +241,17 @@
           </a-table>
         </ConsoleTableShell>
         <a-empty v-else-if="claimsLoaded && !loadingClaims" description="当前没有待处理的提交" />
+        <a-pagination
+          v-if="claimTotal > claimPageSize"
+          aria-label="评价返现提交分页"
+          size="small"
+          :current="claimPage"
+          :page-size="claimPageSize"
+          :total="claimTotal"
+          :show-size-changer="false"
+          :disabled="loading || busy"
+          @change="changeClaimPage"
+        />
       </ConsolePanel>
 
       <a-modal
@@ -483,6 +494,10 @@ export default {
     const ruleWarning = ref('')
 
     const claims = ref([])
+    const claimPageSize = 20
+    const claimPage = ref(1)
+    const claimTotal = ref(0)
+    let claimListQuery = { page: 1, filters: {} }
     const claimsLoaded = ref(false)
     const loadingClaims = ref(false)
     const deciding = ref(false)
@@ -592,6 +607,7 @@ export default {
       if (loading.value || busy.value) return
       Object.assign(claimFilters, emptyClaimFilters())
       claimFilterError.value = ''
+      claimListQuery = { page: 1, filters: {} }
       loadClaims()
     }
 
@@ -604,6 +620,13 @@ export default {
         return
       }
       claimFilterError.value = ''
+      claimListQuery = { page: 1, filters: claimFilterParams() }
+      loadClaims()
+    }
+
+    const changeClaimPage = page => {
+      if (loading.value || busy.value || !canManage() || !Number.isSafeInteger(page) || page < 1) return
+      claimListQuery = { ...claimListQuery, page }
       loadClaims()
     }
 
@@ -849,14 +872,24 @@ export default {
       const ownsFailure = () => owns() && context === claimsFailureContextKey.value
       loadingClaims.value = true
       try {
-        const res = await getReviewRebateClaims(claimFilterParams())
+        const { page, filters } = claimListQuery
+        const params = page === 1 ? filters : { ...filters, page, pageSize: claimPageSize }
+        const res = await getReviewRebateClaims(params)
         if (!ownsFailure()) return false
         const body = res?.data
         const list = Array.isArray(body) ? body : body?.data
         if (res?.status !== 200 || !Array.isArray(list)) {
           claimsFailureOwner = ownsFailure; claimsFailure.value = ensureRequestFailure(res); return false
         }
+        const total = Number.isSafeInteger(body?.total) && body.total >= 0 ? body.total : list.length
+        const lastPage = Math.max(1, Math.ceil(total / claimPageSize))
+        if (page > lastPage) {
+          claimListQuery = { page: lastPage, filters }
+          return loadClaims()
+        }
         claims.value = list.filter(item => item && typeof item === 'object').map(item => ({ ...item }))
+        claimPage.value = page
+        claimTotal.value = total
         claimsLoaded.value = true
         return true
       } catch (error) {
@@ -1118,6 +1151,9 @@ export default {
       programVersion += 1; rulesVersion += 1; claimsVersion += 1; writeVersion += 1
       rules.value = []; rulesLoaded.value = false
       claims.value = []; claimsLoaded.value = false; loadingClaims.value = false
+      claimPage.value = 1; claimTotal.value = 0
+      Object.assign(claimFilters, emptyClaimFilters()); claimFilterError.value = ''
+      claimListQuery = { page: 1, filters: {} }
       ruleDialogOpen.value = false; decisionDialogOpen.value = false
       verificationRecord.value = null
       ruleWarning.value = ''; decisionWarning.value = ''
@@ -1155,6 +1191,7 @@ export default {
       programMissing, programWarning, programWarningContextKey,
       rules, rulesLoaded, savingRule, ruleWarning, ruleColumns,
       claims, claimsLoaded, loadingClaims, deciding, decisionWarning, claimColumns,
+      claimPage, claimPageSize, claimTotal, changeClaimPage,
       claimFilters, claimFilterError, claimStatusOptions, setClaimFilter, reloadClaims, resetClaimFilters,
       programFailure, programFailureContextKey, isCurrentProgramFailure,
       rulesFailure, rulesFailureContextKey, isCurrentRulesFailure,
