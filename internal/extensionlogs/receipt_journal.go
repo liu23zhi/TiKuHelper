@@ -72,6 +72,21 @@ type Receipt struct {
 	ReceivedAt string `json:"received_at"`
 }
 
+// ReceiptProof is a local committed receipt and its accepted IDs in batch
+// order. It neither grants access nor defines a wire format.
+type ReceiptProof struct {
+	Receipt
+	AcceptedEventIDs []string
+	Scope            ReceiptProofScope
+}
+
+// ReceiptProofScope is the persisted scope: hashed device/browser keys and a
+// canonical launch UUID, never the raw device/browser identifiers.
+type ReceiptProofScope struct {
+	OwnerID                               int32
+	Mode, DeviceKey, BrowserKey, LaunchID string
+}
+
 type ReceiptRecord struct {
 	ReceiptEvent
 	OwnerID        int32  `json:"user_id"`
@@ -161,14 +176,17 @@ func (j *ReceiptJournal) open(create bool) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := filepath.ToSlash(path)
-	if !strings.HasPrefix(name, "/") {
-		name = "/" + name
-	}
-	q := url.Values{
+	return openReceiptSQLite(path, url.Values{
 		"mode":    {"rw"},
 		"_txlock": {"immediate"},
 		"_pragma": {"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(32768)"},
+	})
+}
+
+func openReceiptSQLite(path string, q url.Values) (*sql.DB, error) {
+	name := filepath.ToSlash(path)
+	if !strings.HasPrefix(name, "/") {
+		name = "/" + name
 	}
 	dsn := (&url.URL{Scheme: "file", Path: name, RawQuery: q.Encode()}).String()
 	db, err := sql.Open("sqlite", dsn)
@@ -418,6 +436,94 @@ func (j *ReceiptJournal) Append(ctx context.Context, owner int32, meta Session, 
 		return Receipt{}, err
 	}
 	return r, nil
+}
+
+// LookupReceiptProof verifies an entire ordered batch against committed
+// journal rows in one read-only snapshot. Callers must supply already
+// authorized owner/session metadata. No match returns sql.ErrNoRows; a
+// mismatched or incomplete proof returns ErrReceiptConflict.
+func (j *ReceiptJournal) LookupReceiptProof(ctx context.Context, owner int32, meta Session, batch ReceiptBatch) (ReceiptProof, error) {
+	if !j.opts.Enabled {
+		return ReceiptProof{}, ErrDisabled
+	}
+	b, err := receiptBatch(meta, batch)
+	if err != nil || owner <= 0 {
+		return ReceiptProof{}, ErrBatch
+	}
+	if err := ctx.Err(); err != nil {
+		return ReceiptProof{}, err
+	}
+	path, err := j.path(false)
+	if errors.Is(err, os.ErrNotExist) {
+		return ReceiptProof{}, sql.ErrNoRows
+	}
+	if err != nil {
+		return ReceiptProof{}, err
+	}
+	db, err := openReceiptSQLite(path, url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(2000)"}})
+	if err != nil {
+		return ReceiptProof{}, err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ReceiptProof{}, err
+	}
+	defer tx.Rollback()
+	if ready, err := checkReceiptDB(ctx, tx); err != nil {
+		return ReceiptProof{}, err
+	} else if !ready {
+		return ReceiptProof{}, ErrReceiptPath
+	}
+
+	k := receiptScope(owner, meta)
+	args := []any{k.owner, k.mode, k.device, k.browser, k.launch}
+	var p ReceiptProof
+	var segment, received int64
+	var digest []byte
+	err = tx.QueryRowContext(ctx, `SELECT id,owner,mode,device,browser,launch,batch_id,digest,received_ms,accepted,stored
+		FROM receipt_segments WHERE (owner,mode,device,browser,launch)=(?,?,?,?,?) AND batch_id=?`, append(args, b.id)...).
+		Scan(&segment, &p.Scope.OwnerID, &p.Scope.Mode, &p.Scope.DeviceKey, &p.Scope.BrowserKey, &p.Scope.LaunchID,
+			&p.BatchID, &digest, &received, &p.Accepted, &p.Stored)
+	if err != nil {
+		return ReceiptProof{}, err
+	}
+	if !bytes.Equal(digest, b.digest[:]) || p.Accepted != len(b.events) || p.Stored < 0 || p.Stored > p.Accepted {
+		return ReceiptProof{}, ErrReceiptConflict
+	}
+
+	// The batch digest fixes order; an event may originate in an earlier
+	// segment of the same scope (including when this receipt stored zero).
+	// Require the actual row and payload, not just its stored digest.
+	const eventRow = `SELECT e.event_id,e.segment_id
+		FROM receipt_events e JOIN receipt_segments origin ON origin.id=e.segment_id
+		AND (origin.owner,origin.mode,origin.device,origin.browser,origin.launch)=(e.owner,e.mode,e.device,e.browser,e.launch)
+		WHERE (e.owner,e.mode,e.device,e.browser,e.launch)=(?,?,?,?,?)
+		AND e.event_id=? AND e.event_seq=? AND e.digest=? AND e.segment_id<=?
+		AND e.event_ms=? AND e.level=? AND e.event=? AND e.duration_ms IS ? AND e.count IS ? AND e.version=?`
+	ids := make([]string, 0, p.Accepted)
+	stored := 0
+	for _, e := range b.events {
+		var id string
+		var origin int64
+		err := tx.QueryRowContext(ctx, eventRow, append(args, e.EventID, e.EventSeq, e.digest[:], segment,
+			e.ms, e.Level, e.Event, e.DurationMS, e.Count, meta.Version)...).Scan(&id, &origin)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ReceiptProof{}, ErrReceiptConflict
+		}
+		if err != nil {
+			return ReceiptProof{}, err
+		}
+		if origin == segment {
+			stored++
+		}
+		ids = append(ids, id)
+	}
+	if stored != p.Stored {
+		return ReceiptProof{}, ErrReceiptConflict
+	}
+	p.ReceivedAt, p.AcceptedEventIDs = journalTime(received), ids
+	return p, nil
 }
 
 // Read applies the full logical-segment merge before LIMIT/OFFSET. New
