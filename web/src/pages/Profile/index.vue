@@ -680,7 +680,13 @@ export default defineComponent({
         case 'wechat-unbind': return user.wechatId === null || user.wechatId === ''
         case 'wechat-code':
         case 'wechat-scan': return typeof user.wechatId === 'string' && Boolean(user.wechatId.trim())
-        case 'profile-save': return typeof user.username === 'string' && user.username.trim() !== '' && Object.hasOwn(user, 'nickname')
+        case 'profile-save': {
+          // The service stores strings.TrimSpace(input), including an empty nickname.
+          const canonical = text => text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '')
+          const { username, nickname } = owner.snapshot
+          return typeof username === 'string' && typeof nickname === 'string' &&
+            user.username !== '' && user.username === canonical(username) && user.nickname === canonical(nickname)
+        }
         default: return true
       }
     }

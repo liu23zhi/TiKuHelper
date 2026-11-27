@@ -422,3 +422,30 @@ test('Profile account cards: unavailable binding channels only affect the cards 
   assert.equal(stateOf(w,'phone'),'ready'); assert.equal(calls.me.length,meReads)
   assert.equal(calls.settings.length,2);assert.equal(calls.phoneSMS.length+calls.unbind.length,0)
 })
+
+test('Profile rename: stale same-owner DTO cannot confirm identity or replace its draft', async () => {
+  const w = await open(Profile, A)
+  const name = 'owned_fixture_Alpha_NEW', nick = '新昵称'
+  await profileFields(w, name, nick)
+  for (const returned of [{ username: A.username, nickname: nick }, { username: name, nickname: A.nickname }, { username: name, nickname: null }]) {
+    await w.findAll('form')[0].trigger('submit'); await settle()
+    await resolve('profile', { ...A, ...returned })
+    assert.equal(stateOf(w, 'identity'), 'error'); assert.match(card(w, 'identity').text(), /未确认/)
+    assert.doesNotMatch(card(w, 'identity').text(), /资料已保存/)
+    assert.equal(w.vm.profileForm.username, name); assert.equal(w.vm.profileForm.nickname, nick)
+    assert.equal(user.getStoredCurrentUser().username, A.username)
+    assert.equal(user.getStoredCurrentUser().nickname, A.nickname)
+    assert.equal(stateOf(w, 'base'), 'ready')
+  }
+  assert.equal(calls.profile.length, 3); assert.equal(calls.me.length, 1)
+})
+
+test('Profile rename: canonical server fields confirm normalized input and empty nickname', async () => {
+  const w = await open(Profile, A)
+  await profileFields(w, '  canonical_Name  ', '　 ')
+  await w.findAll('form')[0].trigger('submit'); await settle()
+  await resolve('profile', { ...A, username: 'canonical_Name', nickname: '' })
+  assert.equal(stateOf(w, 'identity'), 'ready'); assert.match(card(w, 'identity').text(), /资料已保存/)
+  assert.equal(w.vm.profileForm.username, 'canonical_Name'); assert.equal(w.vm.profileForm.nickname, '')
+  assert.equal(user.getStoredCurrentUser().username, 'canonical_Name'); assert.equal(calls.me.length, 1)
+})
