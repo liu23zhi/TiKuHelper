@@ -155,7 +155,7 @@ test('REGISTER_PROFILE existing ordinary profile loads me/local locations and pr
 test('REGISTER_PROFILE existing ordinary phone SMS202 cooldown and successful phone update retain valid capability', async () => {
   const w = await open(Profile, A); await phoneFields(w); await w.get('input[placeholder="请输入短信验证码"]').setValue('12x34567'); assert.equal(w.vm.phoneForm.smsCode, OTP)
   click(w, '发送验证码'); await settle(); await acceptCaptcha('sms_send_change_phone'); assert.deepEqual(calls.phoneSMS[0].payload, { phone: '13800000000', captchaToken: TOKEN })
-  await resolve('phoneSMS', {}, 202); assert.equal(w.vm.smsCooldownActive, true); assert.ok(notices.some(x => x.text.includes('待核对')))
+  await resolve('phoneSMS', {}, 202); assert.equal(w.vm.smsCooldownActive, true); assert.ok(notices.some(x => x.text.includes('待核对'))); assert.equal(stateOf(w, 'phone'), 'error'); assert.equal(w.vm.currentUser.phone, A.phone)
   await w.findAll('form')[1].trigger('submit'); await settle(); assert.deepEqual(calls.phone[0].payload, { phone: '13800000000', smsCode: OTP })
   const saved = { ...A, phone: '13800000000' }; await resolve('phone', saved); assert.deepEqual(user.getStoredCurrentUser(), saved); assert.equal(w.vm.phoneForm.phone, ''); assert.equal(w.vm.updatingPhone, false)
 })
@@ -165,7 +165,7 @@ test('REGISTER_PROFILE existing ordinary WeChat code bind and native confirm unb
   assert.deepEqual(user.getStoredCurrentUser(), bound); assert.equal(w.vm.wechatCodeForm.code, ''); click(w, '解绑微信');
   const popup = await until(() => { const found = [...document.querySelectorAll('.ant-popover:not(.ant-popover-hidden)')].filter(node => node.textContent.includes('确定解绑当前微信吗')); return found.length === 1 && found[0] }, 'CURRENT_NATIVE_POPOVER_READY')
   const confirm = [...popup.querySelectorAll('button')].find(node => node.textContent.replace(/\s/g, '') === '确认解绑'); assert.ok(confirm, 'REAL_ANTD_POPOVER_CONFIRM'); confirm.click(); await settle(); assert.equal(calls.unbind.length, 1)
-  await resolve('unbind', A); assert.deepEqual(user.getStoredCurrentUser(), A); assert.equal(w.vm.unbindingWechat, false); assert.ok(notices.some(x => x.text === '微信已解绑'))
+  await resolve('unbind', A); assert.equal(stateOf(w, 'wechat'), 'empty'); assert.match(card(w, 'wechat').text(), /微信已解绑/); assert.deepEqual(user.getStoredCurrentUser(), A); assert.equal(w.vm.unbindingWechat, false); assert.ok(notices.some(x => x.text === '微信已解绑'))
 })
 test('REGISTER_PROFILE existing ordinary scan QR actual controller accepts owned bind and clears own QR', async () => {
   settings.wechatDefaultLoginMode = 'scan'; const w = await open(Profile, A); click(w, '刷新绑定二维码'); await settle()
@@ -333,7 +333,7 @@ test('REGISTER_PROFILE ownership unavailable native storage permits legitimate a
 })
 test('REGISTER_PROFILE ownership current ordinary WeChat failure preserves code and fixed feedback never reveals bind secrets', async () => {
   const w = await open(Profile, A); await w.get('input[placeholder="请输入微信验证码"]').setValue('654321'); click(w, '微信验证码绑定'); await settle()
-  calls.codeBind[0].resolve({ status: 400, message: 'SYNTHETIC_UNSAFE_UPSTREAM SYNTHETIC_BIND_SECRET ' + PW }); await settle(); assert.equal(w.vm.wechatCodeForm.code, '654321'); assert.equal(w.vm.wechatCodeSubmitting, false); assert.equal(user.getStoredCurrentUser().wechatId, ''); assertPrivateFeedback()
+  calls.codeBind[0].resolve({ status: 400, message: 'SYNTHETIC_UNSAFE_UPSTREAM SYNTHETIC_BIND_SECRET ' + PW }); await settle(); assert.equal(w.vm.wechatCodeForm.code, '654321'); assert.equal(w.vm.wechatCodeSubmitting, false); assert.equal(user.getStoredCurrentUser().wechatId, ''); assert.equal(stateOf(w, 'wechat'), 'error'); assert.equal(stateOf(w, 'phone'), 'ready'); assert.equal(w.text().includes('SYNTHETIC_BIND_SECRET'), false); assertPrivateFeedback()
 })
 test('REGISTER_PROFILE ownership ordinary initial and refreshed me results cannot overwrite B or release a newer load', async () => {
   meReply = null; const w = await open(Profile, A); const old = calls.me[0]; user.setStoredCurrentUser(B); await settle(); click(w, '刷新'); await settle(); assert.equal(calls.me.length, 2); assert.equal(w.vm.loading, true)
@@ -367,4 +367,58 @@ test('REGISTER_PROFILE ownership same ordinary actor metadata update preserves u
   assert.equal(w.vm.profileForm.nickname, '未保存的昵称', 'SAME_ACTOR_METADATA_DOES_NOT_ERASE_NICKNAME'); assert.equal(w.vm.phoneForm.phone, '13800000000'); assert.equal(w.vm.phoneForm.smsCode, OTP); assert.equal(w.vm.sendingPhoneCode, true); await settle()
   assert.equal(w.vm.currentUser.balance, 0.987654); assert.equal(calls.me.length, meCount, 'SAME_ACTOR_METADATA_NEEDS_NO_NEW_AUTHENTICATION_READ'); assert.equal(calls.phoneSMS.length, 1)
   issued.resolve({ status: 202 }); await settle(); assert.equal(w.vm.sendingPhoneCode, false); assert.equal(w.vm.smsCooldownActive, true); assert.equal(w.vm.profileForm.nickname, '未保存的昵称'); assert.equal(w.vm.phoneForm.phone, '13800000000'); assert.deepEqual(user.getStoredCurrentUser(), refreshed)
+})
+
+const card = (w, key) => w.get('[data-profile-card="' + key + '"]')
+const stateOf = (w, key) => card(w, key).attributes('data-card-state')
+
+test('Profile account cards: confirmed owner, distinct missing data and no mutations before /me', async () => {
+  meReply = null
+  const w = await open(Profile, A)
+  const all = ['base', 'identity', 'phone', 'wechat']
+  assert.deepEqual(all.map(k => stateOf(w, k)), ['loading', 'loading', 'loading', 'loading'])
+  assert.equal(card(w, 'identity').get('button').element.disabled, true)
+  assert.equal(card(w, 'phone').text().includes('未绑定'), false)
+  calls.me[0].resolve({ status: 200, data: { nickname: 'UNCONFIRMED_PRIVATE_NAME', phone: A.phone } }); await settle()
+  assert.deepEqual(all.map(k => stateOf(w, k)), ['error', 'error', 'error', 'error'])
+  assert.equal(w.vm.profileReady, false); assert.equal(w.text().includes('UNCONFIRMED_PRIVATE_NAME'), false)
+  await w.findAll('form')[0].trigger('submit'); await settle(); assert.equal(calls.profile.length, 0)
+  meReply = { id: A.id, role: A.role, status: A.status, phone: null, wechatId: null }
+  click(w, '刷新'); await settle()
+  assert.deepEqual(all.map(k => stateOf(w, k)), ['empty', 'empty', 'empty', 'empty'])
+  assert.equal(calls.me.length, 2)
+})
+
+test('Profile account cards: independent edits, single read, scoped failure, unconfirmed mutation and rename hint', async () => {
+  const w = await open(Profile, A)
+  await profileFields(w, 'updated_fixture_login', '新昵称'); await phoneFields(w)
+  await w.findAll('form')[0].trigger('submit'); await settle()
+  assert.deepEqual(['base', 'identity', 'phone', 'wechat'].map(k => stateOf(w,k)), ['ready','loading','ready','empty'])
+  await w.findAll('form')[1].trigger('submit'); await settle()
+  calls.phone[0].resolve({ status: 422, message: 'SYNTHETIC_UNSAFE_UPSTREAM' }); await settle()
+  assert.equal(stateOf(w, 'phone'), 'error'); assert.equal(stateOf(w, 'identity'), 'loading')
+  assert.ok(card(w, 'phone').text().includes('手机号未完成')); assert.equal(w.text().includes('SYNTHETIC_UNSAFE_UPSTREAM'), false)
+  assert.equal(w.vm.profileForm.nickname, '新昵称'); assert.equal(w.vm.phoneForm.phone, '13800000000')
+  await resolve('profile', { ...A, username: 'updated_fixture_login', nickname:'新昵称' })
+  assert.equal(stateOf(w, 'identity'), 'ready'); assert.match(card(w, 'identity').text(), /下次登录.*更新后的用户名/)
+  assert.equal(stateOf(w, 'phone'), 'error'); assert.equal(calls.me.length, 1)
+  await w.findAll('form')[1].trigger('submit'); await settle(); await resolve('phone', { id: A.id })
+  assert.equal(stateOf(w,'phone'),'error'); assert.match(card(w,'phone').text(), /未确认/)
+  assert.equal(w.vm.currentUser.phone, A.phone); assert.equal(w.vm.phoneForm.phone,'13800000000')
+  user.clearStoredCurrentUser(); await settle()
+  assert.equal(w.vm.profileReady, false); assert.equal(w.text().includes('手机号未完成'), false)
+  assert.equal(card(w, 'identity').get('button').element.disabled, true)
+})
+
+test('Profile account cards: unavailable binding channels only affect the cards needing them', async () => {
+  meReply={...A, wechatId:'synthetic-old-wechat-id'}; settings = null
+  const w=await open(Profile,A)
+  assert.deepEqual(['base','identity','phone','wechat'].map(k => stateOf(w,k)),['ready','ready','error','ready'])
+  assert.ok(card(w,'phone').text().includes('尾号 0000')); assert.equal(card(w,'phone').text().includes('管理员尚未启用'),false)
+  assert.equal(card(w,'wechat').text().includes('synthetic-old-wechat-id'),false)
+  assert.ok(card(w,'wechat').findAll('button').some(b=>b.text().includes('解绑微信')))
+  const meReads=calls.me.length
+  settings={...defaults}; click(w,'重新读取绑定设置'); await settle()
+  assert.equal(stateOf(w,'phone'),'ready'); assert.equal(calls.me.length,meReads)
+  assert.equal(calls.settings.length,2);assert.equal(calls.phoneSMS.length+calls.unbind.length,0)
 })

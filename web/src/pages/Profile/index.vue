@@ -63,10 +63,11 @@
         </a-card>
     </ConsoleSummaryGrid>
 
-    <a-card :bordered="false" class="page-card" :loading="loading">
-      <a-row :gutter="[16, 16]">
-        <a-col :xs="24" :lg="10">
-          <ConsolePanel class="profile-panel" title="基础信息" description="账号创建与最近登录情况。">
+    <div class="account-columns">
+      <div class="account-column">
+        <AccountCard kind="base" :heading-id="fieldId('base-heading')" title="基础信息"
+          description="账号创建与最近登录情况。" :view="cards.base">
+          <template v-if="profileReady">
             <div class="profile-field">
               <span class="profile-field-label">用户名</span>
               <span data-profile-private>{{ currentUser.username || '-' }}</span>
@@ -84,198 +85,193 @@
               <span data-profile-private>{{ formatDateTime(currentUser.createdAt) }}</span>
             </div>
             <div class="profile-field">
+              <span class="profile-field-label">上次登录</span>
+              <span data-profile-private>{{ formatDateTime(currentUser.lastLoginAt) }}</span>
+            </div>
+            <div class="profile-field">
               <span class="profile-field-label">登录 IP</span>
               <span data-profile-private class="location-value">{{ formatValueWithLocation(currentUser.lastLoginIp, ipLocations[normalizeLocationKey(currentUser.lastLoginIp)]) || '-' }}</span>
             </div>
-            <div class="profile-section-divider"></div>
-            <div class="panel-heading panel-heading--form">
-              <h3 class="panel-title">修改用户名和昵称</h3>
-              <p class="panel-subtitle">更新后使用新用户名登录。</p>
-            </div>
-            <a-form :name="fieldId('profile')" layout="vertical" :model="profileForm" @finish="renderHandlers.submitProfile">
-              <a-form-item label="用户名" name="username" required>
-                <a-input
-                  :value="profileForm.username"
-                  @update:value="renderHandlers.setUsername"
-                  :disabled="!profileReady"
-                  placeholder="只能使用中文、英文、数字、下划线和@"
-                  :maxlength="255"
-                />
-              </a-form-item>
-              <a-form-item label="昵称" name="nickname">
-                <a-input
-                  :value="profileForm.nickname"
-                  @update:value="renderHandlers.setNickname"
-                  :disabled="!profileReady"
-                  placeholder="可选，最多255个字符"
-                  :maxlength="255"
-                />
-              </a-form-item>
-              <a-button type="primary" html-type="submit" :loading="updatingProfile" :disabled="!profileReady">
-                保存资料
-              </a-button>
-            </a-form>
-          </ConsolePanel>
-        </a-col>
-
-        <a-col :xs="24" :lg="14">
-          <ConsolePanel class="profile-panel">
-            <template #heading>
-              <div>
-                <h2 class="panel-title">手机号绑定</h2>
-                <div class="panel-subtitle">
-                  当前：<span data-profile-private class="location-value">{{ currentUser.phone ? formatValueWithLocation(currentUser.phone, phoneLocations[normalizeLocationKey(currentUser.phone)]) : '未绑定' }}</span>
-                  <span data-profile-private v-if="currentUser.phoneBoundAt" class="location-extra">，绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
-                </div>
-              </div>
-            </template>
-            <a-alert
-              v-if="!publicAuthSettings.smsLoginEnabled"
-              type="warning"
-              show-icon
-              message="管理员尚未启用手机号，当前无法更换手机号。"
-            />
-            <a-form v-else layout="vertical" :model="phoneForm" @finish="renderHandlers.submitPhoneChange">
-              <a-form-item label="新手机号" :html-for="fieldId('phone')" required>
-                <MainlandPhoneInput
-                  :value="phoneForm.phone"
-                  @update:value="renderHandlers.setPhone"
-                  :id="fieldId('phone')"
-                  :disabled="!profileReady"
-                />
-              </a-form-item>
-              <a-form-item label="新手机号验证码" :html-for="fieldId('sms-code')" required>
-                <div class="sms-code-row">
-                  <a-input
-                    :value="phoneForm.smsCode"
-                    @update:value="renderHandlers.setSMSCode"
-                    :id="fieldId('sms-code')"
-                    :disabled="!profileReady"
-                    placeholder="请输入短信验证码"
-                    :maxlength="6"
-                    inputmode="numeric"
-                  />
-                  <a-button
-                    :loading="sendingPhoneCode"
-                    :disabled="!profileReady || sendingPhoneCode || smsCooldownActive || !phoneForm.phone"
-                    @click="renderHandlers.sendPhoneChangeCode"
-                  >
-                    {{ smsCooldownText }}
-                  </a-button>
-                </div>
-              </a-form-item>
-              <a-button
-                type="primary"
-                html-type="submit"
-                :loading="updatingPhone"
-                :disabled="!profileReady || updatingPhone || !phoneForm.phone || !phoneForm.smsCode"
-              >
-                确认更换手机号
-              </a-button>
-            </a-form>
-          </ConsolePanel>
-        </a-col>
-      </a-row>
-    </a-card>
-
-    <a-card :bordered="false" class="page-card" :loading="loading">
-      <template #title>
-        <div>
-          <h2 class="page-title">微信绑定</h2>
-          <div class="page-subtitle">绑定后可使用微信扫描或微信验证码登录当前账号。</div>
-        </div>
-      </template>
-
-      <div v-if="currentUser.wechatId" class="wechat-bound-panel">
-        <a-tag color="green">已绑定</a-tag>
-        <div data-profile-private class="wechat-binding-id">
-          微信ID：{{ currentUser.wechatId }}
-        </div>
-        <div data-profile-private class="wechat-bound-time">
-          绑定时间：{{ formatDateTime(currentUser.wechatBoundAt) }}
-        </div>
-        <a-popconfirm
-          title="确定解绑当前微信吗？解绑后将不能继续使用该微信快捷登录。"
-          ok-text="确认解绑"
-          cancel-text="取消"
-          @confirm="wechatHandlers.unbindWechat"
-        >
-          <a-button danger :disabled="!profileReady" :loading="unbindingWechat">解绑微信</a-button>
-        </a-popconfirm>
-      </div>
-
-      <div v-else :key="wechatModeKey" class="wechat-bind-panel">
-        <div class="wechat-binding-id wechat-binding-id--empty">未绑定</div>
-        <a-alert
-          v-if="!publicAuthSettings.wechatLoginEnabled"
-          type="warning"
-          show-icon
-          message="管理员尚未开启微信，当前无法绑定。"
-        />
-        <template v-else>
-          <a-radio-group
-            v-if="publicAuthSettings.wechatScanLoginEnabled && publicAuthSettings.wechatCodeLoginEnabled"
-            :value="wechatBindSubMode"
-            @update:value="wechatHandlers.setMode"
-            button-style="solid"
-            class="wechat-mode-switch"
-          >
-            <a-radio-button value="scan">微信扫描</a-radio-button>
-            <a-radio-button value="code">微信验证码</a-radio-button>
-          </a-radio-group>
-
-          <template v-if="wechatRenderMode === 'scan'">
-            <div class="wechat-qrcode-frame">
-              <a-spin v-if="wechatQrLoading" />
-              <img v-else-if="wechatQrCodeImageData" :src="wechatQrCodeImageData" alt="微信绑定二维码" />
-              <div v-else class="wechat-qrcode-empty">点击下方按钮获取绑定二维码</div>
-            </div>
-            <div class="wechat-status">
-              {{ wechatStatusText }}
-              <span v-if="wechatRemainingSeconds !== null">，剩余 {{ wechatRemainingSeconds }} 秒</span>
-              <span v-if="wechatTransportText">，{{ wechatTransportText }}</span>
-            </div>
-            <section v-if="wechatQrFailure" data-profile-wechat-feedback>
-              <RequestFailureAlert :key="wechatQrFailureContextKey" :failure="wechatQrFailure" :message="wechatQrFailureText" :busy="wechatQrLoading" :context-key="wechatQrFailureContextKey" :is-current="isCurrentWechatQrFailure" />
-            </section>
-            <a-button block :disabled="!profileReady" :loading="wechatQrLoading" @click="wechatHandlers.startWechatBind">刷新绑定二维码</a-button>
           </template>
-
-          <template v-else>
-            <div class="wechat-qrcode-frame">
-              <img
-                v-if="publicAuthSettings.wechatCodeStaticQrcodeUrl"
-                :src="publicAuthSettings.wechatCodeStaticQrcodeUrl"
-                alt="微信验证码二维码"
-              />
-              <div v-else class="wechat-qrcode-empty">请联系管理员配置验证码二维码</div>
-            </div>
-            <div class="wechat-status">扫码关注后发送“验证码”，再输入收到的验证码绑定</div>
-            <div class="wechat-code-field">
-              <label for="profile-wechat-code">微信验证码</label>
+        </AccountCard>
+        <AccountCard kind="identity" :heading-id="fieldId('identity-heading')" title="修改用户名和昵称"
+          description="更新后使用新用户名登录。" :view="cards.identity">
+          <a-form :name="fieldId('profile')" layout="vertical" :model="profileForm" @finish="renderHandlers.submitProfile">
+            <a-form-item label="用户名" name="username" required>
               <a-input
-                id="profile-wechat-code"
-                :value="wechatCodeForm.code"
-                @update:value="wechatHandlers.setCode"
+                :value="profileForm.username"
+                @update:value="renderHandlers.setUsername"
                 :disabled="!profileReady"
-                placeholder="请输入微信验证码"
-                inputmode="numeric"
-                :maxlength="12"
+                placeholder="只能使用中文、英文、数字、下划线和@"
+                :maxlength="255"
               />
-            </div>
+            </a-form-item>
+            <a-form-item label="昵称" name="nickname">
+              <a-input
+                :value="profileForm.nickname"
+                @update:value="renderHandlers.setNickname"
+                :disabled="!profileReady"
+                placeholder="可选，最多255个字符"
+                :maxlength="255"
+              />
+            </a-form-item>
+            <a-button type="primary" html-type="submit" :loading="updatingProfile" :disabled="!profileReady">
+              保存资料
+            </a-button>
+          </a-form>
+        </AccountCard>
+      </div>
+      <div class="account-column">
+        <AccountCard kind="phone" :heading-id="fieldId('phone-heading')" title="手机号绑定"
+          description="使用新手机号与验证码绑定或更换。" :view="cards.phone">
+          <div v-if="profileReady && hasPhoneField" class="binding-summary">
+            <strong data-profile-private>{{ maskedPhone || '未绑定' }}</strong>
+            <span v-if="boundPhoneLocation" data-profile-private>{{ boundPhoneLocation }}</span>
+            <span data-profile-private v-if="currentUser.phoneBoundAt">绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
+          </div>
+          <a-alert
+            v-if="settingsState === 'ready' && bindingSettingsKnown.phone && !publicAuthSettings.smsLoginEnabled"
+            type="warning"
+            show-icon
+            message="管理员尚未启用手机号，当前无法更换手机号。"
+          />
+          <a-form v-else-if="settingsState === 'ready' && bindingSettingsKnown.phone && publicAuthSettings.smsLoginEnabled" layout="vertical" :model="phoneForm" @finish="renderHandlers.submitPhoneChange">
+            <a-form-item label="新手机号" :html-for="fieldId('phone')" required>
+              <MainlandPhoneInput
+                :value="phoneForm.phone"
+                @update:value="renderHandlers.setPhone"
+                :id="fieldId('phone')"
+                :disabled="!profileReady"
+              />
+            </a-form-item>
+            <a-form-item label="新手机号验证码" :html-for="fieldId('sms-code')" required>
+              <div class="sms-code-row">
+                <a-input
+                  :value="phoneForm.smsCode"
+                  @update:value="renderHandlers.setSMSCode"
+                  :id="fieldId('sms-code')"
+                  :disabled="!profileReady"
+                  placeholder="请输入短信验证码"
+                  :maxlength="6"
+                  inputmode="numeric"
+                />
+                <a-button
+                  :loading="sendingPhoneCode"
+                  :disabled="!profileReady || sendingPhoneCode || smsCooldownActive || !phoneForm.phone"
+                  @click="renderHandlers.sendPhoneChangeCode"
+                >
+                  {{ smsCooldownText }}
+                </a-button>
+              </div>
+            </a-form-item>
             <a-button
               type="primary"
-              block
-              :loading="wechatCodeSubmitting"
-              :disabled="!profileReady || wechatCodeSubmitting || !wechatCodeForm.code || !publicAuthSettings.wechatCodeStaticQrcodeUrl"
-              @click="wechatHandlers.submitWechatCodeBind"
+              html-type="submit"
+              :loading="updatingPhone"
+              :disabled="!profileReady || updatingPhone || !phoneForm.phone || !phoneForm.smsCode"
             >
-              微信验证码绑定
+              确认更换手机号
             </a-button>
-          </template>
-        </template>
+          </a-form>
+          <a-button v-if="(settingsState === 'error' || (settingsState === 'ready' && !bindingSettingsKnown.phone)) && profileReady" @click="renderHandlers.loadSettings">重新读取绑定设置</a-button>
+        </AccountCard>
+        <AccountCard kind="wechat" :heading-id="fieldId('wechat-heading')" title="微信绑定"
+          description="绑定后可使用微信扫码或验证码登录。" :view="cards.wechat">
+          <div v-if="profileReady && hasWechatField && currentUser.wechatId" class="wechat-bound-panel">
+            <a-tag color="green">已绑定</a-tag>
+            <div data-profile-private class="wechat-binding-id">
+              {{ maskedWechat }}
+            </div>
+            <div data-profile-private class="wechat-bound-time">
+              绑定时间：{{ formatDateTime(currentUser.wechatBoundAt) }}
+            </div>
+            <a-popconfirm
+              title="确定解绑当前微信吗？解绑后将不能继续使用该微信快捷登录。"
+              ok-text="确认解绑"
+              cancel-text="取消"
+              @confirm="wechatHandlers.unbindWechat"
+            >
+              <a-button danger :disabled="!profileReady" :loading="unbindingWechat">解绑微信</a-button>
+            </a-popconfirm>
+          </div>
+
+          <div v-else-if="profileReady && hasWechatField" :key="wechatModeKey" class="wechat-bind-panel">
+            <div class="wechat-binding-id wechat-binding-id--empty">未绑定</div>
+            <a-alert
+              v-if="settingsState === 'ready' && bindingSettingsKnown.wechat && !publicAuthSettings.wechatLoginEnabled"
+              type="warning"
+              show-icon
+              message="管理员尚未开启微信，当前无法绑定。"
+            />
+            <template v-else-if="settingsState === 'ready' && bindingSettingsKnown.wechat && publicAuthSettings.wechatLoginEnabled">
+              <a-radio-group
+                v-if="publicAuthSettings.wechatScanLoginEnabled && publicAuthSettings.wechatCodeLoginEnabled"
+                :value="wechatBindSubMode"
+                @update:value="wechatHandlers.setMode"
+                button-style="solid"
+                class="wechat-mode-switch"
+              >
+                <a-radio-button value="scan">微信扫描</a-radio-button>
+                <a-radio-button value="code">微信验证码</a-radio-button>
+              </a-radio-group>
+
+              <template v-if="wechatRenderMode === 'scan'">
+                <div class="wechat-qrcode-frame">
+                  <a-spin v-if="wechatQrLoading" />
+                  <img v-else-if="wechatQrCodeImageData" :src="wechatQrCodeImageData" alt="微信绑定二维码" />
+                  <div v-else class="wechat-qrcode-empty">点击下方按钮获取绑定二维码</div>
+                </div>
+                <div class="wechat-status">
+                  {{ wechatStatusText }}
+                  <span v-if="wechatRemainingSeconds !== null">，剩余 {{ wechatRemainingSeconds }} 秒</span>
+                  <span v-if="wechatTransportText">，{{ wechatTransportText }}</span>
+                </div>
+                <section v-if="wechatQrFailure" data-profile-wechat-feedback>
+                  <RequestFailureAlert :key="wechatQrFailureContextKey" :failure="wechatQrFailure" :message="wechatQrFailureText" :busy="wechatQrLoading" :context-key="wechatQrFailureContextKey" :is-current="isCurrentWechatQrFailure" />
+                </section>
+                <a-button block :disabled="!profileReady" :loading="wechatQrLoading" @click="wechatHandlers.startWechatBind">刷新绑定二维码</a-button>
+              </template>
+
+              <template v-else>
+                <div class="wechat-qrcode-frame">
+                  <img
+                    v-if="publicAuthSettings.wechatCodeStaticQrcodeUrl"
+                    :src="publicAuthSettings.wechatCodeStaticQrcodeUrl"
+                    alt="微信验证码二维码"
+                  />
+                  <div v-else class="wechat-qrcode-empty">请联系管理员配置验证码二维码</div>
+                </div>
+                <div class="wechat-status">扫码关注后发送“验证码”，再输入收到的验证码绑定</div>
+                <div class="wechat-code-field">
+                  <label :for="fieldId('wechat-code')">微信验证码</label>
+                  <a-input
+                    :id="fieldId('wechat-code')"
+                    data-profile-wechat-code
+                    :value="wechatCodeForm.code"
+                    @update:value="wechatHandlers.setCode"
+                    :disabled="!profileReady"
+                    placeholder="请输入微信验证码"
+                    inputmode="numeric"
+                    :maxlength="12"
+                  />
+                </div>
+                <a-button
+                  type="primary"
+                  block
+                  :loading="wechatCodeSubmitting"
+                  :disabled="!profileReady || wechatCodeSubmitting || !wechatCodeForm.code || !publicAuthSettings.wechatCodeStaticQrcodeUrl"
+                  @click="wechatHandlers.submitWechatCodeBind"
+                >
+                  微信验证码绑定
+                </a-button>
+              </template>
+            </template>
+          </div>
+
+          <a-button v-if="(settingsState === 'error' || (settingsState === 'ready' && !bindingSettingsKnown.wechat)) && profileReady && !currentUser.wechatId" @click="renderHandlers.loadSettings">重新读取绑定设置</a-button>
+        </AccountCard>
       </div>
-    </a-card>
+    </div>
 
     <!-- ─────────── 自助注销（B2-5）───────────
          用户诉求：「注销提供两个入口，另一个入口在个人中心」。
@@ -328,6 +324,7 @@ import ClosureGuide from '@/pages/Tickets/ClosureGuide.vue'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
 import { buildDeviceLimitHint, buildDeviceLimitText } from '@/utils/userLevelHelpers.mjs'
 import { getMyUserLevel } from '@/api/UserLevelApi'
+import AccountCard from './AccountCard.vue'
 import { buildProfileBalanceDisplay } from '@/utils/profileBalance.mjs'
 import { captureCurrentUserLease, getCurrentUserLogoutEpoch, getStoredCurrentUser, setStoredCurrentUser, useCurrentUserDisplay } from '@/utils/currentUser.js'
 import { currentUserIdentity } from '@/utils/currentUserScope'
@@ -457,6 +454,54 @@ export default defineComponent({
       smsLoginEnabled: false, wechatLoginEnabled: false, wechatScanLoginEnabled: false,
       wechatCodeLoginEnabled: false, wechatDefaultLoginMode: 'scan', wechatCodeStaticQrcodeUrl: '',
     })
+    const settingsState = ref('loading')
+    const bindingSettingsKnown = ref({ phone: false, wechat: false })
+    const cardNotes = reactive({ identity: null, phone: null, wechat: null })
+    const note = (key, state, message) => { cardNotes[key] = { state, message } }
+    // The authenticated /me DTO has an account ID. Neither cached role nor binding data confirms a principal.
+    const confirmedProfile = value => Number.isSafeInteger(Number(value?.id)) && Number(value.id) > 0 &&
+      (typeof value.id === 'number' || typeof value.id === 'string')
+    const hasPhoneField = computed(() => currentUser.value.phone === null || typeof currentUser.value.phone === 'string')
+    const hasWechatField = computed(() => currentUser.value.wechatId === null || typeof currentUser.value.wechatId === 'string')
+    const maskedPhone = computed(() => {
+      const value = String(currentUser.value.phone ?? '').trim()
+      if (!value) return ''
+      return /^1[0-9]{10}$/.test(value) ? '尾号 ' + value.slice(-4) : '已绑定（号码已隐藏）'
+    })
+    const maskedWechat = computed(() => {
+      const id = String(currentUser.value.wechatId || '').trim()
+      return id.length >= 8 && /[A-Za-z0-9_-]{4}$/.test(id) ? '标识尾号 ' + id.slice(-4) : '微信标识已隐藏'
+    })
+    const boundPhoneLocation = computed(() => {
+      const phone = String(currentUser.value.phone || '')
+      const region = phone && phoneLocations[normalizeLocationKey(phone)]
+      return region && !region.includes(phone) && !(currentUser.value.wechatId && region.includes(currentUser.value.wechatId)) ? region : ''
+    })
+    const view = (state, message = '') => ({ state, message })
+    const cardView = key => {
+      if (!profileReady.value || loading.value) {
+        return profileError.value ? view('error', '尚未确认本人资料，请刷新重试。') : view('loading', '正在读取本人资料…')
+      }
+      const pending = key === 'identity' ? updatingProfile.value :
+        key === 'phone' ? updatingPhone.value || sendingPhoneCode.value :
+          key === 'wechat' && (unbindingWechat.value || wechatQrLoading.value || wechatCodeSubmitting.value)
+      if (pending) return view('loading', key === 'identity' ? '正在保存资料…' : '正在处理，请稍候…')
+      if (cardNotes[key]) return cardNotes[key]
+      if (profileError.value) return view('error', '刷新失败，保留上次确认的资料。')
+      if (key === 'base') {
+        return ['username', 'nickname', 'registerSource', 'createdAt', 'lastLoginAt', 'lastLoginIp'].some(k => currentUser.value[k])
+          ? view('ready') : view('empty', '暂无基础资料。')
+      }
+      if (key === 'identity') return currentUser.value.username || currentUser.value.nickname ? view('ready') : view('empty', '尚未设置用户名或昵称。')
+      const known = key === 'phone' ? hasPhoneField.value : hasWechatField.value
+      const bound = key === 'phone' ? maskedPhone.value : currentUser.value.wechatId
+      if (!known) return view('error', '未收到绑定状态，请刷新核对。')
+      if ((key === 'phone' || !bound) && settingsState.value !== 'ready') return settingsState.value === 'loading'
+        ? view('loading', '正在读取绑定设置…') : view('error', '绑定设置读取失败；已确认的绑定状态不变。')
+      if ((key === 'phone' || !bound) && !bindingSettingsKnown.value[key]) return view('error', '未收到绑定设置，请重试。')
+      return bound ? view('ready') : view('empty')
+    }
+    const cards = computed(() => Object.fromEntries(['base', 'identity', 'phone', 'wechat'].map(key => [key, cardView(key)])))
     const smsCooldown = useSmsCooldown()
     const attempts = new Map()
     const draftEpoch = { profile: 0, phone: 0, wechat: 0 }
@@ -553,6 +598,8 @@ export default defineComponent({
       try {
         clearCurrentUserFailure()
         clearWechatQrFailure()
+        if (attempts.has('settings')) settingsState.value = 'error'
+        for (const key of Object.keys(cardNotes)) cardNotes[key] = null
         renderEpoch.value += 1
         const epoch = renderEpoch.value
         // Empty controlled values drain before disposing Antd's accepted state.
@@ -610,8 +657,10 @@ export default defineComponent({
         message.warning('请先刷新并确认当前账号信息后继续操作')
         return null
       }
+      const key = kind === 'profile-save' ? 'identity' : kind.startsWith('phone-') ? 'phone' : kind.startsWith('wechat-') ? 'wechat' : ''
+      if (key) cardNotes[key] = null
       const owner = {
-        kind, mutation, draft, input: draftEpoch[draft], render: renderEpoch.value, route: routeKey(),
+        card: key, kind, mutation, draft, input: draftEpoch[draft], render: renderEpoch.value, route: routeKey(),
         actor: actorKey(profileUser.value), lease: captureCurrentUserLease(), controller: new AbortController(),
         mode: mode ? wechatModeEpoch.value : undefined, data: dataGeneration, profileDraft: draftEpoch.profile,
       }
@@ -621,13 +670,28 @@ export default defineComponent({
     const reportError = (owner, failure, fallback) => {
       if (!isCurrent(owner) || failure?.name === 'AbortError' || failure?.code === 'ERR_CANCELED') return
       const text = publicFailureText(failure, fallback)
+      if (owner.card) note(owner.card, 'error', text)
       if (text === unknownOutcomeText) message.warning(text)
       else message.error(text)
     }
+    const confirmsChange = (user, owner) => {
+      switch (owner.kind) {
+        case 'phone-change': return user.phone === owner.snapshot?.phone
+        case 'wechat-unbind': return user.wechatId === null || user.wechatId === ''
+        case 'wechat-code':
+        case 'wechat-scan': return typeof user.wechatId === 'string' && Boolean(user.wechatId.trim())
+        case 'profile-save': return typeof user.username === 'string' && user.username.trim() !== '' && Object.hasOwn(user, 'nickname')
+        default: return true
+      }
+    }
     const applyCurrentUser = (user, owner, fields = null) => {
       if (!isCurrent(owner)) return false
-      if (!user || typeof user !== 'object' || Array.isArray(user) || !Object.keys(user).length) {
-        if (owner.mutation) message.warning('操作已提交，但当前资料尚未确认，请先刷新核对，勿重复提交。')
+      if (!user || typeof user !== 'object' || Array.isArray(user) || !confirmedProfile(user) ||
+        (fields && (!Object.hasOwn(user, fields[0]) || !confirmsChange(user, owner)))) {
+        if (owner.mutation) {
+          note(owner.card, 'error', unknownOutcomeText)
+          message.warning('操作已提交，但当前资料尚未确认，请先刷新核对，勿重复提交。')
+        }
         return false
       }
       if (profileUser.value?.id != null && user.id != null && String(profileUser.value.id) !== String(user.id)) {
@@ -716,6 +780,7 @@ export default defineComponent({
       const owner = beginAttempt('profile-read')
       if (!owner) return
       loading.value = true; profileError.value = ''
+      for (const key of Object.keys(cardNotes)) cardNotes[key] = null
       clearCurrentUserFailure()
       const ownsFailure = captureCurrentUserFailureOwner(owner)
       try {
@@ -728,7 +793,7 @@ export default defineComponent({
           throw error
         }
         if (!isCurrent(owner) || owner.data !== dataGeneration) return
-        if (res?.status !== 200 || !res.data || typeof res.data !== 'object' || Array.isArray(res.data) || !Object.keys(res.data).length) {
+        if (res?.status !== 200 || !res.data || typeof res.data !== 'object' || Array.isArray(res.data) || !confirmedProfile(res.data)) {
           profileError.value = '获取个人状态失败，已确认的资料与未保存内容保持不变，请刷新重试'
           showCurrentUserFailure(res, ownsFailure)
           reportError(owner, res, '获取个人状态失败，请稍后刷新重试')
@@ -751,10 +816,14 @@ export default defineComponent({
     const loadPublicSettings = async () => {
       const owner = beginAttempt('settings')
       if (!owner) return
+      settingsState.value = 'loading'
       try {
         if (!isCurrent(owner)) return
         const res = await getPublicRegisterStatus()
-        if (!isCurrent(owner) || res?.status !== 200) return
+        if (!isCurrent(owner)) return
+        if (res?.status !== 200 || !res.data || typeof res.data !== 'object' || Array.isArray(res.data)) { settingsState.value = 'error'; return }
+        bindingSettingsKnown.value = { phone: typeof res.data.smsLoginEnabled === 'boolean', wechat: typeof res.data.wechatLoginEnabled === 'boolean' }
+        settingsState.value = 'ready'
         publicAuthSettings.value = {
           captchaProvider: res?.data?.captchaProvider || 'remote',
           captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn', captchaType: res?.data?.captchaType || 'RANDOM',
@@ -764,7 +833,7 @@ export default defineComponent({
         }
         internalModeChange = true
         try { wechatBindSubMode.value = chooseWechatBindSubMode(); wechatRenderMode.value = wechatBindSubMode.value } finally { internalModeChange = false }
-      } catch { /* Public settings failure must not discard confirmed profile data. */ }
+      } catch { if (isCurrent(owner)) settingsState.value = 'error' }
       finally { closeAttempt(owner) }
     }
     const ensureCaptchaToken = (scene, targetForm, owner) => ensureAuthCaptchaToken({
@@ -773,7 +842,7 @@ export default defineComponent({
       signal: owner.controller.signal, isCurrent: () => isCurrent(owner),
     })
     const sendPhoneChangeCode = async () => {
-      if (!publicAuthSettings.value.smsLoginEnabled || smsCooldown.active.value) return
+      if (settingsState.value !== 'ready' || !publicAuthSettings.value.smsLoginEnabled || smsCooldown.active.value) return
       const owner = beginAttempt('phone-send', { mutation: true, draft: 'phone' })
       if (!owner) return
       sendingPhoneCode.value = true
@@ -790,22 +859,24 @@ export default defineComponent({
         const res = await sendUserPhoneChangeSMSCode(payload)
         if (!isCurrent(owner)) return
         if (res?.status === 202) {
+          note('phone', 'error', '短信发送结果待核对；尚未更改绑定。')
           message.warning('短信发送结果待核对，请先等待短信，勿重复发送'); smsCooldown.start(); return
         }
         if (res?.status !== 200) { reportError(owner, res, '短信发送未完成，请稍后再试'); return }
+        note('phone', 'ready', '验证码已发送，尚未更改绑定。')
         message.success('发送成功，请注意查收'); smsCooldown.start()
       } catch (error) {
         reportError(owner, error, owner.phase === 'issued' ? unknownOutcomeText : owner.phase === 'captcha' ? '人机验证未完成，请重新验证' : '请输入11位手机号')
       } finally { closeAttempt(owner) }
     }
     const submitPhoneChange = async () => {
-      if (!publicAuthSettings.value.smsLoginEnabled) return
+      if (settingsState.value !== 'ready' || !publicAuthSettings.value.smsLoginEnabled) return
       const owner = beginAttempt('phone-change', { mutation: true, draft: 'phone' })
       if (!owner) return
       updatingPhone.value = true
       try {
         const payload = owner.snapshot = { phone: ensurePhoneBeforeSMSCaptcha(phoneForm.phone), smsCode: phoneForm.smsCode }
-        if (!payload.smsCode) { message.warning('请输入短信验证码'); return }
+        if (!payload.smsCode) { note('phone', 'error', '请输入短信验证码'); message.warning('请输入短信验证码'); return }
         withInternalInputs(() => { phoneForm.phone = payload.phone })
         if (!isCurrent(owner)) return
         owner.phase = 'issued'
@@ -814,7 +885,7 @@ export default defineComponent({
         if (!isCurrent(owner)) return
         if (res?.status !== 200) { reportError(owner, res, '更换手机号未完成，请核对验证码后再操作'); return }
         if (!applyCurrentUser(res.data, owner, ['phone', 'phoneBoundAt'])) return
-        message.success('手机号更换成功')
+        note('phone', 'ready', '手机号更换成功'); message.success('手机号更换成功')
         const pendingSend = attempts.get('phone-send')
         if (!pendingSend?.issued) closeAttempt(pendingSend)
         // The successful change supersedes the old phone draft, while an
@@ -837,7 +908,10 @@ export default defineComponent({
         const res = await updateCurrentUserProfile({ ...payload })
         if (!isCurrent(owner)) return
         if (res?.status !== 200) { reportError(owner, res, '保存资料未完成，请核对用户名和昵称后重试'); return }
-        if (applyCurrentUser(res.data, owner, ['username', 'nickname'])) message.success('资料保存成功')
+        if (applyCurrentUser(res.data, owner, ['username', 'nickname'])) {
+          note('identity', 'ready', '资料已保存；下次登录请使用更新后的用户名。')
+          message.success('资料保存成功')
+        }
       } catch (error) { reportError(owner, error, unknownOutcomeText) }
       finally { closeAttempt(owner) }
     }
@@ -872,11 +946,12 @@ export default defineComponent({
             return false
           }
           if (applyCurrentUser(res.data, owner, ['wechatId', 'wechatBoundAt'])) {
-            message.success('微信绑定成功')
+            note('wechat', 'ready', '微信绑定成功'); message.success('微信绑定成功')
             completed = true
             return true
           }
         } else if (resolved.status === 'success') {
+          note('wechat', 'error', '该微信已绑定其他账号。')
           wechatStatusText.value = '该微信已绑定其他账号，请先在该账号中解绑'
           completed = true
           return true
@@ -892,7 +967,7 @@ export default defineComponent({
       return false
     }
     const startWechatBind = async () => {
-      if (wechatBindSubMode.value !== 'scan' || !publicAuthSettings.value.wechatLoginEnabled || !publicAuthSettings.value.wechatScanLoginEnabled || currentUser.value.wechatId) return
+      if (!hasWechatField.value || settingsState.value !== 'ready' || wechatBindSubMode.value !== 'scan' || !publicAuthSettings.value.wechatLoginEnabled || !publicAuthSettings.value.wechatScanLoginEnabled || currentUser.value.wechatId) return
       if (wechatQrLoading.value || attempts.has('wechat-code') || attempts.has('wechat-unbind') || attempts.get('wechat-scan')?.resolving) return
       closeAttempt(attempts.get('wechat-scan')); clearWechatScan()
       const owner = beginAttempt('wechat-scan', { mutation: true, mode: true })
@@ -910,6 +985,7 @@ export default defineComponent({
         const token = owner.token = res.data.loginToken
         wechatQrCodeImageData.value = res.data.qrcodeImageData; wechatLoginToken.value = token
         wechatStatusText.value = '请使用微信扫码确认绑定'
+        note('wechat', 'loading', '等待扫码确认；尚未绑定。')
         // Every native callback captures this operation and exact token, in
         // addition to the existing controller's generation/expiry/backoff guard.
         const owns = () => isCurrent(owner) && owner.token === token && wechatLoginToken.value === token
@@ -923,13 +999,19 @@ export default defineComponent({
           onRemaining: seconds => { if (owns()) wechatRemainingSeconds.value = seconds },
           onExpired: () => {
             if (!owns()) return
-            clearWechatScan(); wechatStatusText.value = '二维码已过期，请刷新'; closeAttempt(owner)
+            clearWechatScan(); wechatStatusText.value = '二维码已过期，请刷新'; note('wechat', 'error', '二维码已过期，请刷新。'); closeAttempt(owner)
           },
-          onError: () => { if (owns()) wechatStatusText.value = '微信绑定状态未确认，正在重试；请勿重复绑定。' },
+          onError: () => {
+            if (!owns()) return
+            wechatStatusText.value = '微信绑定状态未确认，正在重试；请勿重复绑定。'
+            note('wechat', 'error', wechatStatusText.value)
+          },
           onStatus: async (status, payload) => {
             if (!owns()) return
-            if (status === 'pending') wechatStatusText.value = '请使用微信扫码确认绑定'
-            else if (status === 'scanned') wechatStatusText.value = '已扫描，请在微信中确认'
+            if (status === 'pending' || status === 'scanned') {
+              wechatStatusText.value = status === 'pending' ? '请使用微信扫码确认绑定' : '已扫描，请在微信中确认'
+              note('wechat', 'loading', '等待微信确认；尚未绑定。')
+            }
             else if (status === 'success' || status === 'need_bind') return resolveWechatBindStatus(payload, owner, token)
           },
         })
@@ -941,6 +1023,7 @@ export default defineComponent({
     }
     const handleWechatBindSubModeChange = () => {
       clearWechatQrFailure()
+      cardNotes.wechat = null
       wechatModeEpoch.value += 1
       const modeEpoch = wechatModeEpoch.value, epoch = renderEpoch.value
       for (const kind of ['wechat-scan', 'wechat-code']) {
@@ -952,7 +1035,7 @@ export default defineComponent({
       }
       clearWechatScan()
       withInternalInputs(() => { wechatCodeForm.code = '' })
-      scrubInputs('#profile-wechat-code')
+      scrubInputs('[data-profile-wechat-code]')
       wechatStatusText.value = wechatBindSubMode.value === 'scan' ? '请使用微信扫码完成绑定' : '请输入微信验证码'
       nextTick().then(() => nextTick()).then(() => {
         if (active && renderEpoch.value === epoch && wechatModeEpoch.value === modeEpoch) {
@@ -962,7 +1045,7 @@ export default defineComponent({
       })
     }
     const submitWechatCodeBind = async () => {
-      if (wechatBindSubMode.value !== 'code' || !publicAuthSettings.value.wechatLoginEnabled || !publicAuthSettings.value.wechatCodeLoginEnabled || currentUser.value.wechatId || attempts.has('wechat-unbind') || attempts.get('wechat-scan')?.resolving) return
+      if (!hasWechatField.value || settingsState.value !== 'ready' || wechatBindSubMode.value !== 'code' || !publicAuthSettings.value.wechatLoginEnabled || !publicAuthSettings.value.wechatCodeLoginEnabled || currentUser.value.wechatId || attempts.has('wechat-unbind') || attempts.get('wechat-scan')?.resolving) return
       if (!wechatCodeForm.code) { if (viewCurrent()) message.warning('请输入微信验证码'); return }
       const owner = beginAttempt('wechat-code', { mutation: true, draft: 'wechat', mode: true })
       if (!owner) return
@@ -975,8 +1058,8 @@ export default defineComponent({
         if (!isCurrent(owner)) return
         if (res?.status !== 200) { reportError(owner, res, '微信验证码绑定未完成，请核对验证码后再操作'); return }
         if (!applyCurrentUser(res.data, owner, ['wechatId', 'wechatBoundAt'])) return
-        message.success('微信绑定成功')
-        withInternalInputs(() => { wechatCodeForm.code = '' }); scrubInputs('#profile-wechat-code'); clearWechatScan()
+        note('wechat', 'ready', '微信绑定成功'); message.success('微信绑定成功')
+        withInternalInputs(() => { wechatCodeForm.code = '' }); scrubInputs('[data-profile-wechat-code]'); clearWechatScan()
       } catch (error) { reportError(owner, error, unknownOutcomeText) }
       finally { closeAttempt(owner) }
     }
@@ -992,8 +1075,8 @@ export default defineComponent({
         if (!isCurrent(owner)) return
         if (res?.status !== 200) { reportError(owner, res, '微信解绑未完成，请核对账号的其他登录方式后重试'); return }
         if (!applyCurrentUser(res.data, owner, ['wechatId', 'wechatBoundAt'])) return
-        message.success('微信已解绑'); closeAttempt(attempts.get('wechat-scan')); clearWechatScan()
-        withInternalInputs(() => { wechatCodeForm.code = '' }); scrubInputs('#profile-wechat-code')
+        note('wechat', 'empty', '微信已解绑'); message.success('微信已解绑'); closeAttempt(attempts.get('wechat-scan')); clearWechatScan()
+        withInternalInputs(() => { wechatCodeForm.code = '' }); scrubInputs('[data-profile-wechat-code]')
         internalModeChange = true
         try { wechatBindSubMode.value = chooseWechatBindSubMode(); wechatRenderMode.value = wechatBindSubMode.value } finally { internalModeChange = false }
       } catch (error) { reportError(owner, error, unknownOutcomeText) }
@@ -1023,7 +1106,8 @@ export default defineComponent({
             input.value = ''; input.defaultValue = ''; input.removeAttribute('value')
           }
         },
-        loadProfile: run(loadProfile), submitProfile: run(submitProfile), submitPhoneChange: run(submitPhoneChange), sendPhoneChangeCode: run(sendPhoneChangeCode),
+        loadSettings: run(loadPublicSettings),
+        loadProfile: run(() => { if (settingsState.value !== 'ready') void loadPublicSettings(); return loadProfile() }), submitProfile: run(submitProfile), submitPhoneChange: run(submitPhoneChange), sendPhoneChangeCode: run(sendPhoneChangeCode),
         setUsername: run(value => { profileForm.username = value }), setNickname: run(value => { profileForm.nickname = value }),
         setPhone: run(value => { phoneForm.phone = value }), setSMSCode: run(value => { phoneForm.smsCode = normalizeSMSCodeInput(value) }),
       }
@@ -1040,6 +1124,7 @@ export default defineComponent({
     })
     const retireDraft = draft => {
       if (internalInputChange) return
+      cardNotes[draft === 'profile' ? 'identity' : draft] = null
       draftEpoch[draft] += 1
       for (const owner of [...attempts.values()]) {
         // A draft edit revokes completion/paint authority, not a request already
@@ -1089,6 +1174,7 @@ export default defineComponent({
 
     return {
       fieldId,
+      cards, settingsState, bindingSettingsKnown, maskedPhone, maskedWechat, boundPhoneLocation, hasPhoneField, hasWechatField,
       profileRoot, formKey, wechatModeKey, renderHandlers, wechatHandlers, profileReady, profileError,
       loading, updatingPhone, updatingProfile, sendingPhoneCode, unbindingWechat,
       currentUserFailure, currentUserFailureContextKey, currentUserFailureText, isCurrentCurrentUserFailure,
@@ -1105,7 +1191,7 @@ export default defineComponent({
       ipLocations, phoneLocations, normalizeLocationKey, formatValueWithLocation, roleText, statusText,
     }
   },
-  components: { ClosureGuide, MainlandPhoneInput, RequestFailureAlert },
+  components: { AccountCard, ClosureGuide, MainlandPhoneInput, RequestFailureAlert },
 })
 </script>
 
@@ -1120,8 +1206,7 @@ export default defineComponent({
 }
 
 .summary-card,
-.page-card,
-.profile-panel {
+.page-card {
   border-radius: var(--console-radius, 12px);
 }
 
@@ -1217,8 +1302,7 @@ export default defineComponent({
   font-weight: 600;
 }
 
-.page-subtitle,
-.panel-subtitle {
+.page-subtitle {
   margin-top: 6px;
   color: var(--console-muted, #62766e);
   font-size: 13px;
@@ -1232,38 +1316,11 @@ export default defineComponent({
   text-align: left;
 }
 
-.location-extra {
-  display: block;
-}
-
-.profile-panel {
-  height: 100%;
-  min-width: 0;
-  border: 1px solid var(--console-border, #dce5e1);
-  background: var(--console-surface, #fff);
-}
-
-.panel-title {
-  margin: 0;
-  color: var(--console-text, #172b27);
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.panel-heading--form {
-  margin: 0 0 16px;
-}
-
-.panel-heading .panel-subtitle {
-  margin-bottom: 0;
-}
-
-.profile-section-divider {
-  height: 1px;
-  margin: 18px 0;
-  background: var(--console-border, #dce5e1);
-}
-
+.account-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; }
+.account-column { min-width: 0; display: grid; gap: 16px; }
+.binding-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin-bottom: 12px; }
+.binding-summary span { color: var(--console-muted, #62766e); font-size: 13px; }
+@media (max-width: 800px) { .account-columns { grid-template-columns: minmax(0, 1fr); } }
 .profile-field {
   display: flex;
   justify-content: space-between;
