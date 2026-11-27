@@ -11,7 +11,6 @@ axios.defaults.adapter = async config => {
   const body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
   return { config, status: 200, headers: {}, request: {}, data: { data: await respond(config.method, config.url, body) } }
 }
-const Policy = require('../../src/pages/RiskAdmin/RiskPolicyCard.vue')
 const Window = require('../../src/pages/RiskAdmin/RiskWindowSettings.vue')
 const Response = require('../../src/pages/RiskAdmin/RiskAlertResponse.vue')
 const wrappers = []
@@ -27,21 +26,6 @@ const click = async (w, text) => {
 }
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount() })
 after(() => { axios.defaults.adapter = savedAdapter })
-
-test('核心类型默认只通知，显式选择才发送有限期单 IP 策略', async () => {
-  const writes = []
-  const w = await open(Policy, { detector: 'login_bruteforce', title: '密码爆破' }, (method, url, body) => {
-    assert.equal(url, '/api/risk/response-policies/login_bruteforce')
-    if (method === 'put') writes.push(body)
-    return { mode: 'notify', durationMinutes: 30, blacklistEnabled: true, ...body }
-  })
-  assert.deepEqual(writes, [])
-  await w.get('select').setValue('temp_ip')
-  await w.get('input').setValue(45)
-  await click(w, '保存处置策略')
-  assert.deepEqual(writes, [{ mode: 'temp_ip', durationMinutes: 45 }])
-  assert.match(w.text(), /45 分钟/)
-})
 
 test('共享窗口以一条请求写入跨天起止，展示服务端核准值；等时段不提交', async () => {
   const calls = []
@@ -86,4 +70,24 @@ test('仅通知的告警和关闭黑名单总开关的告警均无执行入口',
     const w = await open(Response, { alertId: 18 }, () => ({ ...values, ip: '', history: [] }))
     assert.ok(!w.text().includes('执行封禁')); assert.equal(w.find('select').exists(), false)
   }
+})
+
+test('封禁撤销先确认，再只发送规则处置编号并显示保留的审计', async () => {
+  const writes = []
+  const w = await open(Response, { alertId: 17 }, (method, url, body) => {
+    assert.equal(url, '/api/risk/alerts/17/response')
+    if (method === 'post') writes.push(body)
+    const auto = { id: 7, actorId: 0, ruleId: 'custom_rule', target: '192.0.2.37-192.0.2.52', sourceIpMasked: '192.0.2.*',
+      entryId: 3, status: 'applied', canRevoke: method === 'get' }
+    return { eligible: true, ip: '192.0.2.41', blacklistEnabled: true,
+      history: method === 'get' ? [auto] : [{ id: 8, actorId: 11, target: auto.target, status: 'revoked' }, auto] }
+  })
+  await click(w, '撤销自动封禁')
+  assert.equal(writes.length, 0)
+  const confirm = w.findComponent(Antd.Popconfirm)
+  await confirm.vm.$emit('confirm'); await settle()
+  assert.deepEqual(writes, [{ action: 'revoke_auto', responseId: 7, confirmed: true }])
+  assert.match(w.text(), /已撤销/)
+  assert.match(w.text(), /192.0.2.37-192.0.2.52/)
+  assert.match(w.text(), /192.0.2.\*/)
 })

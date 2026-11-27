@@ -21,8 +21,15 @@
         <h4>处置记录</h4>
         <ul><li v-for="row in saved.history" :key="row.id">
           {{ row.actorId ? '管理员 #' + row.actorId : '自动策略' }} · {{ row.target || '—' }} · {{ statusLabel[row.status] || row.status }}
-          <span v-if="row.entryId && row.status !== 'skipped'"> · {{ row.expiresAt ? '到期：' + formatRiskDateTime(row.expiresAt) : '无到期日' }}</span>
+          <span v-if="row.ruleId"> · 规则 {{ row.ruleId }}</span>
+          <span v-if="row.sourceIpMasked"> · 来源 {{ row.sourceIpMasked }}</span>
+          <span v-if="row.entryId && row.status !== 'skipped'"> · {{ row.status === 'applied' ? '开始' : '记录于' }} {{ formatRiskDateTime(row.createdAt) }}</span>
+          <span v-if="row.entryId && row.status !== 'skipped' && row.status !== 'revoked'"> · {{ row.expiresAt ? '到期：' + formatRiskDateTime(row.expiresAt) : '无到期日' }}</span>
           <span v-if="row.reason"> · {{ row.reason }}</span>
+          <span v-if="row.message"> · {{ row.message }}</span>
+          <a-popconfirm v-if="row.canRevoke" title="只停用这一条自动封禁，保留处置记录。确定撤销？" ok-text="撤销" cancel-text="取消" @confirm="revoke(row.id)">
+            <a-button size="small" danger :disabled="busy">撤销自动封禁</a-button>
+          </a-popconfirm>
         </li></ul>
       </div>
     </template>
@@ -32,18 +39,21 @@
 </template>
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { applyAlertResponse, getAlertResponse } from '@/api/RiskAdminApi'
+import { applyAlertResponse, getAlertResponse, revokeAutomaticAlertResponse } from '@/api/RiskAdminApi'
 import { formatRiskDateTime } from './riskAdminHelpers.mjs'
 import { useRiskForm } from './useRiskForm'
 const props = defineProps({ alertId: { type: Number, required: true }, captureScope: { type: Function, required: true } })
 const action = ref('ip'), minutes = ref(60), permanent = ref(false), confirmed = ref(false), reason = ref('')
-const statusLabel = { applied: '已写入黑名单', existing: '已存在，保留原处置', skipped: '未执行' }
+const statusLabel = { applied: '已写入黑名单', existing: '已存在，保留原处置', skipped: '未执行', failed: '执行失败', revoked: '已撤销' }
 const { saved, busy, error, notice, run, reload } = useRiskForm(props.captureScope, () => getAlertResponse(props.alertId))
 const target = computed(() => saved.value?.[{ ip: 'ip', segment: 'segment', city_isp: 'cityIsp' }[action.value]] || '')
 const needsConfirm = computed(() => action.value !== 'ip' || permanent.value)
 watch([action, minutes, permanent, target], () => { confirmed.value = false }, { flush: 'sync' })
 const valid = computed(() => saved.value?.eligible && saved.value.blacklistEnabled && target.value && reason.value.trim() &&
   (!needsConfirm.value || confirmed.value) && (permanent.value || (Number.isInteger(minutes.value) && minutes.value >= 1 && minutes.value <= 525600)))
+async function revoke(responseId) {
+  await run(() => revokeAutomaticAlertResponse(props.alertId, responseId), '已撤销自动封禁')
+}
 async function apply() {
   if (!valid.value) return
   if (await run(() => applyAlertResponse(props.alertId, {

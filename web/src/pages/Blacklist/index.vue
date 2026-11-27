@@ -323,7 +323,7 @@ import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 const KIND_LABELS = { ip: 'IP', phone: '手机号', wechat: '微信', region: '地区' }
 const KIND_COLORS = { ip: 'blue', phone: 'purple', wechat: 'green', region: 'orange' }
-const MATCH_TYPE_LABELS = { exact: '精确', cidr: 'CIDR', prefix: '前缀' }
+const MATCH_TYPE_LABELS = { range: '精确 IPv4 段', exact: '精确', cidr: 'CIDR', prefix: '前缀' }
 const ACTION_LABELS = { blocked: '已拦截', logged_only: '仅留痕' }
 const ACTION_COLORS = { blocked: 'red', logged_only: 'gold' }
 

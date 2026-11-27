@@ -450,15 +450,16 @@ type RiskRule struct {
 	//
 	// 2048 是留足余量：当前最长 549，留约 3.7 倍空间给后续规则补限制说明。
 	// 不设 TEXT 是为了保持「有明确上限」的纪律 —— 描述是说明文字，不该无限增长。
-	Description string     `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
-	Type        string     `gorm:"column:rule_type;type:varchar(64);not null;default:''" json:"type"`
-	ConfigJSON  string     `gorm:"column:config_json;type:varchar(4096);not null;default:'{}'" json:"-"`
-	Source      string     `gorm:"column:source;type:varchar(16);not null;default:'builtin'" json:"source"`
-	CreatedBy   int32      `gorm:"column:created_by;not null;default:0" json:"createdBy"`
-	UpdatedBy   int32      `gorm:"column:updated_by;not null;default:0" json:"updatedBy"`
-	DeletedAt   *time.Time `gorm:"column:deleted_at;index:idx_risk_rule_deleted" json:"deletedAt,omitempty"`
-	CreatedAt   time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt   time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	Description        string     `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
+	Type               string     `gorm:"column:rule_type;type:varchar(64);not null;default:''" json:"type"`
+	ResponsePolicyJSON string     `gorm:"type:varchar(128);not null;default:''" json:"-"`
+	ConfigJSON         string     `gorm:"column:config_json;type:varchar(4096);not null;default:'{}'" json:"-"`
+	Source             string     `gorm:"column:source;type:varchar(16);not null;default:'builtin'" json:"source"`
+	CreatedBy          int32      `gorm:"column:created_by;not null;default:0" json:"createdBy"`
+	UpdatedBy          int32      `gorm:"column:updated_by;not null;default:0" json:"updatedBy"`
+	DeletedAt          *time.Time `gorm:"column:deleted_at;index:idx_risk_rule_deleted" json:"deletedAt,omitempty"`
+	CreatedAt          time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*RiskRule) TableName() string { return TableNameRiskRule }

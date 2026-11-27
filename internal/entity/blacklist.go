@@ -12,6 +12,7 @@ const (
 // 四种粒度共用一张表，靠 Kind + MatchType 区分：
 //
 //	Kind=ip     + MatchType=exact  → Pattern 是规范化后的单个 IP
+//	Kind=ip     + MatchType=range  → Pattern 是已验证的 IPv4 精确闭区间
 //	Kind=ip     + MatchType=cidr   → Pattern 是 CIDR（"203.0.113.0/24"、"2001:db8::/32"）
 //	Kind=phone  + MatchType=exact  → Pattern 是 11 位大陆手机号
 //	Kind=wechat + MatchType=exact  → Pattern 是 TrimSpace 后的 OpenID（大小写敏感）
@@ -39,7 +40,7 @@ type BlacklistEntry struct {
 	ValueHash string `gorm:"column:value_hash;type:char(64);not null;default:'';uniqueIndex:uk_blacklist_entry_pattern,priority:2" json:"valueHash"`
 	// ValueMasked 是展示用脱敏值（203.0.113.* / 138****5678 / o***ABC / 云南*）。
 	ValueMasked string `gorm:"column:value_masked;type:varchar(191);not null;default:''" json:"valueMasked"`
-	// MatchType 取 exact / cidr / prefix；ip 的 prefix 输入会被归一化成 cidr（见 service 层）。
+	// MatchType 取 exact / cidr / prefix / range；ip 的 prefix 输入会被归一化成 cidr（见 service 层）。
 	MatchType string `gorm:"column:match_type;type:varchar(16);not null;default:'exact';uniqueIndex:uk_blacklist_entry_pattern,priority:3" json:"matchType"`
 	// Reason 是拉黑原因（必填，运营要能解释），由管理端校验。
 	Reason string `gorm:"column:reason;type:varchar(255);not null;default:''" json:"reason"`

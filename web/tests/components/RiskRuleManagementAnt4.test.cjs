@@ -18,7 +18,6 @@ const response = (config, data, status = 200) => ({ config, data, status, header
 axios.defaults.adapter = async config => {
   const body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
   calls.push({ method: config.method, url: config.url, body })
-  if (config.url.startsWith('/api/risk/response-policies/')) return response(config, { data: { mode: 'notify', durationMinutes: 30, blacklistEnabled: false } })
   if (config.url === '/api/risk/alerts') return response(config, { data: [], total: 0, page: 1, pageSize: 20 })
   if (config.url === '/api/risk/webhook') return response(config, { data: { enabled: false, configured: false, webhookUrl: '', preview: '', mentionedList: [] } })
   const threshold = () => ({ key: 'risk_rule_debt_user_threshold', ruleId: 'debt_user', label: '用户欠费阈值', value: thresholdValue, defaultValue: 10, unit: '元', configured: true })
@@ -35,7 +34,7 @@ axios.defaults.adapter = async config => {
     configValue = config.method === 'delete' ? '' : body.value
     return response(config, { message: '已保存', item: setting() })
   }
-  if (config.url === '/api/risk/rule-types') return response(config, { data: [{ type: 'debt_user', name: '用户欠费', defaultThreshold: 10, defaultSeverity: 'high', defaultThrottleSeconds: 3600, hasThreshold: true, thresholdUnit: '元', description: '达到欠费阈值时告警' }] })
+  if (config.url === '/api/risk/rule-types') return response(config, { data: [{ type: 'debt_user', name: '用户欠费', defaultThreshold: 10, defaultSeverity: 'high', defaultThrottleSeconds: 3600, hasThreshold: true, thresholdUnit: '元', description: '达到欠费阈值时告警' }, { type: 'login_bruteforce', name: '密码爆破', defaultThreshold: 10, defaultSeverity: 'medium', defaultThrottleSeconds: 600, hasThreshold: true, thresholdUnit: '次', supportsResponsePolicy: true }] })
   if (config.url === '/api/risk/rules' && config.method === 'get') {
     // Real endpoint deliberately retains the old compact shape alongside editable records.
     return response(config, { items: records.map(({ ruleId, enabled, threshold }) => ({ ruleId, enabled, threshold })), data: records.map(item => ({ ...item })) })
@@ -69,8 +68,8 @@ axios.defaults.adapter = async config => {
 const RiskAdmin = require('../../src/pages/RiskAdmin/index.vue')
 
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
-async function openPage(otherRules = true) {
-  records = [builtin(), custom()]; calls = []; holdSave = holdThreshold = null; failSave = ''; thresholdValue = 10; configValue = 'AS15169'
+async function openPage(otherRules = true, ruleRecords = [builtin(), custom()]) {
+  records = ruleRecords; calls = []; holdSave = holdThreshold = null; failSave = ''; thresholdValue = 10; configValue = 'AS15169'
   currentUser.setStoredCurrentUser({ id: 7, role: 'admin', username: 'synthetic-admin' })
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: RiskAdmin }] })
   routers.push(router)
@@ -239,10 +238,37 @@ test('retired threshold completion cannot update the next admin status or start 
 test('核心保护是默认入口；其他规则保留，新增时继承类型实际的级别与节流', async () => {
   const wrapper = await openPage(false)
   assert.equal(wrapper.get('button[data-risk-nav="core"]').attributes('aria-pressed'), 'true')
-  assert.equal(wrapper.findAll('[data-risk-policy]').length, 2)
+  assert.ok(!calls.some(call => call.url.includes('/response-policies/')))
   assert.equal(wrapper.findAll('.risk-rule-row').length, 0, '财务规则不混入核心保护')
   await wrapper.get('button[data-risk-nav="other"]').trigger('click')
   await button(wrapper, '新增规则').trigger('click'); await settle()
   assert.equal(wrapper.vm.ruleDraft.severity, 'high')
   assert.equal(wrapper.vm.ruleDraft.throttleSeconds, 3600)
+})
+
+test('单规则编辑默认仅告警；精确段及永封确认不继承，列表显示实效与配置', async () => {
+  const record = { ...custom(), type: 'login_bruteforce', name: '合成密码爆破', responsePolicy: { mode: 'temporary', scope: 'ip', durationMinutes: 45 },
+    effectiveResponsePolicy: { mode: 'notify' } }
+  const wrapper = await openPage(false, [record])
+  assert.match(wrapper.get('[data-rule-response]').text(), /生效处置：仅告警.*已配置：告警 \+ 临时封禁 · 单 IP · 45 分钟/)
+  await wrapper.vm.openCreateRule(); await settle()
+  assert.equal(wrapper.vm.ruleDraft.responseMode, 'notify')
+  assert.ok(!document.querySelector('label[for$="editor-response-scope"]'))
+  wrapper.vm.closeRuleEditor(); await settle()
+  await wrapper.vm.openEditRule(wrapper.vm.rules[0]); await settle()
+  assert.match(document.querySelector('[data-editor-effective-policy]').textContent, /当前生效：仅告警/)
+  assert.match(document.querySelector('.risk-rule-editor').textContent, /仅用于发送通知时显示，不参与触发条件、处置动作或封禁范围判断/)
+  assert.equal(wrapper.vm.ruleDraft.responseMinutes, 45)
+  wrapper.vm.ruleDraft.responseScope = 'segment'; await settle()
+  await wrapper.vm.saveRule()
+  assert.ok(!calls.some(call => call.method === 'put'))
+  assert.match(wrapper.vm.rulesError, /明确确认/)
+  wrapper.vm.ruleDraft.responseConfirmed = true
+  wrapper.vm.ruleDraft.responseMode = 'permanent'
+  await wrapper.vm.saveRule()
+  assert.ok(!calls.some(call => call.method === 'put'), 'changing riskier parameters cleared confirmation')
+  assert.ok(!document.querySelector('label[for$="editor-response-duration"]'))
+  wrapper.vm.ruleDraft.responseConfirmed = true
+  await wrapper.vm.saveRule(); await settle()
+  assert.deepEqual(calls.find(call => call.method === 'put').body.responsePolicy, { mode: 'permanent', scope: 'segment', confirmed: true })
 })

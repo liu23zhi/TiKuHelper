@@ -70,7 +70,7 @@ func TestRiskResponsePolicyDefaultAndCustomDetector(t *testing.T) {
 	if err := db.Where("rule_id = ? AND actor_id = ?", det, 21).First(&audit).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&entity.RiskRule{RuleID: "custom_response", Source: "custom", Type: det, Enabled: true, Threshold: 10, ThrottleSeconds: 600}).Error; err != nil {
+	if err := db.Create(&entity.RiskRule{RuleID: "custom_response", Source: "custom", Type: det, ResponsePolicyJSON: `{"mode":"temporary","scope":"ip","durationMinutes":30}`, Enabled: true, Threshold: 10, ThrottleSeconds: 600}).Error; err != nil {
 		t.Fatal(err)
 	}
 	// User-ID attribution can exist on an IP warning too. Only the detector dimension decides.
@@ -93,6 +93,15 @@ func TestRiskResponsePolicyDefaultAndCustomDetector(t *testing.T) {
 	if err := db.Find(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
+	// Account-scoped and password-IP-scoped alerts are both retained, but only
+	// the latter may produce a network block.
+	filtered := rows[:0]
+	for _, r := range rows {
+		if r.Status != "skipped" {
+			filtered = append(filtered, r)
+		}
+	}
+	rows = filtered
 	if len(rows) != 1 || rows[0].Status != "applied" || rows[0].ActorID != 0 || rows[0].DurationMinutes != 30 || rows[0].Action != "ip" || rows[0].Target != "203.0.113.54" {
 		t.Fatalf("auto reactions: %+v", rows)
 	}
