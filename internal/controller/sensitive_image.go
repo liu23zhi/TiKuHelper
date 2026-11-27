@@ -3,7 +3,6 @@ package controller
 import (
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
-	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -33,7 +31,7 @@ import (
 //     涉及多少行，否则管理员会以为只改了一个工单。
 //
 //  3. **响应绝不回图片字节与上游原文**。缓存表本身就不存字节（字节在
-//     ticket_attachments 的密文里），Reason 也已经在上游边界截断过。
+//     ticket_attachments 的密文里），历史 Reason 在响应前投影到固定文案。
 
 // sensitiveImageAdminDB 取数据库句柄；未初始化时返回 nil（调用方降级成 500）。
 //
@@ -94,6 +92,9 @@ func SensitiveImageEntryList(c *gin.Context) {
 		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取敏感图片检测记录失败"})
 		return
+	}
+	for i := range rows {
+		rows[i].Reason = service.SafeSensitiveImageHistoryReason(rows[i].Status, rows[i].Reason)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"data": rows, "total": total, "page": page, "pageSize": pageSize,
@@ -224,63 +225,45 @@ func SensitiveImageManualDetect(c *gin.Context) {
 		return
 	}
 
-	// 按工单批量：取该工单的附件（解密后交给检测）。额度在这里**不检查**。
+	// 按工单仍允许部分成功，逐张返回安全的失败回执。
 	if request.ImageSHA256 == "" {
 		result, err := service.ManualDetectSensitiveImageTicketWithDB(c.Request.Context(), db, request.TicketID)
 		if err != nil {
-			logSensitiveImageDetectFailure(c, request.ImageSHA256, request.TicketID, err)
-			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			writeSensitiveImageDetectFailure(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, result)
 		return
 	}
-
-	// 按 SHA256：缓存表不存字节，字节必须从 ticket_attachments 里按 sha256 找一行解密。
-	plain, mimeType, err := service.LoadSensitiveImageBytesWithDB(db, request.ImageSHA256)
+	result, err := service.ManualDetectSensitiveImageBySHAWithDB(c.Request.Context(), db, request.ImageSHA256)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrSensitiveImageBytesUnavailable):
-			logSensitiveImageDetectFailure(c, request.ImageSHA256, request.TicketID, err)
-			c.JSON(http.StatusNotFound, gin.H{"code": "SENSITIVE_IMAGE_BYTES_UNAVAILABLE", "message": "找不到该图片的原始字节，无法重新检测"})
-		default:
-			logSensitiveImageDetectFailure(c, request.ImageSHA256, request.TicketID, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"code": "SENSITIVE_IMAGE_READ_FAILED", "message": "读取图片失败"})
-		}
+		writeSensitiveImageDetectFailure(c, err)
 		return
 	}
-	now := service.SensitiveImageQuotaNow()
-	result, err := service.ManualDetectSensitiveImageWithDB(c.Request.Context(), db, plain, mimeType, now)
-	if err != nil {
-		logSensitiveImageDetectFailure(c, request.ImageSHA256, request.TicketID, err)
-		c.JSON(http.StatusBadGateway, gin.H{"code": sensitiveImageDetectErrorCode(err), "message": "图片检测服务调用失败，请查看日志后重试"})
+	c.JSON(http.StatusOK, gin.H{"result": result, "affectedAttachments": result.AffectedAttachments})
+}
+
+func writeSensitiveImageDetectFailure(c *gin.Context, err error) {
+	var diagnostic service.SensitiveImageDiagnostic
+	if !errors.As(err, &diagnostic) {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "图片检测未完成"})
 		return
 	}
-	// 结论跟着 SHA256 走：写回缓存后，所有引用这张图的附件都要同步 scan_state，
-	// 否则「管理页显示已重判为 clean，但用户看到的还是隐藏」。
-	updated, syncErr := service.SyncSensitiveImageScanStateWithDB(db, request.ImageSHA256, string(result.State))
-	response := gin.H{
-		"result":              result,
-		"affectedAttachments": updated,
+	status := http.StatusBadGateway
+	message := "图片检测服务调用失败，请按诊断编号排查"
+	switch diagnostic.Code {
+	case "SENSITIVE_IMAGE_BYTES_UNAVAILABLE":
+		status, message = http.StatusNotFound, "找不到该图片的原始字节，无法重新检测"
+	case "SENSITIVE_IMAGE_READ_FAILED":
+		status, message = http.StatusInternalServerError, "读取或解密图片失败"
+	case "SENSITIVE_IMAGE_REQUEST_INVALID":
+		status, message = http.StatusBadRequest, "检测参数无效"
+	case "SENSITIVE_IMAGE_STATE_SYNC_FAILED":
+		status, message = http.StatusInternalServerError, "未能同步检测结果，未提交新判定"
+	case "SENSITIVE_IMAGE_DETECTOR_UNCONFIGURED":
+		message = "未配置敏感图片检测通道"
 	}
-	if syncErr != nil {
-		// 同步失败必须如实告知：缓存已经改了，但附件行没跟上，展示会不一致。
-		response["attachSyncError"] = syncErr.Error()
-	}
-	c.JSON(http.StatusOK, response)
-}
-
-func sensitiveImageDetectErrorCode(err error) string {
-	if strings.Contains(err.Error(), "未配置敏感图片检测通道") {
-		return "SENSITIVE_IMAGE_DETECTOR_UNCONFIGURED"
-	}
-	return "SENSITIVE_IMAGE_DETECT_FAILED"
-}
-
-func logSensitiveImageDetectFailure(c *gin.Context, sha string, ticketID int64, err error) {
-	requestID := strings.TrimSpace(c.GetString("transport_request_id"))
-	logger.SysWarn(fmt.Sprintf("sensitive_image_detect_failed request_id=%s image_sha256=%s ticket_id=%d code=%s error=%s",
-		requestID, strings.TrimSpace(sha), ticketID, sensitiveImageDetectErrorCode(err), logger.RedactSecrets(err.Error())))
+	c.JSON(status, gin.H{"code": diagnostic.Code, "diagnosticId": diagnostic.DiagnosticID, "message": message})
 }
 
 // isSensitiveImageSHA256 校验 64 位十六进制（缓存主键的唯一合法形态）。
