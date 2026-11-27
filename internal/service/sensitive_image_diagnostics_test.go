@@ -154,6 +154,7 @@ func TestT12ImageManualAndUploadFailureClasses(t *testing.T) {
 		{"forbidden", 403, `{"message":"faux"}`, "UPSTREAM_FORBIDDEN"},
 		{"rate", 429, `{"code":"RATE_LIMIT_EXCEEDED"}`, "UPSTREAM_RATE_LIMITED"},
 		{"quota", 429, `{"code":"VISITOR_MONTHLY_QUOTA_EXHAUSTED"}`, "UPSTREAM_QUOTA_EXHAUSTED"},
+		{"quota_typed_alias", 429, `{"code":"fixture:visitor_monthly_quota_exhausted"}`, "UPSTREAM_QUOTA_EXHAUSTED"},
 		{"balance", 402, `{}`, "UPSTREAM_QUOTA_EXHAUSTED"},
 		{"bad_parameters", 413, `{}`, "UPSTREAM_4XX"},
 		{"upstream_timeout_status", 408, `{}`, "UPSTREAM_4XX"},
