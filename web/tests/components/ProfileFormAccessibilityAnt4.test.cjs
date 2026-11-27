@@ -171,7 +171,7 @@ test('Profile actual four visible main labels associate with their own inputs; e
   assert.deepEqual(reads, ['getCurrentUser', 'getPublicRegisterStatus', 'getMyLocations', 'getMyUserLevel'])
   const fields = allAssociated(root)
   assert.ok(first.vm.profileReady); assert.equal(first.vm.currentUser.role, 'user')
-  assert.ok(root.textContent.includes('普通用户')); assert.ok(root.textContent.includes('0.123456')); assert.ok(root.textContent.includes(ORDINARY.phone))
+  assert.ok(root.textContent.includes('普通用户')); assert.ok(root.textContent.includes('0.123456')); assert.ok(root.textContent.includes('尾号 0000')); assert.equal(root.textContent.includes(ORDINARY.phone), false)
   assert.equal(first.vm.currentUser.balance, 0.123456); assert.equal(first.vm.currentUser.phone, ORDINARY.phone)
   assert.equal(fields[0].control.value, ORDINARY.username); assert.equal(fields[1].control.value, ORDINARY.nickname)
   for (const { control } of fields) { assert.equal(control.disabled, false); assert.equal(control.readOnly, false) }
@@ -270,7 +270,7 @@ test('Profile actual Card loading branch gates unconfirmed server/me and the com
   const { first } = await open({ waitReady: false })
   await until(() => first.vm.publicAuthSettings.smsLoginEnabled, 'actual SMS settings read renders original phone branch')
   assert.equal(first.vm.profileReady, false)
-  // Antd Card's real loading branch hides its body; do not manufacture controls.
+  // Until /me settles, the four stable sections cannot enable private mutations.
   assert.equal(first.vm.loading, true)
   assert.equal(first.vm.profileForm.username, ''); assert.equal(first.vm.phoneForm.phone, '')
   assert.equal(pendingMe.length, 1); holdMe = false; pendingMe.shift()(ORDINARY); await settle()
@@ -399,4 +399,34 @@ test('Profile balance distinguishes loading, request failure, missing buckets, i
   await read({ ...ORDINARY, balance: -0.000001, giftBalance: 0.000001 })
   assert.equal(balance.total(), '¥ 0')
   assert.deepEqual(balance.values(), ['¥ -0.000001', '¥ 0.000001'])
+})
+
+test('T13 card baseline: four named regions stay visible through the common read without sharing one card', async () => {
+  holdMe = true
+  const { first } = await open({ waitReady: false })
+  await until(() => pendingMe.length, 'profile response pending')
+  const summary = () => [...first.element.querySelectorAll('[data-profile-card]')].filter(visible)
+  const keys = xs => xs.map(x => x.getAttribute('data-profile-card'))
+  const whileLoading = keys(summary())
+  holdMe = false
+  pendingMe.shift()(ORDINARY)
+  await until(() => first.vm.profileReady, 'confirmed server/me')
+  const afterRead = keys(summary())
+  let structural = { pending: whileLoading, settled: afterRead, oldPanelCount: first.element.querySelectorAll('.profile-panel').length }
+  console.log(JSON.stringify(structural))
+  const required = ['base', 'identity', 'phone', 'wechat']
+  assert.deepEqual(whileLoading, required, 'both columns and four named cards are stable while loading')
+  assert.deepEqual(afterRead, required, 'four independent named cards persist after read')
+})
+
+test('T13 card baseline: binding display masks full phone and WeChat identity', async () => {
+  const fullPhone = '13900719734'
+  const fullWechat = 'fixture-only-wechat-bind-key'
+  me = { ...ORDINARY, phone: fullPhone, wechatId: fullWechat }
+  const { first } = await open()
+  const root = first.element
+  const visibleText = [...root.querySelectorAll('[data-profile-private]')].filter(visible).map(x => compact(x.textContent)).join('\n')
+  const observed = { fullPhoneVisible: visibleText.includes(fullPhone), fullWechatVisible: visibleText.includes(fullWechat) }
+  console.log(JSON.stringify(observed))
+  assert.deepEqual(observed, { fullPhoneVisible:false, fullWechatVisible:false })
 })
