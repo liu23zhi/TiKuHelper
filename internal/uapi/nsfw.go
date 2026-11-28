@@ -13,7 +13,7 @@ import (
 const (
 	// DefaultImageNSFWURL 是文档给出的敏感图片检测完整地址。
 	DefaultImageNSFWURL = "https://uapis.cn/api/v1/image/nsfw"
-	// MaxImageNSFWBytes 是文档给出的最大上传大小（20 MB）。
+	// MaxImageNSFWBytes 是本项目的本地上限（20 MiB）；公开规格写 20 MB，未说明精确字节。
 	MaxImageNSFWBytes = 20 * 1024 * 1024
 
 	// NSFWResponseJSONInvalid 与 NSFWResponseVerdictMissing 是本地生成的 2xx 内容错误码。
@@ -129,10 +129,25 @@ func (c *Client) imageNSFW(ctx context.Context, request ImageNSFWRequest) (Image
 	result.RequestID = response.Header().Get("X-Request-ID")
 	// 200 但没有判定字段 = 上游没给出结论。这里返回错误，让调用方走 fail-closed，
 	// 绝不能因为「HTTP 200」就把图片当成正常图片放行。
-	if result.IsNSFW == nil && strings.TrimSpace(result.Suggestion) == "" && strings.TrimSpace(result.RiskLevel) == "" {
+	if !hasImageNSFWVerdict(result) {
 		return ImageNSFWResponse{}, invalidContent(NSFWResponseVerdictMissing, "检测响应缺少判定字段", nil)
 	}
 	return result, nil
+}
+
+func hasImageNSFWVerdict(result ImageNSFWResponse) bool {
+	if result.IsNSFW != nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(result.Suggestion)) {
+	case "pass", "review", "block":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(result.RiskLevel)) {
+	case "low", "medium", "high":
+		return true
+	}
+	return false
 }
 
 func validateImageNSFWRequest(request ImageNSFWRequest) error {

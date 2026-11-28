@@ -167,3 +167,45 @@ func TestImageNSFWDoesNotRetryBillablePost(t *testing.T) {
 		t.Fatalf("billable POST must not be replayed, got %d calls", calls)
 	}
 }
+
+func TestImageNSFWRequiresDocumentedVerdictWithoutBoolean(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"unknown_suggestion_is_not_a_verdict", `{"suggestion":"fixture-response-note","label":"normal"}`, false},
+		{"unknown_risk_is_not_a_verdict", `{"is_nsfw":null,"risk_level":"fixture-response-note"}`, false},
+		{"recognized_review", `{"suggestion":" review ","label":"fixture-response-note"}`, true},
+		{"recognized_risk", `{"risk_level":"HIGH","other":"future"}`, true},
+		{"explicit_false_with_supported_schema_and_unknown_values", `{"is_nsfw":false,"risk_level":"future","other":"extension"}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const ref = "fixture-returned-ref"
+			var n int
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n++
+				w.Header().Set("X-Request-ID", ref)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer s.Close()
+			o, err := NewClient("uapi-fixture-local-only").SetMaxRetries(4).SetImageNSFWURL(s.URL).
+				ImageNSFW(context.Background(), ImageNSFWRequest{Image: []byte("synthetic"), ImageName: "owned.png"})
+			if n != 1 {
+				t.Fatalf("potentially billable POST count=%d, want 1", n)
+			}
+			if tt.valid {
+				if err != nil || o.HTTPStatus != 200 || o.RequestID != ref {
+					t.Fatalf("known verdict was lost: %v", err)
+				}
+				return
+			}
+			var e *APIError
+			if !errors.As(err, &e) || e.Code != NSFWResponseVerdictMissing || e.RequestID != ref || !errors.Is(err, ErrUpstream) {
+				t.Fatalf("unsupported verdict accepted; status=%d error=%T", o.HTTPStatus, err)
+			}
+			if strings.Contains(err.Error(), ref) || strings.Contains(err.Error(), "fixture-response-note") {
+				t.Fatal("untrusted response leaked in diagnostic")
+			}
+		})
+	}
+}
