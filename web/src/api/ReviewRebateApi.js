@@ -121,18 +121,16 @@ export function decideReviewRebateClaim(id, decision, note = '', approvalSnapsho
   const value = Number(id)
   if (!Number.isInteger(value) || value <= 0) throw new Error('提交记录参数错误')
   if (!['approve', 'reject'].includes(decision)) throw new Error('审核结论无效')
-  return request({
+  const config = {
     errorFeedback: 'local',
     url: `${adminBase}/claims/${value}/decision`,
     method: 'post',
     // 规范名是 action（后端 service/controller 都按它取）；decision 只是兼容别名。
     retryPolicy: 'single',
-    data: {
-      action: decision,
-      note: String(note || ''),
-      ...(decision === 'approve' && approvalSnapshot ? { approvalSnapshot } : {}),
-    },
-  })
+    data: { action: decision, note: String(note || '') },
+  }
+  if (decision === 'approve' && approvalSnapshot) config.data.approvalSnapshot = approvalSnapshot
+  return request(config)
 }
 
 // 只由管理员显式触发一次评分，不自动重放评分请求。
