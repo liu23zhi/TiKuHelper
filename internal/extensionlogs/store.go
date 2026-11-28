@@ -239,7 +239,7 @@ func (s *Store) SetPolicy(p Policy) error {
 	if !p.Enabled {
 		clear(s.pending)
 	}
-	return s.prune(p, s.now().UTC(), 0, true)
+	return s.sweepReceiptBudget(p, s.now().UTC(), true)
 }
 
 // Only the three managed layouts and the old flat directory are scanned. A
@@ -463,7 +463,7 @@ func (s *Store) Sweep() error {
 	} else {
 		clear(s.pending)
 	}
-	return s.prune(p, now, 0, true)
+	return s.sweepReceiptBudget(p, now, true)
 }
 func (s *Store) RunCleanup(ctx context.Context, onError func(error)) {
 	go func() {

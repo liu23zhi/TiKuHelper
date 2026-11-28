@@ -38,14 +38,16 @@ var (
 // future adapter must supply already authorized owner/session metadata and
 // enforce consent before calling Append; a receipt is not an access grant.
 type ReceiptJournal struct {
-	root string
-	opts ReceiptOptions
-	now  func() time.Time
+	root   string
+	folder string
+	opts   ReceiptOptions
+	now    func() time.Time
 }
 
 type ReceiptOptions struct {
 	Enabled               bool
-	MaxEvents, MaxBatches int // zero means the prototype default, not unlimited
+	MaxEvents, MaxBatches int           // zero means the default, not unlimited
+	MaxAge                time.Duration // enforced against server receipt time; zero for isolated compatibility fixtures
 }
 
 type ReceiptEvent struct {
@@ -107,10 +109,11 @@ type ReceiptPage struct {
 // Private typed cursor, bound to a database generation and a filter. A
 // later HTTP adapter must design its own authorized cursor representation.
 type ReceiptCursor struct {
-	database  string
-	filter    sessionKey
-	watermark int64
-	offset    int
+	database       string
+	filter         sessionKey
+	watermark      int64
+	offset         int
+	expiresAt, age int64
 }
 
 func NewReceiptJournal(logRoot string, opts ReceiptOptions) *ReceiptJournal {
@@ -134,7 +137,11 @@ func (j *ReceiptJournal) path(create bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for i, dir := range []string{root, filepath.Join(root, "client"), filepath.Join(root, "client", receiptFolder)} {
+	folder := j.folder
+	if folder == "" {
+		folder = receiptFolder
+	}
+	for i, dir := range []string{root, filepath.Join(root, "client"), filepath.Join(root, "client", folder)} {
 		fi, err := os.Lstat(dir)
 		if i > 0 && errors.Is(err, os.ErrNotExist) && create {
 			if err = os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
@@ -149,7 +156,7 @@ func (j *ReceiptJournal) path(create bool) (string, error) {
 			return "", ErrReceiptPath
 		}
 	}
-	path := filepath.Join(root, "client", receiptFolder, receiptFilename)
+	path := filepath.Join(root, "client", folder, receiptFilename)
 	fi, err := os.Lstat(path)
 	if create && errors.Is(err, os.ErrNotExist) {
 		f, e := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
@@ -179,7 +186,7 @@ func (j *ReceiptJournal) open(create bool) (*sql.DB, error) {
 	return openReceiptSQLite(path, url.Values{
 		"mode":    {"rw"},
 		"_txlock": {"immediate"},
-		"_pragma": {"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(32768)"},
+		"_pragma": {"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(32768)", "secure_delete(ON)"},
 	})
 }
 
@@ -218,6 +225,7 @@ CREATE TABLE IF NOT EXISTS receipt_events (
 );
 CREATE INDEX IF NOT EXISTS receipt_events_order
 ON receipt_events(event_ms,owner,mode,device,browser,launch,event_seq,event_id);
+CREATE INDEX IF NOT EXISTS receipt_segments_received ON receipt_segments(received_ms);
 `
 
 type receiptQuery interface {
@@ -268,6 +276,15 @@ func receiptKey(kind, raw string) string {
 	}
 	d := sha256.Sum256([]byte("tiku-receipts-v2/" + kind + "\x00" + raw))
 	return hex.EncodeToString(d[:])
+}
+
+func receiptFilterKey(kind, identifier string) string {
+	if strings.HasPrefix(identifier, "h:") && len(identifier) == 66 {
+		if _, err := hex.DecodeString(identifier[2:]); err == nil {
+			return strings.ToLower(identifier[2:])
+		}
+	}
+	return receiptKey(kind, identifier)
 }
 
 func receiptScope(owner int32, meta Session) sessionKey {
@@ -371,6 +388,9 @@ func (j *ReceiptJournal) Append(ctx context.Context, owner int32, meta Session, 
 	}
 	defer tx.Rollback() // also on conflicts, capacity, etc.
 	if err := initReceiptDB(ctx, tx); err != nil {
+		return Receipt{}, err
+	}
+	if err := j.pruneExpired(ctx, tx); err != nil {
 		return Receipt{}, err
 	}
 	k := receiptScope(owner, meta)
@@ -536,9 +556,9 @@ func (j *ReceiptJournal) Read(ctx context.Context, f Filter, limit int, cursor *
 	if !f.Valid() || limit < 1 || limit > 100 {
 		return ReceiptPage{}, ErrCursor
 	}
-	filter := sessionKey{f.UserID, f.Mode, receiptKey("device", f.DeviceID), receiptKey("browser", f.BrowserID), strings.ToLower(f.LaunchID)}
+	filter := sessionKey{f.UserID, f.Mode, receiptFilterKey("device", f.DeviceID), receiptFilterKey("browser", f.BrowserID), strings.ToLower(f.LaunchID)}
 	page := ReceiptPage{Entries: []ReceiptRecord{}}
-	db, err := j.open(false)
+	path, err := j.path(false)
 	if errors.Is(err, os.ErrNotExist) {
 		if cursor != nil {
 			return ReceiptPage{}, ErrCursor
@@ -548,28 +568,53 @@ func (j *ReceiptJournal) Read(ctx context.Context, f Filter, limit int, cursor *
 	if err != nil {
 		return ReceiptPage{}, err
 	}
+	db, err := openReceiptSQLite(path, url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(2000)"}})
+	if err != nil {
+		return ReceiptPage{}, err
+	}
 	defer db.Close()
-	if ready, err := checkReceiptDB(ctx, db); err != nil {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ReceiptPage{}, err
+	}
+	defer tx.Rollback()
+	if ready, err := checkReceiptDB(ctx, tx); err != nil {
 		return ReceiptPage{}, err
 	} else if !ready {
 		return ReceiptPage{}, ErrReceiptPath
 	}
 	var watermark int64
 	var database string
-	if err := db.QueryRowContext(ctx, `SELECT hex(id), (SELECT coalesce(max(id),0) FROM receipt_segments)
+	if err := tx.QueryRowContext(ctx, `SELECT hex(id), (SELECT coalesce(max(id),0) FROM receipt_segments)
 		FROM receipt_identity WHERE singleton=1`).Scan(&database, &watermark); err != nil {
 		return ReceiptPage{}, err
 	}
 	var offset int
+	now := j.now().UTC()
+	age := j.opts.MaxAge.Milliseconds()
+	var expires int64
 	if cursor != nil {
 		if cursor.database != database || cursor.filter != filter || cursor.watermark > watermark ||
-			cursor.watermark <= 0 || cursor.offset < 1 || cursor.offset > maxReceiptRows {
+			cursor.watermark <= 0 || cursor.offset < 1 || cursor.offset > maxReceiptRows || cursor.age != age ||
+			(cursor.expiresAt != 0 && now.UnixMilli() >= cursor.expiresAt) {
 			return ReceiptPage{}, ErrCursor
 		}
-		watermark, offset = cursor.watermark, cursor.offset
+		watermark, offset, expires = cursor.watermark, cursor.offset, cursor.expiresAt
+	} else if age > 0 {
+		var oldest sql.NullInt64
+		if err = tx.QueryRowContext(ctx, "SELECT min(received_ms) FROM receipt_segments WHERE id<=? AND received_ms>?", watermark, now.UnixMilli()-age).Scan(&oldest); err != nil {
+			return ReceiptPage{}, err
+		}
+		if oldest.Valid {
+			expires = oldest.Int64 + age
+		}
 	}
 	where := []string{"e.segment_id<=?"}
 	args := []any{watermark, watermark}
+	if age > 0 {
+		where = append(where, "s.received_ms>?")
+		args = append(args, now.UnixMilli()-age)
+	}
 	if filter.owner != 0 {
 		where = append(where, "e.owner=?")
 		args = append(args, filter.owner)
@@ -590,7 +635,7 @@ func (j *ReceiptJournal) Read(ctx context.Context, f Filter, limit int, cursor *
 			AND p.event_seq<e.event_seq AND p.event_ms>e.event_ms)
 		FROM receipt_events e JOIN receipt_segments s ON s.id=e.segment_id WHERE ` + strings.Join(where, " AND ") +
 		" ORDER BY e.event_ms,e.owner,e.mode,e.device,e.browser,e.launch,e.event_seq,e.event_id LIMIT ? OFFSET ?"
-	rows, err := db.QueryContext(ctx, q, append(args, limit+1, offset)...)
+	rows, err := tx.QueryContext(ctx, q, append(args, limit+1, offset)...)
 	if err != nil {
 		return ReceiptPage{}, err
 	}
@@ -610,7 +655,7 @@ func (j *ReceiptJournal) Read(ctx context.Context, f Filter, limit int, cursor *
 	}
 	if len(page.Entries) > limit {
 		page.Entries = page.Entries[:limit]
-		page.Next = &ReceiptCursor{database, filter, watermark, offset + limit}
+		page.Next = &ReceiptCursor{database, filter, watermark, offset + limit, expires, age}
 	}
 	return page, nil
 }

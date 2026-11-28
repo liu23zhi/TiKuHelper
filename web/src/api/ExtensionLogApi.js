@@ -6,6 +6,14 @@ export const listExtensionLogs = (filters, cursor = '') => request({
   url: endpoint, method: 'get', params: { limit: 50, ...filters, ...(cursor ? { cursor } : {}) },
   retryPolicy: 'single', errorFeedback: 'local',
 })
+export const listDiagnosticReceipts = (filters, cursor = '') => request({
+  url: endpoint + '/receipts', method: 'get', params: { limit: 50, ...filters, ...(cursor ? { cursor } : {}) },
+  retryPolicy: 'single', errorFeedback: 'local',
+})
+export const exportDiagnosticReceipts = filters => request({
+  url: endpoint + '/receipts/export', method: 'get', params: filters, responseType: 'blob',
+  retryPolicy: 'single', errorFeedback: 'local',
+})
 export const getExtensionLogPolicy = () => request({
   url: endpoint + '/settings', method: 'get', retryPolicy: 'single', errorFeedback: 'local',
 })
