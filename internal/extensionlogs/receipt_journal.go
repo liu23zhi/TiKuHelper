@@ -24,7 +24,7 @@ const (
 	receiptFilename      = "journal.sqlite"
 	maxReceiptRows       = 100000
 	receiptAppID         = 0x54494b38 // "TIK8"
-	receiptSchemaVersion = 2
+	receiptSchemaVersion = 3
 )
 
 var (
@@ -38,10 +38,11 @@ var (
 // future adapter must supply already authorized owner/session metadata and
 // enforce consent before calling Append; a receipt is not an access grant.
 type ReceiptJournal struct {
-	root   string
-	folder string
-	opts   ReceiptOptions
-	now    func() time.Time
+	root        string
+	folder      string
+	physicalCap int64
+	opts        ReceiptOptions
+	now         func() time.Time
 }
 
 type ReceiptOptions struct {
@@ -184,11 +185,17 @@ func (j *ReceiptJournal) open(create bool) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return openReceiptSQLite(path, url.Values{
-		"mode":    {"rw"},
-		"_txlock": {"immediate"},
-		"_pragma": {"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(32768)"},
-	})
+	pages := int64(32768) // standalone prototype, not the product cap
+	if j.physicalCap > 0 {
+		pages = max(pages, (j.physicalCap+(16<<20))/4096)
+	}
+	pragmas := []string{"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(" + strconv.FormatInt(pages, 10) + ")"}
+	if j.physicalCap > 0 && create {
+		if info, e := os.Stat(path); e == nil && info.Size() == 0 {
+			pragmas = append(pragmas, "auto_vacuum(INCREMENTAL)")
+		}
+	}
+	return openReceiptSQLite(path, url.Values{"mode": {"rw"}, "_txlock": {"immediate"}, "_pragma": pragmas})
 }
 
 func openReceiptSQLite(path string, q url.Values) (*sql.DB, error) {
@@ -247,7 +254,7 @@ func checkReceiptDB(ctx context.Context, q receiptQuery) (bool, error) {
 			return false, err
 		}
 	}
-	if mode != "delete" || !((appID == 0 && version == 0) || (appID == receiptAppID && version == receiptSchemaVersion)) {
+	if mode != "delete" || !((appID == 0 && version == 0) || (appID == receiptAppID && (version == 2 || version == receiptSchemaVersion))) {
 		return false, ErrReceiptPath
 	}
 	return appID == receiptAppID, nil
@@ -255,7 +262,21 @@ func checkReceiptDB(ctx context.Context, q receiptQuery) (bool, error) {
 
 func initReceiptDB(ctx context.Context, tx *sql.Tx) error {
 	ready, err := checkReceiptDB(ctx, tx)
-	if err != nil || ready {
+	if err != nil {
+		return err
+	}
+	if ready {
+		var version int
+		if err = tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+			return err
+		}
+		if version == receiptSchemaVersion {
+			return nil
+		}
+		if _, err = tx.ExecContext(ctx, retiredReceiptSchema); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "PRAGMA user_version="+strconv.Itoa(receiptSchemaVersion))
 		return err
 	}
 	var objects int
@@ -265,7 +286,7 @@ func initReceiptDB(ctx context.Context, tx *sql.Tx) error {
 	if objects != 0 {
 		return ErrReceiptPath
 	}
-	if _, err := tx.ExecContext(ctx, receiptSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, receiptSchema+retiredReceiptSchema); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "PRAGMA application_id="+strconv.Itoa(receiptAppID)+"; PRAGMA user_version="+strconv.Itoa(receiptSchemaVersion))
@@ -419,6 +440,10 @@ func (j *ReceiptJournal) Append(ctx context.Context, owner int32, meta Session, 
 		var digest []byte
 		err := tx.QueryRowContext(ctx, "SELECT digest FROM receipt_events WHERE "+sameScope+" AND (event_id=? OR event_seq=?)",
 			append(args, event.EventID, event.EventSeq)...).Scan(&digest)
+		if errors.Is(err, sql.ErrNoRows) {
+			id, seq := retiredKeys(k, event.EventID, event.EventSeq)
+			err = tx.QueryRowContext(ctx, "SELECT digest FROM receipt_retired_events WHERE event_key=? OR seq_key=?", id, seq).Scan(&digest)
+		}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			newEvents = append(newEvents, event)
@@ -428,12 +453,14 @@ func (j *ReceiptJournal) Append(ctx context.Context, owner int32, meta Session, 
 			return Receipt{}, ErrReceiptConflict
 		}
 	}
-	var events, batches int
-	if err := tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM receipt_events), (SELECT count(*) FROM receipt_segments)").Scan(&events, &batches); err != nil {
-		return Receipt{}, err
-	}
-	if events+len(newEvents) > j.opts.MaxEvents || batches >= j.opts.MaxBatches {
-		return Receipt{}, ErrReceiptCapacity
+	if j.physicalCap == 0 {
+		var events, batches int
+		if err := tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM receipt_events), (SELECT count(*) FROM receipt_segments)").Scan(&events, &batches); err != nil {
+			return Receipt{}, err
+		}
+		if events+len(newEvents) > j.opts.MaxEvents || batches >= j.opts.MaxBatches {
+			return Receipt{}, ErrReceiptCapacity
+		}
 	}
 	received = j.now().UnixMilli()
 	r.Accepted, r.Stored, r.ReceivedAt = len(b.events), len(newEvents), journalTime(received)
@@ -495,6 +522,13 @@ func (j *ReceiptJournal) LookupReceiptProof(ctx context.Context, owner int32, me
 	if ready, err := checkReceiptDB(ctx, tx); err != nil {
 		return ReceiptProof{}, err
 	} else if !ready {
+		var n int
+		if e := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&n); e != nil {
+			return ReceiptProof{}, e
+		}
+		if n == 0 {
+			return ReceiptProof{}, sql.ErrNoRows
+		}
 		return ReceiptProof{}, ErrReceiptPath
 	}
 
@@ -509,6 +543,9 @@ func (j *ReceiptJournal) LookupReceiptProof(ctx context.Context, owner int32, me
 			&p.BatchID, &digest, &received, &p.Accepted, &p.Stored)
 	if err != nil {
 		return ReceiptProof{}, err
+	}
+	if j.opts.MaxAge > 0 && received <= j.now().Add(-j.opts.MaxAge).UnixMilli() {
+		return ReceiptProof{}, sql.ErrNoRows
 	}
 	if !bytes.Equal(digest, b.digest[:]) || p.Accepted != len(b.events) || p.Stored < 0 || p.Stored > p.Accepted {
 		return ReceiptProof{}, ErrReceiptConflict
@@ -531,7 +568,11 @@ func (j *ReceiptJournal) LookupReceiptProof(ctx context.Context, owner int32, me
 		err := tx.QueryRowContext(ctx, eventRow, append(args, e.EventID, e.EventSeq, e.digest[:], segment,
 			e.ms, e.Level, e.Event, e.DurationMS, e.Count, meta.Version)...).Scan(&id, &origin)
 		if errors.Is(err, sql.ErrNoRows) {
-			return ReceiptProof{}, ErrReceiptConflict
+			origin, err = retiredProof(ctx, tx, k, e, segment)
+			id = e.EventID
+			if errors.Is(err, sql.ErrNoRows) {
+				return ReceiptProof{}, ErrReceiptConflict
+			}
 		}
 		if err != nil {
 			return ReceiptProof{}, err

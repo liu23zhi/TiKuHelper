@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"math/big"
@@ -102,6 +103,12 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 	if db == nil || uid <= 0 || beforeBill < 0 {
 		return result, ErrLedgerInput
 	}
+	// Totals, audit and the selected bill page must come from one snapshot,
+	// even when MariaDB's session default is READ COMMITTED.
+	var opts *sql.TxOptions
+	if db.Dialector.Name() == "mysql" {
+		opts = &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+	}
 	err := userLevelSession(db).Transaction(func(tx *gorm.DB) error {
 		if err := checkEffectiveTarget(tx, actor, uid, false); err != nil {
 			return err
@@ -140,7 +147,7 @@ func ReviewEffectiveLedger(db *gorm.DB, actor entity.User, uid, beforeBill int32
 			result.Sources = append(result.Sources, *p.billFromRow(b))
 		}
 		return nil
-	})
+	}, opts)
 	return result, err
 }
 

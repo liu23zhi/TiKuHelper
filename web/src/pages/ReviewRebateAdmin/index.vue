@@ -1055,11 +1055,13 @@ export default {
       decisionForm.note = ''
       decisionDialogOpen.value = true
     }
-    const closeDecisionDialog = () => {
-      if (deciding.value) return
+    const resetDecisionDialog = () => {
       decisionDialogOpen.value = false
       decisionRecord.value = {}
       decisionForm.note = ''
+    }
+    const closeDecisionDialog = () => {
+      if (!deciding.value) resetDecisionDialog()
     }
     const updateDecisionNote = value => { if (!deciding.value) decisionForm.note = String(value ?? '') }
     const submitDecision = async () => {
@@ -1076,13 +1078,16 @@ export default {
       try {
         const res = await decideReviewRebateClaim(id, decisionForm.decision, decisionForm.note)
         if (!ownsFailure()) return
-        if (res?.status === 409) { decisionWarning.value = '该提交状态已变更，请刷新后核对。'; await loadClaims(); return }
+        if (res?.status === 409) {
+          resetDecisionDialog()
+          decisionWarning.value = '该提交状态已变更，请按最新列表核对。'
+          await loadClaims()
+          return
+        }
         if (res?.status !== 200) {
           claimsFailureOwner = ownsFailure; claimsFailure.value = ensureRequestFailure(res); return
         }
-        decisionDialogOpen.value = false
-        decisionRecord.value = {}
-        decisionForm.note = ''
+        resetDecisionDialog()
         message.success(decisionForm.decision === 'approve' ? '已批准' : '已拒绝')
         await loadClaims()
       } catch (error) {

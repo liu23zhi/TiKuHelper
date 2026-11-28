@@ -10,8 +10,8 @@ export const listDiagnosticReceipts = (filters, cursor = '') => request({
   url: endpoint + '/receipts', method: 'get', params: { limit: 50, ...filters, ...(cursor ? { cursor } : {}) },
   retryPolicy: 'single', errorFeedback: 'local',
 })
-export const exportDiagnosticReceipts = filters => request({
-  url: endpoint + '/receipts/export', method: 'get', params: filters, responseType: 'blob',
+export const exportDiagnosticReceipts = (filters, snapshot = '') => request({
+  url: endpoint + '/receipts/export', method: 'get', params: { ...filters, ...(snapshot ? { snapshot } : {}) }, responseType: 'blob',
   retryPolicy: 'single', errorFeedback: 'local',
 })
 export const getExtensionLogPolicy = () => request({

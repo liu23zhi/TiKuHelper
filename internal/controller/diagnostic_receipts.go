@@ -150,7 +150,7 @@ func AdminDiagnosticReceiptLogs(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_filter"})
 		return
 	}
-	rows, next, err := extensionLogFiles.ReadReceipts(c.Request.Context(), f, n, c.Query("cursor"))
+	page, err := extensionLogFiles.ReadUnified(c.Request.Context(), f, n, c.Query("cursor"))
 	if errors.Is(err, extensionlogs.ErrCursor) {
 		c.JSON(http.StatusGone, gin.H{"code": "diagnostic_cursor_expired"})
 		return
@@ -160,7 +160,7 @@ func AdminDiagnosticReceiptLogs(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{"entries": rows, "next_cursor": next})
+	c.JSON(http.StatusOK, page)
 }
 
 func AdminExportDiagnosticReceiptLogs(c *gin.Context) {
@@ -169,35 +169,26 @@ func AdminExportDiagnosticReceiptLogs(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_filter"})
 		return
 	}
+	rows, err := extensionLogFiles.ExportReceipts(c.Request.Context(), f, c.Query("snapshot"))
+	if errors.Is(err, extensionlogs.ErrCursor) {
+		c.JSON(http.StatusGone, gin.H{"code": "diagnostic_cursor_expired"})
+		return
+	}
+	if errors.Is(err, extensionlogs.ErrDiagnosticExportLimit) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": "narrow_diagnostic_filter"})
+		return
+	}
+	if err != nil {
+		diagnosticReceiptError(c, err)
+		return
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	cursor := ""
-	rowsCount := 0
-	for {
-		rows, next, err := extensionLogFiles.ReadReceipts(c.Request.Context(), f, 100, cursor)
-		if errors.Is(err, extensionlogs.ErrCursor) {
-			c.JSON(http.StatusGone, gin.H{"code": "diagnostic_cursor_expired"})
-			return
-		}
-		if err != nil {
+	for _, row := range rows {
+		if err = enc.Encode(row); err != nil {
 			diagnosticReceiptError(c, err)
 			return
 		}
-		rowsCount += len(rows)
-		if rowsCount > 5000 {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": "narrow_diagnostic_filter"})
-			return
-		}
-		for _, row := range rows {
-			if err = enc.Encode(row); err != nil {
-				diagnosticReceiptError(c, err)
-				return
-			}
-		}
-		if next == "" {
-			break
-		}
-		cursor = next
 	}
 	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", `attachment; filename="diagnostic-receipts.jsonl"`)

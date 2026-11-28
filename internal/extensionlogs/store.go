@@ -177,10 +177,13 @@ type Store struct {
 	now                     func() time.Time
 	segmentBytes, unitBytes int64
 	// Reconstructed from managed files once, including after a process restart.
-	files      map[string]*segment
-	latest     map[sessionKey]*segment
-	total, seq int64
-	nextSweep  time.Time
+	files             map[string]*segment
+	latest            map[sessionKey]*segment
+	total, seq        int64
+	nextSweep         time.Time
+	legacyBudgetBytes int64
+	recoveredStaging  bool
+	wakeCleanup       chan struct{}
 	// A start signal does not count as a diagnostic event or survive restart.
 	pending map[sessionKey]time.Time
 }
@@ -188,7 +191,7 @@ type Store struct {
 // New accepts the logs root, containing both the legacy extension directory
 // (including its policy) and the three client destinations.
 func New(dir string) *Store {
-	return &Store{dir: dir, now: time.Now, segmentBytes: 4 << 20, unitBytes: 1_000_000_000, pending: make(map[sessionKey]time.Time)}
+	return &Store{dir: dir, now: time.Now, segmentBytes: 4 << 20, unitBytes: 1_000_000_000, pending: make(map[sessionKey]time.Time), wakeCleanup: make(chan struct{}, 1)}
 }
 
 var Default = New("logs")
@@ -226,9 +229,6 @@ func (s *Store) SetPolicy(p Policy) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Join(s.dir, legacyDir), 0700); err != nil {
 		return err
 	}
@@ -251,7 +251,12 @@ func (s *Store) SetPolicy(p Policy) error {
 	if !p.Enabled {
 		clear(s.pending)
 	}
-	return s.sweepReceiptBudget(p, s.now().UTC(), true)
+	err = s.sweepReceiptBudget(p, s.now().UTC(), true)
+	select {
+	case s.wakeCleanup <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 // Only the three managed layouts and the old flat directory are scanned. A
@@ -341,7 +346,7 @@ func (s *Store) load() error {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if dir != legacyDir {
+		if !s.recoveredStaging && dir != legacyDir {
 			if err := s.recoverStaging(dir, ls); err != nil {
 				return err
 			}
@@ -375,7 +380,7 @@ func (s *Store) load() error {
 			}
 			stamp, _ := strconv.ParseInt(m[1], 10, 64)
 			key := first.Session.key(first.UserID)
-			if !first.Session.valid() || first.UserID <= 0 || first.Seq != stamp || last.Seq < first.Seq || !last.Session.valid() || last.Session.key(last.UserID) != key ||
+			if !first.Session.valid() || first.UserID <= 0 || first.Seq < stamp || last.Seq < first.Seq || !last.Session.valid() || last.Session.key(last.UserID) != key ||
 				(dir != legacyDir && name != key.segmentName(stamp)) {
 				return errors.New("inconsistent diagnostic segment")
 			}
@@ -391,6 +396,7 @@ func (s *Store) load() error {
 		}
 	}
 	s.files, s.latest, s.seq, s.total = files, latest, seq, total
+	s.recoveredStaging = true
 	return nil
 }
 
@@ -462,9 +468,6 @@ func (s *Store) prune(p Policy, now time.Time, incoming int64, force bool) error
 func (s *Store) Sweep() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
-		return err
-	}
 	p, err := s.policy()
 	if err != nil {
 		return err
@@ -479,20 +482,30 @@ func (s *Store) Sweep() error {
 }
 func (s *Store) RunCleanup(ctx context.Context, onError func(error)) {
 	go func() {
-		t := time.NewTicker(time.Hour)
-		defer t.Stop()
-		for {
-			if err := s.Sweep(); err != nil && onError != nil {
+		for ctx.Err() == nil {
+			err := s.Sweep()
+			if err != nil && onError != nil {
 				onError(err)
 			}
+			s.mu.Lock()
+			delay := s.nextSweep.Sub(s.now())
+			s.mu.Unlock()
+			if err != nil {
+				delay = time.Minute
+			} else if delay <= 0 {
+				delay = time.Millisecond
+			}
+			t := time.NewTimer(min(delay, time.Hour))
 			select {
 			case <-ctx.Done():
-				return
 			case <-t.C:
+			case <-s.wakeCleanup:
 			}
+			t.Stop()
 		}
 	}()
 }
+
 func deviceSlug(id string) string {
 	// Keep UUIDs readable. Hash other legal identities so none can contain
 	// the underscore delimiters separating fields in a segment name.
