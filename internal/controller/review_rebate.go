@@ -104,7 +104,7 @@ var (
 		// 打分器按当前 AI 配置选择：配置可用 → 真实模型；不可用 → 占位实现（带 stub 标记）。
 		// 这里**不缓存**实例：管理员刚在设置页配好模型，下一次点「重新打分」就该生效，
 		// 缓存会让配置改动需要重启才起作用，是最容易误判成「配了没用」的坑。
-		return service.ScoreReviewRebateClaimWithDB(db, id, service.NewReviewRebateScorerWithDB(db))
+		return service.ScoreReviewRebateClaimManuallyWithDB(db, id, service.NewReviewRebateScorerWithDB(db))
 	}
 	decideReviewRebateClaim = func(reviewer entity.User, id int32, approve bool, note string) (entity.ReviewRebateClaim, error) {
 		db, err := requireReviewRebateDB()
@@ -719,10 +719,8 @@ func AdminDecideReviewRebateClaim(c *gin.Context) {
 	c.JSON(http.StatusOK, claim)
 }
 
-// AdminScoreReviewRebateClaim 触发一次 Agent 打分（管理员手工重跑用）。
-//
-// 幂等：已批准/已拒绝的行会被服务层拒绝（ErrReviewRebateClaimState），
-// 因为改一个已入账单子的金额会让账更难对。
+// AdminScoreReviewRebateClaim 由管理员启动尚无结果的评分，或重试失败的评分。
+// 并发占用、已有评分及人工结案均由服务层拒绝，不执行发放。
 func AdminScoreReviewRebateClaim(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	if !requireAdmin(c) {

@@ -130,12 +130,12 @@ export function decideReviewRebateClaim(id, decision, note = '') {
   })
 }
 
-// 触发/重跑一次 Agent 打分。
-// 返回 200 + claim；打分失败是 502（claim 保持 submitted，分数与金额都没写）。
+// 只由管理员显式触发一次评分，不自动重放评分请求。
+// 结果以管理员列表的持久状态为准；失败不写分数或发放任何款项。
 export function scoreReviewRebateClaim(id) {
   const value = Number(id)
   if (!Number.isInteger(value) || value <= 0) throw new Error('提交记录参数错误')
-  return request({ errorFeedback: 'local', url: `${adminBase}/claims/${value}/score`, method: 'post' })
+  return request({ errorFeedback: 'local', url: `${adminBase}/claims/${value}/score`, method: 'post', retryPolicy: 'single', timeout: 150_000 })
 }
 
 // 只在截图端点替换传输：XHR 会自动跟随重定向，无法在下游请求发出前阻止它。

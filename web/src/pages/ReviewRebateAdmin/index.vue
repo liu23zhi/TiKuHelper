@@ -204,6 +204,7 @@
           />
         </section>
         <a-alert v-else-if="decisionWarning" type="warning" show-icon :message="decisionWarning" class="status-alert" />
+        <a-alert v-if="scoreWarning" type="warning" show-icon :message="scoreWarning" class="status-alert" />
 
         <ConsoleTableShell v-if="claims.length" label="评价返现提交列表">
           <a-table table-layout="fixed" :data-source="claims" :columns="claimColumns" :loading="loadingClaims" :pagination="false" row-key="id" size="small" :scroll="{ x: sumTableColumnWidths(claimColumns) }">
@@ -226,6 +227,16 @@
                 {{ formatConfidence(record) }}
                 <a-tag v-if="isLowConfidence(record)" color="orange" class="low-tag">低于门槛</a-tag>
               </span>
+              <div v-else-if="column.key === 'agentScoreState'" class="score-phase">
+                <a-tag :color="SCORE_STATE[scoreState(record)].color">{{ SCORE_STATE[scoreState(record)].label }}</a-tag>
+                <a-button
+                  v-if="canScore(record)"
+                  type="link"
+                  size="small"
+                  :disabled="loading || busy"
+                  @click="submitScore(record)"
+                >{{ scoreState(record) === 'failed' ? '重试评分' : '开始评分' }}</a-button>
+              </div>
               <span v-else-if="column.key === 'matchedRule'">{{ record.matchedRuleId ?? '—' }}</span>
               <span v-else-if="column.key === 'awardAmount'" class="money-cell">{{ moneyText(record.awardAmount) }}</span>
               <span v-else-if="column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record.createdAt) }}</span>
@@ -407,6 +418,7 @@ import {
   getReviewRebateClaims,
   getReviewRebateScreenshot,
   decideReviewRebateClaim,
+  scoreReviewRebateClaim,
 } from '@/api/ReviewRebateApi'
 import { notifyReviewRebateAvailabilityChanged } from '@/utils/reviewRebateAvailability'
 import ReviewRebateVerificationDialog from './VerificationDialog.vue'
@@ -431,11 +443,20 @@ const CLAIM_STATUS = {
 const REVIEWABLE = ['submitted', 'scraping', 'scored', 'pending_review']
 // 这些状态由评分写入；批准/拒绝等终态也可来自未评分记录，不能作评分证据。
 const SCORE_RESULT_STATUSES = ['scored', 'pending_review', 'below_threshold']
+const SCORE_STATE = {
+  unscored: { label: '待评分', color: 'default' },
+  running: { label: '评分中', color: 'processing' },
+  failed: { label: '评分失败', color: 'red' },
+  scored: { label: '已评分', color: 'green' },
+}
 const scorerKind = record => String(record?.agentScorer || '').trim().toLowerCase()
-const hasRecordedAgentScore = record => ['agent', 'stub'].includes(scorerKind(record))
-  || SCORE_RESULT_STATUSES.includes(String(record?.status || '').trim().toLowerCase())
-  // 旧评分事务已写专用理由，但尚无 scorer 字段。只检查存证是否存在，不读取内容作判断。
-  || (typeof record?.agentRationale === 'string' && record.agentRationale.trim() !== '')
+const hasRecordedAgentScore = record => {
+  if (Object.hasOwn(SCORE_STATE, record?.agentScoreState)) return record.agentScoreState === 'scored'
+  // 旧 API 的专用评分证据仍可用于显示历史值，包括真零。
+  return ['agent', 'stub'].includes(scorerKind(record))
+    || SCORE_RESULT_STATUSES.includes(String(record?.status || '').trim().toLowerCase())
+    || (typeof record?.agentRationale === 'string' && record.agentRationale.trim() !== '')
+}
 
 function readNonnegativeNumber(value) {
   if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null
@@ -502,6 +523,8 @@ export default {
     const loadingClaims = ref(false)
     const deciding = ref(false)
     const decisionWarning = ref('')
+    const scoreWarning = ref('')
+    const scoringRequests = reactive(new Map())
     // 提交列表筛选。与既有页面（LogList / RechargeOrderList）同一约定：
     // 日期用原生 <input type="date"> 的 YYYY-MM-DD，后端按「起始日 00:00 起、
     // 截止日次日 00:00 止」解释，因此「查 11-10」覆盖整天。
@@ -550,6 +573,15 @@ export default {
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin()
     const busy = computed(() => savingProgram.value || savingRule.value || deciding.value || loadingClaims.value)
 
+    const scoreState = record => {
+      if (scoringRequests.has(readPositiveInt(record?.id))) return 'running'
+      return Object.hasOwn(SCORE_STATE, record?.agentScoreState)
+        ? record.agentScoreState
+        : (hasRecordedAgentScore(record) ? 'scored' : 'unscored')
+    }
+    const canScore = record => ['submitted', 'scraping'].includes(record?.status)
+      && ['unscored', 'failed'].includes(scoreState(record))
+
     const minConfidence = computed(() => readNonnegativeNumber(programForm.minAgentConfidence))
 
     const ruleColumns = [
@@ -570,6 +602,7 @@ export default {
       { title: '截图', dataIndex: 'screenshot', key: 'screenshot', width: 100 },
       { title: 'Agent 打分', dataIndex: 'agentScore', key: 'agentScore', width: 160 },
       { title: '置信度', dataIndex: 'agentConfidence', key: 'agentConfidence', width: 170 },
+      { title: '评分状态', key: 'agentScoreState', width: 124 },
       { title: '命中规则', dataIndex: 'matchedRule', key: 'matchedRule', width: 100 },
       { title: '金额', dataIndex: 'awardAmount', key: 'awardAmount', width: 130 },
       { title: '提交时间', dataIndex: 'createdAt', key: 'createdAt', width: 175 },
@@ -1047,6 +1080,34 @@ export default {
       }
     }
 
+    const submitScore = async record => {
+      const id = readPositiveInt(record?.id)
+      if (!canManage() || busy.value || !id) return
+      const current = claims.value.find(item => readPositiveInt(item.id) === id)
+      if (!canScore(current)) return
+
+      const attempt = Symbol()
+      scoringRequests.set(id, attempt)
+      scoreWarning.value = ''
+      const owns = () => canManage() && scoringRequests.get(id) === attempt
+      try {
+        let status
+        try {
+          status = (await scoreReviewRebateClaim(id))?.status
+        } catch {
+          // 请求超时并不能确定服务端是否已完成。
+        }
+        if (!owns()) return
+        const refreshed = await loadClaims()
+        if (!owns()) return
+        if (status === 409) scoreWarning.value = '评分状态已变更，请按最新列表核对。'
+        else if (status === 502) scoreWarning.value = '评分失败，可重试或继续人工审核。'
+        else if (status !== 200 || !refreshed) scoreWarning.value = '未能确认评分结果，请刷新列表后核对。'
+      } finally {
+        if (owns()) scoringRequests.delete(id)
+      }
+    }
+
     const openDecisionDialog = (record, decision) => {
       if (!canManage() || busy.value || !isReviewable(record)) return
       decisionDialogKey.value += 1
@@ -1161,7 +1222,8 @@ export default {
       claimListQuery = { page: 1, filters: {} }
       ruleDialogOpen.value = false; decisionDialogOpen.value = false
       verificationRecord.value = null
-      ruleWarning.value = ''; decisionWarning.value = ''
+      ruleWarning.value = ''; decisionWarning.value = ''; scoreWarning.value = ''
+      scoringRequests.clear()
       savingProgram.value = false; savingRule.value = false; deciding.value = false
       clearProgramFailure(); clearRulesFailure(); clearClaimsFailure()
     }
@@ -1204,7 +1266,7 @@ export default {
       ruleDialogOpen, ruleDialogKey, editingRuleId, ruleForm, ruleFormError,
       decisionDialogOpen, decisionDialogKey, decisionRecord, decisionForm, decisionValidation,
       rangeText, moneyText, formatConfidence, formatDateTime, buildUserName, buildAgentScore,
-      scorerLabel, scorerColor,
+      scorerLabel, scorerColor, scoreState, canScore, submitScore, scoreWarning, SCORE_STATE,
       claimStatusLabel, claimStatusColor, isReviewable, isLowConfidence,
       setProgramField, saveProgram, resetProgramForm, loadProgram, loadRules, loadClaims, loadAll,
       setRuleField, openRuleDialog, closeRuleDialog, saveRule, removeRule,
@@ -1228,6 +1290,8 @@ export default {
 .money-cell, .time-cell { font-variant-numeric: tabular-nums; }
 .note-cell { overflow-wrap: anywhere; white-space: pre-wrap; }
 .scorer-tag { margin-inline-start: 6px; }
+.score-phase { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.score-phase :deep(.ant-btn) { padding-inline: 0; }
 .screenshot-preview { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
 .action-disabled { color: var(--console-muted); font-size: 13px; }
 .claim-actions :deep(.ant-btn-link) { padding-inline: 8px; }
