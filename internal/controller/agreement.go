@@ -52,6 +52,8 @@ func agreementFail(c *gin.Context, op string, err error) {
 		code, status = "proof_required", 401
 	case errors.Is(err, service.ErrAgreementInput):
 		code, status = "invalid_request", 400
+	case errors.Is(err, service.ErrAgreementContactRequired):
+		code, status = "contact_required", 409
 	case errors.Is(err, service.ErrAgreementConflict):
 		code, status = "version_conflict", 409
 	case errors.Is(err, gorm.ErrRecordNotFound):

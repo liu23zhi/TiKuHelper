@@ -195,7 +195,7 @@ func AdminExtensionLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, page)
 }
 func GetExtensionLogPolicy(c *gin.Context) {
-	policy, err := extensionLogFiles.Policy()
+	policy, err := extensionLogFiles.EffectivePolicy()
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "暂时无法读取诊断日志策略"})
 		return
@@ -216,10 +216,14 @@ func SetExtensionLogPolicy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请明确扩展日志回传开关"})
 		return
 	}
+	if input.RetentionDays < 1 || input.RetentionDays > 7 || input.MaxGB < 1 || input.MaxGB > 10 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请填写 1–7 天、1–10 GB 的完整整数"})
+		return
+	}
 	policy := extensionlogs.Policy{Enabled: *input.Enabled, RetentionDays: input.RetentionDays, MaxGB: input.MaxGB}
 	err := extensionLogFiles.SetPolicy(policy)
 	if errors.Is(err, extensionlogs.ErrPolicy) {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "请填写 1–3650 天、1–1024 GB 的完整整数"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请填写 1–7 天、1–10 GB 的完整整数"})
 		return
 	}
 	if err != nil {

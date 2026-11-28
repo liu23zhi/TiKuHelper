@@ -113,6 +113,19 @@ func (s AgreementStore) Publish(id, rev int64) (r entity.AgreementRelease, err e
 		if used != 0 {
 			return ErrAgreementConflict
 		}
+		if d.Version == ApprovedDiagnosticAgreementVersion {
+			if d.Summary != approvedDiagnosticAgreementSummary ||
+				!IsApprovedDiagnosticAgreement(d.Version, AgreementContentHash(d.Body)) {
+				return ErrAgreementInput
+			}
+			contacts, err := (AgreementStore{tx}).PublicContacts()
+			if err != nil {
+				return err
+			}
+			if len(contacts.Channels) == 0 {
+				return ErrAgreementContactRequired
+			}
+		}
 		r = entity.AgreementRelease{DraftID: id, Revision: rev, Version: d.Version, Summary: d.Summary, Body: d.Body, PublishedAt: time.Now().UTC()}
 		if e := tx.Create(&r).Error; e != nil {
 			return e

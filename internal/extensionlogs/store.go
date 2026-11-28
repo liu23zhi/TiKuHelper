@@ -193,6 +193,11 @@ func New(dir string) *Store {
 
 var Default = New("logs")
 
+func cappedDiagnosticPolicy(p Policy) Policy {
+	p.RetentionDays, p.MaxGB = min(p.RetentionDays, 7), min(p.MaxGB, 10)
+	return p
+}
+
 func (s *Store) policy() (Policy, error) {
 	raw, err := os.ReadFile(filepath.Join(s.dir, legacyDir, "settings.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -207,7 +212,14 @@ func (s *Store) policy() (Policy, error) {
 	}
 	return p, nil
 }
+
+// Policy reads the stored configuration, including pre-T06 values. Product
+// reads and enforcement use EffectivePolicy so old files need no migration.
 func (s *Store) Policy() (Policy, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.policy() }
+func (s *Store) EffectivePolicy() (Policy, error) {
+	p, err := s.Policy()
+	return cappedDiagnosticPolicy(p), err
+}
 func (s *Store) SetPolicy(p Policy) error {
 	if !p.valid() {
 		return ErrPolicy
@@ -239,7 +251,7 @@ func (s *Store) SetPolicy(p Policy) error {
 	if !p.Enabled {
 		clear(s.pending)
 	}
-	return s.prune(p, s.now().UTC(), 0, true)
+	return s.sweepReceiptBudget(p, s.now().UTC(), true)
 }
 
 // Only the three managed layouts and the old flat directory are scanned. A
@@ -463,7 +475,7 @@ func (s *Store) Sweep() error {
 	} else {
 		clear(s.pending)
 	}
-	return s.prune(p, now, 0, true)
+	return s.sweepReceiptBudget(p, now, true)
 }
 func (s *Store) RunCleanup(ctx context.Context, onError func(error)) {
 	go func() {
@@ -767,7 +779,7 @@ func (s *Store) Read(cursor string, limit int, filter Filter) (Page, error) {
 	if err != nil {
 		return out, err
 	}
-	cut := s.now().UTC().AddDate(0, 0, -p.RetentionDays)
+	cut := s.now().UTC().AddDate(0, 0, -cappedDiagnosticPolicy(p).RetentionDays)
 	candidates := make([]*segment, 0)
 	for _, x := range s.files {
 		if x.first < before && filter.matches(x.key) && !x.updated.Before(cut) {

@@ -14,3 +14,7 @@ export const publishAgreementDraft = (id, revision) => send('post', '/drafts/' +
 export const listAgreementReleases = params => send('get', '/releases', { params })
 export const getAgreementRelease = id => send('get', '/releases/' + id)
 export const listAgreementRecords = params => send('get', '/records', { params })
+
+export const getAgreementContacts = () => send('get', '/contacts')
+export const putAgreementContacts = channels => send('put', '/contacts', { data: { channels } })
+export const getDiagnosticAgreementTemplate = () => send('get', '/templates/diagnostics-v1')

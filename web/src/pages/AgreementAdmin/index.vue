@@ -8,9 +8,31 @@
     <p v-else-if="!authorized" role="status">仅当前有效的管理员账号可管理用户协议。</p>
     <div v-else :key="generation" class="agreement-panels">
       <p v-if="notice" role="status" class="notice">{{ notice }}</p>
+      <ConsolePanel title="公开联系方式" description="填写公开邮箱、企业微信或公众号名称／账号。拒绝协议或无法登录的访客也能查看；请勿填写密钥、Webhook 或私密联系资料。">
+        <template #actions>
+          <a-button v-if="!contacts.open" data-action="edit-contacts" :onClick="owned(openContacts)">配置公开联系方式</a-button>
+          <a href="/agreement-support" target="_blank" rel="noopener noreferrer">查看公开页面</a>
+        </template>
+        <template v-if="contacts.open">
+          <p v-if="contacts.loading" role="status">正在读取公开联系方式…</p>
+          <p v-if="contacts.error" role="alert">{{ contacts.error }}</p>
+          <p v-if="contacts.saved" role="status">公开联系方式已保存。</p>
+          <a-button v-if="!contacts.loaded && !contacts.loading" :onClick="owned(loadContacts)">重新读取</a-button>
+          <form v-if="contacts.loaded" class="draft-form" aria-label="公开联系方式" @submit.prevent="ownedSaveContacts">
+            <label v-for="field in publicContactKinds" :key="field.kind" :for="'agreement-contact-' + field.kind">
+              {{ field.label }}
+              <input :id="'agreement-contact-' + field.kind" v-model.trim="contacts.fields[field.kind]" :type="field.kind === 'email' ? 'email' : 'text'"
+                :maxlength="field.maxLength" :disabled="contacts.saving" autocomplete="off" />
+            </label>
+            <a-button type="primary" html-type="submit" data-action="save-contacts" :loading="contacts.saving" :disabled="contacts.saving">保存公开联系方式</a-button>
+          </form>
+        </template>
+      </ConsolePanel>
+
       <ConsolePanel title="协议草稿" description="保存草稿不会影响已发布版本或设备。">
         <template #actions>
           <a-button data-action="refresh-drafts" :disabled="drafts.status === 'loading'" :onClick="owned(loadPage, 'drafts', 0)">刷新草稿</a-button>
+          <a-button data-action="diagnostics-template" :onClick="owned(openDiagnosticsTemplate)">载入已审定 v1.0 模板</a-button>
           <a-button type="primary" data-action="create" :onClick="owned(openDialog, 'create')">新建草稿</a-button>
           <a-button danger data-action="batch-delete" :disabled="!selected.length" :onClick="owned(openDelete, null)">批量删除{{ selected.length ? '（' + selected.length + '）' : '' }}</a-button>
         </template>
@@ -200,10 +222,13 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import {
   listAgreementDrafts, getAgreementDraft, saveAgreementDraft, deleteAgreementDraft, deleteAgreementDrafts,
   publishAgreementDraft, listAgreementReleases, getAgreementRelease, listAgreementRecords,
+  getAgreementContacts, putAgreementContacts, getDiagnosticAgreementTemplate,
 } from '@/api/AgreementAdminApi'
 import { getCurrentUser } from '@/api/TikuComponentApi'
 import { getCurrentSessionRevision, getCurrentUserLogoutEpoch, isAdminUser, setStoredCurrentUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
+
+import { publicContactKinds, readAgreementChannels } from '@/utils/agreementContacts.mjs'
 
 defineOptions({ name: 'AgreementAdmin' })
 
@@ -225,6 +250,11 @@ const readNames = { drafts: '草稿', releases: '发布版本', records: '同意
 const currentRelease = shallowRef(null), headLoaded = ref(false), publishedDrafts = reactive(new Set())
 const selected = ref([]), notice = ref(''), dialog = shallowRef(null), generation = ref(0)
 let dialogKey = 0
+const blankContacts = () => ({
+  open: false, loaded: false, loading: false, saving: false, saved: false, error: '',
+  fields: Object.fromEntries(publicContactKinds.map(({ kind }) => [kind, ''])),
+})
+const contacts = reactive(blankContacts())
 const emptyFilter = () => ({ deviceId: '', userId: '', version: '', clientKind: '', accepted: '', unbound: false })
 const filter = reactive(emptyFilter()), applied = shallowRef({})
 const filterError = computed(() => {
@@ -251,6 +281,7 @@ function clear() {
   generation.value++
   for (const list of Object.values(lists)) Object.assign(list, newList())
   notice.value = ''; dialog.value = null; selected.value = []
+  Object.assign(contacts, blankContacts())
   currentRelease.value = null; headLoaded.value = false; publishedDrafts.clear()
   Object.assign(filter, emptyFilter()); applied.value = {}
 }
@@ -283,6 +314,7 @@ function owned(fn, ...args) {
 }
 const ownedSubmitFilters = computed(() => owned(submitFilters))
 const ownedSubmitDraft = computed(() => owned(commitDialog, dialog.value))
+const ownedSaveContacts = computed(() => owned(saveContacts))
 
 const deniedMessage = '服务器已拒绝管理访问，个人资料不会因一次拒绝而改写。可重新检查权限。'
 const unconfirmedMessage = '未能确认当前会话的管理员权限。管理内容保持隐藏，请重新检查。'
@@ -333,6 +365,61 @@ async function adminRequest(request, owner) {
     void recheckAccess(false)
   }
   return result
+}
+
+function applyContacts(channels) {
+  for (const { kind } of publicContactKinds) contacts.fields[kind] = channels.find(row => row.kind === kind)?.value ?? ''
+}
+function openContacts() {
+  if (contacts.open) return
+  contacts.open = true
+  void loadContacts()
+}
+async function loadContacts() {
+  if (contacts.loading || contacts.loaded) return
+  const owner = capture()
+  contacts.loading = true; contacts.error = ''
+  try {
+    const result = await adminRequest(getAgreementContacts, owner)
+    if (!owner()) return
+    const channels = result.status === 200 ? readAgreementChannels(result.data) : null
+    if (!channels) throw new Error('invalid public contact response')
+    applyContacts(channels)
+    contacts.loaded = true
+  } catch {
+    if (owner()) contacts.error = '公开联系方式读取失败，请重试。'
+  } finally {
+    if (owner()) contacts.loading = false
+  }
+}
+async function saveContacts() {
+  if (!contacts.loaded || contacts.saving) return
+  const owner = capture()
+  const channels = publicContactKinds.map(({ kind }) => ({ kind, value: contacts.fields[kind].trim() })).filter(row => row.value)
+  contacts.saving = true; contacts.saved = false; contacts.error = ''
+  try {
+    const result = await adminRequest(() => putAgreementContacts(channels), owner)
+    if (!owner()) return
+    if (result.status === 409 && result.data?.code === 'contact_required') {
+      contacts.error = '当前协议需要至少保留一种公开联系方式。'
+      return
+    }
+    if (result.status === 400) {
+      contacts.error = '仅填写有效公开邮箱、企业微信或公众号的名称／账号；不要填写 URL、二维码或私密资料。'
+      return
+    }
+    const stored = result.status === 200 ? readAgreementChannels(result.data) : null
+    if (!stored || channels.length !== stored.length || !channels.every(expected =>
+      stored.some(actual => actual.kind === expected.kind && actual.value === expected.value))) {
+      throw new Error('unconfirmed public contact response')
+    }
+    applyContacts(stored)
+    contacts.saved = true
+  } catch {
+    if (owner()) contacts.error = '保存结果未确认。请刷新页面核对，再决定是否重试。'
+  } finally {
+    if (owner()) contacts.saving = false
+  }
 }
 
 async function loadPage(type, offset) {
@@ -402,6 +489,26 @@ function openDialog(mode, id) {
   notice.value = ''
   if (mode !== 'create') loadDetail(target)
 }
+async function openDiagnosticsTemplate() {
+  if (dialog.value) return
+  openDialog('create')
+  const target = dialog.value, owner = capture()
+  const live = () => owner() && dialog.value === target
+  target.loading = true; target.form = null
+  try {
+    const result = await adminRequest(getDiagnosticAgreementTemplate, owner)
+    if (!live()) return
+    const { version, summary, body } = result.data || {}
+    if (result.status !== 200 || version !== 'v1.0' || !validContent({ version, summary, body })) {
+      throw new Error('diagnostics template unavailable')
+    }
+    target.form = { version, summary, body, revision: 0 }
+  } catch {
+    if (live()) target.error = '未能读取已审定模板，请关闭后重试。'
+  } finally {
+    if (live()) target.loading = false
+  }
+}
 function openDelete(row) {
   if (dialog.value) return
   const ids = row ? [row.id] : drafts.rows.map(row => row.id).filter(id => selected.value.includes(id))
@@ -459,11 +566,14 @@ async function commitDialog(target) {
     if (!live()) return
     const { status, data } = result
     if (status !== 200) {
-      if (status === 409) {
+      if (status === 409 && data?.code === 'contact_required') {
+        target.error = '请先配置至少一项公开联系方式，再审阅并发布。'
+      } else if (status === 409) {
         target.error = '版本冲突：草稿修订已改变、协议已发布或版本号已使用。请核对后再操作。'
         target.locked = true; target.canReload = mode === 'edit' || mode === 'publish'
       } else if (status === 404) { target.error = '目标草稿已不存在；请刷新列表。'; target.locked = true }
-      else if (status === 400) target.error = '服务端未接受本次提交，请检查填写内容。'
+      else if (status === 400) target.error = mode === 'publish' && detail.version === 'v1.0'
+        ? '正式 v1.0 的摘要和正文必须与已审定模板完全一致。' : '服务端未接受本次提交，请检查填写内容。'
       else lockUnconfirmed(target)
       return
     }

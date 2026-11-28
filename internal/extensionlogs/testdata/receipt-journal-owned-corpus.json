@@ -1,0 +1,111 @@
+{
+  "fixture_only": true,
+  "compatibility": "Logical events; this is not an agreed HTTP wire schema or authorization to attach telemetry.",
+  "captured_provider": "f02011ba6852c98902f0b354ad34144a2b460e5e",
+  "streams": [
+    {
+      "name": "ext",
+      "owner": 41001,
+      "mode": "extension",
+      "device": "owned-shared-fixture",
+      "browser": "",
+      "launch": "96e2b690-3319-425b-92d1-2350af303700"
+    },
+    {
+      "name": "browser",
+      "owner": 41001,
+      "mode": "native_browser",
+      "device": "owned-shared-fixture",
+      "browser": "owned-browser-01",
+      "launch": "96e2b690-3319-425b-92d1-2350af303700"
+    },
+    {
+      "name": "exam",
+      "owner": 41002,
+      "mode": "native_exam",
+      "device": "owned-shared-fixture",
+      "browser": "",
+      "launch": "96e2b690-3319-425b-92d1-2350af303700"
+    }
+  ],
+  "events": [
+    {
+      "name": "e1",
+      "stream": "ext",
+      "batch": "owned-batch-a",
+      "id": "owned-id-1",
+      "seq": 1,
+      "event": "extension.ready",
+      "time": "2026-11-27T03:02:00.123Z"
+    },
+    {
+      "name": "e2",
+      "stream": "ext",
+      "batch": "owned-batch-b",
+      "id": "owned-id-2",
+      "seq": 2,
+      "event": "network.offline",
+      "time": "2026-11-27T03:01:00.456Z"
+    },
+    {
+      "name": "e3",
+      "stream": "ext",
+      "batch": "owned-batch-c",
+      "id": "owned-id-3",
+      "seq": 3,
+      "event": "sync.success",
+      "time": "2026-11-27T03:02:00.123Z"
+    },
+    {
+      "name": "b1",
+      "stream": "browser",
+      "batch": "owned-batch-a",
+      "id": "owned-id-1",
+      "seq": 1,
+      "event": "settings.saved",
+      "time": "2026-11-27T11:02:00.123+08:00"
+    },
+    {
+      "name": "b2",
+      "stream": "browser",
+      "batch": "owned-batch-b",
+      "id": "owned-id-2",
+      "seq": 2,
+      "event": "network.timeout",
+      "time": "2026-11-27T03:02:02.008Z"
+    },
+    {
+      "name": "x1",
+      "stream": "exam",
+      "batch": "owned-batch-a",
+      "id": "owned-id-1",
+      "seq": 1,
+      "event": "runtime.error",
+      "time": "2026-11-27T03:00:10.010Z"
+    }
+  ],
+  "deliveries": [
+    "b2",
+    "e1",
+    "x1",
+    "e3",
+    "e2",
+    "b1"
+  ],
+  "after_reopen_replay": "e2",
+  "owner_boundaries": "Same textual event ID/launch/device across valid streams are NOT reversibly linked or deduped across owner/mode/browser. Owner must be trusted API identity, not accepted from wire.",
+  "for_later_v2": {
+    "expected_unique_events": 6,
+    "same_event_changed_payload": "reject conflict, retain previous receipt and content",
+    "wrong_or_unknown_ack": "retain pending events; never infer receipt from timeout or HTTPS error",
+    "clock_rollback_scope": "e2 is a lower client timestamp at higher seq in the same ext stream; comparison is not based on receive time or across streams."
+  },
+  "intended_event_order": [
+    "x1",
+    "e2",
+    "e1",
+    "e3",
+    "b1",
+    "b2"
+  ]
+}

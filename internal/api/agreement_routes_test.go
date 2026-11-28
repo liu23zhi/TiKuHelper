@@ -22,6 +22,30 @@ func TestAgreementRoutes(t *testing.T) {
 	}
 }
 
+func TestAgreementContactRoutes(t *testing.T) {
+	r := gin.New()
+	SetAPIRouter(r)
+	got := map[string]bool{}
+	for _, route := range r.Routes() {
+		got[route.Method+" "+route.Path] = true
+	}
+	for _, path := range []string{
+		"GET /api/agreements/contacts",
+		"GET /api/admin/agreements/contacts",
+		"PUT /api/admin/agreements/contacts",
+		"GET /api/admin/agreements/templates/diagnostics-v1",
+	} {
+		if !got[path] {
+			t.Errorf("missing %s", path)
+		}
+	}
+	for _, method := range []string{"POST", "PUT", "DELETE"} {
+		if got[method+" /api/agreements/contacts"] {
+			t.Errorf("anonymous contact mutation registered: %s", method)
+		}
+	}
+}
+
 func TestAgreementHeaderScopedToClientRoutes(t *testing.T) {
 	r := gin.New()
 	SetAPIRouter(r)

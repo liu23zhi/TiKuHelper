@@ -7,7 +7,13 @@
     </ConsolePageHeading>
     <p v-if="!authorized" role="status">仅当前有效的管理员账号可查看扩展诊断日志。</p>
     <div v-else :key="generation" class="extension-log-panels">
-      <ConsolePanel title="最近事件" description="按服务器接收顺序显示，最新在前。时间采用北京时间。">
+      <ConsolePanel title="诊断事件" :description="historical ? '旧版记录按服务器接收顺序显示，最新在前。' : '本次协议下的诊断按事件发生时间排序；发生时间和接收时间分别显示为北京时间。'">
+        <div class="extension-log-form log-source" aria-label="诊断数据来源">
+          <a-button :type="historical ? 'default' : 'primary'" data-action="show-receipts" :disabled="reading || exporting" :onClick="owned(selectSource, false)">已确认回传</a-button>
+          <a-button :type="historical ? 'primary' : 'default'" data-action="show-history" :disabled="reading || exporting" :onClick="owned(selectSource, true)">历史日志</a-button>
+          <a-button v-if="!historical" data-action="export" :disabled="reading || exporting" :loading="exporting" :onClick="owned(download)">下载筛选结果</a-button>
+          <p v-if="exportError" role="alert">{{ exportError }}</p>
+        </div>
         <form class="extension-log-form filter-form" aria-label="日志筛选" @submit.prevent="submitFilters">
           <label for="extension-log-user">用户 ID<input id="extension-log-user" v-model.trim="draft.user" inputmode="numeric" placeholder="全部账号" /></label>
           <label for="extension-log-device">设备 ID<input id="extension-log-device" v-model.trim="draft.device" placeholder="完整设备 ID" /></label>
@@ -27,12 +33,12 @@
         <p v-else-if="hasList && !rows.length && !listError" role="status">暂无扩展诊断日志。</p>
         <div v-if="rows.length" class="extension-log-table" tabindex="0" aria-label="扩展诊断日志表格，可横向滚动">
           <table>
-            <caption class="sr-only">扩展诊断事件，最新接收的在前</caption>
+            <caption class="sr-only">{{ historical ? "历史扩展诊断，最新接收的在前" : "已确认回传诊断，按发生时间升序" }}</caption>
             <thead><tr><th scope="col">接收时间</th><th scope="col">发生时间</th><th scope="col">级别</th><th scope="col">事件</th><th scope="col">用户 ID</th><th scope="col">设备 ID</th><th scope="col">运行方式</th><th scope="col">浏览器 ID</th><th scope="col">启动 ID</th><th scope="col">扩展版本</th><th scope="col">耗时</th><th scope="col">数量</th><th scope="col">定位</th></tr></thead>
             <tbody>
               <tr v-for="(entry, index) in rows" :key="index">
                 <td><time :datetime="entry.received_at">{{ displayTime(entry.received_at) }}</time></td>
-                <td><time :datetime="entry.time">{{ displayTime(entry.time) }}</time></td>
+                <td><time :datetime="entry.time">{{ displayTime(entry.time) }}</time><span v-if="entry.clock_regressed">（客户端时钟回拨）</span></td>
                 <td>{{ levelLabel(entry.level) }}</td><td>{{ eventLabel(entry.event) }}</td>
                 <td>{{ entry.user_id }}</td><td><code>{{ entry.device_id || '—' }}</code></td><td>{{ modeLabel(entry.mode) }}</td>
                 <td><code v-if="entry.mode === 'native_browser'">{{ entry.browser_id || '未上报' }}</code><span v-else>不适用</span></td><td><code>{{ entry.launch_id || '—' }}</code></td><td>{{ entry.version }}</td>
@@ -42,23 +48,23 @@
             </tbody>
           </table>
         </div>
-        <a-button v-if="cursor" class="older-button" data-action="older" :disabled="reading" :onClick="owned(older)">查看更早的日志</a-button>
+        <a-button v-if="cursor" class="older-button" data-action="older" :disabled="reading" :onClick="owned(older)">{{ historical ? "查看更早的日志" : "继续查看" }}</a-button>
       </ConsolePanel>
-      <ConsolePanel title="回传与保留设置" description="服务端将日志写入 ./logs/extension；按账号和设备区分，每次扩展启动单独建档。超出保留期限或容量上限会清理最早的日志。">
+      <ConsolePanel title="回传与保留设置" description="按账号、设备和启动区分，达到保留期限或容量上限时优先清理最早收到的日志。">
         <p v-if="policyError" role="alert">{{ policyError }}</p>
         <p v-if="policyNotice" role="status">{{ policyNotice }}</p>
         <p v-if="policyReading" role="status">正在读取保留设置…</p>
         <a-button v-else-if="!saved" :onClick="owned(loadPolicy)">重试读取设置</a-button>
         <form v-if="saved" class="extension-log-form" aria-label="回传与保留设置" @submit.prevent="submitPolicy">
           <label class="upload-toggle" for="extension-log-enabled"><input id="extension-log-enabled" v-model="enabled" type="checkbox" :disabled="saving" />启用扩展日志回传</label>
-          <p class="hint">默认开启，由管理员统一控制；关闭回传不等于删除历史日志。</p>
+          <p class="hint">默认开启，仅在设备确认当前正式协议后生效；关闭回传不立即删除历史日志。</p>
           <label for="extension-log-retention">保留天数
-            <input id="extension-log-retention" v-model.number="days" type="number" min="1" max="3650" step="1" required :disabled="saving" />
+            <input id="extension-log-retention" v-model.number="days" type="number" min="1" max="7" step="1" required :disabled="saving" />
           </label>
           <label for="extension-log-size">总容量上限（GB）
-            <input id="extension-log-size" v-model.number="maxGB" type="number" min="1" max="1024" step="1" required :disabled="saving" />
+            <input id="extension-log-size" v-model.number="maxGB" type="number" min="1" max="10" step="1" required :disabled="saving" />
           </label>
-          <p class="hint">保留 1–3650 天，容量 1–1024 GB；1 GB = 10 亿字节。</p>
+          <p class="hint">保留 1–7 天，容量 1–10 GB；1 GB = 10 亿字节。</p>
           <a-button type="primary" html-type="submit" data-action="save" :loading="saving" :disabled="!canSave">保存设置</a-button>
         </form>
       </ConsolePanel>
@@ -70,7 +76,7 @@
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
-import { getExtensionLogPolicy, listExtensionLogs, saveExtensionLogPolicy } from '@/api/ExtensionLogApi'
+import { exportDiagnosticReceipts, getExtensionLogPolicy, listDiagnosticReceipts, listExtensionLogs, saveExtensionLogPolicy } from '@/api/ExtensionLogApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
 
@@ -94,6 +100,7 @@ const { currentUser } = useCurrentUserDisplay()
 const logout = getCurrentUserLogoutEpoch()
 const authorized = computed(() => getCurrentUserLogoutEpoch() === logout && Boolean(currentUserIdentity(currentUser.value)) &&
   isAdminUser(currentUser.value) && String(currentUser.value?.status || 'enabled') === 'enabled')
+const historical = ref(false), exporting = ref(false), exportError = ref('')
 const rows = shallowRef([]), cursor = ref(''), reading = ref(false), hasList = ref(false), listError = ref('')
 const saved = shallowRef(null), enabled = ref(false), days = ref(null), maxGB = ref(null), saving = ref(false), policyReading = ref(false)
 const blankFilter = () => ({ user: '', device: '', launch: '', mode: '', browser: '' })
@@ -107,10 +114,11 @@ const filterError = computed(() => {
 const hasFilter = computed(() => draft.user || draft.device || draft.launch || draft.mode || draft.browser || Object.keys(applied.value).length)
 const policyError = ref(''), policyNotice = ref(''), generation = ref(0)
 const valid = (n, max) => Number.isInteger(n) && n >= 1 && n <= max
-const canSave = computed(() => authorized.value && saved.value && !saving.value && valid(days.value, 3650) && valid(maxGB.value, 1024) &&
+const canSave = computed(() => authorized.value && saved.value && !saving.value && valid(days.value, 7) && valid(maxGB.value, 10) &&
   (enabled.value !== saved.value.enabled || days.value !== saved.value.retention_days || maxGB.value !== saved.value.max_gb))
 function clear() {
   generation.value++
+  historical.value = exporting.value = false; exportError.value = ""
   rows.value = []; cursor.value = ''; hasList.value = reading.value = false; listError.value = ''
   Object.assign(draft, blankFilter()); applied.value = {}; enabled.value = false
   saved.value = days.value = maxGB.value = null; saving.value = policyReading.value = false; policyError.value = policyNotice.value = ''
@@ -138,13 +146,14 @@ async function loadPage(append) {
   const live = capture()
   reading.value = true; listError.value = ''
   try {
-    const result = await listExtensionLogs(applied.value, append ? cursor.value : '')
+    const list = historical.value ? listExtensionLogs : listDiagnosticReceipts
+    const result = await list(applied.value, append ? cursor.value : '')
     if (!live()) return
     if (result?.status !== 200 || !Array.isArray(result.data?.entries)) throw new Error()
     rows.value = append ? [...rows.value, ...result.data.entries] : result.data.entries
     cursor.value = result.data.next_cursor || ''; hasList.value = true
   } catch {
-    if (live()) listError.value = '日志读取失败，请刷新日志或重试查看更早的记录。'
+    if (live()) listError.value = '日志读取失败，请刷新日志或重试查看下一页。'
   } finally { if (live()) reading.value = false }
 }
 const refresh = () => loadPage(false)
@@ -159,13 +168,34 @@ function applyFilter() {
 const submitFilters = computed(() => owned(applyFilter))
 function modeChanged() { if (draft.mode && draft.mode !== 'native_browser') draft.browser = '' }
 function clearFilters() { Object.assign(draft, blankFilter()); applyFilter() }
+function selectSource(history) {
+  if (historical.value === history || reading.value || exporting.value) return
+  historical.value = history; exportError.value = ''
+  Object.assign(draft, blankFilter()); applyFilter()
+}
+async function download() {
+  if (!authorized.value || exporting.value || historical.value || !scope.canLoadForCurrentUser()) return
+  const live = capture()
+  exporting.value = true; exportError.value = ''
+  try {
+    const result = await exportDiagnosticReceipts(applied.value)
+    if (!live()) return
+    if (result?.status !== 200 || !(result.data instanceof Blob)) throw new Error()
+    const url = URL.createObjectURL(result.data)
+    try {
+      const link = document.createElement('a')
+      link.href = url; link.download = 'diagnostic-receipts.jsonl'; link.click()
+    } finally { setTimeout(() => URL.revokeObjectURL(url), 1000) }
+  } catch { if (live()) exportError.value = '日志导出失败。请缩小筛选范围或刷新后重试。' }
+  finally { if (live()) exporting.value = false }
+}
 function locateLaunch(entry) {
   Object.assign(draft, { user: String(entry.user_id), device: entry.device_id, launch: entry.launch_id,
     mode: modes.has(entry.mode) ? entry.mode : '', browser: entry.mode === 'native_browser' ? entry.browser_id || '' : '' })
   applyFilter()
 }
 function setPolicy(value) {
-  if (typeof value?.enabled !== 'boolean' || !valid(value?.retention_days, 3650) || !valid(value?.max_gb, 1024)) throw new Error()
+  if (typeof value?.enabled !== 'boolean' || !valid(value?.retention_days, 7) || !valid(value?.max_gb, 10)) throw new Error()
   saved.value = value; enabled.value = value.enabled; days.value = value.retention_days; maxGB.value = value.max_gb
 }
 async function loadPolicy() {
@@ -203,7 +233,7 @@ const submitPolicy = computed(() => owned(async () => {
 .extension-log-form label { display: grid; gap: .25rem; }
 .extension-log-form input, .extension-log-form select { color: inherit; background: transparent; border: 1px solid var(--console-border, #aaa); border-radius: .4rem; padding: .4rem .55rem; }
 .extension-log-form .upload-toggle { display: flex; align-items: center; gap: .5rem; }
-.filter-form { margin-bottom: 1rem; }
+.filter-form, .log-source { margin-bottom: 1rem; }
 .hint { flex-basis: 100%; margin: 0; }
 .older-button { margin-top: .75rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

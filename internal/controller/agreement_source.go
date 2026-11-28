@@ -12,7 +12,8 @@ const agreementSourceKey = "agreement_verified_source"
 const agreementGatewayMark = "by=_tiku_agreement_gateway"
 
 func agreementRoute(path string) bool {
-	return strings.HasPrefix(path, "/api/agreements/") || strings.HasPrefix(path, "/api/admin/agreements/")
+	return strings.HasPrefix(path, "/api/agreements/") || strings.HasPrefix(path, "/api/admin/agreements/") ||
+		path == "/api/extension-logs/receipt-policy" || path == "/api/extension-logs/batches"
 }
 func agreementPeer(remote string) netip.Addr {
 	host, _, err := net.SplitHostPort(remote)
