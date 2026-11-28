@@ -29,6 +29,8 @@
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { readAgreementChannels } from '@/utils/agreementContacts.mjs'
 
+defineOptions({ name: 'AgreementPublicSupport' })
+
 const channels = ref(null), release = ref(null)
 const contactMessage = ref('正在读取公开联系方式…')
 const releaseMessage = ref('正在读取当前已发布协议…')
