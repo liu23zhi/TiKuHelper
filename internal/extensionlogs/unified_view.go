@@ -5,8 +5,10 @@ import (
 	"container/heap"
 	"context"
 	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -67,12 +69,12 @@ func (h *unifiedMax) offer(x unifiedEntry, n int) {
 }
 
 type unifiedWindow struct {
-	Days             int
-	At, Expires      int64
-	Filter           Filter
-	Legacy, Database string
-	Watermark        int64
-	After            *unifiedKey
+	Days                            int
+	At, Expires                     int64
+	Filter                          Filter
+	Legacy, LegacyContent, Database string
+	Watermark                       int64
+	After                           *unifiedKey
 }
 type UnifiedDiagnosticPage struct {
 	Entries  []DiagnosticReceiptRow `json:"entries"`
@@ -172,7 +174,12 @@ func (s *Store) selectUnified(ctx context.Context, f Filter, limit int, token st
 	}
 	f = normalizedDiagnosticFilter(f)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.mu.Unlock()
+		}
+	}()
 	p, err := s.policy()
 	if err != nil {
 		return nil, w, err
@@ -197,9 +204,21 @@ func (s *Store) selectUnified(ctx context.Context, f Filter, limit int, token st
 			return nil, w, ErrCursor
 		}
 	}
+	journal, err := s.receiptJournal(p).unifiedReceipts(ctx, &w, limit, cut, token != "")
+	if err != nil {
+		return nil, w, err
+	}
+	// Take the SQLite watermark under the write lock, then release it before
+	// scanning immutable historical files. A replacement during the scan
+	// aborts the result and does not stall diagnostic ingestion.
+	s.mu.Unlock()
+	locked = false
+	digest := sha256.New()
 	legacy := make(unifiedMax, 0, min(limit, 100))
 	for _, file := range files {
-		err = file.visit(ctx, root, func(r Record, _ []byte) error {
+		_, _ = digest.Write([]byte(file.id))
+		err = file.visit(ctx, root, func(r Record, raw []byte) error {
+			_, _ = digest.Write(raw)
 			if !r.ReceivedAt.After(cut) {
 				return nil
 			}
@@ -223,12 +242,19 @@ func (s *Store) selectUnified(ctx context.Context, f Filter, limit int, token st
 			return nil
 		})
 		if err != nil {
+			if token != "" && (errors.Is(err, errLegacyChanged) || errors.Is(err, os.ErrNotExist)) {
+				return nil, w, ErrCursor
+			}
 			return nil, w, err
 		}
 	}
-	journal, err := s.receiptJournal(p).unifiedReceipts(ctx, &w, limit, cut, token != "")
-	if err != nil {
-		return nil, w, err
+	content := hex.EncodeToString(digest.Sum(nil))
+	if token != "" && w.LegacyContent != content {
+		return nil, w, ErrCursor
+	}
+	w.LegacyContent = content
+	if s.now().UnixMilli() >= w.Expires {
+		return nil, w, ErrCursor
 	}
 	out := append([]unifiedEntry(legacy), journal...)
 	sort.Slice(out, func(i, j int) bool { return compareUnified(out[i].key, out[j].key) < 0 })

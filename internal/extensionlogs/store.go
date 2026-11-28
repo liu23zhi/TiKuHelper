@@ -177,11 +177,13 @@ type Store struct {
 	now                     func() time.Time
 	segmentBytes, unitBytes int64
 	// Reconstructed from managed files once, including after a process restart.
-	files       map[string]*segment
-	latest      map[sessionKey]*segment
-	total, seq  int64
-	nextSweep   time.Time
-	wakeCleanup chan struct{}
+	files             map[string]*segment
+	latest            map[sessionKey]*segment
+	total, seq        int64
+	nextSweep         time.Time
+	legacyBudgetBytes int64
+	recoveredStaging  bool
+	wakeCleanup       chan struct{}
 	// A start signal does not count as a diagnostic event or survive restart.
 	pending map[sessionKey]time.Time
 }
@@ -227,9 +229,6 @@ func (s *Store) SetPolicy(p Policy) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Join(s.dir, legacyDir), 0700); err != nil {
 		return err
 	}
@@ -347,7 +346,7 @@ func (s *Store) load() error {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if dir != legacyDir {
+		if !s.recoveredStaging && dir != legacyDir {
 			if err := s.recoverStaging(dir, ls); err != nil {
 				return err
 			}
@@ -397,6 +396,7 @@ func (s *Store) load() error {
 		}
 	}
 	s.files, s.latest, s.seq, s.total = files, latest, seq, total
+	s.recoveredStaging = true
 	return nil
 }
 
@@ -468,9 +468,6 @@ func (s *Store) prune(p Policy, now time.Time, incoming int64, force bool) error
 func (s *Store) Sweep() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
-		return err
-	}
 	p, err := s.policy()
 	if err != nil {
 		return err

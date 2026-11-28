@@ -28,7 +28,7 @@ func (f legacyFile) keep(ctx context.Context, root *os.Root, keep func(Record) b
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return err
 	}
-	tmp := filepath.Join(filepath.Dir(f.name), ".retained-"+hex.EncodeToString(suffix[:]))
+	tmp := filepath.Join(filepath.Dir(f.name), retainedPrefix+hex.EncodeToString(suffix[:]))
 	out, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
@@ -36,8 +36,8 @@ func (f legacyFile) keep(ctx context.Context, root *os.Root, keep func(Record) b
 	defer root.Remove(tmp)
 	defer out.Close()
 	var written int64
-	err = f.visit(ctx, root, func(r Record, raw []byte) error {
-		if !keep(r) {
+	err = f.visitRows(ctx, root, true, func(r Record, raw []byte) error {
+		if r.ReceivedAt.IsZero() || !keep(r) {
 			return nil
 		}
 		n, e := out.Write(raw)
@@ -242,19 +242,19 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 	if err != nil {
 		return err
 	}
-	// Index reuse is safe for the ordinary hot path (legacy upload routes
-	// no longer write). Periodic maintenance or a quota check rediscovers files.
-	if err = s.load(); err != nil {
-		return err
-	}
-	if !force && now.Before(s.nextSweep) && s.total+journal <= budget {
+	// Use the cached byte count only as a hot-path hint. No legacy payload
+	// parsing can prevent the independent receipt cleanup.
+	if !force && now.Before(s.nextSweep) && s.legacyBudgetBytes+journal <= budget {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
+	if err = j.sweepExpired(ctx); err != nil {
+		return err
+	}
 	age := time.Duration(p.RetentionDays) * 24 * time.Hour
 	cut := now.Add(-age)
-	root, files, _, err := s.legacyFiles()
+	root, files, _, err := s.collectLegacyFiles(true)
 	if err != nil {
 		return err
 	}
@@ -265,9 +265,25 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 	}()
 	var next time.Time
 	oldestLimit := now.Add(time.Hour)
+	s.legacyBudgetBytes = legacyBytes(files)
+	if !force && s.legacyBudgetBytes+journal <= budget {
+		// Ingestion below quota need not parse malformed legacy history;
+		// the scheduled cleanup below handles it independently.
+		receiptTime, e := j.oldestReceiptTime(ctx)
+		if e != nil {
+			return e
+		}
+		if s.nextSweep.IsZero() || !now.Before(s.nextSweep) {
+			s.nextSweep = oldestLimit
+		}
+		if at := receiptTime.Add(age); !receiptTime.IsZero() && at.Before(s.nextSweep) {
+			s.nextSweep = at
+		}
+		return nil
+	}
 	for _, f := range files {
 		expired := false
-		err = f.visit(ctx, root, func(r Record, _ []byte) error {
+		err = f.visitRows(ctx, root, true, func(r Record, _ []byte) error {
 			if !r.ReceivedAt.After(cut) {
 				expired = true
 			} else {
@@ -284,9 +300,6 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 				return err
 			}
 		}
-	}
-	if err = j.sweepExpired(ctx); err != nil {
-		return err
 	}
 	receiptTime, err := j.oldestReceiptTime(ctx)
 	if err != nil {
@@ -307,6 +320,7 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 		if err != nil {
 			return err
 		}
+		s.legacyBudgetBytes = legacyBytes(files)
 		journal, err = j.physicalSize()
 		return err
 	}

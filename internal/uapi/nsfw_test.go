@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -181,17 +182,17 @@ func TestImageNSFWRequiresDocumentedVerdictWithoutBoolean(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			const ref = "fixture-returned-ref"
-			var n int
+			var n atomic.Int32
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				n++
+				n.Add(1)
 				w.Header().Set("X-Request-ID", ref)
 				_, _ = io.WriteString(w, tt.body)
 			}))
 			defer s.Close()
 			o, err := NewClient("uapi-fixture-local-only").SetMaxRetries(4).SetImageNSFWURL(s.URL).
 				ImageNSFW(context.Background(), ImageNSFWRequest{Image: []byte("synthetic"), ImageName: "owned.png"})
-			if n != 1 {
-				t.Fatalf("potentially billable POST count=%d, want 1", n)
+			if n.Load() != 1 {
+				t.Fatalf("potentially billable POST count=%d, want 1", n.Load())
 			}
 			if tt.valid {
 				if err != nil || o.HTTPStatus != 200 || o.RequestID != ref {

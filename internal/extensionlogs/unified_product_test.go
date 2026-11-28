@@ -271,3 +271,132 @@ func TestUnifiedReadDoesNotRewriteV2AndUpgradePreservesExistingProof(t *testing.
 		t.Fatalf("original proof changed: %v", e)
 	}
 }
+
+func TestUnifiedCleanupRetainsValidRowsAndSweepsBothSourcesDespiteBrokenLegacyLine(t *testing.T) {
+	ctx := context.Background()
+	s := New(t.TempDir())
+	start := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	now := start
+	s.now = func() time.Time { return now }
+	meta := receiptFixtureMeta()
+	legacyOwnedRecord(t, s, 82, meta, "settings.saved", start.Add(-2*time.Hour))
+	if _, err := s.AppendReceipt(ctx, 82, meta, receiptFixtureBatch(811, receiptFixtureEvent(1, "2026-01-02T13:00:00.000Z"))); err != nil {
+		t.Fatal(err)
+	}
+	now = start.Add(20 * time.Minute)
+	legacyOwnedRecord(t, s, 82, meta, "network.offline", start.Add(-time.Hour))
+	var f string
+	for k := range s.files {
+		f = filepath.Join(s.dir, k)
+	}
+	raw, err := os.ReadFile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, ok := strings.Cut(string(raw), "\n")
+	if !ok || b == "" {
+		t.Fatal("fixture not mixed")
+	}
+	if err = os.WriteFile(f, []byte(a+"\nnot-a-log-line\n"+b), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Reads stay strict without publishing unclassified diagnostic content.
+	if _, err = s.ReadUnified(ctx, Filter{}, 10, ""); err == nil {
+		t.Fatal("malformed source silently yielded a preview")
+	}
+	now = start.Add(7 * 24 * time.Hour)
+	if err = s.Sweep(); err != nil {
+		t.Fatal(err)
+	}
+	j := s.receiptJournal(Policy{true, 7, 10})
+	d, e := j.open(false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer d.Close()
+	var rows int
+	if e = d.QueryRow("SELECT count(*) FROM receipt_events").Scan(&rows); e != nil || rows != 0 {
+		t.Fatalf("new-source expiry blocked: %d %v", rows, e)
+	}
+	entries, e := s.ExportReceipts(ctx, Filter{}, "")
+	if e != nil || len(entries) != 1 || entries[0].Event != "network.offline" {
+		t.Fatalf("valid legacy survivor lost: %d %v", len(entries), e)
+	}
+	clean, e := os.ReadFile(f)
+	if e != nil || strings.Contains(string(clean), "not-a-log-line") {
+		t.Fatal("unparsable payload retained")
+	}
+}
+
+func TestUnifiedRetentionRemovesOnlyOwnAbandonedTempOnMaintenance(t *testing.T) {
+	s := New(t.TempDir())
+	p := filepath.Join(s.dir, "extension")
+	if e := os.Mkdir(p, 0700); e != nil {
+		t.Fatal(e)
+	}
+	owned := filepath.Join(p, ".retained-1234567890abcdef11223344")
+	other := filepath.Join(p, ".retained-not-ours")
+	for _, f := range []string{owned, other} {
+		if e := os.WriteFile(f, []byte("owned diagnostic fixture"), 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if _, e := s.ReadUnified(context.Background(), Filter{}, 10, ""); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(owned); e != nil {
+		t.Fatal("GET touched pending files", e)
+	}
+	if e := s.Sweep(); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(owned); !os.IsNotExist(e) {
+		t.Fatal("orphan still retained", e)
+	}
+	if _, e := os.Stat(other); e != nil {
+		t.Fatal("unrelated file changed", e)
+	}
+}
+
+func TestUnifiedSnapshotRejectsSameSizeSameStampLegacyReplacement(t *testing.T) {
+	ctx := context.Background()
+	s := New(t.TempDir())
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	legacyOwnedRecord(t, s, 93, receiptFixtureMeta(), "network.offline", now)
+	view, err := s.ReadUnified(ctx, Filter{}, 2, "")
+	if err != nil || len(view.Entries) != 1 || view.Entries[0].Event != "network.offline" {
+		t.Fatal(err, view)
+	}
+	var target string
+	for k := range s.files {
+		target = filepath.Join(s.dir, k)
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := strings.Replace(string(body), "network.offline", "network.timeout", 1)
+	if len(replaced) != len(body) {
+		t.Fatal("fixture sizes differ")
+	}
+	// Same metadata but a different immutable segment generation.
+	p := target + ".fixture-tmp"
+	if err = os.WriteFile(p, []byte(replaced), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(p, target); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ExportReceipts(ctx, Filter{}, view.Snapshot)
+	if !errors.Is(err, ErrCursor) {
+		t.Fatalf("snapshot observed replacement with same metadata: rows=%d err=%v", len(rows), err)
+	}
+}
