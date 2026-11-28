@@ -7,9 +7,9 @@
     </ConsolePageHeading>
     <p v-if="!authorized" role="status">仅当前有效的管理员账号可查看扩展诊断日志。</p>
     <div v-else :key="generation" class="extension-log-panels">
-      <ConsolePanel title="诊断事件" :description="historical ? '旧版记录按服务器接收顺序显示，最新在前。' : '本次协议下的诊断按事件发生时间排序；发生时间和接收时间分别显示为北京时间。'">
+      <ConsolePanel title="诊断事件" :description="historical ? '旧版记录按服务器接收顺序显示，最新在前。' : '来自历史文件和回执库的日志统一按事件发生时间排序；发生时间和接收时间分别显示为北京时间。'">
         <div class="extension-log-form log-source" aria-label="诊断数据来源">
-          <a-button :type="historical ? 'default' : 'primary'" data-action="show-receipts" :disabled="reading || exporting" :onClick="owned(selectSource, false)">已确认回传</a-button>
+          <a-button :type="historical ? 'default' : 'primary'" data-action="show-receipts" :disabled="reading || exporting" :onClick="owned(selectSource, false)">全部诊断</a-button>
           <a-button :type="historical ? 'primary' : 'default'" data-action="show-history" :disabled="reading || exporting" :onClick="owned(selectSource, true)">历史日志</a-button>
           <a-button v-if="!historical" data-action="export" :disabled="reading || exporting" :loading="exporting" :onClick="owned(download)">下载筛选结果</a-button>
           <p v-if="exportError" role="alert">{{ exportError }}</p>
@@ -33,7 +33,7 @@
         <p v-else-if="hasList && !rows.length && !listError" role="status">暂无扩展诊断日志。</p>
         <div v-if="rows.length" class="extension-log-table" tabindex="0" aria-label="扩展诊断日志表格，可横向滚动">
           <table>
-            <caption class="sr-only">{{ historical ? "历史扩展诊断，最新接收的在前" : "已确认回传诊断，按发生时间升序" }}</caption>
+            <caption class="sr-only">{{ historical ? "历史扩展诊断，最新接收的在前" : "统一诊断，按发生时间升序" }}</caption>
             <thead><tr><th scope="col">接收时间</th><th scope="col">发生时间</th><th scope="col">级别</th><th scope="col">事件</th><th scope="col">用户 ID</th><th scope="col">设备 ID</th><th scope="col">运行方式</th><th scope="col">浏览器 ID</th><th scope="col">启动 ID</th><th scope="col">扩展版本</th><th scope="col">耗时</th><th scope="col">数量</th><th scope="col">定位</th></tr></thead>
             <tbody>
               <tr v-for="(entry, index) in rows" :key="index">
@@ -101,7 +101,7 @@ const logout = getCurrentUserLogoutEpoch()
 const authorized = computed(() => getCurrentUserLogoutEpoch() === logout && Boolean(currentUserIdentity(currentUser.value)) &&
   isAdminUser(currentUser.value) && String(currentUser.value?.status || 'enabled') === 'enabled')
 const historical = ref(false), exporting = ref(false), exportError = ref('')
-const rows = shallowRef([]), cursor = ref(''), reading = ref(false), hasList = ref(false), listError = ref('')
+const rows = shallowRef([]), cursor = ref(''), snapshot = ref(''), reading = ref(false), hasList = ref(false), listError = ref('')
 const saved = shallowRef(null), enabled = ref(false), days = ref(null), maxGB = ref(null), saving = ref(false), policyReading = ref(false)
 const blankFilter = () => ({ user: '', device: '', launch: '', mode: '', browser: '' })
 const draft = reactive(blankFilter()), applied = shallowRef({})
@@ -119,7 +119,7 @@ const canSave = computed(() => authorized.value && saved.value && !saving.value 
 function clear() {
   generation.value++
   historical.value = exporting.value = false; exportError.value = ""
-  rows.value = []; cursor.value = ''; hasList.value = reading.value = false; listError.value = ''
+  rows.value = []; cursor.value = ''; snapshot.value = ''; hasList.value = reading.value = false; listError.value = ''
   Object.assign(draft, blankFilter()); applied.value = {}; enabled.value = false
   saved.value = days.value = maxGB.value = null; saving.value = policyReading.value = false; policyError.value = policyNotice.value = ''
 }
@@ -151,7 +151,7 @@ async function loadPage(append) {
     if (!live()) return
     if (result?.status !== 200 || !Array.isArray(result.data?.entries)) throw new Error()
     rows.value = append ? [...rows.value, ...result.data.entries] : result.data.entries
-    cursor.value = result.data.next_cursor || ''; hasList.value = true
+    cursor.value = result.data.next_cursor || ''; snapshot.value = historical.value ? '' : result.data.snapshot || ''; hasList.value = true
   } catch {
     if (live()) listError.value = '日志读取失败，请刷新日志或重试查看下一页。'
   } finally { if (live()) reading.value = false }
@@ -163,7 +163,7 @@ function applyFilter() {
   applied.value = { ...(draft.user && { user_id: Number(draft.user) }), ...(draft.device && { device_id: draft.device }), ...(draft.launch && { launch_id: draft.launch }),
     ...(draft.mode && { mode: draft.mode }), ...(draft.browser && { browser_id: draft.browser }) }
   // A cursor belongs to its exact filter. Never show an old selection as the new one on error.
-  rows.value = []; cursor.value = ''; hasList.value = false; refresh()
+  rows.value = []; cursor.value = ''; snapshot.value = ''; hasList.value = false; refresh()
 }
 const submitFilters = computed(() => owned(applyFilter))
 function modeChanged() { if (draft.mode && draft.mode !== 'native_browser') draft.browser = '' }
@@ -178,7 +178,7 @@ async function download() {
   const live = capture()
   exporting.value = true; exportError.value = ''
   try {
-    const result = await exportDiagnosticReceipts(applied.value)
+    const result = await exportDiagnosticReceipts(applied.value, snapshot.value)
     if (!live()) return
     if (result?.status !== 200 || !(result.data instanceof Blob)) throw new Error()
     const url = URL.createObjectURL(result.data)

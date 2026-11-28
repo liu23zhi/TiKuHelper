@@ -166,3 +166,17 @@ test('receipt view defaults to event time and switching to history keeps the exi
   assert.equal(w.find('[data-action="export"]').exists(), false)
   assert.equal(calls.filter(c => c.path === base).length, 1)
 })
+test('unified diagnostic export names the same signed snapshot as the current list', async () => {
+  defaultPolicy = { enabled: true, retention_days: 7, max_gb: 10 }
+  respond = c => {
+    if (c.path === receipts) return status({ entries: [event('runtime.error')], next_cursor: '', snapshot: 'opaque-snapshot' })
+    assert.equal(c.path, receipts + '/export')
+    assert.deepEqual(c.params, { snapshot: 'opaque-snapshot' })
+    return status({}, 410)
+  }
+  const w = await open()
+  assert.match(w.text(), /全部诊断/)
+  await by(w, 'export').trigger('click'); await settle()
+  assert.match(w.text(), /日志导出失败/)
+  assert.equal(calls.filter(c => c.path === receipts + '/export').length, 1)
+})

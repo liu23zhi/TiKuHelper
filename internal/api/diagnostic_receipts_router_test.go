@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/extensionlogs"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/util"
 )
@@ -240,4 +242,61 @@ func TestDiagnosticReceiptPreflightUsesOnlyScopedAgreementHeaders(t *testing.T) 
 			t.Errorf("preflight %s status=%d allowed=%q", item.path, w.Code, w.Header().Get("Access-Control-Allow-Headers"))
 		}
 	}
+}
+
+func TestDiagnosticUnifiedRoutesPageAndExportSameSnapshot(t *testing.T) {
+	if !hostAdmissionChild(t) {
+		return
+	}
+	r, db := newHostAdmissionRouter(t)
+	const actor int32 = 958
+	const owned = "diagnostic-synthetic-mixed-admin"
+	if err := db.Create(&entity.User{ID: actor, Username: "diagnostic-owned-mixed", Role: "admin", Status: "enabled", Password: owned}).Error; err != nil {
+		t.Fatal(err)
+	}
+	auth := util.GenerateJwtForUser(actor, owned)
+	src := extensionlogs.New("logs")
+	meta := extensionlogs.Session{Mode: "extension", Version: "1.2.3", DeviceID: "mixed-owned-device",
+		LaunchID: "11111111-1111-4111-8111-111111111111"}
+	if _, err := src.Start(actor, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Append(actor, extensionlogs.Batch{Session: meta, Entries: []extensionlogs.Entry{
+		{Time: time.Date(2026, 1, 1, 16, 0, 0, 0, time.UTC), Level: "info", Event: "settings.saved"},
+		{Time: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), Level: "info", Event: "extension.ready"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	b := extensionlogs.ReceiptBatch{BatchID: "22222222-2222-4222-8222-222222222222", Entries: []extensionlogs.ReceiptEvent{
+		{EventID: "33333333-3333-4333-8333-333333333333", EventSeq: 1, Time: "2026-01-01T14:00:00.000Z", Event: "sync.success", Level: "info"},
+	}}
+	if _, err := src.AppendReceipt(context.Background(), actor, meta, b); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/api/admin/extension-logs/receipts"
+	w := diagnosticFixtureRequest(r, "GET", path+"?limit=2", auth, "", "")
+	var first extensionlogs.UnifiedDiagnosticPage
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &first) != nil || len(first.Entries) != 2 ||
+		first.Entries[0].Event != "extension.ready" || first.Entries[1].Event != "sync.success" ||
+		first.Next == "" || first.Snapshot == "" {
+		t.Fatalf("invalid mixed result: %d %s", w.Code, w.Body)
+	}
+	w = diagnosticFixtureRequest(r, "GET", path+"?limit=2&cursor="+first.Next, auth, "", "")
+	var second extensionlogs.UnifiedDiagnosticPage
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &second) != nil || len(second.Entries) != 1 ||
+		second.Entries[0].Event != "settings.saved" || second.Next != "" {
+		t.Fatalf("invalid continuation: %d %s", w.Code, w.Body)
+	}
+	w = diagnosticFixtureRequest(r, "GET", path+"/export?snapshot="+first.Snapshot, auth, "", "")
+	got := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	if w.Code != 200 || len(got) != 3 {
+		t.Fatalf("invalid download: %d %d", w.Code, len(got))
+	}
+	for i, want := range append(first.Entries, second.Entries...) {
+		var row extensionlogs.DiagnosticReceiptRow
+		if e := json.Unmarshal([]byte(got[i]), &row); e != nil || row.Event != want.Event || row.Seq != want.Seq || row.DeviceID != want.DeviceID {
+			t.Fatal("download diverged from page")
+		}
+	}
+	t.Logf("actual mixed router dialect=%s: 3 events; pages 2+1 and signed-snapshot export match", db.Dialector.Name())
 }
