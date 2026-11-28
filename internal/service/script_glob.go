@@ -44,6 +44,7 @@ var (
 // 目前也不存在。兜底让这三类路径在任何调用顺序下都保持保留状态。
 var baselineReservedScriptPrefixes = []string{
 	"adapter-service",
+	"agreement-support",
 	"sqp",
 	"api",
 	"assets",

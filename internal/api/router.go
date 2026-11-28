@@ -73,9 +73,13 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter.POST("/agreements/devices", controller.EnrollAgreementDevice)
 	apiRouter.GET("/agreements/current", controller.CurrentAgreement)
+	apiRouter.GET("/agreements/contacts", controller.AgreementPublicContacts)
 	apiRouter.GET("/agreements/status", controller.AgreementDeviceStatus)
 	apiRouter.POST("/agreements/consents", controller.SubmitAgreement)
 	adminAgreements := apiRouter.Group("/admin/agreements", controller.Auth, middleware.RequireAdmin)
+	adminAgreements.GET("/contacts", controller.AgreementAdminContacts)
+	adminAgreements.PUT("/contacts", controller.UpdateAgreementAdminContacts)
+	adminAgreements.GET("/templates/diagnostics-v1", controller.AgreementDiagnosticTemplate)
 	adminAgreements.GET("/drafts", controller.AgreementDrafts)
 	adminAgreements.POST("/drafts", controller.CreateAgreementDraft)
 	adminAgreements.POST("/drafts/batch-delete", controller.BatchDeleteAgreementDrafts)

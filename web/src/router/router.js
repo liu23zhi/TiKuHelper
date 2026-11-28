@@ -6,6 +6,7 @@ import { getPublicRegisterStatus } from '../api/TikuComponentApi'
 
 import AdapterLoginLayout from '../layout/LoginLayout.vue';
 import AdapterLoginPage from '../pages/Login/index.vue'
+const AgreementSupport = () => import(/* webpackChunkName: "route-agreement-support" */ '../pages/AgreementSupport/index.vue')
 const AdapterRegisterPage = () => import(/* webpackChunkName: "route-adapter-register-page" */ '../pages/Register/index.vue')
 const WechatBind = () => import(/* webpackChunkName: "route-wechat-bind" */ '../pages/WechatBind/index.vue')
 const Profile = () => import(/* webpackChunkName: "route-profile" */ '../pages/Profile/index.vue')
@@ -95,6 +96,11 @@ const routes = [
         component: WechatBind
       }
     ]
+  },
+  {
+    path: '/agreement-support',
+    name: 'agreement-support',
+    component: AgreementSupport,
   },
   {
     path: '/recharge/result',
@@ -511,6 +517,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'script-activation-codes',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
+  'agreement-support',
   // 支付回跳：下单后浏览器跳回来时会话可能尚未建立。
   'recharge-result',
   // 登录流程三步（loginlayout 的 children）。2026-11-14 路径改名后主布局

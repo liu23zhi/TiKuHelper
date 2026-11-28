@@ -3,6 +3,9 @@
   <main class="auth-main">
     <router-view></router-view>
   </main>
+  <nav aria-label="公开支持" class="auth-support">
+    <RouterLink to="/agreement-support">协议与公开联系方式（无需登录）</RouterLink>
+  </nav>
   <PageFoot/>
 </template>
 
@@ -28,6 +31,8 @@ export default {
 </script>
 
 <style scoped>
+.auth-support { text-align: center; padding: 0 1rem 1rem; }
+
 .auth-main {
   width: 100%;
   min-height: calc(100vh - 120px);

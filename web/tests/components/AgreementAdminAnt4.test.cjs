@@ -61,7 +61,8 @@ async function open(actor = admin) {
   user.setStoredCurrentUser(actor)
   const entry = router.resolve(route).matched.at(-1)?.components?.default
   assert.ok(entry, 'the real router should expose the agreement administration component')
-  const { default: Page } = await entry()
+  const component = typeof entry === 'function' ? await entry() : entry
+  const Page = component.default || component
   const w = mount(Page, { attachTo: document.body, global: { plugins: [{ install: registerConsoleUI }] } })
   mounted.push(w); await settle(); return w
 }
@@ -405,4 +406,54 @@ test('server-confirmed demotion after a list 403 sends the live RouterView to pe
   assert.equal(user.getStoredCurrentUser().role, 'user')
   assert.equal(router.currentRoute.value.path, user.resolveHomePath(member))
   assert.deepEqual(mutateCalls(), [])
+})
+
+
+test('T06 contact panel is administrator-owned, validates saves and confirms the returned public catalog', async () => {
+  respond = c => c.path === base + '/contacts' && ok({ channels: c.method === 'put' ? c.data.channels : [] })
+  const w = await open()
+  await click(w, 'edit-contacts')
+  assert.equal(calls.filter(c => c.path === base + '/contacts' && c.method === 'get').length, 1)
+  await fill(w, 'contact-email', 'fixture@example.invalid')
+  await fill(w, 'contact-wecom', '第一方企业微信客服')
+  await w.find('form[aria-label="公开联系方式"]').trigger('submit'); await settle()
+  assert.deepEqual(mutateCalls(), [{ method: 'put', path: base + '/contacts', params: undefined, data: { channels: [
+    { kind: 'email', value: 'fixture@example.invalid' }, { kind: 'wecom', value: '第一方企业微信客服' },
+  ] } }])
+  assert.match(w.text(), /公开联系方式已保存/)
+})
+
+test('T06 loads the approved body template into a draft preview without publishing or saving it', async () => {
+  respond = c => c.path === base + '/templates/diagnostics-v1' && ok({ version: 'v1.0', summary: '用户协议与必要运行日志告知', body: '已批准的完整正文' })
+  const w = await open()
+  await click(w, 'diagnostics-template')
+  const d = modal()
+  assert.equal(d.get('#agreement-version').element.value, 'v1.0')
+  assert.equal(d.get('#agreement-body').element.value, '已批准的完整正文')
+  assert.deepEqual(mutateCalls(), [])
+})
+
+
+test('T06 public support opens before login and only renders public text from anonymous reads', async t => {
+  const seen = []
+  t.mock.method(global, 'fetch', async (path, opts) => {
+    seen.push({ path, credentials: opts.credentials, cache: opts.cache })
+    const data = path === '/api/agreements/contacts'
+      ? { channels: [{ kind: 'wechat_official', value: '<img data-unsafe-fixture>官方客服' }] }
+      : { version: 'v1.0', body: '公开的已发布正文<em data-unsafe-fixture>' }
+    return { ok: true, status: 200, json: async () => data }
+  })
+  await router.push('/agreement-support')
+  assert.equal(router.currentRoute.value.name, 'agreement-support')
+  const entry = router.currentRoute.value.matched.at(-1)?.components?.default
+  const Page = entry.__asyncLoader ? await entry.__asyncLoader() : entry
+  const w = mount(Page.default || Page, { attachTo: document.body, global: { plugins: [router] } })
+  mounted.push(w); await settle()
+  assert.match(w.text(), /公众号.*官方客服/s)
+  assert.match(w.text(), /已发布正文/)
+  assert.equal(w.find('[data-unsafe-fixture]').exists(), false)
+  assert.deepEqual(seen.sort((a, b) => a.path.localeCompare(b.path)), [
+    { path: '/api/agreements/contacts', credentials: 'omit', cache: 'no-store' },
+    { path: '/api/agreements/current', credentials: 'omit', cache: 'no-store' },
+  ])
 })
