@@ -67,7 +67,7 @@ func (s *Store) AppendReceipt(ctx context.Context, owner int32, meta Session, ba
 }
 
 func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
-	p.MaxGB = min(p.MaxGB, 10)
+	p = cappedDiagnosticPolicy(p)
 	j := s.receiptJournal(p)
 	path, err := j.path(false)
 	if errors.Is(err, os.ErrNotExist) {
@@ -120,6 +120,9 @@ func (j *ReceiptJournal) sweepExpired(ctx context.Context) error {
 func (j *ReceiptJournal) pruneExpired(ctx context.Context, tx *sql.Tx) error {
 	if j.opts.MaxAge <= 0 {
 		return nil
+	}
+	if _, err := tx.ExecContext(ctx, "PRAGMA secure_delete=ON"); err != nil {
+		return err
 	}
 	cut := j.now().Add(-j.opts.MaxAge).UnixMilli()
 	// Read visibility uses the same strict received-time cutoff even between
@@ -222,7 +225,7 @@ func (s *Store) ReadReceipts(ctx context.Context, f Filter, limit int, token str
 		rows = append(rows, DiagnosticReceiptRow{
 			Session: Session{Mode: e.Mode, BrowserID: browser, Version: e.Version, DeviceID: "h:" + e.DeviceKey, LaunchID: e.LaunchID},
 			Time:    e.Time, Level: e.Level, Event: e.Event, DurationMS: e.DurationMS, Count: e.Count,
-			UserID: e.OwnerID, ReceivedAt: e.ReceivedAt, Seq: e.EventSeq, ClockRegressed: e.ClockRegressed,
+			UserID: e.OwnerID, ReceivedAt: e.ReceivedAt, Seq: e.Seq, ClockRegressed: e.ClockRegressed,
 		})
 	}
 	return rows, next, nil

@@ -77,3 +77,25 @@ func TestProductReceiptsDoNotCreateStorageWhileDisabledOrOnRead(t *testing.T) {
 		t.Fatal("created journal before a real allowed event", err)
 	}
 }
+
+func TestProductReceiptSequenceIsAssignedByServerAndRetainsOldCap(t *testing.T) {
+	ctx := context.Background()
+	s := New(t.TempDir())
+	if err := s.SetPolicy(Policy{true, 365, 220}); err != nil {
+		t.Fatal(err)
+	}
+	if p, e := s.Policy(); e != nil || p.RetentionDays != 7 || p.MaxGB != 10 {
+		t.Fatalf("wrong effective caps: %+v %v", p, e)
+	}
+	a, b := receiptFixtureMeta(), receiptFixtureMeta()
+	b.DeviceID = "different-owned-device"
+	for _, meta := range []Session{a, b} {
+		if _, err := s.AppendReceipt(ctx, 991, meta, receiptFixtureBatch(901, receiptFixtureEvent(1234, fixtureTime))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, _, err := s.ReadReceipts(ctx, Filter{UserID: 991}, 5, "")
+	if err != nil || len(rows) != 2 || rows[0].Seq == 1234 || rows[1].Seq == 1234 || rows[0].Seq == rows[1].Seq {
+		t.Fatal("operator view reused client-supplied ordering as server sequence", err)
+	}
+}

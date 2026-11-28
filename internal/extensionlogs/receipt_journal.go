@@ -24,7 +24,7 @@ const (
 	receiptFilename      = "journal.sqlite"
 	maxReceiptRows       = 100000
 	receiptAppID         = 0x54494b38 // "TIK8"
-	receiptSchemaVersion = 1
+	receiptSchemaVersion = 2
 )
 
 var (
@@ -91,6 +91,7 @@ type ReceiptProofScope struct {
 
 type ReceiptRecord struct {
 	ReceiptEvent
+	Seq            int64  `json:"seq,string"`
 	OwnerID        int32  `json:"user_id"`
 	Mode           string `json:"mode"`
 	DeviceKey      string `json:"device_key"`
@@ -186,7 +187,7 @@ func (j *ReceiptJournal) open(create bool) (*sql.DB, error) {
 	return openReceiptSQLite(path, url.Values{
 		"mode":    {"rw"},
 		"_txlock": {"immediate"},
-		"_pragma": {"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(32768)", "secure_delete(ON)"},
+		"_pragma": {"busy_timeout(2000)", "foreign_keys(ON)", "synchronous(FULL)", "max_page_count(32768)"},
 	})
 }
 
@@ -216,6 +217,7 @@ CREATE TABLE IF NOT EXISTS receipt_segments (
  UNIQUE (owner,mode,device,browser,launch,batch_id)
 );
 CREATE TABLE IF NOT EXISTS receipt_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
  owner INTEGER NOT NULL, mode TEXT NOT NULL, device TEXT NOT NULL, browser TEXT NOT NULL, launch TEXT NOT NULL,
  event_id TEXT NOT NULL, event_seq INTEGER NOT NULL,
  event_ms INTEGER NOT NULL, level TEXT NOT NULL, event TEXT NOT NULL, duration_ms INTEGER, count INTEGER, version TEXT NOT NULL,
@@ -629,7 +631,7 @@ func (j *ReceiptJournal) Read(ctx context.Context, f Filter, limit int, cursor *
 	}
 	// Regression is only relative to an earlier observed event_seq of this
 	// stream. Delay between event time and server receipt isn't clock evidence.
-	q := `SELECT e.owner,e.mode,e.device,e.browser,e.launch,e.event_id,e.event_seq,e.event_ms,e.level,e.event,e.duration_ms,e.count,e.version,s.received_ms,
+	q := `SELECT e.seq,e.owner,e.mode,e.device,e.browser,e.launch,e.event_id,e.event_seq,e.event_ms,e.level,e.event,e.duration_ms,e.count,e.version,s.received_ms,
 		EXISTS(SELECT 1 FROM receipt_events p WHERE p.owner=e.owner AND p.mode=e.mode
 			AND p.device=e.device AND p.browser=e.browser AND p.launch=e.launch AND p.segment_id<=?
 			AND p.event_seq<e.event_seq AND p.event_ms>e.event_ms)
@@ -643,7 +645,7 @@ func (j *ReceiptJournal) Read(ctx context.Context, f Filter, limit int, cursor *
 	for rows.Next() {
 		var e ReceiptRecord
 		var event, received int64
-		if err := rows.Scan(&e.OwnerID, &e.Mode, &e.DeviceKey, &e.BrowserKey, &e.LaunchID, &e.EventID, &e.EventSeq, &event, &e.Level,
+		if err := rows.Scan(&e.Seq, &e.OwnerID, &e.Mode, &e.DeviceKey, &e.BrowserKey, &e.LaunchID, &e.EventID, &e.EventSeq, &event, &e.Level,
 			&e.Event, &e.DurationMS, &e.Count, &e.Version, &received, &e.ClockRegressed); err != nil {
 			return ReceiptPage{}, err
 		}

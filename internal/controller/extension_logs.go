@@ -201,7 +201,6 @@ func GetExtensionLogPolicy(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	policy.RetentionDays, policy.MaxGB = min(policy.RetentionDays, 7), min(policy.MaxGB, 10)
 	c.JSON(http.StatusOK, policy)
 }
 func SetExtensionLogPolicy(c *gin.Context) {

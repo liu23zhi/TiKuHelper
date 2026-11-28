@@ -193,6 +193,11 @@ func New(dir string) *Store {
 
 var Default = New("logs")
 
+func cappedDiagnosticPolicy(p Policy) Policy {
+	p.RetentionDays, p.MaxGB = min(p.RetentionDays, 7), min(p.MaxGB, 10)
+	return p
+}
+
 func (s *Store) policy() (Policy, error) {
 	raw, err := os.ReadFile(filepath.Join(s.dir, legacyDir, "settings.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -205,7 +210,7 @@ func (s *Store) policy() (Policy, error) {
 	if err = json.Unmarshal(raw, &p); err != nil || !p.valid() {
 		return Policy{}, ErrPolicy
 	}
-	return p, nil
+	return cappedDiagnosticPolicy(p), nil
 }
 func (s *Store) Policy() (Policy, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.policy() }
 func (s *Store) SetPolicy(p Policy) error {

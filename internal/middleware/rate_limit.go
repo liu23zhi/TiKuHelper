@@ -20,9 +20,10 @@ func CORS(c *gin.Context) {
 	// If these are missing from the preflight allow-list, the browser reports only
 	// "Failed to fetch" and never reaches authentication or the API handler.
 	allowedHeaders := "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity"
-	// The installation credential is scoped to the agreement protocol only.
+	// Only agreement operations or diagnostics that validate the same installation proof.
 	switch c.Request.URL.Path {
-	case "/api/agreements/current", "/api/agreements/status", "/api/agreements/consents":
+	case "/api/agreements/current", "/api/agreements/status", "/api/agreements/consents",
+		"/api/extension-logs/receipt-policy", "/api/extension-logs/batches":
 		allowedHeaders += ", X-Agreement-Device"
 	}
 	c.Header("Access-Control-Allow-Headers", allowedHeaders)
