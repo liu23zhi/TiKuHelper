@@ -4,7 +4,7 @@ import { message } from 'ant-design-vue'
 import { getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
 import { getPublicRegisterStatus } from '../api/TikuComponentApi'
 
-import AdapterLoginLayout from '../layout/LoginLayout.vue';
+const AdapterLoginLayout = () => import(/* webpackChunkName: "route-adapter-login-layout" */ '../layout/LoginLayout.vue')
 import AdapterLoginPage from '../pages/Login/index.vue'
 const AgreementSupport = () => import(/* webpackChunkName: "route-agreement-support" */ '../pages/AgreementSupport/index.vue')
 const AdapterRegisterPage = () => import(/* webpackChunkName: "route-adapter-register-page" */ '../pages/Register/index.vue')
