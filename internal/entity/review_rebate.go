@@ -137,6 +137,8 @@ type ReviewRebateClaim struct {
 	// 这一列存在的唯一目的：管理端必须能区分「模型看过截图」与「占位实现按哈希派生」。
 	// 分不出来的后果是运营把哈希算出来的 5 星当成核验结论，直接点批准。
 	AgentScorer string `gorm:"column:agent_scorer;type:varchar(16);not null;default:''" json:"agentScorer"`
+	// AgentScoreRun is a private scoring lease or result marker, not part of any user response.
+	AgentScoreRun string `gorm:"column:agent_score_run;type:varchar(64);not null;default:''" json:"-"`
 	// MatchedRuleID 是打分时命中的规则快照；规则被删后这里会指向不存在的行，
 	// 金额已经写进 AwardAmount，不影响对账。
 	MatchedRuleID int32 `gorm:"column:matched_rule_id;type:int(11);not null;default:0" json:"matchedRuleId"`

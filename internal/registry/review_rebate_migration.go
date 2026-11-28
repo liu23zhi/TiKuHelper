@@ -61,7 +61,7 @@ func ensureReviewRebateSchema(db *gorm.DB) error {
 			return err
 		}
 		claim := &entity.ReviewRebateClaim{}
-		for _, field := range []string{"StoreURLSnapshot", "ExtensionIDSnapshot"} {
+		for _, field := range []string{"StoreURLSnapshot", "ExtensionIDSnapshot", "AgentScoreRun"} {
 			if !db.Migrator().HasColumn(claim, field) {
 				if err := db.Migrator().AddColumn(claim, field); err != nil {
 					return fmt.Errorf("add review rebate claim %s: %w", field, err)

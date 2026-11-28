@@ -308,3 +308,41 @@ func TestClampNegativeGiftBalanceRunsDespiteOneShotFlag(t *testing.T) {
 		t.Fatalf("self-check must run even when the flag is set, got %v", stored.GiftBalance)
 	}
 }
+
+func TestEnsureReviewRebateSchemaAddsManualScoreRunToMarkedDatabase(t *testing.T) {
+	db := newReviewRebateMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate base: %v", err)
+	}
+	if err := ensureReviewRebateSchema(db); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	legacy := entity.ReviewRebateClaim{
+		ProgramID: 1, UserID: 1, CanonicalClaimID: "synthetic-legacy",
+		Status: entity.ReviewRebateStatusRejected, AgentScorer: "agent", AgentRationale: "synthetic zero score",
+		ReviewNote: "synthetic human decision",
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("ALTER TABLE " + entity.TableNameReviewRebateClaim + " DROP COLUMN agent_score_run").Error; err != nil {
+		t.Fatal(err)
+	}
+	if !systemSettingFlagIsSet(db, reviewRebateSchemaReadyKey) {
+		t.Fatal("expected pre-upgrade database to retain its one-shot marker")
+	}
+	for i := 0; i < 2; i++ {
+		if err := ensureReviewRebateSchema(db); err != nil {
+			t.Fatalf("upgrade/restart %d: %v", i, err)
+		}
+	}
+	var stored entity.ReviewRebateClaim
+	if err := db.First(&stored, legacy.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasColumn(&entity.ReviewRebateClaim{}, "AgentScoreRun") ||
+		stored.AgentScoreRun != "" || stored.Status != legacy.Status || stored.AgentScorer != legacy.AgentScorer ||
+		stored.AgentRationale != legacy.AgentRationale || stored.ReviewNote != legacy.ReviewNote {
+		t.Fatalf("migration must add an empty fence without changing historic decisions/scores: %+v", stored)
+	}
+}

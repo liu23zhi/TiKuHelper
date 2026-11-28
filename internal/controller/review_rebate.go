@@ -104,14 +104,14 @@ var (
 		// 打分器按当前 AI 配置选择：配置可用 → 真实模型；不可用 → 占位实现（带 stub 标记）。
 		// 这里**不缓存**实例：管理员刚在设置页配好模型，下一次点「重新打分」就该生效，
 		// 缓存会让配置改动需要重启才起作用，是最容易误判成「配了没用」的坑。
-		return service.ScoreReviewRebateClaimWithDB(db, id, service.NewReviewRebateScorerWithDB(db))
+		return service.ScoreReviewRebateClaimManuallyWithDB(db, id, service.NewReviewRebateScorerWithDB(db))
 	}
-	decideReviewRebateClaim = func(reviewer entity.User, id int32, approve bool, note string) (entity.ReviewRebateClaim, error) {
+	decideReviewRebateClaim = func(reviewer entity.User, id int32, approve bool, note, approvalSnapshot string) (entity.ReviewRebateClaim, error) {
 		db, err := requireReviewRebateDB()
 		if err != nil {
 			return entity.ReviewRebateClaim{}, err
 		}
-		return service.DecideReviewRebateClaimWithDB(db, reviewer, id, approve, note)
+		return service.DecideReviewRebateAdminClaimWithDB(db, reviewer, id, approve, note, approvalSnapshot)
 	}
 	listReviewRebatePrograms = func() ([]entity.ReviewRebateProgram, error) {
 		db, err := requireReviewRebateDB()
@@ -667,7 +667,7 @@ func AdminReviewRebateClaims(c *gin.Context) {
 
 // AdminDecideReviewRebateClaim 批准/拒绝一条提交单（管理员）。
 //
-// 请求体：{"action":"approve"|"reject","note":"..."}
+// 请求体：{"action":"approve"|"reject","note":"...","approvalSnapshot":"..."}
 // 批准时在**同一事务**内写 award + 累加钱包 + 写账单；claim_id 唯一索引防重复发放。
 func AdminDecideReviewRebateClaim(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -690,8 +690,9 @@ func AdminDecideReviewRebateClaim(c *gin.Context) {
 		// 只认一个名字的结果是：另一方发来的请求永远 400「action 只能是 approve 或 reject」，
 		// 而这种 400 看起来像「参数校验」，最容易被当成前端传错了事。
 		// 两个名字都收，规范名 `action` 优先。
-		Decision string `json:"decision"`
-		Note     string `json:"note"`
+		Decision         string `json:"decision"`
+		Note             string `json:"note"`
+		ApprovalSnapshot string `json:"approvalSnapshot"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
@@ -705,7 +706,7 @@ func AdminDecideReviewRebateClaim(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "action 只能是 approve 或 reject"})
 		return
 	}
-	claim, err := decideReviewRebateClaim(operator, id, action == "approve", input.Note)
+	claim, err := decideReviewRebateClaim(operator, id, action == "approve", input.Note, strings.TrimSpace(input.ApprovalSnapshot))
 	if err != nil {
 		writeReviewRebateError(c, err)
 		return
@@ -719,10 +720,8 @@ func AdminDecideReviewRebateClaim(c *gin.Context) {
 	c.JSON(http.StatusOK, claim)
 }
 
-// AdminScoreReviewRebateClaim 触发一次 Agent 打分（管理员手工重跑用）。
-//
-// 幂等：已批准/已拒绝的行会被服务层拒绝（ErrReviewRebateClaimState），
-// 因为改一个已入账单子的金额会让账更难对。
+// AdminScoreReviewRebateClaim 由管理员启动尚无结果的评分，或重试失败的评分。
+// 并发占用、已有评分及人工结案均由服务层拒绝，不执行发放。
 func AdminScoreReviewRebateClaim(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	if !requireAdmin(c) {

@@ -497,21 +497,22 @@ func GetReviewRebateClaimWithDB(db *gorm.DB, id int32) (entity.ReviewRebateClaim
 //   - 置信度达标但规则未命中 → below_threshold + 金额 0；
 //   - 置信度达标且规则命中 → scored（仍不发放，等管理员批准）。
 //
-// 打分失败（超时/网络/模型报错/输出不可解析）→ 返回 ErrReviewRebateScoringFailed，
-// **不写入任何分数、不改状态**（保持 submitted）。理由：没有依据的分数比没有分数更危险，
-// 一个"恰好看起来及格"的默认分数会让运营直接点批准。调用方（controller）把它翻成 502，
-// 管理员可重试或直接人工判断。
-//
-// 为什么把打分调用放在事务**外面**（与早期实现不同）：
-//
-//	真实模型调用可能耗时到分钟级。在事务里调模型等于把 claim 的行锁 hold 住整段时间，
-//	并发复核（批准/拒绝）会被拖到超时。因此先在事务外读 claim + 打分，再在事务内
-//	**重新加锁并复核状态**后才写结果 —— 状态在这期间被别人改过（已批准/已拒绝）
-//	就丢弃这次打分结果，绝不覆盖终态行。
-//
-// 幂等：已批准/已拒绝的行不再打分（否则会把已经入账的金额改掉，账就更乱了）。
+// 独立的私有租约在调用上游前通过 CAS 获取；并发请求不得重入打分器。
+// 上游调用在事务外执行，不阻塞人工复核。失败只记录评分状态，不写分数、候选金额
+// 或审核结论；评分结束时重新核对租约及审核状态，过期或已经人工结案的结果不得落库。
+// 整个流程不创建发放或账单。已有内部调用按原约定可以重算非终态记录。
 func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScorer) (entity.ReviewRebateClaim, error) {
-	if !ReviewRebateSchemaAvailable(db) {
+	return scoreReviewRebateClaimWithDB(db, id, scorer, false)
+}
+
+// ScoreReviewRebateClaimManuallyWithDB limits the administrator route to an
+// unscored or failed claim. A successful result cannot trigger billable re-entry.
+func ScoreReviewRebateClaimManuallyWithDB(db *gorm.DB, id int32, scorer ReviewRebateScorer) (entity.ReviewRebateClaim, error) {
+	return scoreReviewRebateClaimWithDB(db, id, scorer, true)
+}
+
+func scoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScorer, manual bool) (entity.ReviewRebateClaim, error) {
+	if !ReviewRebateSchemaAvailable(db) || !db.Migrator().HasColumn(&entity.ReviewRebateClaim{}, "AgentScoreRun") {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateSchemaUnavailable
 	}
 	if !GetReviewRebateEnabledWithDB(db) {
@@ -521,15 +522,24 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 		scorer = DefaultReviewRebateScorer
 	}
 
-	// 阶段一（事务外，可能很慢）：读快照 + 让打分器工作。
+	// 获取权威租约后才调用上游；整个上游调用过程不持有事务锁。
 	snapshot, err := GetReviewRebateClaimWithDB(db, id)
 	if err != nil {
 		return entity.ReviewRebateClaim{}, err
 	}
-	switch snapshot.Status {
-	case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected, entity.ReviewRebateStatusClawedBack:
-		return entity.ReviewRebateClaim{}, ErrReviewRebateClaimState
+	run, err := beginReviewRebateScoreRun(db, snapshot, manual)
+	if err != nil {
+		return entity.ReviewRebateClaim{}, err
 	}
+	saved := false
+	defer func() {
+		if !saved {
+			// 只结束自己的尝试。数据库暂不可写时，租约到期也能恢复重试。
+			_ = reviewRebateSession(db).Model(&entity.ReviewRebateClaim{}).
+				Where("id = ? AND agent_score_run = ?", id, run).
+				UpdateColumn("agent_score_run", reviewRebateScoreFailed).Error
+		}
+	}()
 	score, err := scorer.Score(snapshot)
 	if err != nil {
 		return entity.ReviewRebateClaim{}, err
@@ -566,9 +576,8 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 			}
 			return err
 		}
-		// 并发下别人可能刚好完成复核：终态行的分数与金额不可再改。
-		switch claim.Status {
-		case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected, entity.ReviewRebateStatusClawedBack:
+		// 人工结案、租约到期或者新的尝试已接手：不允许旧结果覆盖。
+		if !reviewRebateCanRunScorer(claim.Status, manual) || claim.AgentScoreRun != run || !reviewRebateScoreRunActive(run, time.Now()) {
 			return ErrReviewRebateClaimState
 		}
 		program, err := getReviewRebateProgramByID(tx, claim.ProgramID)
@@ -609,15 +618,21 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 		updates["award_amount"] = amount
 		updates["matched_rule_id"] = matchedRuleID
 
-		if err := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).
-			Where("id = ?", claim.ID).Updates(updates).Error; err != nil {
-			return err
+		updates["agent_score_run"] = reviewRebateScoreScored
+		res := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).
+			Where("id = ? AND status = ? AND agent_score_run = ?", claim.ID, claim.Status, run).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return ErrReviewRebateClaimState
 		}
 		return reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).Where("id = ?", claim.ID).Take(&scored).Error
 	})
 	if txErr != nil {
 		return entity.ReviewRebateClaim{}, txErr
 	}
+	saved = true
 	// 成功路径的 trace 在这里写：此刻事务已提交，scored 是回读的落库行，
 	// matchedRuleId / awardAmount 是**本次**算出来的真实值。
 	//
@@ -669,6 +684,17 @@ func normalizeReviewRebateContentScore(score int) (int, error) {
 //     事务回滚 → 钱包不会被加两次。这是「重复批准只留一条 award」的机械保证，
 //     不依赖调用方是否先查过状态。
 func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note string) (entity.ReviewRebateClaim, error) {
+	return decideReviewRebateClaimWithDB(db, reviewer, id, approve, note, nil)
+}
+
+// DecideReviewRebateAdminClaimWithDB is the HTTP confirmation path. Rejects do
+// not need a monetary snapshot; older approval clients can only use untouched
+// legacy rows that never acquired the new scoring marker.
+func DecideReviewRebateAdminClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note, approvalSnapshot string) (entity.ReviewRebateClaim, error) {
+	return decideReviewRebateClaimWithDB(db, reviewer, id, approve, note, &approvalSnapshot)
+}
+
+func decideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note string, approvalSnapshot *string) (entity.ReviewRebateClaim, error) {
 	if !ReviewRebateSchemaAvailable(db) {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateSchemaUnavailable
 	}
@@ -723,6 +749,12 @@ func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, 
 			claim.ReviewedAt = &now
 			decided = claim
 			return nil
+		}
+
+		// 审核意图必须与锁住的当前行一致，再计算发放或写账；不能在事务外比对。
+		if approvalSnapshot != nil && ((*approvalSnapshot == "" && claim.AgentScoreRun != "") ||
+			(*approvalSnapshot != "" && *approvalSnapshot != ReviewRebateApprovalSnapshot(claim))) {
+			return fmt.Errorf("%w: 评分结果或拟发放金额已变更，请刷新并重新确认", ErrReviewRebateClaimState)
 		}
 
 		// 批准：金额取**打分时快照的候选金额**，不重新套规则 ——
