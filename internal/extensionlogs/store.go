@@ -210,9 +210,16 @@ func (s *Store) policy() (Policy, error) {
 	if err = json.Unmarshal(raw, &p); err != nil || !p.valid() {
 		return Policy{}, ErrPolicy
 	}
-	return cappedDiagnosticPolicy(p), nil
+	return p, nil
 }
+
+// Policy reads the stored configuration, including pre-T06 values. Product
+// reads and enforcement use EffectivePolicy so old files need no migration.
 func (s *Store) Policy() (Policy, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.policy() }
+func (s *Store) EffectivePolicy() (Policy, error) {
+	p, err := s.Policy()
+	return cappedDiagnosticPolicy(p), err
+}
 func (s *Store) SetPolicy(p Policy) error {
 	if !p.valid() {
 		return ErrPolicy
@@ -772,7 +779,7 @@ func (s *Store) Read(cursor string, limit int, filter Filter) (Page, error) {
 	if err != nil {
 		return out, err
 	}
-	cut := s.now().UTC().AddDate(0, 0, -p.RetentionDays)
+	cut := s.now().UTC().AddDate(0, 0, -cappedDiagnosticPolicy(p).RetentionDays)
 	candidates := make([]*segment, 0)
 	for _, x := range s.files {
 		if x.first < before && filter.matches(x.key) && !x.updated.Before(cut) {

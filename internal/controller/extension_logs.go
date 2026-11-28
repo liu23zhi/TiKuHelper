@@ -195,7 +195,7 @@ func AdminExtensionLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, page)
 }
 func GetExtensionLogPolicy(c *gin.Context) {
-	policy, err := extensionLogFiles.Policy()
+	policy, err := extensionLogFiles.EffectivePolicy()
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "暂时无法读取诊断日志策略"})
 		return

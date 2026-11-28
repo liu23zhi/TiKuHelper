@@ -84,7 +84,10 @@ func TestProductReceiptSequenceIsAssignedByServerAndRetainsOldCap(t *testing.T) 
 	if err := s.SetPolicy(Policy{true, 365, 220}); err != nil {
 		t.Fatal(err)
 	}
-	if p, e := s.Policy(); e != nil || p.RetentionDays != 7 || p.MaxGB != 10 {
+	if p, e := s.Policy(); e != nil || p.RetentionDays != 365 || p.MaxGB != 220 {
+		t.Fatalf("stored compatibility settings lost: %+v %v", p, e)
+	}
+	if p, e := s.EffectivePolicy(); e != nil || p.RetentionDays != 7 || p.MaxGB != 10 {
 		t.Fatalf("wrong effective caps: %+v %v", p, e)
 	}
 	a, b := receiptFixtureMeta(), receiptFixtureMeta()

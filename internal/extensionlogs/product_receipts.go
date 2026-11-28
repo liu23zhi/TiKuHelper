@@ -204,7 +204,7 @@ func (s *Store) ReadReceipts(ctx context.Context, f Filter, limit int, token str
 	if err != nil {
 		return nil, "", err
 	}
-	p, err := s.Policy()
+	p, err := s.EffectivePolicy()
 	if err != nil {
 		return nil, "", err
 	}
