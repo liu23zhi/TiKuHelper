@@ -490,8 +490,10 @@ func (s *Store) RunCleanup(ctx context.Context, onError func(error)) {
 			s.mu.Lock()
 			delay := s.nextSweep.Sub(s.now())
 			s.mu.Unlock()
-			if err != nil || delay <= 0 {
+			if err != nil {
 				delay = time.Minute
+			} else if delay <= 0 {
+				delay = time.Millisecond
 			}
 			t := time.NewTimer(min(delay, time.Hour))
 			select {

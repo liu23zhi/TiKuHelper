@@ -244,7 +244,7 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 	}
 	// Use the cached byte count only as a hot-path hint. No legacy payload
 	// parsing can prevent the independent receipt cleanup.
-	if !force && now.Before(s.nextSweep) && s.legacyBudgetBytes+journal <= budget {
+	if !force && now.Before(s.nextSweep) && s.legacyBudgetBytes+journal < budget {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -266,7 +266,7 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 	var next time.Time
 	oldestLimit := now.Add(time.Hour)
 	s.legacyBudgetBytes = legacyBytes(files)
-	if !force && s.legacyBudgetBytes+journal <= budget {
+	if !force && s.legacyBudgetBytes+journal < budget {
 		// Ingestion below quota need not parse malformed legacy history;
 		// the scheduled cleanup below handles it independently.
 		receiptTime, e := j.oldestReceiptTime(ctx)
@@ -327,7 +327,7 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 	if err = refresh(); err != nil {
 		return err
 	}
-	if legacyBytes(files)+journal <= budget {
+	if legacyBytes(files)+journal < budget {
 		return nil
 	}
 	if err = j.compactReceipt(ctx, true); err != nil {
@@ -336,7 +336,7 @@ func (s *Store) sweepReceiptBudget(p Policy, now time.Time, force bool) error {
 	if journal, err = j.physicalSize(); err != nil {
 		return err
 	}
-	for excess := legacyBytes(files) + journal - budget; excess > 0; excess = legacyBytes(files) + journal - budget {
+	for excess := legacyBytes(files) + journal - budget + 1; excess > 0; excess = legacyBytes(files) + journal - budget + 1 {
 		// Select a bounded oldest prefix from *both* stores. If SQLite page
 		// packing freed fewer bytes than estimated, remeasure and continue in
 		// the same chronological order rather than dropping a newer segment.

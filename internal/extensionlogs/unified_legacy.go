@@ -115,6 +115,16 @@ func (s *Store) collectLegacyFiles(maintenance bool) (*os.Root, []legacyFile, st
 	return root, files, hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// The old initial-marker code is a legacy-only exception to the current
+// event allowlist, not a reason to export arbitrary strings as log events.
+func validLegacyPayload(r Record) bool {
+	e := r.Entry
+	if e.Event == "session.start" {
+		e.Event = "extension.ready"
+	}
+	return (Batch{Session: r.Session, Entries: []Entry{e}}).valid()
+}
+
 const retainedPrefix = ".retained-"
 
 func retainedStagingName(n string) bool {
@@ -174,7 +184,7 @@ func (f legacyFile) visitRows(ctx context.Context, root *os.Root, repair bool, u
 		}
 		var r Record
 		if json.Unmarshal(line, &r) != nil || r.ReceivedAt.IsZero() || r.Time.IsZero() || r.UserID <= 0 ||
-			r.Seq <= last || !r.Session.valid() || last != 0 && key != r.Session.key(r.UserID) {
+			r.Seq <= last || !validLegacyPayload(r) || last != 0 && key != r.Session.key(r.UserID) {
 			if !repair {
 				return errors.New("invalid or mixed diagnostic segment record")
 			}
