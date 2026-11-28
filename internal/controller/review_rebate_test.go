@@ -444,8 +444,21 @@ func TestReviewRebateHTTPDecisionFlow(t *testing.T) {
 		t.Fatalf("unexpected scored claim: %+v", scored)
 	}
 
-	// 批准。
-	out = send(http.MethodPost, fmt.Sprintf("/admin/review-rebate/claims/%d/decision", created.ID), `{"action":"approve","note":"内容一致"}`)
+	// 真实管理员列表显示的金额与快照必须一起确认。
+	list := send(http.MethodGet, "/admin/review-rebate/claims", "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("read approval quote: %d %s", list.Code, list.Body.String())
+	}
+	row := decodeJSONObject(t, list.Body.Bytes())["data"].([]any)[0].(map[string]any)
+	snapshot, _ := row["approvalSnapshot"].(string)
+	if snapshot == "" || row["awardAmount"] != scored.AwardAmount {
+		t.Fatalf("list must carry current amount and its snapshot: %v", row)
+	}
+	body, err := json.Marshal(map[string]string{"action": "approve", "note": "内容一致", "approvalSnapshot": snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = send(http.MethodPost, fmt.Sprintf("/admin/review-rebate/claims/%d/decision", created.ID), string(body))
 	if out.Code != http.StatusOK {
 		t.Fatalf("approve failed: %d %s", out.Code, out.Body.String())
 	}

@@ -65,6 +65,7 @@ type adminReviewRebateClaimDTO struct {
 	AgentRationale    string     `json:"agentRationale"`
 	AgentScorer       string     `json:"agentScorer"`
 	AgentScoreState   string     `json:"agentScoreState"`
+	ApprovalSnapshot  string     `json:"approvalSnapshot"`
 	MatchedRuleID     int32      `json:"matchedRuleId"`
 	AwardAmount       float64    `json:"awardAmount"`
 	ScreenshotURL     string     `json:"screenshotUrl"`
@@ -128,6 +129,7 @@ func toAdminReviewRebateClaimDTO(item service.ReviewRebateClaimListItem) adminRe
 		AgentRationale:    item.AgentRationaleText,
 		AgentScorer:       item.AgentScorer,
 		AgentScoreState:   service.ReviewRebateAgentScoreState(item.ReviewRebateClaim),
+		ApprovalSnapshot:  service.ReviewRebateApprovalSnapshot(item.ReviewRebateClaim),
 		MatchedRuleID:     item.MatchedRuleID,
 		AwardAmount:       item.AwardAmount,
 		ScreenshotURL:     item.ScreenshotURL,

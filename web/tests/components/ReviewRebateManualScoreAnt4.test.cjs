@@ -11,7 +11,7 @@ const { setStoredCurrentUser, clearStoredCurrentUser } = require('../../src/util
 for (const name of ['ConsolePageHeading', 'ConsolePanel', 'ConsoleSummaryGrid', 'ConsoleTableShell']) delete config.global.components[name]
 const base = '/api/admin/review-rebate'
 const original = axios.defaults.adapter
-let wrapper, router, rows, scoreReplies, writes
+let wrapper, router, rows, scoreReplies, writes, decisionReplies, decisions
 axios.defaults.adapter = async config => {
   if (config.method === 'get') {
     if (config.url === base + '/claims') return { status: 200, data: { data: rows.map(value => ({ ...value })) }, config }
@@ -19,15 +19,16 @@ axios.defaults.adapter = async config => {
     if (config.url === base + '/rules') return { status: 200, data: { data: [] }, config }
   } else {
     writes.push([config.method, config.url])
-    const result = scoreReplies.shift()
-    assert.ok(result, 'only explicitly queued scoring clicks may write')
+    if (config.url.endsWith('/decision')) decisions.push(JSON.parse(config.data))
+    const result = config.url.endsWith('/decision') ? decisionReplies.shift() : scoreReplies.shift()
+    assert.ok(result, 'only explicitly queued scoring and review clicks may write')
     return { ...await result, config }
   }
   throw new Error('unexpected request')
 }
 const Review = require('../../src/pages/ReviewRebateAdmin/index.vue')
 const item = (id, status, agentScoreState, score = {}) => ({
-  id, status, agentScoreState, source: 'edge', userId: 102,
+  id, status, agentScoreState, source: 'edge', userId: 102, approvalSnapshot: 'before-' + id,
   agentScorer: '', agentStars: 0, agentContentScore: 0, agentConfidence: 0, ...score,
 })
 async function settle() { await nextTick(); await flushPromises(); await nextTick() }
@@ -37,6 +38,8 @@ const button = (id, name) => row(id).findAll('button').find(control => control.t
 async function open() {
   writes = []
   scoreReplies = []
+  decisionReplies = []
+  decisions = []
   rows = [
     item(41, 'submitted', 'unscored'),
     item(42, 'submitted', 'running'),
@@ -101,4 +104,59 @@ test('manual scoring locks duplicate clicks, refreshes failure and retries into 
   assert.match(row(41).text(), /4 星 \/ 7 分/)
   assert.equal(button(41, '重试评分'), undefined)
   assert.deepEqual(writes, Array.from({ length: 2 }, () => ['post', base + '/claims/41/score']))
+})
+
+const modal = () => document.querySelector('[role="dialog"]')
+const decide = () => [...(modal()?.querySelectorAll('button') ?? [])].find(button => button.textContent.trim() === '提交结论')
+
+test('a same-record score refresh retires the stale approval and a fresh approval sends its snapshot', async () => {
+  await open()
+  let finishScore
+  scoreReplies.push(new Promise(resolve => { finishScore = resolve }))
+  await button(41, '开始评分').trigger('click')
+  await settle()
+  await button(41, '批准').trigger('click')
+  await settle()
+  assert.match(modal()?.textContent || '', /批准这条评价返现/)
+  rows[0] = item(41, 'scored', 'scored', { agentScorer: 'agent', awardAmount: 3, approvalSnapshot: 'after-41' })
+  finishScore({ status: 200, data: rows[0] })
+  await settle()
+  assert.equal(Boolean(modal()), false, 'a score changed this displayed quote; it must retire the stale approval')
+  assert.deepEqual(decisions, [], 'closing is not submitting')
+  await button(41, '批准').trigger('click')
+  await settle()
+  rows[0] = item(41, 'approved', 'scored', { awardAmount: 3, approvalSnapshot: 'approved-41' })
+  decisionReplies.push(Promise.resolve({ status: 200, data: rows[0] }))
+  decide().click()
+  await settle()
+  assert.deepEqual(decisions, [{ action: 'approve', note: '', approvalSnapshot: 'after-41' }])
+})
+
+test('a score refresh on A cannot consume the in-flight decision result on B', async () => {
+  await open()
+  let finishScore, finishDecision
+  scoreReplies.push(new Promise(resolve => { finishScore = resolve }))
+  decisionReplies.push(new Promise(resolve => { finishDecision = resolve }))
+  await button(41, '开始评分').trigger('click')
+  await settle()
+  await button(43, '拒绝').trigger('click')
+  await settle()
+  const input = modal().querySelector('textarea')
+  input.value = 'synthetic rejection'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await settle()
+  decide().click()
+  await settle()
+  assert.deepEqual(decisions, [{ action: 'reject', note: 'synthetic rejection' }])
+  rows[0] = item(41, 'scored', 'scored')
+  finishScore({ status: 200, data: rows[0] })
+  await settle()
+  assert.match(row(41).text(), /已评分/)
+  assert.ok(modal(), 'an unrelated refresh must not retire an in-flight decision')
+  rows[2] = item(43, 'rejected', 'unscored')
+  finishDecision({ status: 200, data: rows[2] })
+  await settle()
+  assert.equal(Boolean(modal()), false, 'the successful decision must still retire after an unrelated refresh')
+  assert.match(row(43).text(), /已拒绝/)
+  assert.equal(decisions.length, 1)
 })

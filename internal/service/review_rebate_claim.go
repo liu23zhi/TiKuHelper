@@ -684,6 +684,17 @@ func normalizeReviewRebateContentScore(score int) (int, error) {
 //     事务回滚 → 钱包不会被加两次。这是「重复批准只留一条 award」的机械保证，
 //     不依赖调用方是否先查过状态。
 func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note string) (entity.ReviewRebateClaim, error) {
+	return decideReviewRebateClaimWithDB(db, reviewer, id, approve, note, nil)
+}
+
+// DecideReviewRebateAdminClaimWithDB is the HTTP confirmation path. Rejects do
+// not need a monetary snapshot; older approval clients can only use untouched
+// legacy rows that never acquired the new scoring marker.
+func DecideReviewRebateAdminClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note, approvalSnapshot string) (entity.ReviewRebateClaim, error) {
+	return decideReviewRebateClaimWithDB(db, reviewer, id, approve, note, &approvalSnapshot)
+}
+
+func decideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, approve bool, note string, approvalSnapshot *string) (entity.ReviewRebateClaim, error) {
 	if !ReviewRebateSchemaAvailable(db) {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateSchemaUnavailable
 	}
@@ -738,6 +749,12 @@ func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, 
 			claim.ReviewedAt = &now
 			decided = claim
 			return nil
+		}
+
+		// 审核意图必须与锁住的当前行一致，再计算发放或写账；不能在事务外比对。
+		if approvalSnapshot != nil && ((*approvalSnapshot == "" && claim.AgentScoreRun != "") ||
+			(*approvalSnapshot != "" && *approvalSnapshot != ReviewRebateApprovalSnapshot(claim))) {
+			return fmt.Errorf("%w: 评分结果或拟发放金额已变更，请刷新并重新确认", ErrReviewRebateClaimState)
 		}
 
 		// 批准：金额取**打分时快照的候选金额**，不重新套规则 ——

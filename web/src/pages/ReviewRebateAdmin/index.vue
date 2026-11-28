@@ -921,6 +921,7 @@ export default {
           return loadClaims()
         }
         claims.value = list.filter(item => item && typeof item === 'object').map(item => ({ ...item }))
+        retireChangedApproval()
         claimPage.value = page
         claimTotal.value = total
         claimsLoaded.value = true
@@ -1098,6 +1099,8 @@ export default {
           // 请求超时并不能确定服务端是否已完成。
         }
         if (!owns()) return
+        // Even an unconfirmed score request may have changed this exact quote.
+        if (isIdleApproval() && readPositiveInt(decisionRecord.value.id) === id) retireApproval()
         const refreshed = await loadClaims()
         if (!owns()) return
         if (status === 409) scoreWarning.value = '评分状态已变更，请按最新列表核对。'
@@ -1121,6 +1124,18 @@ export default {
       decisionRecord.value = {}
       decisionForm.note = ''
     }
+    const isIdleApproval = () => decisionDialogOpen.value && !deciding.value && decisionForm.decision === 'approve'
+    const retireApproval = () => {
+      resetDecisionDialog()
+      decisionWarning.value = '拟发放金额或评分已更新，请按最新列表重新确认。'
+    }
+    const retireChangedApproval = () => {
+      if (!isIdleApproval()) return
+      const snapshot = decisionRecord.value
+      const latest = claims.value.find(record => readPositiveInt(record.id) === readPositiveInt(snapshot.id))
+      if (!latest || latest.approvalSnapshot !== snapshot.approvalSnapshot ||
+          latest.status !== snapshot.status || latest.awardAmount !== snapshot.awardAmount) retireApproval()
+    }
     const closeDecisionDialog = () => {
       if (!deciding.value) resetDecisionDialog()
     }
@@ -1131,14 +1146,15 @@ export default {
       if (!id) return
       const ticket = ++writeVersion
       const owns = () => canManage() && ticket === writeVersion
+      // A score/read on another row cannot take ownership of this write.
       clearClaimsFailure()
-      const context = claimsFailureContextKey.value
-      const ownsFailure = () => owns() && context === claimsFailureContextKey.value
+      const decision = decisionForm.decision
+      const snapshot = decisionRecord.value.approvalSnapshot
       deciding.value = true
       decisionWarning.value = ''
       try {
-        const res = await decideReviewRebateClaim(id, decisionForm.decision, decisionForm.note)
-        if (!ownsFailure()) return
+        const res = await decideReviewRebateClaim(id, decision, decisionForm.note, snapshot)
+        if (!owns()) return
         if (res?.status === 409) {
           resetDecisionDialog()
           decisionWarning.value = '该提交状态已变更，请按最新列表核对。'
@@ -1146,13 +1162,13 @@ export default {
           return
         }
         if (res?.status !== 200) {
-          claimsFailureOwner = ownsFailure; claimsFailure.value = ensureRequestFailure(res); return
+          claimsFailureOwner = owns; claimsFailure.value = ensureRequestFailure(res); return
         }
         resetDecisionDialog()
-        message.success(decisionForm.decision === 'approve' ? '已批准' : '已拒绝')
+        message.success(decision === 'approve' ? '已批准' : '已拒绝')
         await loadClaims()
       } catch (error) {
-        if (ownsFailure()) { claimsFailureOwner = ownsFailure; claimsFailure.value = ensureRequestFailure(error) }
+        if (owns()) { claimsFailureOwner = owns; claimsFailure.value = ensureRequestFailure(error) }
       } finally {
         if (owns()) deciding.value = false
       }

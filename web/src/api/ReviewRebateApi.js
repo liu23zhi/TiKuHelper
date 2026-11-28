@@ -117,7 +117,7 @@ export function getReviewRebateClaims(params) {
   return request({ errorFeedback: 'local', url: `${adminBase}/claims`, method: 'get', params })
 }
 
-export function decideReviewRebateClaim(id, decision, note = '') {
+export function decideReviewRebateClaim(id, decision, note = '', approvalSnapshot = '') {
   const value = Number(id)
   if (!Number.isInteger(value) || value <= 0) throw new Error('提交记录参数错误')
   if (!['approve', 'reject'].includes(decision)) throw new Error('审核结论无效')
@@ -126,7 +126,12 @@ export function decideReviewRebateClaim(id, decision, note = '') {
     url: `${adminBase}/claims/${value}/decision`,
     method: 'post',
     // 规范名是 action（后端 service/controller 都按它取）；decision 只是兼容别名。
-    data: { action: decision, note: String(note || '') },
+    retryPolicy: 'single',
+    data: {
+      action: decision,
+      note: String(note || ''),
+      ...(decision === 'approve' && approvalSnapshot ? { approvalSnapshot } : {}),
+    },
   })
 }
 
